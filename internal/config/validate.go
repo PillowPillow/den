@@ -2,7 +2,8 @@ package config
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 )
 
 var (
@@ -20,11 +21,7 @@ func (g *Global) Validate() []error {
 		errs = append(errs, fmt.Errorf("agents : le registre est vide, déclare au moins un agent"))
 	}
 
-	noms := make([]string, 0, len(g.Agents))
-	for nom := range g.Agents {
-		noms = append(noms, nom)
-	}
-	sort.Strings(noms) // déterminisme de l'ordre des erreurs
+	noms := slices.Sorted(maps.Keys(g.Agents)) // déterminisme de l'ordre des erreurs
 
 	for _, nom := range noms {
 		a := g.Agents[nom]
@@ -51,26 +48,17 @@ func (g *Global) Validate() []error {
 		errs = append(errs, fmt.Errorf("defaults.stack : requis"))
 	}
 
-	if !contient(modesSSH, g.SSH.Mode) {
+	if !slices.Contains(modesSSH, g.SSH.Mode) {
 		errs = append(errs, fmt.Errorf("ssh.mode : %q inconnu (attendu : %v)", g.SSH.Mode, modesSSH))
 	}
 	if g.SSH.Mode == "mount" && g.SSH.Dir == "" {
 		errs = append(errs, fmt.Errorf("ssh.dir : requis quand ssh.mode vaut mount"))
 	}
 
-	if !contient(layoutsWorktree, g.WorktreeLayout) {
+	if !slices.Contains(layoutsWorktree, g.WorktreeLayout) {
 		errs = append(errs, fmt.Errorf(
 			"worktree_layout : %q inconnu (attendu : %v)", g.WorktreeLayout, layoutsWorktree))
 	}
 
 	return errs
-}
-
-func contient(liste []string, v string) bool {
-	for _, e := range liste {
-		if e == v {
-			return true
-		}
-	}
-	return false
 }

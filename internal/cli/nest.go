@@ -3,7 +3,8 @@ package cli
 import (
 	"fmt"
 	"io"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -116,7 +117,9 @@ func ecrisResolution(w io.Writer, r *nest.Resolved) {
 
 	if len(r.Nest.Env) > 0 {
 		fmt.Fprintln(w, "env:")
-		for _, k := range clesTriees(r.Nest.Env) {
+		// L'ordre d'itération des maps Go n'est pas déterministe : tout ce qui
+		// s'affiche est trié.
+		for _, k := range slices.Sorted(maps.Keys(r.Nest.Env)) {
 			fmt.Fprintf(w, "  %s=%s\n", k, r.Nest.Env[k])
 		}
 	}
@@ -138,14 +141,4 @@ func ecrisResolution(w io.Writer, r *nest.Resolved) {
 			fmt.Fprintf(w, "  - %s -> %d%s\n", p.Name, p.Container, suffixe)
 		}
 	}
-}
-
-// clesTriees rend l'affichage des maps déterministe (l'ordre d'itération Go ne l'est pas).
-func clesTriees(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
