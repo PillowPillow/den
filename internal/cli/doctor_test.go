@@ -70,6 +70,27 @@ func TestDoctorEchoueQuandSbxManque(t *testing.T) {
 	}
 }
 
+// Les tests ci-dessus construisent la commande directement pour injecter leurs
+// Deps, ce qui laisse le câblage de root.go (newDoctorCmd branché sur l'arbre
+// racine avec doctor.DepsSysteme()) sans couverture. Celui-ci passe par
+// NewRootCmd : il n'assert que l'atteignabilité et la sortie, jamais le code de
+// retour lié à sbx.
+func TestDoctorEstCableDansLArbreRacine(t *testing.T) {
+	t.Setenv("DEN_HOME", t.TempDir())
+	out, err := run(t, "doctor")
+	// config.yaml est absent : au moins un diagnostic échoue, que sbx soit
+	// installé ou non sur la machine.
+	if err == nil {
+		t.Error("attendu une erreur : config.yaml est absent du den home")
+	}
+	if !strings.Contains(out, "den home:") {
+		t.Errorf("sortie = %q, attendu l'en-tête de doctor", out)
+	}
+	if !strings.Contains(out, "config.yaml") {
+		t.Errorf("sortie = %q, attendu le diagnostic de config.yaml", out)
+	}
+}
+
 func TestDoctorEchoueSurConfigAbsente(t *testing.T) {
 	out, err := runDoctor(t, t.TempDir(), depsSaines())
 	if err == nil {

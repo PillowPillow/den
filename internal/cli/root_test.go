@@ -2,20 +2,31 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
-// exécute la commande racine avec des arguments et retourne sa sortie standard.
-func run(t *testing.T, args ...string) (string, error) {
+// executeCmd exécute un arbre de commandes DONNÉ et retourne sa sortie. Séparé
+// de run() pour que les tests puissent construire plusieurs arbres avant d'en
+// exécuter un seul.
+func executeCmd(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
 	t.Helper()
-	cmd := NewRootCmd()
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 	cmd.SetErr(out)
 	cmd.SetArgs(args)
 	err := cmd.Execute()
 	return out.String(), err
+}
+
+// exécute une commande racine neuve avec des arguments et retourne sa sortie standard.
+func run(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	return executeCmd(t, NewRootCmd(), args...)
 }
 
 func TestVersionAfficheLaVersion(t *testing.T) {
@@ -30,6 +41,56 @@ func TestVersionAfficheLaVersion(t *testing.T) {
 	}
 	if !strings.Contains(out, "1.2.3") {
 		t.Errorf("sortie = %q, attendu contenant %q", out, "1.2.3")
+	}
+}
+
+// denHomeAvecNest fabrique un den home minimal ne contenant qu'un nest.
+// `den nest ls` n'a besoin de rien d'autre.
+func denHomeAvecNest(t *testing.T, nom string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "nests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nests", nom+".yaml"), []byte("stack: devx\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// Le flag --den-home appartient à l'instance de commande, pas au paquet.
+//
+// L'entrelacement est ce qui compte : cmd2 est construit AVANT que cmd1 ne
+// s'exécute. Avec une variable de paquet, la construction de cmd2 remet la
+// variable à "" (StringVar écrit son défaut), puis l'exécution de cmd1 y écrit
+// dirA, et cmd2 — qui ne porte pourtant aucun --den-home — hérite de dirA au
+// lieu de retomber sur DEN_HOME. Construire les deux arbres dans l'ordre
+// d'exécution masquerait complètement le défaut.
+func TestDenHomeEstScopeAChaqueInstance(t *testing.T) {
+	dirA := denHomeAvecNest(t, "alpha")
+	dirB := denHomeAvecNest(t, "beta")
+	t.Setenv("DEN_HOME", dirB)
+
+	cmd1 := NewRootCmd()
+	cmd2 := NewRootCmd() // construit avant l'exécution de cmd1
+
+	out1, err := executeCmd(t, cmd1, "nest", "ls", "--den-home", dirA)
+	if err != nil {
+		t.Fatalf("cmd1 : erreur inattendue : %v", err)
+	}
+	if !strings.Contains(out1, "alpha") {
+		t.Errorf("cmd1 = %q, attendu le nest de %s", out1, dirA)
+	}
+
+	out2, err := executeCmd(t, cmd2, "nest", "ls")
+	if err != nil {
+		t.Fatalf("cmd2 : erreur inattendue : %v", err)
+	}
+	if strings.Contains(out2, "alpha") {
+		t.Errorf("cmd2 = %q : le --den-home de cmd1 a fuité dans une autre instance", out2)
+	}
+	if !strings.Contains(out2, "beta") {
+		t.Errorf("cmd2 = %q, attendu le nest de DEN_HOME (%s)", out2, dirB)
 	}
 }
 
