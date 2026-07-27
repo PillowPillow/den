@@ -71,3 +71,47 @@ func TestValidateCumuleLesErreurs(t *testing.T) {
 		t.Errorf("attendu au moins 2 erreurs cumulées, obtenu %d : %v", len(errs), errs)
 	}
 }
+
+func TestValidateDeterminismeTriAgents(t *testing.T) {
+	// Les maps Go itèrent dans un ordre aléatoire. Validate() doit trier les noms
+	// d'agents avant de les parcourir, sinon l'ordre des erreurs varie entre les
+	// exécutions. Ce test prouve que le tri fonctionne en créant deux agents
+	// fautifs (alpha, zeta sans Update) et en vérifiant que les erreurs
+	// apparaissent dans l'ordre alphabétique.
+	g := globalValide()
+	g.Agents = map[string]Agent{
+		"zeta":  {ConfigDir: "/tmp/zeta", Update: "", BinDirs: []string{}},
+		"alpha": {ConfigDir: "/tmp/alpha", Update: "", BinDirs: []string{}},
+	}
+	g.Defaults.Agent = "alpha"
+
+	errs := g.Validate()
+	if len(errs) < 2 {
+		t.Fatalf("attendu au moins 2 erreurs, obtenu %d", len(errs))
+	}
+
+	// Extrait les messages et vérifie l'ordre
+	msgs := make([]string, len(errs))
+	for i, e := range errs {
+		msgs[i] = e.Error()
+	}
+
+	// alpha.update doit apparaître avant zeta.update
+	alphaIdx := -1
+	zetaIdx := -1
+	for i, msg := range msgs {
+		if strings.Contains(msg, "alpha.update") {
+			alphaIdx = i
+		}
+		if strings.Contains(msg, "zeta.update") {
+			zetaIdx = i
+		}
+	}
+
+	if alphaIdx == -1 || zetaIdx == -1 {
+		t.Fatalf("attendu erreurs alpha.update et zeta.update, obtenu %v", msgs)
+	}
+	if alphaIdx >= zetaIdx {
+		t.Errorf("ordre des erreurs non trié : alpha à %d, zeta à %d (messages : %v)", alphaIdx, zetaIdx, msgs)
+	}
+}
