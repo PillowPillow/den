@@ -68,6 +68,13 @@ func TestRunConfigSaine(t *testing.T) {
 	if !tousOK(checks) {
 		t.Errorf("attendu tous les checks OK, obtenu %+v", checks)
 	}
+	// tousOK seul passerait avec un unique check trivial : on vérifie nommément
+	// que chaque diagnostic attendu sur un den sain est bien produit.
+	for _, fragment := range []string{"sbx", "config.yaml", "config", "stacks", "defaults.stack", "nests"} {
+		if _, ok := trouve(checks, fragment); !ok {
+			t.Errorf("aucun check ne concerne %q, obtenu %+v", fragment, checks)
+		}
+	}
 }
 
 func TestRunSbxAbsent(t *testing.T) {
