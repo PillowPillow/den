@@ -41,6 +41,10 @@ en une commande, sans retaper mixin/kits/policy à la main. La microVM reste la 
 | La VM qui tourne | *sandbox* (terme sbx) | `sbx ls` |
 | Profil d'un agent IA (Claude, Codex…) | **agent profile** | `config_dir` monté RW |
 
+**Identité d'un objet = son chemin.** Une stack est nommée par son dossier (`stacks/<n>/`), un nest
+par le basename de son fichier (`nests/<n>.yaml`). Aucun objet ne porte son nom dans son contenu :
+une seule source d'identité, non falsifiable.
+
 Un **nest** est un terrier multi-galeries : plusieurs repos co-montés dans une seule VM. On le
 **spawn** ; on peut y propager un **worktree** sur tous ses repos d'un coup.
 
@@ -106,7 +110,6 @@ egress:                                  # allowlist baseline, TOUTES sandboxes
 ### 4.2 `stacks/<n>/stack.yaml` (recette image)
 
 ```yaml
-name: dgdevx
 image: dgdevx:v1        # passé à `sbx create --template`
 parent: devx            # DAG de build (build devx avant dgdevx)
 kit: ./kit              # kit par défaut de la stack (env + egress toolchain)
@@ -116,7 +119,6 @@ egress: []              # ajouts egress niveau stack
 ### 4.3 `nests/<n>.yaml` (objet spawnable)
 
 ```yaml
-name: fullstack
 stack: dgdevx
 env:                                 # optionnel, per-nest → injecté via le mixin généré
   SOME_VAR: value
@@ -318,6 +320,12 @@ jamais source de vérité.
 **Stack :** Go · CLI **cobra** · YAML **`yaml.v3`** · binaire statique unique (`go build`).
 `sbx` piloté par **exec derrière une interface `sbx.Runner`** (mockable).
 
+**Décodage YAML strict** (`KnownFields(true)`) sur *tous* les fichiers de config : une clé inconnue
+est une erreur de chargement, jamais un silence. Une faute de frappe (`egres:` pour `egress:`) qui
+passe inaperçue laisse l'allowlist vide et produit une sandbox qui n'atteint plus
+`api.anthropic.com`, settle-loop fail-closed sans cause visible — le pire mode de défaillance de ce
+projet, et précisément ce que `den doctor` doit attraper.
+
 **Layout du dépôt (la CLI) :**
 ```
 cmd/den/                 # entrée cobra
@@ -357,6 +365,8 @@ internal/
 10. État sans DB (labels sbx) ; cache reconstructible optionnel.
 11. **Fraîcheur de l'agent au boot**, déclarée dans le registre (`update` + `bin_dirs`), rendue en
     dernière startup command du mixin généré, **fail-closed avec retries bornés** (§9.1).
+12. **Identité par le chemin, jamais par le contenu** (§2) ; **décodage YAML strict** sur toute la
+    configuration (§12).
 
 ---
 
@@ -374,3 +384,7 @@ internal/
   `~/.den/stacks/`.
 - **Commande `update` de codex** (§4.1) : placeholder non vérifié, à confirmer le jour où l'agent
   codex est réellement branché. Celle de claude (`claude update`) est validée en VM.
+- **Factorisation de repos partagés entre nests** : non traitée en v1 — chaque nest liste ses repos
+  en entier, quitte à dupliquer. Risque assumé. Si la duplication devient douloureuse, ajouter un
+  `extends: <nest>` explicite, pas des anchors YAML (qui rendraient les fichiers illisibles et
+  contourneraient le décodage strict du §12).
