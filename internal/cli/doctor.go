@@ -8,13 +8,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newDoctorCmd() *cobra.Command {
+// newDoctorCmd prend ses accès système en paramètre plutôt que de câbler
+// doctor.DepsSysteme() en dur : c'est ce qui permet au test d'exercer les deux
+// branches du contrat de sortie sans dépendre de la machine qui l'exécute.
+func newDoctorCmd(denHome *string, deps doctor.Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Diagnostique la configuration den et l'environnement",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			home, err := config.Home(denHome)
+			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
 			}
@@ -22,7 +25,7 @@ func newDoctorCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "den home: %s\n\n", home)
 
-			checks := doctor.Run(home, doctor.DepsSysteme())
+			checks := doctor.Run(home, deps)
 			echecs := 0
 			for _, c := range checks {
 				marque := "ok  "

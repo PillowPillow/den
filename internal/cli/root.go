@@ -5,6 +5,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/spf13/cobra"
 )
 
@@ -36,7 +37,7 @@ func NewRootCmd() *cobra.Command {
 		},
 	})
 	root.AddCommand(newNestCmd())
-	root.AddCommand(newDoctorCmd())
+	root.AddCommand(newDoctorCmd(&denHome, doctor.DepsSysteme()))
 	return root
 }
 
