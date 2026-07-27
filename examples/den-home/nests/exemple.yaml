@@ -1,0 +1,4 @@
+name: exemple
+stack: devx
+repos:
+  - { path: ~/dev/mon-projet }

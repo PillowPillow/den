@@ -1,0 +1,20 @@
+# Recopie ce dossier dans ~/.den puis adapte-le.
+agents:
+  claude:
+    config_dir: ~/.den/agents/claude
+    env: { CLAUDE_CONFIG_DIR: "{config_dir}" }
+    # Chemins IN-VM ajoutés au PATH avant la commande update (cf. spec §9.1).
+    bin_dirs: ["$HOME/.local/bin", "$HOME/.claude/local"]
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: agent-forward
+  dir: ~/.ssh_sbx
+worktree_layout: central
+worktree_root: ~/.den/worktrees
+egress:
+  - api.anthropic.com
+  - github.com
+  - registry.npmjs.org
