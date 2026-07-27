@@ -93,6 +93,25 @@ func TestResolveAgentOverrideNestCibleLeBonAgent(t *testing.T) {
 	}
 }
 
+// ResolveAgent doit accepter un nest nil : la garde `if n != nil` existe pour
+// les appelants qui résolvent un agent hors contexte de nest (le futur
+// `den doctor`/`den build`), et du code défensif non exercé n'est pas prouvé.
+func TestResolveAgentSansNest(t *testing.T) {
+	nom, a, dir, err := ResolveAgent(globalTest(), nil, "")
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if nom != "claude" {
+		t.Errorf("nom = %q, attendu claude (defaults.agent)", nom)
+	}
+	if a.Update != "claude update" {
+		t.Errorf("Update = %q", a.Update)
+	}
+	if dir != "/home/moi/.den/agents/claude" {
+		t.Errorf("configDir = %q, attendu celui du registre global", dir)
+	}
+}
+
 func TestResolveAgentInconnu(t *testing.T) {
 	_, _, _, err := ResolveAgent(globalTest(), nestTest(), "gemini")
 	if err == nil {

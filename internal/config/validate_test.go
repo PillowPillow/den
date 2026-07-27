@@ -23,6 +23,23 @@ func TestValidateConfigCorrecte(t *testing.T) {
 	}
 }
 
+// Les trois modes SSH du spec §10 sont acceptés. `none` n'était couvert par
+// aucun test : rien ne prouvait qu'un mode déclaré au spec passait la validation.
+func TestValidateAccepteLesModesSSHDuSpec(t *testing.T) {
+	for _, mode := range []string{"agent-forward", "mount", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			g := globalValide()
+			g.SSH.Mode = mode
+			if mode == "mount" {
+				g.SSH.Dir = "/tmp/ssh_sbx" // requis dans ce mode uniquement
+			}
+			if errs := g.Validate(); len(errs) != 0 {
+				t.Errorf("mode %q refusé alors qu'il est déclaré au spec §10 : %v", mode, errs)
+			}
+		})
+	}
+}
+
 func TestValidateDetecteLesFautes(t *testing.T) {
 	cas := []struct {
 		nom     string
