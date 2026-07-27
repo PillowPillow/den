@@ -122,6 +122,35 @@ func TestListNestsTriParNom(t *testing.T) {
 	}
 }
 
+// TestListNestsTriDivergeDeLOrdreFichier verrouille le tri explicite de ListNests.
+// os.ReadDir renvoie déjà ses entrées triées par nom de FICHIER : avec des noms de
+// nests qui partagent tous le même suffixe ".yaml" (cas de TestListNestsTriParNom
+// ci-dessus), l'ordre des fichiers et l'ordre des noms de nests coïncident toujours,
+// et un test bâti uniquement sur ce cas ne distinguerait pas « ListNests trie » de
+// « ReadDir trie déjà » — on pourrait retirer sort.Strings sans faire échouer la suite.
+// Ici "web-2.yaml" et "web.yaml" divergent : '-' (0x2D) précède '.' (0x2E) en ASCII, donc
+// ReadDir renvoie "web-2.yaml" avant "web.yaml", alors qu'une fois le suffixe ".yaml"
+// retiré, l'ordre trié des noms de nests place "web" avant "web-2" (préfixe plus court).
+func TestListNestsTriDivergeDeLOrdreFichier(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "web", "stack: devx\n")
+	ecrisNest(t, denHome, "web-2", "stack: devx\n")
+	ecrisNest(t, denHome, "api", "stack: devx\n")
+
+	nests, err := ListNests(denHome)
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	var noms []string
+	for _, n := range nests {
+		noms = append(noms, n.Name)
+	}
+	attendu := []string{"api", "web", "web-2"}
+	if len(noms) != 3 || noms[0] != attendu[0] || noms[1] != attendu[1] || noms[2] != attendu[2] {
+		t.Errorf("noms = %v, attendu %v (trié par nom de nest, pas par nom de fichier)", noms, attendu)
+	}
+}
+
 func TestListNestsDossierAbsent(t *testing.T) {
 	nests, err := ListNests(t.TempDir())
 	if err != nil {
