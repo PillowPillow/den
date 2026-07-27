@@ -23,7 +23,6 @@ func ecrisStack(t *testing.T, denHome, nom, contenu string) string {
 func TestLoadStack(t *testing.T) {
 	denHome := t.TempDir()
 	ecrisStack(t, denHome, "dgdevx", `
-name: dgdevx
 image: dgdevx:v1
 parent: devx
 kit: ./kit
@@ -49,9 +48,9 @@ egress:
 	}
 }
 
+// Le nom d'une stack est le nom de son dossier — cas nominal et unique.
 func TestLoadStackNomDeduitDuDossier(t *testing.T) {
 	denHome := t.TempDir()
-	// `name` absent du YAML : le nom du dossier fait foi.
 	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
 	s, err := LoadStack(denHome, "devx")
 	if err != nil {
@@ -59,6 +58,40 @@ func TestLoadStackNomDeduitDuDossier(t *testing.T) {
 	}
 	if s.Name != "devx" {
 		t.Errorf("Name = %q, attendu %q déduit du dossier", s.Name, "devx")
+	}
+}
+
+// Même règle que pour les nests : une stack ne porte pas son nom dans son
+// contenu. LoadStacks indexait sa map par ce `name:`, alors que LoadStack
+// cherche par nom de dossier — deux clés pour un même objet.
+func TestLoadStackRejetteUnNomDansLeContenu(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisStack(t, denHome, "devx", "name: autre\nimage: devx:v1\n")
+	_, err := LoadStack(denHome, "devx")
+	if err == nil {
+		t.Fatal("attendu un rejet : l'identité d'une stack vient de son dossier, pas de son contenu")
+	}
+	if !strings.Contains(err.Error(), "name") {
+		t.Errorf("erreur = %q, attendu une mention de la clé `name`", err.Error())
+	}
+}
+
+// LoadStacks doit indexer par le nom de dossier, la seule identité qui existe :
+// c'est par cette clé que defaults.stack et nest.stack sont résolus.
+func TestLoadStacksIndexeParLeNomDeDossier(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+
+	stacks, err := LoadStacks(denHome)
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	s, ok := stacks["devx"]
+	if !ok {
+		t.Fatalf("stacks = %v, attendu une entrée sous le nom de dossier %q", stacks, "devx")
+	}
+	if s.Name != "devx" {
+		t.Errorf("Name = %q, attendu %q", s.Name, "devx")
 	}
 }
 

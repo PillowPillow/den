@@ -10,7 +10,9 @@ import (
 
 // Stack est une recette d'image buildable (spec §4.2).
 type Stack struct {
-	Name   string   `yaml:"name"`
+	// Name vient du nom du dossier, JAMAIS du contenu : un objet a une seule
+	// identité, non falsifiable (spec §2).
+	Name   string   `yaml:"-"`
 	Image  string   `yaml:"image"`
 	Parent string   `yaml:"parent"` // arête du DAG de build
 	Kit    string   `yaml:"kit"`    // relatif au dossier de la stack dans le YAML, absolu après chargement
@@ -34,9 +36,7 @@ func LoadStack(denHome, name string) (*Stack, error) {
 		return nil, err
 	}
 
-	if s.Name == "" {
-		s.Name = name // le dossier fait foi
-	}
+	s.Name = name // le dossier fait foi, sans condition
 	s.Dir = dir
 	if s.Kit != "" && !filepath.IsAbs(s.Kit) {
 		s.Kit = filepath.Join(dir, s.Kit)
@@ -69,7 +69,7 @@ func LoadStacks(denHome string) (map[string]*Stack, error) {
 		if err != nil {
 			return nil, err
 		}
-		stacks[s.Name] = s
+		stacks[e.Name()] = s // le dossier est l'identité, ici comme dans LoadStack
 	}
 	return stacks, nil
 }

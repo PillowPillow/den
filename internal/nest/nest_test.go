@@ -19,7 +19,6 @@ func ecrisNest(t *testing.T, denHome, nom, contenu string) {
 }
 
 const nestComplet = `
-name: fullstack
 stack: dgdevx
 env:
   SOME_VAR: value
@@ -81,6 +80,8 @@ func TestLoadNest(t *testing.T) {
 	}
 }
 
+// Le nom d'un nest est le basename de son fichier — c'est le cas nominal, et le
+// seul : il n'y a pas d'autre source d'identité.
 func TestLoadNestNomDeduitDuFichier(t *testing.T) {
 	denHome := t.TempDir()
 	ecrisNest(t, denHome, "review", "stack: devx\n")
@@ -90,6 +91,23 @@ func TestLoadNestNomDeduitDuFichier(t *testing.T) {
 	}
 	if n.Name != "review" {
 		t.Errorf("Name = %q, attendu %q déduit du fichier", n.Name, "review")
+	}
+}
+
+// Un `name:` dans le contenu était une seconde source d'identité, divergente du
+// nom de fichier : `den nest ls` cessait d'être trié (le tri porte sur les noms
+// de fichiers) et `den nest show <nom-affiché>` cherchait un fichier qui
+// n'existait pas. Le champ n'existe plus au schéma : le décodage strict le
+// rejette, à la source, avec un message qui nomme la clé fautive.
+func TestLoadNestRejetteUnNomDansLeContenu(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "api", "name: fullstack\nstack: devx\n")
+	_, err := LoadNest(denHome, "api")
+	if err == nil {
+		t.Fatal("attendu un rejet : l'identité d'un nest vient de son fichier, pas de son contenu")
+	}
+	if !strings.Contains(err.Error(), "name") {
+		t.Errorf("erreur = %q, attendu une mention de la clé `name`", err.Error())
 	}
 }
 

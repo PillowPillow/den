@@ -39,7 +39,9 @@ type Ports struct {
 
 // Nest est un objet spawnable (spec §4.3).
 type Nest struct {
-	Name   string            `yaml:"name"`
+	// Name vient du basename du fichier, JAMAIS du contenu : un objet a une
+	// seule identité, non falsifiable (spec §2).
+	Name   string            `yaml:"-"`
 	Stack  string            `yaml:"stack"`
 	Env    map[string]string `yaml:"env"`
 	Egress []string          `yaml:"egress"`
@@ -62,9 +64,7 @@ func LoadNest(denHome, name string) (*Nest, error) {
 		return nil, err
 	}
 
-	if n.Name == "" {
-		n.Name = name // le nom de fichier fait foi
-	}
+	n.Name = name // le nom de fichier fait foi, sans condition
 	for i, r := range n.Repos {
 		if n.Repos[i].Path, err = config.ExpandPath(r.Path); err != nil {
 			return nil, fmt.Errorf("nest %q, repo %q : %w", n.Name, r.Path, err)

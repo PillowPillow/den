@@ -1,4 +1,3 @@
-name: devx
 image: devx:v1
 kit: ./kit
 egress: []
