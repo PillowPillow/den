@@ -3,6 +3,7 @@ package nest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,6 +87,33 @@ func TestLoadNestNomDeduitDuFichier(t *testing.T) {
 	n, err := LoadNest(denHome, "review")
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if n.Name != "review" {
+		t.Errorf("Name = %q, attendu %q déduit du fichier", n.Name, "review")
+	}
+}
+
+func TestLoadNestRejetteUneCleInconnue(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "review", "stack: devx\negres:\n  - github.com\n")
+	_, err := LoadNest(denHome, "review")
+	if err == nil {
+		t.Fatal("attendu une erreur sur la clé inconnue `egres`")
+	}
+	if !strings.Contains(err.Error(), "egres") {
+		t.Errorf("erreur = %q, attendu une mention de la clé fautive", err.Error())
+	}
+	if !strings.Contains(err.Error(), filepath.Join(denHome, "nests", "review.yaml")) {
+		t.Errorf("erreur = %q, attendu le chemin du fichier fautif", err.Error())
+	}
+}
+
+func TestLoadNestFichierVide(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "review", "")
+	n, err := LoadNest(denHome, "review")
+	if err != nil {
+		t.Fatalf("un nest vide ne doit pas être une erreur de chargement : %v", err)
 	}
 	if n.Name != "review" {
 		t.Errorf("Name = %q, attendu %q déduit du fichier", n.Name, "review")

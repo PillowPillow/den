@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
-	"gopkg.in/yaml.v3"
 )
 
 // Repo est un dépôt co-monté dans la sandbox.
@@ -59,8 +58,8 @@ func LoadNest(denHome, name string) (*Nest, error) {
 	}
 
 	var n Nest
-	if err := yaml.Unmarshal(brut, &n); err != nil {
-		return nil, fmt.Errorf("%s : YAML invalide : %w", chemin, err)
+	if err := config.DecodeYAMLStrict(chemin, brut, &n); err != nil {
+		return nil, err
 	}
 
 	if n.Name == "" {

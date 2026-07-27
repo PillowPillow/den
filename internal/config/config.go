@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Agent décrit une entrée du registre d'agents (spec §4.1 et §9).
@@ -50,8 +48,8 @@ func LoadGlobal(denHome string) (*Global, error) {
 	}
 
 	var g Global
-	if err := yaml.Unmarshal(brut, &g); err != nil {
-		return nil, fmt.Errorf("%s : YAML invalide : %w", chemin, err)
+	if err := DecodeYAMLStrict(chemin, brut, &g); err != nil {
+		return nil, err
 	}
 
 	if g.SSH.Mode == "" {

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -55,6 +56,30 @@ func TestLoadStackNomDeduitDuDossier(t *testing.T) {
 	s, err := LoadStack(denHome, "devx")
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if s.Name != "devx" {
+		t.Errorf("Name = %q, attendu %q déduit du dossier", s.Name, "devx")
+	}
+}
+
+func TestLoadStackRejetteUneCleInconnue(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisStack(t, denHome, "devx", "image: devx:v1\negres: [github.com]\n")
+	_, err := LoadStack(denHome, "devx")
+	if err == nil {
+		t.Fatal("attendu une erreur sur la clé inconnue `egres`")
+	}
+	if !strings.Contains(err.Error(), "egres") {
+		t.Errorf("erreur = %q, attendu une mention de la clé fautive", err.Error())
+	}
+}
+
+func TestLoadStackFichierVide(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisStack(t, denHome, "devx", "")
+	s, err := LoadStack(denHome, "devx")
+	if err != nil {
+		t.Fatalf("un stack.yaml vide ne doit pas être une erreur de chargement : %v", err)
 	}
 	if s.Name != "devx" {
 		t.Errorf("Name = %q, attendu %q déduit du dossier", s.Name, "devx")

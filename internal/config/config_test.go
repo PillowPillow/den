@@ -120,3 +120,36 @@ func TestLoadGlobalYamlInvalide(t *testing.T) {
 		t.Fatal("attendu une erreur sur YAML invalide")
 	}
 }
+
+// Une clé mal orthographiée doit être une erreur, jamais un silence : `egres:`
+// laisse l'allowlist vide, et la sandbox n'atteint plus api.anthropic.com sans
+// que rien ne l'ait signalé. C'est exactement ce que `den doctor` doit attraper.
+func TestLoadGlobalRejetteUneCleInconnue(t *testing.T) {
+	denHome := ecrisConfig(t, "defaults:\n  agent: claude\n  stack: devx\negres:\n  - api.anthropic.com\n")
+	_, err := LoadGlobal(denHome)
+	if err == nil {
+		t.Fatal("attendu une erreur sur la clé inconnue `egres`")
+	}
+	if !strings.Contains(err.Error(), "egres") {
+		t.Errorf("erreur = %q, attendu une mention de la clé fautive", err.Error())
+	}
+	if !strings.Contains(err.Error(), filepath.Join(denHome, "config.yaml")) {
+		t.Errorf("erreur = %q, attendu le chemin du fichier fautif", err.Error())
+	}
+}
+
+// Un config.yaml vide est une config qui ne déclare rien, pas un fichier corrompu :
+// Validate() dira ce qui manque en clair. yaml.v3 renvoie io.EOF sur un fichier
+// vide, ce qui ne doit surtout pas remonter tel quel à l'utilisateur.
+func TestLoadGlobalFichierVide(t *testing.T) {
+	g, err := LoadGlobal(ecrisConfig(t, ""))
+	if err != nil {
+		t.Fatalf("un config.yaml vide ne doit pas être une erreur de chargement : %v", err)
+	}
+	if g.SSH.Mode != "agent-forward" {
+		t.Errorf("SSH.Mode = %q, attendu le défaut appliqué même sur fichier vide", g.SSH.Mode)
+	}
+	if errs := g.Validate(); len(errs) == 0 {
+		t.Error("attendu que Validate signale une config vide")
+	}
+}

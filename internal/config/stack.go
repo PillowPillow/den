@@ -6,8 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Stack est une recette d'image buildable (spec §4.2).
@@ -32,8 +30,8 @@ func LoadStack(denHome, name string) (*Stack, error) {
 	}
 
 	var s Stack
-	if err := yaml.Unmarshal(brut, &s); err != nil {
-		return nil, fmt.Errorf("%s : YAML invalide : %w", chemin, err)
+	if err := DecodeYAMLStrict(chemin, brut, &s); err != nil {
+		return nil, err
 	}
 
 	if s.Name == "" {
