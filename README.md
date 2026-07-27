@@ -1,6 +1,6 @@
 # den
 
-CLI générique pour piloter des sandboxes [sbx](https://…) : une commande pour démarrer une microVM
+CLI générique pour piloter des sandboxes `sbx` : une commande pour démarrer une microVM
 multi-projet, sans retaper mixin, kits et policy à la main.
 
 ## Installation
