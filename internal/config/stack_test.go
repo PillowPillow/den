@@ -119,9 +119,39 @@ func TestLoadStackFichierVide(t *testing.T) {
 	}
 }
 
+// Une stack absente et une stack illisible appellent deux gestes différents :
+// « déclare-la » contre « répare les droits ». `doctor` relaie ce message tel
+// quel, il doit donc trancher.
 func TestLoadStackAbsente(t *testing.T) {
-	if _, err := LoadStack(t.TempDir(), "fantome"); err == nil {
+	denHome := t.TempDir()
+	_, err := LoadStack(denHome, "fantome")
+	if err == nil {
 		t.Fatal("attendu une erreur pour une stack absente")
+	}
+	if !strings.Contains(err.Error(), "introuvable") {
+		t.Errorf("erreur = %q, attendu un message d'absence explicite", err.Error())
+	}
+	if !strings.Contains(err.Error(), filepath.Join(denHome, "stacks", "fantome")) {
+		t.Errorf("erreur = %q, attendu le chemin attendu de la stack", err.Error())
+	}
+}
+
+func TestLoadStackIllisible(t *testing.T) {
+	denHome := t.TempDir()
+	// stack.yaml présent mais illisible (ici : c'est un dossier) — ce n'est pas
+	// une absence, et le message ne doit pas le prétendre.
+	if err := os.MkdirAll(filepath.Join(denHome, "stacks", "devx", "stack.yaml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadStack(denHome, "devx")
+	if err == nil {
+		t.Fatal("attendu une erreur pour une stack illisible")
+	}
+	if strings.Contains(err.Error(), "introuvable") {
+		t.Errorf("erreur = %q : la stack existe, elle est illisible", err.Error())
+	}
+	if !strings.Contains(err.Error(), "lecture") {
+		t.Errorf("erreur = %q, attendu un message d'erreur de lecture", err.Error())
 	}
 }
 

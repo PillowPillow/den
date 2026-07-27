@@ -28,7 +28,12 @@ func LoadStack(denHome, name string) (*Stack, error) {
 
 	brut, err := os.ReadFile(chemin)
 	if err != nil {
-		return nil, fmt.Errorf("stack %q : lecture de %s : %w", name, chemin, err)
+		// « déclare-la » et « répare les droits » sont deux gestes différents :
+		// doctor relaie ce message tel quel, il doit trancher.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("stack %q : introuvable — attendu %s", name, chemin)
+		}
+		return nil, fmt.Errorf("stack %q : lecture de %s impossible : %w", name, chemin, err)
 	}
 
 	var s Stack
