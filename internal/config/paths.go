@@ -9,18 +9,22 @@ import (
 
 // Home résout le dossier de config den. Priorité : flag > $DEN_HOME > ~/.den.
 // C'est ce point d'indirection qui rend tout le socle testable sur des dossiers temporaires.
+//
+// Le résultat est TOUJOURS absolu : worktree_root en dérive, et ce chemin part
+// ensuite vers `git worktree` et `sbx create`, où le cwd n'est plus garanti.
 func Home(flagValue string) (string, error) {
-	if flagValue != "" {
-		return flagValue, nil
+	brut := flagValue
+	if brut == "" {
+		brut = os.Getenv("DEN_HOME")
 	}
-	if env := os.Getenv("DEN_HOME"); env != "" {
-		return env, nil
+	if brut == "" {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		brut = filepath.Join(h, ".den")
 	}
-	h, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(h, ".den"), nil
+	return filepath.Abs(brut)
 }
 
 // ExpandPath expanse un « ~ » en tête de chemin. Volontairement minimaliste :

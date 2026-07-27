@@ -34,6 +34,38 @@ func TestHomePriorites(t *testing.T) {
 		}
 	})
 
+	// Les chemins issus de Home() partent vers `git worktree` et `sbx create` au
+	// plan suivant, avec un cwd qui n'est plus garanti : ils doivent être absolus
+	// dès leur résolution, jamais plus tard.
+	t.Run("un flag relatif est absolutise", func(t *testing.T) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Home("denh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(cwd, "denh"); got != want {
+			t.Errorf("Home = %q, attendu %q", got, want)
+		}
+	})
+
+	t.Run("un DEN_HOME relatif est absolutise", func(t *testing.T) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("DEN_HOME", "denh")
+		got, err := Home("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(cwd, "denh"); got != want {
+			t.Errorf("Home = %q, attendu %q", got, want)
+		}
+	})
+
 	t.Run("sinon ~/.den", func(t *testing.T) {
 		t.Setenv("DEN_HOME", "")
 		got, err := Home("")
