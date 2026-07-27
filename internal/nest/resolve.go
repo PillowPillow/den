@@ -2,7 +2,8 @@ package nest
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/PillowPillow/den/internal/config"
 )
@@ -44,11 +45,7 @@ func ResolveAgent(g *config.Global, n *Nest, flagAgent string) (string, config.A
 
 	a, ok := g.Agents[nom]
 	if !ok {
-		dispos := make([]string, 0, len(g.Agents))
-		for k := range g.Agents {
-			dispos = append(dispos, k)
-		}
-		sort.Strings(dispos)
+		dispos := slices.Sorted(maps.Keys(g.Agents))
 		return "", config.Agent{}, "", fmt.Errorf(
 			"agent %q inconnu (agents déclarés : %v)", nom, dispos)
 	}
@@ -70,11 +67,7 @@ func Resolve(g *config.Global, stacks map[string]*config.Stack, n *Nest, o Optio
 	}
 	s, ok := stacks[nomStack]
 	if !ok {
-		dispos := make([]string, 0, len(stacks))
-		for k := range stacks {
-			dispos = append(dispos, k)
-		}
-		sort.Strings(dispos)
+		dispos := slices.Sorted(maps.Keys(stacks))
 		return nil, fmt.Errorf(
 			"nest %q : stack %q introuvable dans ~/.den/stacks (stacks déclarées : %v)",
 			n.Name, nomStack, dispos)
