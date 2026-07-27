@@ -70,6 +70,10 @@ func LoadNest(denHome, name string) (*Nest, error) {
 			return nil, fmt.Errorf("nest %q, repo %q : %w", n.Name, r.Path, err)
 		}
 	}
+	// Après expansion : deux chemins écrits différemment peuvent converger.
+	if err := verifieNomsUniques(n.Repos); err != nil {
+		return nil, fmt.Errorf("nest %q : %w", n.Name, err)
+	}
 	for agent, dir := range n.Agents {
 		expanse, err := config.ExpandPath(dir)
 		if err != nil {

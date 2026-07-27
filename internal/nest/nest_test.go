@@ -138,6 +138,35 @@ func TestLoadNestFichierVide(t *testing.T) {
 	}
 }
 
+// Deux repos de meme basename ne sont pas honorables : --without/--only les
+// designent par ce nom (un seul `--without api` en ferait disparaitre deux), et
+// au plan 2 le layout worktree_root/<wt>/<repo> les ferait collisionner sur le
+// meme dossier. On rejette la config a la source plutot que de servir un
+// comportement surprenant.
+func TestLoadNestRejetteDeuxReposHomonymes(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "fullstack", "repos:\n  - { path: /tmp/x/api }\n  - { path: /tmp/y/api }\n")
+	_, err := LoadNest(denHome, "fullstack")
+	if err == nil {
+		t.Fatal("attendu un rejet : deux repos partagent le basename `api`")
+	}
+	for _, attendu := range []string{"fullstack", "api", "/tmp/x/api", "/tmp/y/api"} {
+		if !strings.Contains(err.Error(), attendu) {
+			t.Errorf("erreur = %q, attendu une mention de %q", err.Error(), attendu)
+		}
+	}
+}
+
+// La collision doit etre detectee APRES expansion : deux chemins ecrits
+// differemment peuvent designer le meme basename une fois `~` resolu.
+func TestLoadNestRejetteLesHomonymesApresExpansion(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "fullstack", "repos:\n  - { path: ~/dev/api }\n  - { path: /srv/api, optional: true }\n")
+	if _, err := LoadNest(denHome, "fullstack"); err == nil {
+		t.Fatal("attendu un rejet : les deux chemins expansés partagent le basename `api`")
+	}
+}
+
 func TestLoadNestAbsent(t *testing.T) {
 	if _, err := LoadNest(t.TempDir(), "fantome"); err == nil {
 		t.Fatal("attendu une erreur pour un nest absent")
