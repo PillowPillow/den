@@ -19,6 +19,10 @@ func run(t *testing.T, args ...string) (string, error) {
 }
 
 func TestVersionAfficheLaVersion(t *testing.T) {
+	// Version est une variable de paquet : la restaurer évite de contaminer les
+	// tests suivants avec une valeur de test.
+	original := Version
+	t.Cleanup(func() { Version = original })
 	Version = "1.2.3"
 	out, err := run(t, "version")
 	if err != nil {

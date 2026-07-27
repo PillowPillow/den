@@ -12,22 +12,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newNestCmd() *cobra.Command {
+func newNestCmd(denHome *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "nest",
 		Short: "Inspecter les nests déclarés",
 	}
-	cmd.AddCommand(newNestLsCmd(), newNestShowCmd())
+	cmd.AddCommand(newNestLsCmd(denHome), newNestShowCmd(denHome))
 	return cmd
 }
 
-func newNestLsCmd() *cobra.Command {
+func newNestLsCmd(denHome *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "ls",
 		Short: "Liste les nests déclarés",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			home, err := config.Home(denHome)
+			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
 			}
@@ -54,14 +54,14 @@ func newNestLsCmd() *cobra.Command {
 	}
 }
 
-func newNestShowCmd() *cobra.Command {
+func newNestShowCmd(denHome *string) *cobra.Command {
 	var opts nest.Options
 	cmd := &cobra.Command{
 		Use:   "show <nest>",
 		Short: "Affiche un nest entièrement résolu",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			home, err := config.Home(denHome)
+			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
 			}
