@@ -17,6 +17,10 @@ $EDITOR ~/.den/config.yaml
 ./den doctor
 ```
 
+Au premier `den doctor`, deux diagnostics sont attendus tant que rien n'a été adapté : l'absence de
+`sbx` s'il n'est pas installé, et le repo d'exemple `~/dev/mon-projet` introuvable. Les deux
+disparaissent une fois `~/.den/config.yaml` et `~/.den/nests/exemple.yaml` ajustés.
+
 `~/.den/` est la source unique de vérité. La variable `DEN_HOME` (ou le flag `--den-home`) permet
 d'en utiliser un autre — c'est ce qui rend `den` testable et scriptable.
 
