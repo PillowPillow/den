@@ -51,6 +51,18 @@ func trouve(checks []Check, fragment string) (Check, bool) {
 	return Check{}, false
 }
 
+// trouveNom cherche un check par nom exact : contrairement à trouve, une
+// sous-chaîne ne suffit pas ("config" ne doit pas être satisfait par
+// "config.yaml").
+func trouveNom(checks []Check, nom string) bool {
+	for _, c := range checks {
+		if c.Nom == nom {
+			return true
+		}
+	}
+	return false
+}
+
 func tousOK(checks []Check) bool {
 	for _, c := range checks {
 		if !c.OK {
@@ -68,11 +80,12 @@ func TestRunConfigSaine(t *testing.T) {
 	if !tousOK(checks) {
 		t.Errorf("attendu tous les checks OK, obtenu %+v", checks)
 	}
-	// tousOK seul passerait avec un unique check trivial : on vérifie nommément
-	// que chaque diagnostic attendu sur un den sain est bien produit.
-	for _, fragment := range []string{"sbx", "config.yaml", "config", "stacks", "defaults.stack", "nests"} {
-		if _, ok := trouve(checks, fragment); !ok {
-			t.Errorf("aucun check ne concerne %q, obtenu %+v", fragment, checks)
+	// tousOK seul passerait avec un unique check trivial : on vérifie, par nom
+	// exact (trouve ferait un faux positif : "config" est une sous-chaîne de
+	// "config.yaml"), que chaque diagnostic attendu est bien produit.
+	for _, nom := range []string{"sbx", "config.yaml", "config", "stacks", "defaults.stack", "nests"} {
+		if !trouveNom(checks, nom) {
+			t.Errorf("aucun check nommé %q, obtenu %+v", nom, checks)
 		}
 	}
 }
