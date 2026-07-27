@@ -52,6 +52,9 @@ type Nest struct {
 
 // LoadNest lit <denHome>/nests/<name>.yaml.
 func LoadNest(denHome, name string) (*Nest, error) {
+	if err := config.ValiderNom("nest", name); err != nil {
+		return nil, err
+	}
 	chemin := filepath.Join(denHome, "nests", name+".yaml")
 
 	brut, err := os.ReadFile(chemin)

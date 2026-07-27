@@ -23,6 +23,9 @@ type Stack struct {
 
 // LoadStack lit <denHome>/stacks/<name>/stack.yaml.
 func LoadStack(denHome, name string) (*Stack, error) {
+	if err := ValiderNom("stack", name); err != nil {
+		return nil, err
+	}
 	dir := filepath.Join(denHome, "stacks", name)
 	chemin := filepath.Join(dir, "stack.yaml")
 

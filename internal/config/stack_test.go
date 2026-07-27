@@ -155,6 +155,21 @@ func TestLoadStackIllisible(t *testing.T) {
 	}
 }
 
+func TestLoadStackRefuseUnNomQuiSortDeDenHome(t *testing.T) {
+	racine := t.TempDir()
+	denHome := filepath.Join(racine, "home")
+	// Une stack parfaitement valide, mais HORS du den home.
+	ecrisStack(t, racine, "dehors", "image: dehors:v1\n")
+
+	// <denHome>/stacks/../../stacks/dehors == <racine>/stacks/dehors
+	if _, err := LoadStack(denHome, "../../stacks/dehors"); err == nil {
+		t.Error("LoadStack a chargé une stack située hors du den home")
+	}
+	if _, err := LoadStack(denHome, ".."); err == nil {
+		t.Error("LoadStack(\"..\") = nil, attendu un rejet")
+	}
+}
+
 func TestLoadStacksToutes(t *testing.T) {
 	denHome := t.TempDir()
 	ecrisStack(t, denHome, "devx", "image: devx:v1\n")

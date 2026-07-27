@@ -173,6 +173,33 @@ func TestLoadNestAbsent(t *testing.T) {
 	}
 }
 
+// `den nest show ../../../../etc/passwd` construisait un chemin hors de
+// DEN_HOME. L'impact est faible aujourd'hui (CLI locale, fichiers de
+// l'utilisateur), mais au plan 2 ce nom devient un nom de sandbox, un label
+// `den.nest` et la graine du hash de la fenêtre de ports : on le rejette à la
+// source.
+func TestLoadNestRefuseUnNomQuiSortDeDenHome(t *testing.T) {
+	racine := t.TempDir()
+	denHome := filepath.Join(racine, "home")
+	// Un YAML de nest parfaitement valide, mais HORS du den home.
+	if err := os.MkdirAll(filepath.Join(denHome, "nests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(racine, "dehors.yaml"), []byte("stack: devx\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// <denHome>/nests/../../dehors.yaml == <racine>/dehors.yaml
+	if _, err := LoadNest(denHome, "../../dehors"); err == nil {
+		t.Error("LoadNest a chargé un fichier situé hors du den home")
+	}
+	for _, nom := range []string{"a/b", "..", "."} {
+		if _, err := LoadNest(denHome, nom); err == nil {
+			t.Errorf("LoadNest(%q) = nil, attendu un rejet", nom)
+		}
+	}
+}
+
 func TestListNestsTriParNom(t *testing.T) {
 	denHome := t.TempDir()
 	ecrisNest(t, denHome, "web", "stack: devx\n")
