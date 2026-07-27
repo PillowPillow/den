@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -29,7 +30,37 @@ func DecodeYAMLStrict(chemin string, brut []byte, dest any) error {
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
-		return fmt.Errorf("%s : YAML invalide : %w", chemin, err)
+		return fmt.Errorf("%s : YAML invalide : %w", chemin, franciseClesInconnues(err))
 	}
 	return nil
 }
+
+// motifCleInconnue capture le diagnostic anglais de yaml.v3 pour une clé
+// inconnue. Le « line N: » que yaml.v3 place devant n'en fait pas partie :
+// c'est lui qui rend le message utile, il doit survivre à la réécriture.
+var motifCleInconnue = regexp.MustCompile(`field (\S+) not found in type \S+`)
+
+// franciseClesInconnues réécrit « field egres not found in type config.Global »
+// en « clé inconnue "egres" » : le type Go est un détail d'implémentation, en
+// anglais, dans une CLI francophone.
+//
+// Si le motif n'est pas reconnu (YAML malformé, clé contenant un espace…),
+// l'erreur passe INTACTE : un message imparfait vaut mieux qu'un message
+// mutilé. L'erreur d'origine reste accessible via errors.Unwrap — on réécrit ce
+// que l'utilisateur lit, pas ce que le code peut inspecter.
+func franciseClesInconnues(err error) error {
+	msg := err.Error()
+	francise := motifCleInconnue.ReplaceAllString(msg, `clé inconnue "$1"`)
+	if francise == msg {
+		return err
+	}
+	return &erreurYAML{msg: francise, origine: err}
+}
+
+type erreurYAML struct {
+	msg     string
+	origine error
+}
+
+func (e *erreurYAML) Error() string { return e.msg }
+func (e *erreurYAML) Unwrap() error { return e.origine }
