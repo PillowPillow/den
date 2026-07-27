@@ -36,6 +36,7 @@ func NewRootCmd() *cobra.Command {
 		},
 	})
 	root.AddCommand(newNestCmd())
+	root.AddCommand(newDoctorCmd())
 	return root
 }
 
