@@ -344,6 +344,26 @@ func hoteAutorise(ctx context.Context, r sbx.Runner, sandbox, hote string) (auto
 // Le verdict est dans la première valeur ; ce qui suit est ignoré, exprès. Ce
 // qui PRÉCÈDE reste en revanche une erreur : on ne va pas chercher un verdict au
 // milieu d'un flux qu'on ne comprend pas.
+//
+// PORTÉE EXACTE de la détection de schéma, mesurée (17b), parce que « le schéma
+// a changé » est plus lâche qu'il n'y paraît : l'appariement de champs
+// d'encoding/json est INSENSIBLE À LA CASSE. `{"ALLOWED": true}` fait donc
+// attacher den, tout comme `{"Allowed": true}`. Sont refusés, eux, tous les
+// champs seulement VOISINS — `allowedx`, `allow`, `"allowed "` avec un espace.
+// Et quand deux clés s'apparient (`{"ALLOWED":false,"allowed":true}`), c'est la
+// DERNIÈRE du document qui gagne, pas la mieux orthographiée.
+//
+// Retenu tel quel, plutôt que rendu strict par une lecture manuelle des clés :
+//   - aucune conséquence de sûreté — un `true` sous une autre casse reste sbx
+//     qui dit « autorisé », émis par le même producteur ;
+//   - le fail-closed que ce code doit tenir est « ABSENCE de verdict ⇒ on
+//     n'attache pas », et il tient sur toutes les formes voisines mesurées ;
+//   - à l'inverse, la stricte casse transformerait un simple recasage côté sbx
+//     — l'axe A4 du spec §14.1, justement celui que personne n'a pu vérifier —
+//     en refus total d'attacher.
+//
+// Trois tests tiennent ces trois propriétés dans settle_test.go ; les changer,
+// c'est changer ce contrat, pas le préciser.
 func litVerdict(sortie []byte) (*bool, error) {
 	if len(bytes.TrimSpace(sortie)) == 0 {
 		return nil, fmt.Errorf(

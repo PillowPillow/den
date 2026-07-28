@@ -442,6 +442,80 @@ func TestSettleTolereDuBruitApresLeJSON(t *testing.T) {
 	}
 }
 
+// D4 — l'appariement de champs d'encoding/json est INSENSIBLE À LA CASSE.
+// `{"ALLOWED": true}` est donc un verdict valide et den attache. C'est un choix
+// assumé, pas un oubli (voir le commentaire de litVerdict) : le test est ici
+// pour que le jour où quelqu'un voudra le rendre strict, il le fasse EXPRÈS.
+func TestSettleAccepteUnVerdictSousUneAutreCasse(t *testing.T) {
+	for _, forme := range []string{`{"ALLOWED": true}`, `{"Allowed": true}`, `{"aLLoWeD": true}`} {
+		t.Run(forme, func(t *testing.T) {
+			o, _ := optionsTest(t)
+			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(forme)}}
+
+			if err := Settle(context.Background(), f, "api", []string{"github.com"}, o); err != nil {
+				t.Fatalf("%s doit être lu comme un verdict ; obtenu : %v", forme, err)
+			}
+		})
+	}
+}
+
+// La contrepartie du test précédent, et la seule qui protège vraiment : la
+// tolérance s'arrête EXACTEMENT à la casse. Un champ voisin — préfixe, suffixe,
+// espace parasite — reste un changement de schéma, donc un échec immédiat. Sans
+// ce test, « insensible à la casse » pourrait dériver vers un appariement flou
+// sans que rien ne s'y oppose.
+func TestSettleRefuseUnChampVoisinDAllowed(t *testing.T) {
+	for _, forme := range []string{`{"allowedx": true}`, `{"allow": true}`, `{"allowed ": true}`} {
+		t.Run(forme, func(t *testing.T) {
+			o, _ := optionsTest(t)
+			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(forme)}}
+
+			err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
+			if err == nil {
+				t.Fatalf("%s n'est pas un champ allowed : le fail-closed doit se déclencher", forme)
+			}
+			if !strings.Contains(err.Error(), "allowed") {
+				t.Errorf("le message doit nommer le champ manquant ; obtenu : %v", err)
+			}
+		})
+	}
+}
+
+// Mesuré en 17b, non consigné jusque-là : quand DEUX clés s'apparient au même
+// champ, c'est la DERNIÈRE qui gagne — le décodeur les affecte dans l'ordre du
+// document, l'appariement exact ne l'emporte pas sur l'appariement à la casse
+// près. Le verdict de `{"ALLOWED":false,"allowed":true}` dépend donc de l'ordre
+// d'écriture de sbx.
+//
+// Aucune conséquence de sûreté (les deux clés viennent du même producteur), mais
+// c'est la propriété qu'il faut avoir sous les yeux avant de conclure « le champ
+// exact gagne toujours ». Le sens du test est de rendre le jour où ce serait
+// FAUX visible, pas de bénir la situation.
+func TestSettleLaDerniereCleGagneEnCasDeDoublon(t *testing.T) {
+	cas := []struct {
+		nom     string
+		sortie  string
+		attache bool
+	}{
+		{"le dernier est false", `{"allowed": true, "ALLOWED": false}`, false},
+		{"le dernier est true", `{"ALLOWED": false, "allowed": true}`, true},
+	}
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			o, _ := optionsTest(t)
+			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(c.sortie)}}
+
+			err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
+			if c.attache && err != nil {
+				t.Fatalf("%s : attendu un verdict autorisant ; obtenu : %v", c.sortie, err)
+			}
+			if !c.attache && err == nil {
+				t.Fatalf("%s : attendu un refus (le dernier verdict est false)", c.sortie)
+			}
+		})
+	}
+}
+
 // I-3 — en production, l'annulation arrive PENDANT une passe, pas entre deux
 // tours : sbx est tué, le runner renvoie une erreur de transport qui n'enveloppe
 // aucun motif de contexte (mesuré : « signal: killed »). Settle doit reconnaître
