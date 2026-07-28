@@ -75,7 +75,13 @@ func (g *Global) Validate() []error {
 
 	for _, nom := range noms {
 		a := g.Agents[nom]
-		if a.ConfigDir == "" {
+		// TrimSpace, pour la même raison que `update` juste en dessous — et
+		// mesuré : un `config_dir: "   "` passait `den doctor` en rc=0 sur une
+		// config qui ne peut pas spawner, et le MkdirAll en aval créait un
+		// dossier littéralement nommé « ␣␣␣ » dans le répertoire courant de
+		// l'utilisateur. Le refus venait alors d'une garde en aval dont le
+		// message ne nommait ni config_dir ni l'agent.
+		if strings.TrimSpace(a.ConfigDir) == "" {
 			errs = append(errs, fmt.Errorf("agents.%s.config_dir : requis", nom))
 		}
 		// TrimSpace et non `== ""` : agent.CommandeFraicheur juge sur TrimSpace.
@@ -96,8 +102,11 @@ func (g *Global) Validate() []error {
 		}
 	}
 
+	// TrimSpace partout où le champ est « requis » : sinon `defaults.agent: "  "`
+	// serait jugé déclaré, puis cherché tel quel dans le registre, et l'erreur
+	// rendue parlerait d'un agent introuvable au lieu d'un champ à remplir.
 	switch {
-	case g.Defaults.Agent == "":
+	case strings.TrimSpace(g.Defaults.Agent) == "":
 		errs = append(errs, fmt.Errorf("defaults.agent : requis"))
 	default:
 		if _, ok := g.Agents[g.Defaults.Agent]; !ok {
@@ -106,21 +115,56 @@ func (g *Global) Validate() []error {
 		}
 	}
 
-	if g.Defaults.Stack == "" {
+	if strings.TrimSpace(g.Defaults.Stack) == "" {
 		errs = append(errs, fmt.Errorf("defaults.stack : requis"))
 	}
 
 	if !slices.Contains(modesSSH, g.SSH.Mode) {
 		errs = append(errs, fmt.Errorf("ssh.mode : %q inconnu (attendu : %v)", g.SSH.Mode, modesSSH))
 	}
-	if g.SSH.Mode == "mount" && g.SSH.Dir == "" {
+	// TrimSpace, et pas seulement `== ""` : un `ssh.dir: "   "` n'est aujourd'hui
+	// rattrapé que PAR HASARD, par le Stat de D5 qui échoue sur ce chemin. Ce
+	// n'est pas une garantie — c'est un effet de bord d'un contrôle qui vise
+	// autre chose, et qui ne s'exécute que sur le chemin de spawn.
+	if g.SSH.Mode == "mount" && strings.TrimSpace(g.SSH.Dir) == "" {
 		errs = append(errs, fmt.Errorf("ssh.dir : requis quand ssh.mode vaut mount"))
 	}
 
+	errs = append(errs, g.ValideWorktree()...)
+
+	return errs
+}
+
+// ValideWorktree ne contrôle que les deux champs qui décident OÙ vivent les
+// worktrees : worktree_layout et worktree_root.
+//
+// Elle existe pour que `den rm` puisse valider ce qu'il UTILISE sans valider
+// ce dont il se moque. nettoieWorktrees (internal/cli/rm.go) ne lit que ces
+// deux champs-là : lui imposer une config entièrement saine faisait qu'un
+// `agents.claude.update` fautif — sans le moindre rapport — empêchait de
+// détruire une sandbox bel et bien vivante, contre la doctrine « un ~/.den
+// cassé ne bloque jamais l'accès à une VM vivante ».
+//
+// Le contrôle du layout ne peut PAS être remplacé par le défaut de
+// LoadGlobalSansValider : celui-ci ne défaute que la chaîne VIDE (config.go),
+// donc un `centrl` reste `centrl` et ferait calculer un chemin de worktree faux
+// — den nettoierait à côté, silencieusement.
+//
+// Validate() délègue ici plutôt que de dupliquer : une seule liste blanche de
+// layouts dans le projet, impossible à faire diverger.
+func (g *Global) ValideWorktree() []error {
+	var errs []error
 	if !slices.Contains(layoutsWorktree, g.WorktreeLayout) {
 		errs = append(errs, fmt.Errorf(
 			"worktree_layout : %q inconnu (attendu : %v)", g.WorktreeLayout, layoutsWorktree))
 	}
-
+	// TrimSpace, comme partout ailleurs : LoadGlobalSansValider ne défaute que
+	// la chaîne vide, donc un `worktree_root: "   "` survit et deviendrait un
+	// chemin relatif — un dossier littéralement nommé « ␣␣␣ » créé dans le
+	// répertoire courant de l'utilisateur.
+	if strings.TrimSpace(g.WorktreeRoot) == "" {
+		errs = append(errs, fmt.Errorf(
+			"worktree_root : requis — c'est la racine sous laquelle den crée et retrouve les worktrees"))
+	}
 	return errs
 }

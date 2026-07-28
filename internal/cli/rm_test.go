@@ -255,6 +255,74 @@ func TestRmNestIllisibleNEmpechePasLaDestruction(t *testing.T) {
 	}
 }
 
+// F1 — RÉGRESSION de la tâche 17a, mesurée en revue. Depuis que LoadGlobal
+// valide, une faute dans un champ SANS RAPPORT avec les worktrees
+// (agents.claude.update, ssh.mode, bin_dirs…) faisait sortir nettoieWorktrees
+// en erreur AVANT le `sbx rm --force`, et `den rm` n'arrivait plus à détruire
+// une sandbox bel et bien vivante.
+//
+// C'est la doctrine T13/T16 : un ~/.den cassé ne doit jamais bloquer l'accès à
+// des VM vivantes. Et c'est déjà ce que promet la godoc de nettoieWorktrees —
+// « best-effort sur la RÉSOLUTION ».
+//
+// Une commande valide ce qu'elle UTILISE : nettoieWorktrees ne lit que
+// worktree_layout et worktree_root.
+func TestRmDetruitLaSandboxMalgreUneFauteDeConfigSansRapport(t *testing.T) {
+	// Deux fautes, dans deux familles différentes, dont AUCUNE ne décide où
+	// vivent les worktrees. Les deux sont refusées par LoadGlobal.
+	const configFautiveHorsWorktrees = `agents:
+  claude:
+    config_dir: /profil/claude
+    update: "   "
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: nfs
+`
+	denHome := t.TempDir()
+	ecrisConfig(t, denHome, configFautiveHorsWorktrees)
+	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	ecrisNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
+
+	if _, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
+		t.Fatalf("une faute de config hors worktrees ne doit pas empêcher de détruire une sandbox vivante : %v", err)
+	}
+	if !f.AAppele("rm", "--force", "api.feat12") {
+		t.Errorf("la sandbox doit avoir été détruite ; appels : %v", f.Appels)
+	}
+}
+
+// La contrepartie, dans l'autre sens : une faute sur un champ que
+// nettoieWorktrees UTILISE doit rester une erreur DURE. `centrl` n'est pas
+// rattrapé par LoadGlobalSansValider — seul un worktree_layout VIDE reçoit le
+// défaut `central` (config.go) — donc sans ce refus, den calculerait un chemin
+// de worktree faux et nettoierait à côté, silencieusement.
+func TestRmRefuseUnWorktreeLayoutInconnu(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisConfig(t, denHome, configMinimale+"worktree_layout: centrl\n")
+	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	ecrisNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
+
+	_, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err == nil {
+		t.Fatal("un worktree_layout inconnu doit faire échouer den rm : on ne nettoie pas sans savoir où")
+	}
+	if !strings.Contains(err.Error(), "worktree_layout") {
+		t.Errorf("erreur = %q, attendu le champ fautif nommé", err.Error())
+	}
+	if !strings.Contains(err.Error(), "centrl") {
+		t.Errorf("erreur = %q, attendu la valeur fautive nommée", err.Error())
+	}
+	// Et rien n'a été détruit : on ne supprime pas une sandbox dont on ne sait
+	// pas nettoyer les worktrees.
+	if f.AAppele("rm") {
+		t.Errorf("aucun rm ne doit être tenté ; appels : %v", f.Appels)
+	}
+}
+
 // L'avertissement « nest illisible » part sur STDERR, jamais sur stdout : un
 // `den rm | grep` doit voir un succès propre sans l'avertissement mélangé
 // dedans (I7 en revue). executeCmdAvecSbx fusionne délibérément les deux

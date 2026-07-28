@@ -101,14 +101,23 @@ func LoadGlobal(denHome string) (*Global, error) {
 		return nil, err
 	}
 	if errs := g.Validate(); len(errs) > 0 {
-		// Toutes les fautes, pas la première : un aller-retour par faute est
-		// exactement ce que Validate() a été écrit pour éviter.
-		var b strings.Builder
-		fmt.Fprintf(&b, "configuration invalide dans %s :", filepath.Join(denHome, "config.yaml"))
-		for _, e := range errs {
-			fmt.Fprintf(&b, "\n  - %v", e)
-		}
-		return nil, errors.New(b.String())
+		return nil, ErreurConfig(denHome, errs)
 	}
 	return g, nil
+}
+
+// ErreurConfig assemble une liste d'erreurs de validation en une seule erreur
+// nommant le fichier à corriger.
+//
+// Toutes les fautes, jamais la première seule : un aller-retour par faute est
+// exactement ce que Validate() a été écrit pour éviter. Partagé entre
+// LoadGlobal et les commandes qui ne valident qu'une PARTIE de la config
+// (internal/cli/rm.go), pour que l'utilisateur lise toujours la même forme.
+func ErreurConfig(denHome string, errs []error) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "configuration invalide dans %s :", filepath.Join(denHome, "config.yaml"))
+	for _, e := range errs {
+		fmt.Fprintf(&b, "\n  - %v", e)
+	}
+	return errors.New(b.String())
 }

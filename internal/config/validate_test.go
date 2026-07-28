@@ -189,6 +189,76 @@ func TestValidateAccepteLesBinDirsLegitimes(t *testing.T) {
 	}
 }
 
+// F2 — la moitié non faite de T2-min-5. `TrimSpace(a.Update)` avait été aligné,
+// mais `config_dir` était testé deux lignes plus haut avec un `== ""` — et
+// `defaults.agent`, `defaults.stack`, `ssh.dir`, `worktree_root` étaient dans le
+// même cas. Mesuré : `den doctor` sortait rc=0 sur une config qui ne peut pas
+// spawner, et le MkdirAll en aval créait un dossier littéralement nommé « ␣␣␣ »
+// dans le répertoire courant de l'utilisateur.
+//
+// Un champ « requis » doit juger sur le contenu, pas sur la longueur.
+func TestValidateRefuseUnChampRequisEnBlanc(t *testing.T) {
+	cas := []struct {
+		champ string
+		muter func(*Global, string)
+	}{
+		{"agents.claude.config_dir", func(g *Global, v string) {
+			a := g.Agents["claude"]
+			a.ConfigDir = v
+			g.Agents["claude"] = a
+		}},
+		{"defaults.agent", func(g *Global, v string) { g.Defaults.Agent = v }},
+		{"defaults.stack", func(g *Global, v string) { g.Defaults.Stack = v }},
+		{"ssh.dir", func(g *Global, v string) { g.SSH.Mode = "mount"; g.SSH.Dir = v }},
+		{"worktree_root", func(g *Global, v string) { g.WorktreeRoot = v }},
+	}
+	for _, c := range cas {
+		for _, blanc := range []string{"   ", "\t", "\n"} {
+			t.Run(c.champ+"/"+strconv.Quote(blanc), func(t *testing.T) {
+				g := globalValide()
+				c.muter(g, blanc)
+
+				errs := g.Validate()
+				if len(errs) == 0 {
+					t.Fatalf("%s = %q : attendu un refus, obtenu aucune erreur", c.champ, blanc)
+				}
+				var tout []string
+				for _, e := range errs {
+					tout = append(tout, e.Error())
+				}
+				joint := strings.Join(tout, " | ")
+				// « <champ> : requis », et pas seulement le nom du champ.
+				//
+				// Mesuré : la version faible de cette assertion laissait
+				// SURVIVRE la mutation sur defaults.agent. Avec `== ""`, un
+				// `defaults.agent: "   "` est jugé renseigné, puis cherché tel
+				// quel dans le registre, et l'erreur rendue est
+				// « "   " est absent du registre » — qui contient bien
+				// « defaults.agent » et satisfaisait donc l'assertion, tout en
+				// invitant l'utilisateur à déclarer un agent nommé « ␣␣␣ »
+				// plutôt qu'à remplir le champ. C'est le message qui est le
+				// livrable, pas seulement le refus.
+				requis := c.champ + " : requis"
+				if !strings.Contains(joint, requis) {
+					t.Errorf("erreurs = %q, attendu %q (un champ blanc est un champ à remplir, "+
+						"pas une valeur à chercher dans le registre)", joint, requis)
+				}
+			})
+		}
+	}
+}
+
+// La contrepartie : un champ requis RENSEIGNÉ ne doit pas être refusé. Sans
+// elle, un TrimSpace mal placé qui refuserait tout passerait le test ci-dessus.
+func TestValidateAccepteLesChampsRequisRenseignes(t *testing.T) {
+	g := globalValide()
+	g.SSH.Mode = "mount"
+	g.SSH.Dir = "/home/x/.ssh_sbx"
+	if errs := g.Validate(); len(errs) != 0 {
+		t.Errorf("config saine refusée : %v", errs)
+	}
+}
+
 func TestValidateCumuleLesErreurs(t *testing.T) {
 	g := globalValide()
 	g.SSH.Mode = "vpn"

@@ -129,9 +129,27 @@ func nettoieWorktrees(ctx context.Context, home, nomSandbox string, g worktree.G
 		return fmt.Errorf("nettoyage des worktrees : %w", err)
 	}
 
-	gl, err := config.LoadGlobal(home)
+	// Une commande valide ce qu'elle UTILISE. Ici, ce sont exactement deux
+	// champs : WorktreeLayout et WorktreeRoot, tous deux lus plus bas pour
+	// composer la Cible de worktree.Retire.
+	//
+	// LoadGlobal (validant) serait un contresens à cet endroit : il ferait
+	// échouer `den rm` sur un `agents.claude.update` fautif — sans le moindre
+	// rapport avec les worktrees — et laisserait l'utilisateur avec une VM
+	// vivante qu'il ne peut plus détruire. C'est la doctrine T13/T16 : un
+	// ~/.den cassé ne bloque jamais l'accès à une VM vivante, et c'est déjà ce
+	// que promet le « best-effort sur la RÉSOLUTION » de la godoc ci-dessus.
+	//
+	// Mais l'inverse — ne rien valider — rouvrirait la 14ᵉ configuration
+	// hostile : LoadGlobalSansValider ne défaute que le layout VIDE, donc un
+	// `centrl` survit, et den nettoierait à côté SANS RIEN DIRE. D'où le
+	// contrôle explicite, restreint aux deux champs concernés.
+	gl, err := config.LoadGlobalSansValider(home)
 	if err != nil {
 		return err
+	}
+	if errs := gl.ValideWorktree(); len(errs) > 0 {
+		return fmt.Errorf("nettoyage des worktrees : %w", config.ErreurConfig(home, errs))
 	}
 	n, err := nest.LoadNest(home, nomNest)
 	if err != nil {
