@@ -48,7 +48,13 @@ func Run(denHome string, d Deps) []Check {
 	}
 
 	// 2. config.yaml chargeable
-	g, err := config.LoadGlobal(denHome)
+	//
+	// LoadGlobalSansValider, et non LoadGlobal : le second refuse une config
+	// incohérente, ce qui ferait sortir Run juste en dessous et rendrait
+	// l'étape 3 — comme les stacks et les nests — inatteignable. doctor est le
+	// seul endroit du projet où « charger » et « juger » doivent rester
+	// séparés, parce qu'il est le seul dont le travail est de tout montrer.
+	g, err := config.LoadGlobalSansValider(denHome)
 	if err != nil {
 		ajoute("config.yaml", false, "%v", err)
 		return checks // sans config, tout le reste est indécidable

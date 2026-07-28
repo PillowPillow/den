@@ -199,6 +199,50 @@ func TestRunSignaleUnNestCasseSansMasquerLesAutres(t *testing.T) {
 	}
 }
 
+// Depuis D1, config.LoadGlobal REFUSE une configuration incohérente. Si doctor
+// passait par lui, il s'arrêterait au chargement (doctor.go rend `checks` dès
+// que le chargement échoue) et n'atteindrait plus jamais sa propre validation :
+// l'utilisateur ne verrait qu'une ligne d'erreur au lieu de la liste complète,
+// et plus rien des stacks ni des nests. Ce test verrouille le contraire —
+// doctor doit charger SANS valider, cumuler toutes les fautes, et continuer.
+func TestRunCumuleLesErreursDeConfigEtContinue(t *testing.T) {
+	dir := denHomeValide(t)
+	// Deux fautes indépendantes dans un den home par ailleurs complet (stack
+	// devx et nest api présents) : leur diagnostic à tous deux prouve que Run a
+	// dépassé la config.
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: nfs
+worktree_layout: centrl
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := Run(dir, depsOK())
+
+	for _, attendu := range []string{"nfs", "centrl"} {
+		if _, ok := trouve(checks, attendu); !ok {
+			t.Errorf("aucun check ne mentionne %q : doctor doit montrer TOUTES les fautes d'un coup ; checks : %+v",
+				attendu, checks)
+		}
+	}
+	// Et il doit avoir continué au-delà de la config : sans ça, un chargement
+	// validant aurait tronqué le diagnostic sans qu'aucune assertion ne bouge.
+	for _, nom := range []string{"stacks", "defaults.stack", "nests"} {
+		if !trouveNom(checks, nom) {
+			t.Errorf("aucun check nommé %q : une config fautive ne doit pas interrompre le diagnostic ; checks : %+v",
+				nom, checks)
+		}
+	}
+}
+
 func TestRunAgentSansCommandeUpdate(t *testing.T) {
 	dir := t.TempDir()
 	contenu := "agents:\n  claude:\n    config_dir: /tmp/c\ndefaults:\n  agent: claude\n  stack: devx\n"

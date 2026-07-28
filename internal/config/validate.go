@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 )
 
 var (
@@ -28,7 +29,12 @@ func (g *Global) Validate() []error {
 		if a.ConfigDir == "" {
 			errs = append(errs, fmt.Errorf("agents.%s.config_dir : requis", nom))
 		}
-		if a.Update == "" {
+		// TrimSpace et non `== ""` : agent.CommandeFraicheur juge sur TrimSpace.
+		// Tant que ce test-ci était plus laxiste, un `update: "   "` passait
+		// `den doctor` en vert et n'échouait qu'au spawn — le plus tard et le
+		// moins lisible des deux moments. Deux juges d'un même champ doivent
+		// juger pareil, et c'est le plus strict qui fait foi.
+		if strings.TrimSpace(a.Update) == "" {
 			errs = append(errs, fmt.Errorf(
 				"agents.%s.update : requis — une sandbox ne doit jamais démarrer avec un agent périmé (spec §9.1)", nom))
 		}

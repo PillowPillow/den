@@ -153,6 +153,41 @@ func TestSpawnSequenceNominale(t *testing.T) {
 	}
 }
 
+// D1 — 14ᵉ configuration hostile (T10). `Global.Validate()` n'avait qu'un seul
+// appelant, `den doctor` : `worktree_layout: centrl` traversait donc le spawn
+// sans être vu et retombait SILENCIEUSEMENT sur `central`, changeant la
+// disposition des worktrees sur une faute de frappe. Le refus doit tomber avant
+// le moindre effet de bord — sinon l'utilisateur nettoie à la main.
+func TestSpawnRefuseUneConfigurationInvalide(t *testing.T) {
+	denHome, _ := denTest(t)
+	ecris(t, filepath.Join(denHome, "config.yaml"), `agents:
+  claude:
+    config_dir: `+filepath.Join(denHome, "agents", "claude")+`
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+worktree_layout: centrl
+`)
+	f, d := depsTest()
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+	if err == nil {
+		t.Fatal("attendu un refus de `worktree_layout: centrl`, obtenu nil")
+	}
+	if !strings.Contains(err.Error(), "centrl") {
+		t.Errorf("erreur = %q, attendu la valeur fautive nommée", err.Error())
+	}
+	if len(f.Appels) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("aucun appel à sbx ne doit précéder le refus ; appels : %v, attaches : %v", f.Appels, f.Attaches)
+	}
+	// Ni effet de bord sur le disque : le profil de l'agent est créé par un
+	// MkdirAll au milieu de la séquence.
+	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
+		t.Error("le profil de l'agent ne doit pas avoir été créé avant le refus")
+	}
+}
+
 // L'ordre est une propriété de sûreté : attacher avant que la policy soit
 // posée, c'est exactement le « ça marche à moitié » que le spec §7 interdit.
 func TestSpawnAttacheApresLeSettleLoop(t *testing.T) {

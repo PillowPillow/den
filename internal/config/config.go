@@ -1,9 +1,11 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Agent décrit une entrée du registre d'agents (spec §4.1 et §9).
@@ -39,8 +41,15 @@ type Global struct {
 	Egress         []string         `yaml:"egress"`
 }
 
-// LoadGlobal lit <denHome>/config.yaml, applique les défauts et expanse les chemins hôte.
-func LoadGlobal(denHome string) (*Global, error) {
+// LoadGlobalSansValider lit <denHome>/config.yaml, applique les défauts et
+// expanse les chemins hôte, SANS contrôler la cohérence du résultat.
+//
+// Réservé à `den doctor`, qui doit cumuler et afficher TOUTES les incohérences
+// d'un coup (doctor.go) : s'il chargeait par LoadGlobal, il s'arrêterait à
+// l'erreur de chargement et n'atteindrait plus jamais sa propre validation.
+// Tout autre appelant doit passer par LoadGlobal — la validation n'est pas
+// facultative sur le chemin qui construit une microVM.
+func LoadGlobalSansValider(denHome string) (*Global, error) {
 	chemin := filepath.Join(denHome, "config.yaml")
 	brut, err := os.ReadFile(chemin)
 	if err != nil {
@@ -75,4 +84,31 @@ func LoadGlobal(denHome string) (*Global, error) {
 		g.Agents[nom] = a // les valeurs de map ne sont pas adressables
 	}
 	return &g, nil
+}
+
+// LoadGlobal charge <denHome>/config.yaml et REFUSE une configuration
+// incohérente.
+//
+// Avant D1, Validate() n'avait qu'un appelant — `den doctor` — et toute config
+// invalide traversait `den <nest>`, `den ls`, `den sh` et `den rm` sans être
+// vue : un `worktree_layout: centrl` retombait silencieusement sur `central`,
+// un `config_dir` vide atteignait la microVM. Valider ici plutôt que chez
+// chaque appelant fait que le nom le plus court est le nom sûr : rester aveugle
+// demande désormais d'écrire explicitement LoadGlobalSansValider.
+func LoadGlobal(denHome string) (*Global, error) {
+	g, err := LoadGlobalSansValider(denHome)
+	if err != nil {
+		return nil, err
+	}
+	if errs := g.Validate(); len(errs) > 0 {
+		// Toutes les fautes, pas la première : un aller-retour par faute est
+		// exactement ce que Validate() a été écrit pour éviter.
+		var b strings.Builder
+		fmt.Fprintf(&b, "configuration invalide dans %s :", filepath.Join(denHome, "config.yaml"))
+		for _, e := range errs {
+			fmt.Fprintf(&b, "\n  - %v", e)
+		}
+		return nil, errors.New(b.String())
+	}
+	return g, nil
 }

@@ -151,10 +151,14 @@ func TestDenHomeEstScopeAChaqueInstance(t *testing.T) {
 // n'ont pas de ~/.den, et va lire le den home réel du développeur sur les autres.
 func TestUnPremierArgumentInconnuEstUnNestIntrouvable(t *testing.T) {
 	dir := denHomeAvecNest(t, "api")
-	// config.yaml doit exister, sinon le spawn échoue une étape trop tôt et
-	// l'erreur ne dit plus rien du nest demandé.
+	// config.yaml doit exister ET être VALIDE, sinon le spawn échoue une étape
+	// trop tôt et l'erreur ne dit plus rien du nest demandé. Depuis D1,
+	// config.LoadGlobal refuse une config incohérente : un fichier réduit à
+	// `defaults:` — ce qu'écrivait la version précédente — ne suffit plus, et
+	// c'est le registre d'agents manquant, pas le nest, qui serait rapporté.
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"),
-		[]byte("defaults:\n  agent: claude\n  stack: devx\n"), 0o644); err != nil {
+		[]byte("agents:\n  claude:\n    config_dir: /tmp/den/claude\n    update: \"claude update\"\n"+
+			"defaults:\n  agent: claude\n  stack: devx\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DEN_HOME", dir)

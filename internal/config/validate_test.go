@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,37 @@ func TestValidateDetecteLesFautes(t *testing.T) {
 			joint := strings.Join(tout, " | ")
 			if !strings.Contains(joint, c.attendu) {
 				t.Errorf("erreurs = %q, attendu une mention de %q", joint, c.attendu)
+			}
+		})
+	}
+}
+
+// T2-min-5 : asymétrie entre les deux juges d'un même champ. validate.go testait
+// `Update == ""` là où agent.CommandeFraicheur teste `strings.TrimSpace(...)`.
+// Un `update: "   "` passait donc `den doctor` en vert et n'échouait qu'au
+// spawn, au moment le plus tardif et le moins lisible. Les deux doivent juger
+// pareil, et c'est le plus strict qui gagne.
+func TestValidateRefuseUnUpdateBlanc(t *testing.T) {
+	for _, blanc := range []string{"   ", "\t", "\n"} {
+		t.Run(strconv.Quote(blanc), func(t *testing.T) {
+			g := globalValide()
+			a := g.Agents["claude"]
+			a.Update = blanc
+			g.Agents["claude"] = a
+
+			errs := g.Validate()
+			if len(errs) == 0 {
+				t.Fatalf("update = %q : attendu un refus, la commande de fraîcheur le rejette déjà au spawn", blanc)
+			}
+			// L'erreur visée, pas une autre : globalValide() est par ailleurs saine,
+			// donc toute erreur non liée à update signalerait un défaut du fixture.
+			var tout []string
+			for _, e := range errs {
+				tout = append(tout, e.Error())
+			}
+			joint := strings.Join(tout, " | ")
+			if !strings.Contains(joint, "agents.claude.update") {
+				t.Errorf("erreurs = %q, attendu la clé agents.claude.update", joint)
 			}
 		})
 	}
