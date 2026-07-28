@@ -276,6 +276,51 @@ func TestResolveSubstitueLOverrideDeConfigDirDuNest(t *testing.T) {
 	}
 }
 
+// Le nest peut aussi référencer {config_dir} dans son propre env (par ex. pour
+// réaffirmer le défaut de l'agent) : le jeton doit être substitué là aussi,
+// sinon un nest qui croit réaffirmer CLAUDE_CONFIG_DIR écrase la valeur
+// substituée de l'agent par le jeton littéral.
+func TestResolveSubstitueConfigDirDansLEnvDuNest(t *testing.T) {
+	g := &config.Global{
+		Agents: map[string]config.Agent{
+			"claude": {
+				ConfigDir: "/profil/claude",
+				Update:    "claude update",
+			},
+		},
+		Defaults:       config.Defaults{Agent: "claude", Stack: "devx"},
+		SSH:            config.SSH{Mode: "agent-forward"},
+		WorktreeLayout: "central",
+	}
+	stacks := map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}
+	n := &Nest{Name: "api", Stack: "devx", Env: map[string]string{"QUELQUE_CHOSE": "{config_dir}"}}
+
+	r, err := Resolve("/d", g, stacks, n, Options{})
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if got := r.Env["QUELQUE_CHOSE"]; got != "/profil/claude" {
+		t.Errorf("QUELQUE_CHOSE = %q, attendu le config_dir résolu (/profil/claude)", got)
+	}
+}
+
+func TestResolveRefuseDenHomeRelatif(t *testing.T) {
+	g := &config.Global{
+		Agents:         map[string]config.Agent{"claude": {ConfigDir: "/p", Update: "u"}},
+		Defaults:       config.Defaults{Agent: "claude", Stack: "devx"},
+		SSH:            config.SSH{Mode: "agent-forward"},
+		WorktreeLayout: "central",
+	}
+	stacks := map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}
+	_, err := Resolve("relatif/den", g, stacks, &Nest{Name: "api", Stack: "devx"}, Options{})
+	if err == nil {
+		t.Fatal("attendu une erreur pour un denHome relatif")
+	}
+	if !strings.Contains(err.Error(), "relatif/den") {
+		t.Errorf("erreur = %q, attendu le chemin en cause", err.Error())
+	}
+}
+
 func TestResolveEnvJamaisNil(t *testing.T) {
 	g := &config.Global{
 		Agents:         map[string]config.Agent{"claude": {ConfigDir: "/p", Update: "u"}},

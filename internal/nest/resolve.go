@@ -3,6 +3,7 @@ package nest
 import (
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -24,7 +25,10 @@ const jetonConfigDir = "{config_dir}"
 // Resolved est un nest entièrement résolu : plus rien à recalculer en aval.
 // Le plan Spawn le consomme tel quel pour fabriquer le mixin et l'argv sbx create.
 type Resolved struct {
-	DenHome string // le mixin généré s'écrit sous <DenHome>/cache/mixins/
+	// DenHome est TOUJOURS absolu (Resolve le garantit) : le mixin généré
+	// s'écrit sous <DenHome>/cache/mixins/, et ce chemin part ensuite tel quel
+	// vers `sbx create`, où le cwd n'est plus garanti.
+	DenHome string
 
 	Nest  *Nest
 	Stack *config.Stack
@@ -33,9 +37,10 @@ type Resolved struct {
 	Agent          config.Agent
 	AgentConfigDir string // override nest s'il existe, sinon registre global
 
-	// Env est l'union PRÊTE À POSER : env de l'agent (avec {config_dir} déjà
-	// substitué) ∪ env du nest, le nest gagnant. La substitution est une règle
-	// de cascade, pas d'affichage : elle appartient ici, pas au mixin.
+	// Env est l'union PRÊTE À POSER : env de l'agent ∪ env du nest, le nest
+	// gagnant, {config_dir} substitué PARTOUT (agent comme nest). La
+	// substitution est une règle de cascade, pas d'affichage : elle appartient
+	// ici, pas au mixin.
 	Env map[string]string
 
 	Egress []string // union triée baseline ∪ stack ∪ nest
@@ -47,7 +52,10 @@ type Resolved struct {
 	WorktreeRoot   string
 }
 
-// fusionneEnv applique la cascade agent ← nest et substitue {config_dir}.
+// fusionneEnv applique la cascade agent ← nest et substitue {config_dir} dans
+// les DEUX sources : un nest peut réaffirmer une variable de l'agent (par ex.
+// CLAUDE_CONFIG_DIR) avec le même jeton, et le nest gagnant dans la cascade,
+// une substitution asymétrique laisserait le jeton littéral l'emporter.
 // Renvoie toujours une map non-nil : les consommateurs itèrent sans garde.
 func fusionneEnv(agentEnv, nestEnv map[string]string, configDir string) map[string]string {
 	out := make(map[string]string, len(agentEnv)+len(nestEnv))
@@ -55,7 +63,7 @@ func fusionneEnv(agentEnv, nestEnv map[string]string, configDir string) map[stri
 		out[k] = strings.ReplaceAll(v, jetonConfigDir, configDir)
 	}
 	for k, v := range nestEnv {
-		out[k] = v // le nest est plus bas dans la cascade : il gagne
+		out[k] = strings.ReplaceAll(v, jetonConfigDir, configDir) // le nest est plus bas dans la cascade : il gagne
 	}
 	return out
 }
@@ -87,6 +95,12 @@ func ResolveAgent(g *config.Global, n *Nest, flagAgent string) (string, config.A
 
 // Resolve applique la cascade complète global ← stack ← nest ← flags.
 func Resolve(denHome string, g *config.Global, stacks map[string]*config.Stack, n *Nest, o Options) (*Resolved, error) {
+	if !filepath.IsAbs(denHome) {
+		return nil, fmt.Errorf(
+			"den home %q : chemin non absolu (les chemins dérivés partent tels quels vers "+
+				"git worktree et sbx create, où le cwd n'est plus garanti)", denHome)
+	}
+
 	nomStack := n.Stack
 	if nomStack == "" {
 		nomStack = g.Defaults.Stack

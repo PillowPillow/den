@@ -139,7 +139,7 @@ Les chemins de `kit` et `kits` sont résolus **relativement au dossier de la sta
 ```yaml
 stack: dgdevx
 env:                                 # optionnel, per-nest → injecté via le mixin généré
-  SOME_VAR: value
+  SOME_VAR: value                   # {config_dir} y est substitué comme dans l'env de l'agent (§4.1)
 egress:                              # optionnel, per-nest → caps.network.allow scopé sandbox
   - 10.22.11.54:27017                # ex. IP:port DB projet
 repos:

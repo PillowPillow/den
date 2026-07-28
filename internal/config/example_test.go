@@ -11,7 +11,12 @@ import (
 // L'exemple livré dans examples/den-home doit charger et valider sans erreur :
 // c'est le point de départ que l'utilisateur recopie dans ~/.den.
 func TestExempleDenHomeEstValide(t *testing.T) {
-	home := filepath.Join("..", "..", "examples", "den-home")
+	// Resolve exige un denHome absolu (les chemins dérivés partent vers `git
+	// worktree` et `sbx create`) : filepath.Abs plutôt qu'un Join relatif.
+	home, err := filepath.Abs(filepath.Join("..", "..", "examples", "den-home"))
+	if err != nil {
+		t.Fatalf("résolution du chemin de l'exemple : %v", err)
+	}
 
 	g, err := config.LoadGlobal(home)
 	if err != nil {
