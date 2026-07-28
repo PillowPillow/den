@@ -55,6 +55,11 @@ func LoadNest(denHome, name string) (*Nest, error) {
 	if err := config.ValiderNom("nest", name); err != nil {
 		return nil, err
 	}
+	// Le nom d'un nest devient un nom de sandbox (sbx n'a pas de --label) : le
+	// refuser ici plutôt qu'au spawn fait remonter le problème dès `den nest ls`.
+	if err := config.ValiderComposantSandbox("nest", name); err != nil {
+		return nil, err
+	}
 	chemin := filepath.Join(denHome, "nests", name+".yaml")
 
 	brut, err := os.ReadFile(chemin)

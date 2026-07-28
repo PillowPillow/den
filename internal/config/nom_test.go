@@ -39,3 +39,35 @@ func TestValiderNomRejetteCeQuiSortDeDenHome(t *testing.T) {
 		})
 	}
 }
+
+func TestValiderComposantSandbox(t *testing.T) {
+	valides := []string{"api", "mon-api", "api2", "v1+beta", "A-B"}
+	for _, nom := range valides {
+		if err := ValiderComposantSandbox("nest", nom); err != nil {
+			t.Errorf("%q doit être accepté, refusé avec : %v", nom, err)
+		}
+	}
+
+	// Le point est réservé au séparateur <nest>.<worktree> ; l'underscore et le
+	// slash sont refusés par `sbx create --name` lui-même.
+	invalides := []string{"", "mon.api", "mon_api", "feature/123", "mon api", "café"}
+	for _, nom := range invalides {
+		if err := ValiderComposantSandbox("nest", nom); err == nil {
+			t.Errorf("%q doit être refusé", nom)
+		}
+	}
+}
+
+// Le message doit nommer le caractère fautif : « invalide » sans dire quoi
+// oblige l'utilisateur à deviner.
+func TestValiderComposantSandboxMessageActionnable(t *testing.T) {
+	err := ValiderComposantSandbox("worktree", "feature/123")
+	if err == nil {
+		t.Fatal("attendu une erreur")
+	}
+	for _, attendu := range []string{"worktree", "feature/123", "/"} {
+		if !strings.Contains(err.Error(), attendu) {
+			t.Errorf("le message doit contenir %q ; obtenu : %v", attendu, err)
+		}
+	}
+}

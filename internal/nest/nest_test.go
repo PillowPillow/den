@@ -253,6 +253,15 @@ func TestListNestsTriDivergeDeLOrdreFichier(t *testing.T) {
 	}
 }
 
+func TestLoadNestRefuseUnNomNonSandboxable(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "mon_api", "stack: devx\nrepos: []\n")
+
+	if _, err := LoadNest(denHome, "mon_api"); err == nil {
+		t.Fatal("un nom de nest non convertible en nom de sandbox doit être refusé au chargement")
+	}
+}
+
 func TestListNestsDossierAbsent(t *testing.T) {
 	nests, err := ListNests(t.TempDir())
 	if err != nil {
