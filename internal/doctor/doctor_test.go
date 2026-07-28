@@ -4,15 +4,20 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// depsOK simule un système où sbx est installé et tous les chemins existent.
+// depsOK simule un système où sbx est installé, tous les chemins existent et
+// git est assez récent. La version est INJECTÉE : sans elle, le diagnostic de
+// version dépendrait du git du poste et changerait de verdict d'une machine à
+// l'autre.
 func depsOK() Deps {
 	return Deps{
-		LookPath: func(string) (string, error) { return "/usr/local/bin/sbx", nil },
-		Stat:     func(string) (os.FileInfo, error) { return nil, nil },
+		LookPath:   func(string) (string, error) { return "/usr/local/bin/sbx", nil },
+		Stat:       func(string) (os.FileInfo, error) { return nil, nil },
+		VersionGit: func() (string, error) { return "git version 2.43.0\n", nil },
 	}
 }
 
@@ -61,6 +66,18 @@ func trouveNom(checks []Check, nom string) bool {
 		}
 	}
 	return false
+}
+
+// trouveNomExact rend le Check portant exactement ce nom. Contrairement à
+// trouve, aucune sous-chaîne ne satisfait : "git" ne doit pas être servi par
+// un check nommé autrement qui contiendrait le mot.
+func trouveNomExact(checks []Check, nom string) (Check, bool) {
+	for _, c := range checks {
+		if c.Nom == nom {
+			return c, true
+		}
+	}
+	return Check{}, false
 }
 
 func tousOK(checks []Check) bool {
@@ -301,6 +318,114 @@ func TestRunKitsPresentsNeSignalentRien(t *testing.T) {
 	checks := Run(dir, depsOK()) // depsOK : tout chemin existe
 	if !tousOK(checks) {
 		t.Errorf("attendu tous les checks OK quand les kits existent, obtenu %+v", checks)
+	}
+}
+
+// --- D3 : plancher de version git ------------------------------------------
+//
+// den appelle `git rev-parse --path-format=absolute` (internal/worktree/
+// worktree.go:599 et :611), option apparue dans git 2.31. Rien ne le déclarait
+// ni ne le vérifiait : sur une machine à git 2.25, l'utilisateur récoltait un
+// message git obscur au premier worktree, pas un diagnostic de den.
+
+func TestAnalyseVersionGit(t *testing.T) {
+	cas := []struct {
+		sortie         string
+		majeur, mineur int
+		erreurAttendue bool
+	}{
+		// Les formes réellement rencontrées : git tout court, git d'Apple,
+		// git for Windows — toutes suffixent la version différemment.
+		{"git version 2.43.0\n", 2, 43, false},
+		{"git version 2.39.5 (Apple Git-154)\n", 2, 39, false},
+		{"git version 2.45.2.windows.1\n", 2, 45, false},
+		{"git version 2.25.1", 2, 25, false},
+		{"git version 3.0.0", 3, 0, false},
+		// Une sortie qu'on ne sait pas lire est une erreur, jamais un pari : la
+		// prendre pour 0.0 refuserait un git parfaitement bon.
+		{"", 0, 0, true},
+		{"une autre commande", 0, 0, true},
+		{"git version deux", 0, 0, true},
+	}
+	for _, c := range cas {
+		t.Run(strconv.Quote(c.sortie), func(t *testing.T) {
+			majeur, mineur, err := analyseVersionGit(c.sortie)
+			if c.erreurAttendue {
+				if err == nil {
+					t.Fatalf("attendu une erreur pour %q, obtenu %d.%d", c.sortie, majeur, mineur)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("erreur inattendue pour %q : %v", c.sortie, err)
+			}
+			if majeur != c.majeur || mineur != c.mineur {
+				t.Errorf("analyseVersionGit(%q) = %d.%d, attendu %d.%d", c.sortie, majeur, mineur, c.majeur, c.mineur)
+			}
+		})
+	}
+}
+
+// La BORNE, pas seulement « vieux vs neuf » : 2.30 refusé, 2.31 accepté. Sans
+// le cas d'égalité, un plancher posé à 2.32 passerait ce test sans qu'on le voie.
+func TestRunPlancherDeVersionGit(t *testing.T) {
+	cas := []struct {
+		version string
+		accepte bool
+	}{
+		{"git version 2.25.1", false},
+		{"git version 2.30.9", false},
+		{"git version 2.31.0", true}, // exactement le plancher : accepté
+		{"git version 2.43.0", true},
+		{"git version 3.0.0", true}, // majeur supérieur : le mineur ne compte plus
+	}
+	for _, c := range cas {
+		t.Run(c.version, func(t *testing.T) {
+			d := depsOK()
+			d.VersionGit = func() (string, error) { return c.version, nil }
+			checks := Run(denHomeValide(t), d)
+
+			g, ok := trouveNomExact(checks, "git")
+			if !ok {
+				t.Fatalf("aucun check nommé \"git\" ; checks : %+v", checks)
+			}
+			if g.OK != c.accepte {
+				t.Fatalf("version %q : check git OK = %v, attendu %v (détail : %s)",
+					c.version, g.OK, c.accepte, g.Detail)
+			}
+			if c.accepte {
+				return
+			}
+			// Un refus doit nommer les DEUX versions : celle qu'on a lue et
+			// celle qu'on exige. Sans les deux, l'utilisateur ne sait pas quoi
+			// installer.
+			if !strings.Contains(g.Detail, "2.31") {
+				t.Errorf("détail = %q, attendu la version exigée (2.31)", g.Detail)
+			}
+			if !strings.Contains(g.Detail, strings.TrimPrefix(c.version, "git version ")) {
+				t.Errorf("détail = %q, attendu la version lue (%q)", g.Detail, c.version)
+			}
+		})
+	}
+}
+
+// git absent, ou qui ne répond pas : den ne peut pas créer un seul worktree.
+func TestRunGitInjoignable(t *testing.T) {
+	d := depsOK()
+	d.VersionGit = func() (string, error) { return "", errors.New("exec: \"git\": executable file not found in $PATH") }
+	checks := Run(denHomeValide(t), d)
+
+	g, ok := trouveNomExact(checks, "git")
+	if !ok {
+		t.Fatalf("aucun check nommé \"git\" ; checks : %+v", checks)
+	}
+	if g.OK {
+		t.Errorf("git injoignable doit être un échec ; obtenu %+v", g)
+	}
+	// Et le diagnostic doit continuer : git manquant n'empêche pas de dire ce
+	// qui ne va pas ailleurs.
+	if !trouveNom(checks, "nests") {
+		t.Errorf("le diagnostic doit se poursuivre malgré git injoignable ; checks : %+v", checks)
 	}
 }
 

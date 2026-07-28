@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
@@ -25,11 +27,66 @@ type Check struct {
 type Deps struct {
 	LookPath func(string) (string, error)
 	Stat     func(string) (os.FileInfo, error)
+	// VersionGit rend la sortie brute de `git --version`. Injectée au même
+	// titre que LookPath et Stat : sans elle, le diagnostic de version
+	// rendrait un verdict différent selon le git du poste, et le plancher ne
+	// serait vérifiable sur aucune machine en particulier.
+	VersionGit func() (string, error)
 }
 
 // DepsSysteme renvoie les dépendances réelles.
 func DepsSysteme() Deps {
-	return Deps{LookPath: exec.LookPath, Stat: os.Stat}
+	return Deps{LookPath: exec.LookPath, Stat: os.Stat, VersionGit: versionGitSysteme}
+}
+
+// versionGitSysteme exécute `git --version`. Seul appel de doctor à lancer un
+// processus : il ne lit aucun dépôt, n'écrit rien, et ne dépend pas du cwd.
+func versionGitSysteme() (string, error) {
+	out, err := exec.Command("git", "--version").Output()
+	return string(out), err
+}
+
+// Plancher de version git. `git rev-parse --path-format=absolute` est le seul
+// appel de den qui l'impose — internal/worktree/worktree.go:599 (identifie) et
+// :611 (communDe), relevés par grep sur "path-format" — et cette option est
+// apparue dans git 2.31. En dessous, git rejette l'option et l'utilisateur
+// récolte le message de git au premier worktree, jamais un diagnostic de den.
+//
+// La version d'apparition vient des notes de version de git, pas d'une mesure :
+// ce poste n'a qu'un seul git installé et ne peut pas l'établir. Ce qui EST
+// mesuré ici, c'est quels appels de den portent l'option.
+const (
+	gitMajeurMin = 2
+	gitMineurMin = 31
+)
+
+// analyseVersionGit extrait le couple majeur.mineur de la sortie de
+// `git --version`. Les distributions suffixent librement — « 2.39.5 (Apple
+// Git-154) », « 2.45.2.windows.1 » — donc on ne lit que les deux premiers
+// nombres et on ignore le reste.
+//
+// Une sortie illisible est une ERREUR, pas un 0.0 : la traiter comme une
+// version nulle ferait refuser un git parfaitement bon dont le packageur a
+// changé le format.
+func analyseVersionGit(sortie string) (majeur, mineur int, err error) {
+	illisible := func() (int, int, error) {
+		return 0, 0, fmt.Errorf("sortie de `git --version` illisible : %q", strings.TrimSpace(sortie))
+	}
+	champs := strings.Fields(sortie)
+	if len(champs) < 3 || champs[0] != "git" || champs[1] != "version" {
+		return illisible()
+	}
+	nombres := strings.Split(champs[2], ".")
+	if len(nombres) < 2 {
+		return illisible()
+	}
+	if majeur, err = strconv.Atoi(nombres[0]); err != nil {
+		return illisible()
+	}
+	if mineur, err = strconv.Atoi(nombres[1]); err != nil {
+		return illisible()
+	}
+	return majeur, mineur, nil
 }
 
 // Run exécute tous les diagnostics et renvoie la liste complète, échecs compris.
@@ -45,6 +102,25 @@ func Run(denHome string, d Deps) []Check {
 		ajoute("sbx", false, "binaire sbx introuvable dans le PATH")
 	} else {
 		ajoute("sbx", true, "%s", chemin)
+	}
+
+	// 1bis. git assez récent. Diagnostiqué à côté de sbx : ce sont les deux
+	// binaires sans lesquels den ne peut rien, et aucun des deux ne dépend de
+	// la configuration — un den home vide ne doit pas priver l'utilisateur de
+	// ces deux réponses-là.
+	if sortie, err := d.VersionGit(); err != nil {
+		ajoute("git", false, "version de git indéterminable : %v", err)
+	} else if majeur, mineur, err := analyseVersionGit(sortie); err != nil {
+		ajoute("git", false, "%v", err)
+	} else if majeur < gitMajeurMin || (majeur == gitMajeurMin && mineur < gitMineurMin) {
+		// La version LUE et la version EXIGÉE : sans les deux, l'utilisateur
+		// sait qu'il doit agir mais pas jusqu'où monter.
+		ajoute("git", false,
+			"%s est trop ancien : den exige git %d.%d ou plus — `git rev-parse --path-format=absolute`, "+
+				"par lequel den situe tout worktree, n'existe pas avant",
+			strings.TrimSpace(sortie), gitMajeurMin, gitMineurMin)
+	} else {
+		ajoute("git", true, "%s", strings.TrimSpace(sortie))
 	}
 
 	// 2. config.yaml chargeable

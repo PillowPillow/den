@@ -25,12 +25,16 @@ func runDoctor(t *testing.T, home string, deps doctor.Deps) (string, error) {
 	return out.String(), err
 }
 
-// depsSaines : sbx présent, tous les repos sur disque.
+// depsSaines : sbx présent, tous les repos sur disque, git assez récent.
 func depsSaines() doctor.Deps {
 	return doctor.Deps{
 		LookPath: func(string) (string, error) { return "/usr/local/bin/sbx", nil },
 		// doctor ne regarde que l'erreur, jamais le FileInfo.
 		Stat: func(string) (os.FileInfo, error) { return nil, nil },
+		// Injectée comme les deux autres : sans elle, `den doctor` rendrait ici
+		// le verdict du git du POSTE, et le contrat de sortie de la commande
+		// deviendrait vert ou rouge selon la machine qui lance la suite.
+		VersionGit: func() (string, error) { return "git version 2.43.0\n", nil },
 	}
 }
 
