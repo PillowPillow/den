@@ -374,6 +374,7 @@ internal/
   policy/                # union egress + settle-loop fail-closed
   ports/                 # fenêtre déterministe + scan anti-collision
   agent/                 # résolution agent + mixin généré (env + egress)
+  spawn/                 # orchestration de `den <nest>` (§6), hors cli pour rester testable
 ```
 
 **Tests (TDD) :**

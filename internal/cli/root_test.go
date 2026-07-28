@@ -94,8 +94,27 @@ func TestDenHomeEstScopeAChaqueInstance(t *testing.T) {
 	}
 }
 
-func TestCommandeInconnueEchoue(t *testing.T) {
-	if _, err := run(t, "nexistepas"); err == nil {
-		t.Error("attendu une erreur pour une commande inconnue, obtenu nil")
+// La racine étant devenue la commande de spawn, un premier argument inconnu
+// n'est plus « une commande inconnue » : c'est un NOM DE NEST, et l'échec doit
+// nommer le fichier attendu plutôt que de parler de commande.
+//
+// DEN_HOME est épinglé : sans lui, ce test ne passe que sur les machines qui
+// n'ont pas de ~/.den, et va lire le den home réel du développeur sur les autres.
+func TestUnPremierArgumentInconnuEstUnNestIntrouvable(t *testing.T) {
+	dir := denHomeAvecNest(t, "api")
+	// config.yaml doit exister, sinon le spawn échoue une étape trop tôt et
+	// l'erreur ne dit plus rien du nest demandé.
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"),
+		[]byte("defaults:\n  agent: claude\n  stack: devx\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DEN_HOME", dir)
+
+	_, err := run(t, "nexistepas")
+	if err == nil {
+		t.Fatal("attendu une erreur pour un nest inconnu, obtenu nil")
+	}
+	if !strings.Contains(err.Error(), filepath.Join(dir, "nests", "nexistepas.yaml")) {
+		t.Errorf("l'erreur doit nommer le fichier de nest attendu ; obtenu : %v", err)
 	}
 }

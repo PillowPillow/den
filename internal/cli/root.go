@@ -42,6 +42,9 @@ func NewRootCmd() *cobra.Command {
 	})
 	root.AddCommand(newNestCmd(&denHome))
 	root.AddCommand(newDoctorCmd(&denHome, doctor.DepsSysteme()))
+	// En DERNIER : configureSpawn pose Args sur la racine, ce qui n'a de sens
+	// qu'une fois les sous-commandes enregistrées.
+	configureSpawn(root, &denHome)
 	return root
 }
 
