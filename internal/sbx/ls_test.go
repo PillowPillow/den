@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // Sortie RÉELLE de `sbx ls --json` (sbx v0.35.0, relevée le 2026-07-28).
@@ -243,7 +244,9 @@ func TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees(t *testing.T) {
 	if err == nil {
 		t.Fatal("un statut « exited » doit produire une erreur")
 	}
-	commandes := entreBackticks(err.Error())
+	message := err.Error()
+
+	commandes := entreBackticks(message)
 	if len(commandes) == 0 {
 		t.Fatalf("le message doit présenter sa remédiation entre backticks ; obtenu : %v", err)
 	}
@@ -252,6 +255,17 @@ func TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees(t *testing.T) {
 			t.Errorf("commande NON ATTESTÉE proposée à l'utilisateur : %q ; message : %v", c, err)
 		}
 	}
+
+	// Second filet, indépendant des backticks : TOUTE occurrence de « sbx <mot> »
+	// dans le message, backtickée ou non, doit nommer une sous-commande attestée.
+	// Sans lui, le test ne tient que par la convention typographique du dépôt —
+	// mesuré, deux commandes inventées SANS backticks laissaient la suite verte.
+	for _, sc := range sousCommandesSbx(message) {
+		if !slices.Contains([]string{"ls", "rm"}, sc) {
+			t.Errorf("sous-commande sbx NON ATTESTÉE proposée à l'utilisateur : %q ; message : %v", sc, err)
+		}
+	}
+
 	// Et la porte de sortie doit être là : un refus sans remédiation oblige
 	// l'utilisateur à deviner.
 	if !slices.Contains(commandes, "sbx rm --force api") {
@@ -275,6 +289,35 @@ func entreBackticks(s string) []string {
 		}
 		out = append(out, reste[:j])
 		s = reste[j+1:]
+	}
+}
+
+// sousCommandesSbx rend le mot qui suit chaque « sbx » du message, backticks ou
+// pas.
+//
+// CE QUE CE FILET N'ATTRAPE PAS, et il faut le dire plutôt que de laisser croire
+// le contraire : une commande `den` inventée écrite hors backticks (« den up
+// --force ») passe au travers, parce que « den » apparaît légitimement en prose
+// dans le message (« den n'attache pas… ») et qu'aucune heuristique ne sépare le
+// mot français du nom de programme. C'est la liste blanche des backticks qui
+// couvre ce cas-là, et elle seule.
+func sousCommandesSbx(s string) []string {
+	var out []string
+	for {
+		i := strings.Index(s, "sbx ")
+		if i < 0 {
+			return out
+		}
+		s = s[i+len("sbx "):]
+		fin := strings.IndexFunc(s, func(r rune) bool {
+			return !unicode.IsLetter(r) && r != '-'
+		})
+		if fin < 0 {
+			fin = len(s)
+		}
+		if fin > 0 {
+			out = append(out, s[:fin])
+		}
 	}
 }
 

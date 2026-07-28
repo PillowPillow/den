@@ -90,9 +90,12 @@ func RendMixin(m Mixin) ([]byte, error) {
 	if len(m.Env) > 0 {
 		vars := &yaml.Node{Kind: yaml.MappingNode}
 		for _, k := range slices.Sorted(maps.Keys(m.Env)) {
-			// La CLÉ est structurelle (un nom de variable d'environnement), la
-			// VALEUR est de la donnée utilisateur libre.
-			vars.Content = append(vars.Content, scalaire(k), scalaireTexte(m.Env[k]))
+			// CLÉ ET VALEUR : les deux sont de la donnée utilisateur. La clé
+			// vient d'un `env:` de nest ou d'agent, et AUCUNE validation de
+			// charset ne s'y applique dans toute la cascade. Une clé nulle est
+			// même pire qu'une valeur nulle — elle fait disparaître l'ENTRÉE
+			// ENTIÈRE à la relecture, pas seulement son côté droit.
+			vars.Content = append(vars.Content, scalaireTexte(k), scalaireTexte(m.Env[k]))
 		}
 		env := &yaml.Node{Kind: yaml.MappingNode}
 		env.Content = append(env.Content, scalaire("variables"), vars)
@@ -135,8 +138,8 @@ func scalaire(v string) *yaml.Node {
 }
 
 // scalaireTexte construit un scalaire qui doit se relire comme une CHAÎNE, quoi
-// qu'il contienne. Réservé aux DONNÉES UTILISATEUR : valeurs d'environnement,
-// hôtes d'egress, arguments de la commande de fraîcheur.
+// qu'il contienne. Réservé aux DONNÉES UTILISATEUR : clés ET valeurs
+// d'environnement, hôtes d'egress, arguments de la commande de fraîcheur.
 //
 // Le tag `!!str` fait quoter par l'encodeur les seules valeurs qui, nues, se
 // reliraient autrement — `~`, `null`, `true`, `8080`… Mesuré : sur toutes les
@@ -185,9 +188,10 @@ func valideNomSandbox(nom string) error {
 // dossierMixin et cheminMixin sont l'UNIQUE définition de l'emplacement du
 // mixin. Écriture (EcrisMixin) et relecture (LisMixin) doivent y converger : si
 // les deux composaient leur chemin séparément et divergeaient, LisMixin rendrait
-// éternellement os.ErrNotExist, que Spawn traite — à raison — comme un premier
-// spawn. La dérive de configuration deviendrait alors indétectable EN SILENCE.
-// Verrouillé par TestLisMixinRelitCeQuEcrisMixinEcrit.
+// éternellement os.ErrNotExist, et den n'annoncerait plus jamais qu'une « dérive
+// non vérifiable » — pour TOUTES les sandboxes, en permanence, sans que rien
+// n'échoue. La détection ne serait pas silencieuse, elle serait définitivement
+// inutile. Verrouillé par TestLisMixinRelitCeQuEcrisMixinEcrit.
 func dossierMixin(denHome, nomSandbox string) string {
 	return filepath.Join(denHome, "cache", "mixins", nomSandbox)
 }

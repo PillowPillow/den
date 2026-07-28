@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -277,6 +278,22 @@ func TestEcrisMixinRefuseUnNomHorsCharset(t *testing.T) {
 	} {
 		if _, err := EcrisMixin(denHome, nom, mixinExemple(t)); err == nil {
 			t.Errorf("le nom de sandbox %q doit être refusé", nom)
+		}
+		// LisMixin compose le MÊME chemin hôte, par le même cheminMixin : sa
+		// garde doit refuser la même table. Sans ça, elle n'est exercée par
+		// aucun test (mesuré : retirée, les 9 paquets restent `ok`) et un
+		// refactor la supprimerait sans que rien ne rougisse. Défense en
+		// profondeur : Spawn refuse déjà ces noms en amont.
+		//
+		// L'assertion porte sur la CAUSE, pas sur la seule présence d'une
+		// erreur : sans garde, LisMixin rendrait de toute façon une erreur —
+		// celle du fichier absent — et un simple `err == nil` resterait vert
+		// pour une raison étrangère à ce qu'il prétend tester.
+		_, err := LisMixin(denHome, nom)
+		if err == nil {
+			t.Errorf("LisMixin doit refuser le nom de sandbox %q", nom)
+		} else if errors.Is(err, os.ErrNotExist) {
+			t.Errorf("LisMixin(%q) a buté sur le fichier absent, pas sur la garde de charset : %v", nom, err)
 		}
 	}
 

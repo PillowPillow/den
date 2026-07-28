@@ -152,6 +152,15 @@ func TestLisMixinRelitCeQuEcrisMixinEcrit(t *testing.T) {
 // La table couvre les trois familles que YAML 1.1 résout hors chaîne : le null
 // (`~`, `null` et ses casses), les booléens, et les nombres. `mixinExemple`
 // n'en contient aucune, d'où l'angle mort.
+//
+// Les CLÉS sont balayées au même titre que les valeurs, et ce n'est pas de la
+// symétrie décorative : `Env` est une `map[string]string` que le nest et l'agent
+// remplissent, AUCUNE validation de charset ne s'y applique dans toute la
+// cascade, et une clé nulle est pire qu'une valeur nulle — elle fait sauter
+// l'ENTRÉE ENTIÈRE de la map, pas seulement son côté droit. Une version
+// antérieure de ce correctif affirmait en commentaire que la clé était
+// « structurelle » : c'était faux, et ça se voyait bout en bout (`env ajouté à
+// la config : NULL` à chaque attache, sur une config inchangée).
 func TestAllerRetourSurLesValeursDEnvHostiles(t *testing.T) {
 	hostiles := map[string]string{
 		"TILDE":    "~",
@@ -168,6 +177,20 @@ func TestAllerRetourSurLesValeursDEnvHostiles(t *testing.T) {
 		"HORAIRE":  "1:30",
 		"TIRET":    "-",
 		"ETOILE":   "*",
+		// Clés hostiles, mêmes familles. Une valeur anodine à droite : c'est la
+		// CLÉ qu'on éprouve ici.
+		"~":    "valeur-tilde",
+		"null": "valeur-null-bas",
+		"Null": "valeur-null-cap",
+		"NULL": "valeur-null-maj",
+		"true": "valeur-booleen",
+		"8080": "valeur-nombre",
+		"1.5":  "valeur-flottant",
+		"-":    "valeur-tiret",
+		"*":    "valeur-etoile",
+		"0x10": "valeur-hexa",
+		"1:30": "valeur-horaire",
+		"yes":  "valeur-oui",
 	}
 
 	denHome := t.TempDir()

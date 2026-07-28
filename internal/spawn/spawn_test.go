@@ -548,6 +548,12 @@ func TestSpawnNeReecritPasLeMixinDUneSandboxVivante(t *testing.T) {
 // Le « premier spawn » qui justifiait ce silence ne passe JAMAIS par ici : il
 // prend la branche create. D'où les DEUX tours ci-dessous — le second est celui
 // qui prouve que rien ne se referme tout seul.
+// marqueursAbsence : ce qui n'appartient QU'AU message de référence absente.
+// Les deux tests ci-dessous s'en servent en miroir — l'un exige leur présence,
+// l'autre leur absence. C'est ce couple, et lui seul, qui verrouille le fait que
+// den rend DEUX messages différents pour deux situations différentes.
+var marqueursAbsence = []string{"aucune référence de configuration", "cache purgé"}
+
 func TestSpawnSignaleUneReferenceAbsenteApresPurgeDuCache(t *testing.T) {
 	denHome, repo := denTest(t)
 	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
@@ -580,6 +586,17 @@ func TestSpawnSignaleUneReferenceAbsenteApresPurgeDuCache(t *testing.T) {
 		if !strings.Contains(sortie, "attention") {
 			t.Errorf("tour %d : ce doit être un avertissement ;\n%s", tour, sortie)
 		}
+		// Et le message doit être CELUI de l'absence, pas celui du fichier
+		// corrompu. Cette distinction est le seul consommateur du %w sur
+		// os.ErrNotExist : sans elle, un refactor peut collapser les deux
+		// messages, rendre l'enveloppe sans objet, et laisser
+		// TestLisMixinAbsentEstDistinguableDUneLectureCassee vert en prouvant
+		// une distinction que plus personne n'exploite.
+		for _, marqueur := range marqueursAbsence {
+			if !strings.Contains(sortie, marqueur) {
+				t.Errorf("tour %d : le message d'ABSENCE doit contenir %q ;\n%s", tour, marqueur, sortie)
+			}
+		}
 	}
 	// Et l'attache a bien lieu à chaque tour : ne pas savoir ne bloque pas.
 	if len(f.Attaches) != 2 {
@@ -606,6 +623,15 @@ func TestSpawnSignaleUneDeriveNonVerifiable(t *testing.T) {
 	sortie := journal.String()
 	if !strings.Contains(sortie, "non vérifiable") {
 		t.Errorf("une référence illisible doit être signalée comme telle ;\n%s", sortie)
+	}
+	// Le MIROIR du test d'absence : un fichier corrompu n'est pas un cache
+	// purgé, et envoyer l'utilisateur sur la mauvaise cause lui fait chercher au
+	// mauvais endroit. Sans cette assertion, collapser les deux messages en un
+	// seul laisse toute la suite verte.
+	for _, marqueur := range marqueursAbsence {
+		if strings.Contains(sortie, marqueur) {
+			t.Errorf("un fichier CORROMPU ne doit pas rendre le message d'absence (%q) ;\n%s", marqueur, sortie)
+		}
 	}
 	// Et l'attache a bien lieu : une dérive invérifiable ne bloque pas.
 	if len(f.Attaches) != 1 {
