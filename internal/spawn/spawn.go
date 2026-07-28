@@ -141,6 +141,18 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				r.SSHDir, filepath.Join(denHome, "config.yaml"))
 		}
 	}
+	// Même invariant, même endroit : les kits partent en `--kit` dans l'argv de
+	// `sbx create`. `den doctor` les contrôlait déjà, mais ce diagnostic n'est
+	// obtenu que par qui le lance : sans ce contrôle-ci, `den <nest>` rendait
+	// rc=0 et laissait sbx échouer au boot de la microVM, où l'utilisateur voit
+	// une VM qui meurt et non un message de den.
+	for _, k := range kitsDeLaStack(r.Stack) {
+		if _, err := os.Stat(k); err != nil {
+			return fmt.Errorf(
+				"stack %q : kit introuvable : %s — corrige `kit:` ou `kits:` dans %s",
+				r.Stack.Name, k, filepath.Join(r.Stack.Dir, "stack.yaml"))
+		}
+	}
 
 	// 3. Worktrees, si demandés. Le premier workspace doit rester le premier
 	// repo : sbx.Sandbox.Workdir en dépend pour l'attache, et rien à SON niveau
@@ -236,14 +248,10 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		if err != nil {
 			return err
 		}
-		kits := append([]string{}, r.Stack.Kits...)
-		if r.Stack.Kit != "" {
-			kits = append(kits, r.Stack.Kit)
-		}
 		argv, err := sbx.ArgvCreate(sbx.Create{
 			Nom:        nomSandbox,
 			Image:      r.Stack.Image,
-			KitsStack:  kits,
+			KitsStack:  kitsDeLaStack(r.Stack),
 			KitMixin:   dirMixin,
 			Workspaces: workspaces,
 		})
@@ -343,6 +351,21 @@ func Attache(ctx context.Context, r sbx.Runner, nomSandbox, workdir string) erro
 	}
 	argv = append(argv, nomSandbox, "bash", "-l")
 	return r.Attach(ctx, argv...)
+}
+
+// kitsDeLaStack rend les kits d'une stack dans l'ORDRE de layering sbx :
+// `kits:` (transverses) d'abord, `kit:` ensuite.
+//
+// UNE seule composition, partagée par le contrôle d'existence (étape 2) et
+// l'argv de `sbx create` (étape 6). Si les deux la recomposaient chacune de son
+// côté, den pourrait contrôler un ensemble et en envoyer un autre — c'est-à-dire
+// rendre le contrôle vert tout en laissant passer le chemin qu'il visait.
+func kitsDeLaStack(s *config.Stack) []string {
+	kits := append([]string{}, s.Kits...)
+	if s.Kit != "" {
+		kits = append(kits, s.Kit)
+	}
+	return kits
 }
 
 func premier(s []string) string {

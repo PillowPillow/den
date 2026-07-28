@@ -55,8 +55,18 @@ func denTestSSH(t *testing.T, blocSSH string) (denHome, repo string) {
 	ecrisConfig(t, denHome, blocSSH, egressUnHote)
 	// Deux kits déclarés, pas zéro : sans eux, le mixin serait le seul `--kit`
 	// de l'argv et « le mixin est layeré en dernier » se vérifierait tout seul.
+	//
+	// Les dossiers sont CRÉÉS. La version précédente les déclarait sans jamais
+	// les créer : tous les tests de ce fichier envoyaient donc à `sbx create`
+	// des chemins de kit inexistants et s'en satisfaisaient — le fixture
+	// portait exactement le défaut que TestSpawnRefuseUnKitInexistant instruit.
 	ecris(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
 		"image: devx:v1\nkits: [transverse]\nkit: devx-kit\n")
+	for _, kit := range []string{"transverse", "devx-kit"} {
+		if err := os.MkdirAll(filepath.Join(denHome, "stacks", "devx", kit), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ecris(t, filepath.Join(denHome, "nests", "api.yaml"), "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 	return denHome, repo
 }
@@ -777,6 +787,58 @@ func TestSpawnNExigePasDeSSHDirHorsDuModeMount(t *testing.T) {
 				t.Fatalf("mode %q : erreur inattendue : %v", mode, err)
 			}
 		})
+	}
+}
+
+// F3 — les kits partent en `--kit` dans l'argv de `sbx create`, exactement
+// comme ssh.dir y part en workspace. C'est le même invariant n°3 du plan (ne
+// jamais passer à sbx un chemin que den n'a pas garanti), et l'asymétrie était
+// le défaut : D2 gardait les kits dans `doctor` seulement, donc `den api`
+// rendait rc=0 et envoyait des chemins inexistants à sbx pour qui ne lance pas
+// `den doctor`.
+func TestSpawnRefuseUnKitInexistant(t *testing.T) {
+	for _, kit := range []string{"transverse", "devx-kit"} { // `kits:` pluriel, puis `kit:` singulier
+		t.Run(kit, func(t *testing.T) {
+			denHome, _ := denTest(t)
+			manquant := filepath.Join(denHome, "stacks", "devx", kit)
+			if err := os.RemoveAll(manquant); err != nil {
+				t.Fatal(err)
+			}
+			f, d := depsTest()
+
+			err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+			if err == nil {
+				t.Fatal("un kit inexistant doit être refusé, obtenu nil")
+			}
+			if !strings.Contains(err.Error(), manquant) {
+				t.Errorf("erreur = %q, attendu le chemin complet du kit manquant", err.Error())
+			}
+			// La stack qui le déclare : avec plusieurs stacks, un chemin seul
+			// ne dit pas quel stack.yaml corriger.
+			if !strings.Contains(err.Error(), "devx") {
+				t.Errorf("erreur = %q, attendu la stack fautive nommée", err.Error())
+			}
+			// Refusé AVANT tout effet de bord, comme les repos et ssh.dir.
+			if len(f.Appels) != 0 || len(f.Attaches) != 0 {
+				t.Errorf("aucun appel sbx ne doit précéder le refus ; appels : %v, attaches : %v",
+					f.Appels, f.Attaches)
+			}
+			if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
+				t.Error("le profil de l'agent ne doit pas avoir été créé avant le refus")
+			}
+		})
+	}
+}
+
+// La contrepartie : une stack qui ne déclare AUCUN kit est parfaitement valide
+// (spec §4.2) et ne doit rien exiger. Sans ce cas, un contrôle qui refuserait
+// la chaîne vide casserait toutes les stacks sans kit.
+func TestSpawnAccepteUneStackSansKit(t *testing.T) {
+	denHome, _ := denTest(t)
+	ecris(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"), "image: devx:v1\n")
+	_, d := depsTest()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("une stack sans kit doit rester valide : %v", err)
 	}
 }
 
