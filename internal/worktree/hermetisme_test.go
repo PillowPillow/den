@@ -1,7 +1,9 @@
 package worktree
 
 import (
+	"errors"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
@@ -68,6 +70,16 @@ func racineModule(t *testing.T) string {
 // résoudre les indirections demanderait une analyse de types complète
 // (golang.org/x/tools/go/packages), une dépendance que ce projet n'admet pas
 // (stdlib + cobra + yaml.v3 seulement).
+//
+// LES FICHIERS ANALYSÉS SONT CEUX QUE `go test` COMPILERAIT VRAIMENT SUR CETTE
+// MACHINE — `go/build.ImportDir` (pas un simple `os.ReadDir` + filtre sur le
+// suffixe) applique les contraintes de build (`//go:build`, suffixes de nom
+// `_linux.go`…) pour le GOOS/GOARCH courant avant de rendre la liste. Sans ça,
+// un `TestMain` restreint à une autre plateforme (`//go:build darwin`, par
+// exemple) ferait paraître un paquet protégé sous Linux alors que le binaire
+// de test réellement compilé n'a aucun `TestMain` — mesuré : fabriqué un
+// paquet sonde avec exactement ce patron, la garde passait à tort avant ce
+// correctif.
 func TestExigeNeutraliseEnvironnementGitSiGitEstLanceEnClair(t *testing.T) {
 	racine := racineModule(t)
 
@@ -88,23 +100,39 @@ func TestExigeNeutraliseEnvironnementGitSiGitEstLanceEnClair(t *testing.T) {
 
 func verifiePaquetHermetique(t *testing.T, dirPaquet string) {
 	t.Helper()
-	fichiers, err := os.ReadDir(dirPaquet)
+
+	// build.ImportDir, pas os.ReadDir : seuls les fichiers que CETTE machine
+	// compilerait vraiment pour ce paquet (contraintes de build évaluées).
+	pkg, err := build.ImportDir(dirPaquet, 0)
 	if err != nil {
-		t.Fatal(err)
+		var pasDeSourceGo *build.NoGoError
+		if errors.As(err, &pasDeSourceGo) {
+			return // aucun fichier .go pour cette plateforme ici : rien à vérifier
+		}
+		// Erreur qu'on ne sait pas interpréter (contrainte malformée, paquet
+		// incohérent…) : fail-closed, comme le reste du projet — un t.Errorf
+		// isolé au paquet fautif plutôt qu'un t.Fatal qui couperait le
+		// balayage des paquets suivants avant qu'ils n'aient pu parler.
+		t.Errorf("analyse du paquet %s : %v", dirPaquet, err)
+		return
 	}
 
 	fset := token.NewFileSet()
 	var lanceGitBrut []string
 	aLeHelper := false
 
-	for _, f := range fichiers {
-		if f.IsDir() || !strings.HasSuffix(f.Name(), "_test.go") {
-			continue
-		}
-		chemin := filepath.Join(dirPaquet, f.Name())
+	noms := make([]string, 0, len(pkg.TestGoFiles)+len(pkg.XTestGoFiles))
+	noms = append(noms, pkg.TestGoFiles...)
+	noms = append(noms, pkg.XTestGoFiles...)
+
+	for _, nom := range noms {
+		chemin := filepath.Join(dirPaquet, nom)
 		fichierAST, err := parser.ParseFile(fset, chemin, nil, 0)
 		if err != nil {
-			t.Fatalf("analyse de %s : %v", chemin, err)
+			// Isolé au fichier fautif : les autres paquets du balayage
+			// continuent, pour un diagnostic complet en un seul passage.
+			t.Errorf("analyse de %s : %v", chemin, err)
+			continue
 		}
 
 		if aliasExec, importe := aliasImport(fichierAST, "os/exec"); importe {

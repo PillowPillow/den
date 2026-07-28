@@ -24,6 +24,27 @@ func executeCmd(t *testing.T, cmd *cobra.Command, args ...string) (string, error
 	return out.String(), err
 }
 
+// executeCmdFluxSepares exécute l'arbre de commandes avec DEUX buffers
+// distincts (stdout, stderr) plutôt que le buffer unique d'executeCmd.
+// Nécessaire pour vérifier qu'un message part bien sur l'un des deux flux et
+// PAS sur l'autre — une propriété qu'executeCmd, qui fusionne délibérément
+// les deux dans le même buffer, ne peut pas distinguer.
+//
+// Fonction séparée plutôt que changement de signature d'executeCmd : ce
+// dernier a douze appelants existants dans ce paquet, dont root_deps_test.go
+// et spawn_test.go dont les assertions ne doivent pas changer — les toucher
+// tous pour un besoin qu'un seul test a (rm_test.go) aurait été le mauvais
+// compromis.
+func executeCmdFluxSepares(t *testing.T, cmd *cobra.Command, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var outBuf, errBuf bytes.Buffer
+	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs(args)
+	err = cmd.Execute()
+	return outBuf.String(), errBuf.String(), err
+}
+
 // exécute une commande racine neuve avec des arguments et retourne sa sortie standard.
 func run(t *testing.T, args ...string) (string, error) {
 	t.Helper()

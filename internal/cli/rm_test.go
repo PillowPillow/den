@@ -255,6 +255,35 @@ func TestRmNestIllisibleNEmpechePasLaDestruction(t *testing.T) {
 	}
 }
 
+// L'avertissement « nest illisible » part sur STDERR, jamais sur stdout : un
+// `den rm | grep` doit voir un succès propre sans l'avertissement mélangé
+// dedans (I7 en revue). executeCmdAvecSbx fusionne délibérément les deux
+// flux (voir son commentaire) et ne peut donc PAS vérifier cette séparation —
+// seul executeCmdFluxSepares, qui donne deux buffers distincts, le peut.
+func TestRmNestIllisibleEcritSurStderr(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisConfig(t, denHome, configMinimale)
+	// Pas de ecrisNest("api", ...) : le nest "api" est absent de ~/.den/nests.
+	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
+	deps := DepsSysteme()
+	deps.Sbx = f
+	root := NewRootCmdAvec(deps)
+
+	stdout, stderr, err := executeCmdFluxSepares(t, root, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if !strings.Contains(stderr, "illisible") {
+		t.Errorf("l'avertissement doit sortir sur stderr ; stderr obtenu :\n%s", stderr)
+	}
+	if strings.Contains(stdout, "illisible") {
+		t.Errorf("l'avertissement ne doit PAS apparaître sur stdout ; stdout obtenu :\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "détruite") {
+		t.Errorf("le message de succès doit apparaître sur stdout ; stdout obtenu :\n%s", stdout)
+	}
+}
+
 // L'ordre « worktrees d'abord, sandbox ensuite » est une propriété de sûreté :
 // l'inverse laisserait l'utilisateur sans VM ET avec un message d'erreur sur
 // un dossier.

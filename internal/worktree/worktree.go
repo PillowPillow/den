@@ -78,6 +78,14 @@ var VariablesRedirigeantes = []string{
 // l'IMPOSE à aucun paquet ; TestExigeNeutraliseEnvironnementGitSiGitEstLanceEnClair,
 // dans hermetisme_test.go, ferme structurellement le trou plutôt que de
 // compter sur la mémoire d'un futur auteur de test.
+//
+// RÉSERVÉE À UN TestMain (aucun garde-fou qui l'empêche d'être appelée
+// ailleurs, ni depuis du code de production den lui-même) : elle modifie
+// l'environnement du PROCESSUS ENTIER, pas celui d'un test isolé. L'appeler
+// hors d'un TestMain, ou plusieurs fois, ne casse rien en soi (chaque appel
+// est idempotent — Setenv/Unsetenv sur les mêmes clés), mais poser ces
+// variables pour tout le reste du processus (y compris un binaire den réel
+// qui importerait ce paquet) serait un effet de bord que rien ne justifie.
 func NeutraliseEnvironnementGit() {
 	os.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	os.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
