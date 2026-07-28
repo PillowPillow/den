@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,9 +127,44 @@ func TestRendMixinOmetLesSectionsVides(t *testing.T) {
 	if strings.Contains(rendu, "environment:") {
 		t.Errorf("aucune variable ⇒ pas de section environment ; obtenu :\n%s", rendu)
 	}
+	// La fraîcheur, elle, n'est PAS optionnelle : l'omission des sections vides
+	// ne doit jamais déborder sur commands.
+	if !strings.Contains(rendu, "commands:") {
+		t.Errorf("commands ne s'omet jamais, même sans egress ni env ; obtenu :\n%s", rendu)
+	}
 }
 
-func TestMixinDepuisAssembleLeNestResolu(t *testing.T) {
+// Une Fraicheur vide ne doit pas s'omettre comme une section vide : le mixin
+// rendu serait valide et démarrerait une sandbox SANS contrôle de fraîcheur,
+// exactement ce que CommandeFraicheur refuse (spec §9.1). Fail-closed.
+func TestRendMixinRefuseUneFraicheurVide(t *testing.T) {
+	m := mixinExemple(t)
+	m.Fraicheur = nil
+	if _, err := RendMixin(m); err == nil {
+		t.Fatal("une Fraicheur vide doit être refusée, pas omise silencieusement")
+	}
+}
+
+// Corollaire : tout mixin rendu avec succès porte sa commande de fraîcheur.
+func TestRendMixinPorteToujoursLaFraicheur(t *testing.T) {
+	for _, m := range []Mixin{
+		mixinExemple(t),
+		{NomSandbox: "api", Fraicheur: mixinExemple(t).Fraicheur},
+	} {
+		out, err := RendMixin(m)
+		if err != nil {
+			t.Fatalf("erreur inattendue : %v", err)
+		}
+		for _, attendu := range []string{"commands:", "startup:", "claude update"} {
+			if !strings.Contains(string(out), attendu) {
+				t.Errorf("un mixin rendu doit toujours contenir %q ; obtenu :\n%s", attendu, out)
+			}
+		}
+	}
+}
+
+func resoluExemple(t *testing.T) *nest.Resolved {
+	t.Helper()
 	g := &config.Global{
 		Agents:         map[string]config.Agent{"claude": agentClaude()},
 		Defaults:       config.Defaults{Agent: "claude", Stack: "devx"},
@@ -143,8 +179,11 @@ func TestMixinDepuisAssembleLeNestResolu(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve : %v", err)
 	}
+	return r
+}
 
-	m, err := MixinDepuis(r, "api")
+func TestMixinDepuisAssembleLeNestResolu(t *testing.T) {
+	m, err := MixinDepuis(resoluExemple(t), "api")
 	if err != nil {
 		t.Fatalf("MixinDepuis : %v", err)
 	}
@@ -163,6 +202,27 @@ func TestMixinDepuisAssembleLeNestResolu(t *testing.T) {
 	}
 }
 
+// Env et Egress sont exportés sur une struct exportée : les aliaser ferait
+// d'une écriture sur le mixin une mutation silencieuse du nest résolu, que
+// l'appelant continue d'utiliser après le spawn.
+func TestMixinDepuisNAliasePasLeResolu(t *testing.T) {
+	r := resoluExemple(t)
+	m, err := MixinDepuis(r, "api")
+	if err != nil {
+		t.Fatalf("MixinDepuis : %v", err)
+	}
+
+	m.Env["INJECTE"] = "x"
+	m.Egress[0] = "remplace.exemple.test"
+
+	if _, present := r.Env["INJECTE"]; present {
+		t.Errorf("écrire dans Mixin.Env a muté le nest résolu : %v", r.Env)
+	}
+	if r.Egress[0] == "remplace.exemple.test" {
+		t.Errorf("écrire dans Mixin.Egress a muté le nest résolu : %v", r.Egress)
+	}
+}
+
 func TestEcrisMixinEcritSousCache(t *testing.T) {
 	denHome := t.TempDir()
 	dir, err := EcrisMixin(denHome, "api.feat12", mixinExemple(t))
@@ -177,6 +237,61 @@ func TestEcrisMixinEcritSousCache(t *testing.T) {
 	// C'est le DOSSIER qu'on passe à `--kit`, et sbx y cherche spec.yaml.
 	if _, err := os.Stat(filepath.Join(dir, "spec.yaml")); err != nil {
 		t.Errorf("spec.yaml doit exister dans %s : %v", dir, err)
+	}
+}
+
+// spec.yaml porte environment.variables, c'est-à-dire de l'env utilisateur
+// libre — exactement là où atterrissent une clé d'API ou une URI à credentials.
+// Rien ne justifie qu'il soit lisible par tout le monde.
+func TestEcrisMixinRestreintLesDroits(t *testing.T) {
+	denHome := t.TempDir()
+	dir, err := EcrisMixin(denHome, "api", mixinExemple(t))
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+
+	infoDossier, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat du dossier : %v", err)
+	}
+	if got := infoDossier.Mode().Perm(); got != 0o700 {
+		t.Errorf("droits du dossier = %o, attendu 700", got)
+	}
+
+	infoFichier, err := os.Stat(filepath.Join(dir, "spec.yaml"))
+	if err != nil {
+		t.Fatalf("stat de spec.yaml : %v", err)
+	}
+	if got := infoFichier.Mode().Perm(); got != 0o600 {
+		t.Errorf("droits de spec.yaml = %o, attendu 600 — ce fichier porte l'env résolu", got)
+	}
+}
+
+// EcrisMixin transforme un nom en chemin hôte : c'est ICI que la garde
+// appartient. filepath.Join NETTOIE un « .. » en une vraie traversée au lieu de
+// la rejeter, et sbx.DecomposeNom est totale et ne valide rien.
+func TestEcrisMixinRefuseUnNomHorsCharset(t *testing.T) {
+	denHome := t.TempDir()
+	for _, nom := range []string{
+		"", ".", "..", "../evade", "api/../../evade", "a/b", "-api", "api.feat.trop",
+	} {
+		if _, err := EcrisMixin(denHome, nom, mixinExemple(t)); err == nil {
+			t.Errorf("le nom de sandbox %q doit être refusé", nom)
+		}
+	}
+
+	// Contre-épreuve : aucune écriture n'a eu lieu, nulle part sous denHome.
+	var ecrits []string
+	if err := filepath.WalkDir(denHome, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			ecrits = append(ecrits, p)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("parcours : %v", err)
+	}
+	if len(ecrits) != 0 {
+		t.Errorf("un nom refusé ne doit rien écrire ; obtenu %v", ecrits)
 	}
 }
 
@@ -208,7 +323,8 @@ func TestEcrisMixinEstIdempotent(t *testing.T) {
 }
 
 func TestRendMixinEstDuYAMLRelisible(t *testing.T) {
-	out, err := RendMixin(mixinExemple(t))
+	m := mixinExemple(t)
+	out, err := RendMixin(m)
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
@@ -238,9 +354,14 @@ func TestRendMixinEstDuYAMLRelisible(t *testing.T) {
 	if len(relu.Commands.Startup) != 1 || len(relu.Commands.Startup[0].Command) != 3 {
 		t.Fatalf("startup relu = %v", relu.Commands.Startup)
 	}
-	// Le script doit rester exécutable après l'aller-retour YAML.
-	if !strings.Contains(relu.Commands.Startup[0].Command[2], "$HOME/.local/bin") {
-		t.Errorf("le script relu a perdu ses bin_dirs :\n%s", relu.Commands.Startup[0].Command[2])
+	// Le script doit traverser l'aller-retour YAML OCTET POUR OCTET : c'est lui
+	// qui s'exécute en VM. Une sous-chaîne ne dirait rien d'un espacement perdu
+	// ou d'un chomping qui mange la dernière ligne (« exit 1 »).
+	for i, attendu := range m.Fraicheur {
+		if relu.Commands.Startup[0].Command[i] != attendu {
+			t.Errorf("argv[%d] relu ≠ rendu\n--- relu ---\n%s\n--- attendu ---\n%s",
+				i, relu.Commands.Startup[0].Command[i], attendu)
+		}
 	}
 }
 

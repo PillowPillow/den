@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/PillowPillow/den/internal/nest"
+	"github.com/PillowPillow/den/internal/sbx"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,6 +28,10 @@ type Mixin struct {
 }
 
 // MixinDepuis assemble le mixin d'un nest résolu.
+//
+// Env et Egress sont COPIÉS : ce sont des champs exportés d'une struct
+// exportée, et les aliaser ferait d'une écriture sur le mixin une mutation
+// silencieuse du nest résolu, que l'appelant continue d'utiliser après le spawn.
 func MixinDepuis(r *nest.Resolved, nomSandbox string) (Mixin, error) {
 	fraicheur, err := CommandeFraicheur(r.AgentName, r.Agent)
 	if err != nil {
@@ -34,8 +39,8 @@ func MixinDepuis(r *nest.Resolved, nomSandbox string) (Mixin, error) {
 	}
 	return Mixin{
 		NomSandbox: nomSandbox,
-		Env:        r.Env,
-		Egress:     r.Egress,
+		Env:        maps.Clone(r.Env),
+		Egress:     slices.Clone(r.Egress),
 		Fraicheur:  fraicheur,
 	}, nil
 }
@@ -46,6 +51,17 @@ func MixinDepuis(r *nest.Resolved, nomSandbox string) (Mixin, error) {
 // l'ordre d'itération des maps Go est aléatoire, et un golden file ne tolère
 // pas l'aléatoire. Les clés d'environment.variables sont émises TRIÉES.
 func RendMixin(m Mixin) ([]byte, error) {
+	// La fraîcheur ne suit PAS la règle des sections vides : l'omettre rendrait
+	// un mixin parfaitement valide qui démarre une sandbox sans aucun contrôle
+	// de fraîcheur — un fail-OPEN silencieux, là où CommandeFraicheur refuse
+	// justement un agent sans update (spec §9.1). MixinDepuis ne peut pas
+	// atteindre ce cas, mais RendMixin est exportée et Mixin est une struct nue.
+	if len(m.Fraicheur) == 0 {
+		return nil, fmt.Errorf(
+			"rendu du mixin de %s : aucune commande de fraîcheur — une sandbox ne doit jamais "+
+				"démarrer avec un agent périmé (spec §9.1)", m.NomSandbox)
+	}
+
 	racine := &yaml.Node{Kind: yaml.MappingNode}
 
 	ajoute := func(cle string, valeur *yaml.Node) {
@@ -81,14 +97,13 @@ func RendMixin(m Mixin) ([]byte, error) {
 		ajoute("environment", env)
 	}
 
-	if len(m.Fraicheur) > 0 {
-		entree := &yaml.Node{Kind: yaml.MappingNode}
-		entree.Content = append(entree.Content, scalaire("command"), sequence(m.Fraicheur))
-		startup := &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{entree}}
-		commands := &yaml.Node{Kind: yaml.MappingNode}
-		commands.Content = append(commands.Content, scalaire("startup"), startup)
-		ajoute("commands", commands)
-	}
+	// Inconditionnel : garanti non vide par la garde d'entrée.
+	entree := &yaml.Node{Kind: yaml.MappingNode}
+	entree.Content = append(entree.Content, scalaire("command"), sequence(m.Fraicheur))
+	startup := &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{entree}}
+	commands := &yaml.Node{Kind: yaml.MappingNode}
+	commands.Content = append(commands.Content, scalaire("startup"), startup)
+	ajoute("commands", commands)
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
@@ -121,15 +136,57 @@ func sequence(vals []string) *yaml.Node {
 	return n
 }
 
+// valideNomSandbox contrôle qu'un nom peut devenir un segment de chemin.
+//
+// La garde vit ici et non chez l'appelant : c'est EcrisMixin qui transforme un
+// nom en chemin hôte, elle est exportée, et « à la charge de l'appelant » est un
+// contrat écrit nulle part. sbx.DecomposeNom est délibérément TOTALE et ne
+// valide rien (elle sert aussi aux sandboxes créées hors den), et filepath.Join
+// NETTOIE un « .. » en une vraie traversée au lieu de la rejeter.
+//
+// Le nom peut porter le séparateur « . », donc chaque composant est validé
+// séparément — par un aller-retour à travers le constructeur validant, ce qui
+// évite de redéfinir ici un charset dont config.ValiderComposantSandbox est la
+// seule source.
+func valideNomSandbox(nom string) error {
+	nest, worktree := sbx.DecomposeNom(nom)
+	reconstruit, err := sbx.NomSandbox(nest, worktree)
+	if err != nil {
+		return err
+	}
+	// Attrape ce que la validation par composant laisse passer, tel un nom
+	// terminé par le séparateur : « api. » se décompose en « api » + worktree
+	// vide, deux composants valides, et se reconstruirait en « api ».
+	if reconstruit != nom {
+		return fmt.Errorf("nom de sandbox %q : forme non canonique (se reconstruit en %q)", nom, reconstruit)
+	}
+	return nil
+}
+
 // EcrisMixin matérialise le mixin sous <denHome>/cache/mixins/<sandbox>/ et
 // renvoie le DOSSIER — c'est ce que `sbx create --kit` attend.
 //
 // Sous cache/ et non dans un mktemp : cache/ est déclaré reconstructible par le
 // spec §3, et un mixin qui s'évapore rend indébogable un boot raté. Il est
 // réécrit à chaque spawn et reflète toujours la configuration courante.
+//
+// Droits restrictifs (0700/0600) : spec.yaml porte environment.variables,
+// c'est-à-dire l'env fusionné agent ∪ nest — de l'env utilisateur libre, où
+// atterrissent naturellement une clé d'API ou une URI à credentials. Rien ne
+// justifie de le rendre lisible par tous les comptes de la machine.
+//
+// Choix DÉLIBÉRÉ, à confirmer au premier boot réel : `sbx` n'étant pas
+// installable ici, personne n'a pu vérifier qu'il lit le --kit sous l'uid
+// appelant. S'il le lisait sous un autre uid non-root, 0600 casserait le boot —
+// mais bruyamment et immédiatement (permission refusée au premier `create`),
+// alors qu'un secret lisible par tous ne se signale jamais. root, lui,
+// outrepasse les droits de toute façon.
 func EcrisMixin(denHome, nomSandbox string, m Mixin) (string, error) {
+	if err := valideNomSandbox(nomSandbox); err != nil {
+		return "", fmt.Errorf("écriture du mixin : %w", err)
+	}
 	dir := filepath.Join(denHome, "cache", "mixins", nomSandbox)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("création de %s : %w", dir, err)
 	}
 	contenu, err := RendMixin(m)
@@ -137,7 +194,7 @@ func EcrisMixin(denHome, nomSandbox string, m Mixin) (string, error) {
 		return "", err
 	}
 	chemin := filepath.Join(dir, "spec.yaml")
-	if err := os.WriteFile(chemin, contenu, 0o644); err != nil {
+	if err := os.WriteFile(chemin, contenu, 0o600); err != nil {
 		return "", fmt.Errorf("écriture de %s : %w", chemin, err)
 	}
 	return dir, nil
