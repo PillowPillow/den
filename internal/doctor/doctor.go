@@ -184,6 +184,21 @@ func Run(denHome string, d Deps) []Check {
 		}
 	}
 
+	// 4ter. ssh.dir, en mode mount seulement : c'est le seul mode où il est
+	// monté en workspace et part donc dans l'argv de `sbx create`. Hors de ce
+	// mode il n'est monté nulle part et son absence n'est pas une faute.
+	// Validate() ne juge que « déclaré ou non » ; « déclaré mais absent du
+	// disque » demande une sonde du système, d'où d.Stat.
+	if g.SSH.Mode == "mount" && g.SSH.Dir != "" {
+		if _, err := d.Stat(g.SSH.Dir); err != nil {
+			ajoute("ssh.dir", false,
+				"%s introuvable — en mode « mount » ce dossier est monté dans la sandbox, "+
+					"et un chemin absent y monterait un dossier vide à la place des clés", g.SSH.Dir)
+		} else {
+			ajoute("ssh.dir", true, "%s", g.SSH.Dir)
+		}
+	}
+
 	// 5. profils agents : le dossier peut ne pas exister encore (créé au premier spawn),
 	// on ne signale que ce qui est structurellement faux, pas l'absence.
 	// Tri des noms : toute liste destinée à l'affichage est déterministe (map Go non ordonnée).

@@ -712,7 +712,13 @@ func TestSpawnAvecWorktree(t *testing.T) {
 // contrat doit être verrouillé. Le profil agent (toujours présent) et le dossier
 // SSH (mode « mount ») sont les deux candidats naturels à le doubler.
 func TestSpawnMonteLeRepoAvantLeProfilAgentEtSSH(t *testing.T) {
+	// Le dossier est CRÉÉ : la version précédente montait un chemin qui
+	// n'existait pas et s'en satisfaisait — c'est précisément le défaut que
+	// TestSpawnRefuseUnSSHDirInexistant instruit, et le fixture le portait.
 	sshDir := filepath.Join(t.TempDir(), "ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	denHome, repo := denTestSSH(t, "  mode: mount\n  dir: "+sshDir+"\n")
 	f, d := depsTest()
 
@@ -729,6 +735,48 @@ func TestSpawnMonteLeRepoAvantLeProfilAgentEtSSH(t *testing.T) {
 	// le -w de l'attache.
 	if !f.AAttache("exec", "-it", "-w", repo, "api", "bash", "-l") {
 		t.Errorf("l'attache doit ouvrir dans le repo ; attaches : %v", f.Attaches)
+	}
+}
+
+// D5 — en `ssh.mode: mount`, ssh.dir part en workspace, donc VERBATIM dans
+// l'argv de `sbx create`. Invariant n°3 du plan : ne jamais passer à sbx un
+// chemin que den n'a pas garanti présent — un chemin inexistant devient un
+// mount d'un dossier vide qui ÉCRASE la vue de l'utilisateur sur ses clés.
+// Validate() couvre déjà le cas « ssh.dir non déclaré » ; celui-ci est le cas
+// « déclaré mais absent du disque », que seule une sonde du système peut voir.
+func TestSpawnRefuseUnSSHDirInexistant(t *testing.T) {
+	sshDir := filepath.Join(t.TempDir(), "ssh-jamais-cree")
+	denHome, _ := denTestSSH(t, "  mode: mount\n  dir: "+sshDir+"\n")
+	f, d := depsTest()
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+	if err == nil {
+		t.Fatal("un ssh.dir inexistant doit être refusé, obtenu nil")
+	}
+	if !strings.Contains(err.Error(), sshDir) {
+		t.Errorf("erreur = %q, attendu le chemin complet du dossier manquant", err.Error())
+	}
+	// Refusé AVANT le moindre effet de bord, comme les repos manquants.
+	if len(f.Appels) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("aucun appel sbx ne doit précéder le refus ; appels : %v, attaches : %v", f.Appels, f.Attaches)
+	}
+	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
+		t.Error("le profil de l'agent ne doit pas avoir été créé avant le refus")
+	}
+}
+
+// La contrepartie : les modes qui ne montent RIEN ne doivent pas se mettre à
+// exiger un ssh.dir sur disque. Sans ce cas, un contrôle hissé hors du
+// `mode == "mount"` casserait agent-forward et none sans qu'on le voie.
+func TestSpawnNExigePasDeSSHDirHorsDuModeMount(t *testing.T) {
+	for _, mode := range []string{"agent-forward", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			denHome, _ := denTestSSH(t, "  mode: "+mode+"\n")
+			_, d := depsTest()
+			if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+				t.Fatalf("mode %q : erreur inattendue : %v", mode, err)
+			}
+		})
 	}
 }
 

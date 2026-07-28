@@ -117,6 +117,30 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				"(ou `agents.%s` dans le nest) : c'est le profil monté RW dans la sandbox",
 			r.AgentName, r.AgentName, filepath.Join(denHome, "config.yaml"), r.AgentName)
 	}
+	// Et ssh.dir, en mode mount : il part en workspace, donc VERBATIM dans
+	// l'argv de `sbx create`. den ne passe jamais à sbx un chemin qu'il n'a pas
+	// garanti présent — un dossier inexistant deviendrait un mount vide qui
+	// masque au shell de la VM les clés que l'utilisateur croit y avoir montées.
+	//
+	// Le contrôle est ici, avec ceux des repos, et non à l'endroit où le
+	// workspace est composé : à ce moment-là les worktrees existent déjà et le
+	// profil de l'agent a été créé, donc un refus laisserait l'utilisateur
+	// nettoyer à la main. Le profil, lui, est créé par den et non contrôlé —
+	// c'est la différence entre « den le peuple » et « den le reçoit ».
+	if r.SSHMode == "mount" {
+		if r.SSHDir == "" {
+			return fmt.Errorf(
+				"ssh.mode vaut « mount » mais ssh.dir n'est pas déclaré dans %s",
+				filepath.Join(denHome, "config.yaml"))
+		}
+		if _, err := os.Stat(r.SSHDir); err != nil {
+			return fmt.Errorf(
+				"ssh.dir : %s introuvable — corrige `ssh.dir` dans %s : en mode « mount » ce dossier "+
+					"est monté dans la sandbox, et un chemin absent y monterait un dossier vide "+
+					"à la place de tes clés",
+				r.SSHDir, filepath.Join(denHome, "config.yaml"))
+		}
+	}
 
 	// 3. Worktrees, si demandés. Le premier workspace doit rester le premier
 	// repo : sbx.Sandbox.Workdir en dépend pour l'attache, et rien à SON niveau
@@ -140,12 +164,10 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return fmt.Errorf("création du profil de l'agent %s (%s) : %w", r.AgentName, r.AgentConfigDir, err)
 	}
 	workspaces = append(workspaces, r.AgentConfigDir)
+	// ssh.dir a été contrôlé à l'étape 2, avant tout effet de bord : il ne
+	// reste ici que sa place dans la liste, qui est significative (le premier
+	// workspace devient le -w de l'attache).
 	if r.SSHMode == "mount" {
-		if r.SSHDir == "" {
-			return fmt.Errorf(
-				"ssh.mode vaut « mount » mais ssh.dir n'est pas déclaré dans %s",
-				filepath.Join(denHome, "config.yaml"))
-		}
 		workspaces = append(workspaces, r.SSHDir)
 	}
 

@@ -429,6 +429,77 @@ func TestRunGitInjoignable(t *testing.T) {
 	}
 }
 
+// D5 — un ssh.dir déclaré mais absent du disque. Validate() ne voit que « non
+// déclaré » ; seule une sonde du système voit « déclaré et introuvable », et
+// c'est ce chemin-là que `sbx create` reçoit en workspace.
+func TestRunSSHDirIntrouvable(t *testing.T) {
+	dir := denHomeValide(t)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: mount
+  dir: /dev/ssh-absent
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := depsOK()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/dev/ssh-absent" {
+			return nil, errors.New("introuvable")
+		}
+		return nil, nil
+	}
+
+	checks := Run(dir, d)
+	c, ok := trouveNomExact(checks, "ssh.dir")
+	if !ok {
+		t.Fatalf("aucun check nommé \"ssh.dir\" ; checks : %+v", checks)
+	}
+	if c.OK {
+		t.Errorf("un ssh.dir introuvable doit être un échec ; obtenu %+v", c)
+	}
+	if !strings.Contains(c.Detail, "/dev/ssh-absent") {
+		t.Errorf("détail = %q, attendu le chemin complet", c.Detail)
+	}
+}
+
+// Hors du mode mount, ssh.dir n'est monté nulle part : rien à contrôler, et
+// surtout rien à signaler. Sans ce cas, un contrôle inconditionnel ferait
+// échouer doctor sur toutes les configurations en agent-forward.
+func TestRunNeControlePasSSHDirHorsDuModeMount(t *testing.T) {
+	dir := denHomeValide(t)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: agent-forward
+  dir: /dev/ssh-absent
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := depsOK()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/dev/ssh-absent" {
+			return nil, errors.New("introuvable")
+		}
+		return nil, nil
+	}
+	if checks := Run(dir, d); !tousOK(checks) {
+		t.Errorf("en agent-forward, un ssh.dir absent ne doit rien signaler ; checks : %+v", checks)
+	}
+}
+
 func TestRunAgentSansCommandeUpdate(t *testing.T) {
 	dir := t.TempDir()
 	contenu := "agents:\n  claude:\n    config_dir: /tmp/c\ndefaults:\n  agent: claude\n  stack: devx\n"
