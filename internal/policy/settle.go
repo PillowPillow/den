@@ -175,12 +175,14 @@ func Settle(ctx context.Context, r sbx.Runner, sandbox string, hotes []string, o
 			ok, ind, err := hoteAutorise(ctx, r, sandbox, h)
 			if err != nil {
 				// Une annulation arrive presque toujours PENDANT une passe, pas
-				// entre deux tours : sbx est tué et le runner rend une erreur de
-				// transport (« signal: killed ») qui n'enveloppe aucun motif de
-				// contexte — mesuré, malgré ce qu'affirme le commentaire de
-				// sbx.ErreurExec. On lui substitue donc le motif du contexte, et
-				// sans l'hôte : un Ctrl-C n'est pas la faute de l'hôte sondé, et
-				// l'erreur du runner en incrusterait l'argv complet.
+				// entre deux tours. sbx est alors tué et cmd.Run rend un
+				// « signal: killed » ; depuis la tâche 17b, sbx.Exec.Run y joint
+				// lui-même ctx.Err(), si bien que le motif SERAIT désormais
+				// repérable par errors.Is. La substitution ci-dessous reste, pour
+				// une raison qui n'a jamais été celle-là : un Ctrl-C n'est pas la
+				// faute de l'hôte sondé, et remonter l'erreur du runner
+				// incrusterait son argv complet dans le message. On rend donc le
+				// motif du contexte, sans l'hôte.
 				if errCtx := ctx.Err(); errCtx != nil {
 					return interrompue(sandbox, errCtx)
 				}
