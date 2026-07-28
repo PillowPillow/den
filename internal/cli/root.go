@@ -86,6 +86,9 @@ func NewRootCmdAvec(deps Deps) *cobra.Command {
 	root.AddCommand(newNestCmd(&denHome))
 	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor))
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
+	// Même deps.Sbx que `den ls` et que le spawn : il n'y a qu'un seul
+	// sbx.Runner dans cette structure, et c'est celui-là.
+	root.AddCommand(newShCmd(deps.Sbx))
 
 	// spawn.Deps est ASSEMBLÉE ici, à partir des mêmes champs que newLsCmd
 	// vient de recevoir : deps.Sbx est la SEULE source, il n'y a pas de
