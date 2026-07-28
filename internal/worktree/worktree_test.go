@@ -637,8 +637,25 @@ type gitEspion struct {
 }
 
 func (g *gitEspion) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return g.RunAvecEntree(ctx, dir, nil, args...)
+}
+
+func (g *gitEspion) RunAvecEntree(ctx context.Context, dir string, entree []byte, args ...string) ([]byte, error) {
 	g.appels = append(g.appels, append([]string(nil), args...))
-	return g.reel.Run(ctx, dir, args...)
+	return g.reel.RunAvecEntree(ctx, dir, entree, args...)
+}
+
+// compte dit combien d'appels débutent par ce préfixe. Le nombre est ce qui
+// distingue « une question posée pour tout le lot » de « une question par
+// entrée » — le motif que ce module a déjà dû retirer deux fois.
+func (g *gitEspion) compte(prefixe ...string) int {
+	n := 0
+	for _, a := range g.appels {
+		if commence(a, prefixe) {
+			n++
+		}
+	}
+	return n
 }
 
 func (g *gitEspion) appel(prefixe ...string) []string {
@@ -1021,6 +1038,11 @@ func TestRetireAccepteUnLienSymboliqueIntact(t *testing.T) {
 	cas := []struct{ nom, cible string }{
 		{"lien valide", "cible.txt"},
 		{"lien casse", "/n/existe/pas"},
+		// Deux textes qu'un TrimSpace ou une comparaison ligne à ligne
+		// abîmerait : sans eux, la comparaison de texte tolérait un rognage
+		// sans qu'aucune assertion ne s'en aperçoive.
+		{"cible a espace finale", "cible.txt "},
+		{"cible a retour a la ligne interne", "a\nb"},
 	}
 	for _, c := range cas {
 		t.Run(c.nom, func(t *testing.T) {
@@ -1165,10 +1187,14 @@ type gitDefaillant struct {
 }
 
 func (g gitDefaillant) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return g.RunAvecEntree(ctx, dir, nil, args...)
+}
+
+func (g gitDefaillant) RunAvecEntree(ctx context.Context, dir string, entree []byte, args ...string) ([]byte, error) {
 	if len(args) > 0 && args[0] == g.sur {
 		return nil, errors.New("panne simulée de git " + g.sur)
 	}
-	return g.reel.Run(ctx, dir, args...)
+	return g.reel.RunAvecEntree(ctx, dir, entree, args...)
 }
 
 func TestRetireRefuseQuandUneSondeEstMuette(t *testing.T) {
@@ -1584,10 +1610,14 @@ type gitDefaillantSur struct {
 }
 
 func (g gitDefaillantSur) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return g.RunAvecEntree(ctx, dir, nil, args...)
+}
+
+func (g gitDefaillantSur) RunAvecEntree(ctx context.Context, dir string, entree []byte, args ...string) ([]byte, error) {
 	if commence(args, g.prefixe) {
 		return nil, errors.New("panne simulée de git " + strings.Join(g.prefixe, " "))
 	}
-	return g.reel.Run(ctx, dir, args...)
+	return g.reel.RunAvecEntree(ctx, dir, entree, args...)
 }
 
 // gitForge répond une sortie choisie à une sous-commande et délègue le reste.
@@ -1600,10 +1630,14 @@ type gitForge struct {
 }
 
 func (g gitForge) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return g.RunAvecEntree(ctx, dir, nil, args...)
+}
+
+func (g gitForge) RunAvecEntree(ctx context.Context, dir string, entree []byte, args ...string) ([]byte, error) {
 	if commence(args, g.prefixe) {
 		return g.sortie, nil
 	}
-	return g.reel.Run(ctx, dir, args...)
+	return g.reel.RunAvecEntree(ctx, dir, entree, args...)
 }
 
 // Symétrique de …RefuseUnFichierRemplaceParUnLienDeMemeTexte : l'index attend un
@@ -1830,6 +1864,125 @@ func TestSondesRefusentUneSortieIllisible(t *testing.T) {
 			}
 		}
 	})
+}
+
+// ── Performance : un appel pour tout le lot, pas un fork par entrée ─────────
+
+// empreinteBlob remplace un fork `cat-file blob` par lien marqué. Le seul juge
+// recevable de sa justesse est git lui-même : on compare à `git hash-object`,
+// pas à une valeur recopiée dans le test.
+func TestEmpreinteBlobCoincideAvecGit(t *testing.T) {
+	_, chemin, _ := prepareWorktree(t)
+	textes := []string{
+		"cible.txt",
+		"",
+		"cible.txt ",      // espace FINALE : un TrimSpace la mangerait
+		"a\nb",            // retour à la ligne INTERNE
+		" \t bord \t ",    // espaces des deux côtés
+		"données/été.txt", // non-ASCII
+		strings.Repeat("x", 300),
+	}
+	for _, texte := range textes {
+		cmd := exec.Command("git", "hash-object", "-t", "blob", "--no-filters", "--stdin")
+		cmd.Dir = chemin
+		cmd.Stdin = strings.NewReader(texte)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git hash-object %q : %v\n%s", texte, err, out)
+		}
+		attendu := strings.TrimSpace(string(out))
+
+		got, err := empreinteBlob(texte, len(attendu))
+		if err != nil {
+			t.Fatalf("empreinteBlob(%q) : %v", texte, err)
+		}
+		if got != attendu {
+			t.Errorf("empreinteBlob(%q) = %s, git dit %s", texte, got, attendu)
+		}
+	}
+}
+
+// Un dépôt en SHA-256 porte des empreintes de 64 caractères. Parier sur SHA-1
+// rendrait « modifié » pour toujours ; une longueur inconnue doit donc être une
+// erreur, pas un choix par défaut.
+func TestEmpreinteBlobRefuseUnFormatInconnu(t *testing.T) {
+	for _, longueur := range []int{0, 32, 41, 128} {
+		if _, err := empreinteBlob("cible.txt", longueur); err == nil {
+			t.Errorf("une empreinte de %d caractères doit être refusée", longueur)
+		}
+	}
+	// SHA-256 doit passer, et donner autre chose que le SHA-1.
+	sha1, err := empreinteBlob("cible.txt", 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha256, err := empreinteBlob("cible.txt", 64)
+	if err != nil {
+		t.Fatalf("un dépôt SHA-256 doit être supporté : %v", err)
+	}
+	if len(sha1) != 40 || len(sha256) != 64 || sha1 == sha256 {
+		t.Errorf("empreintes incohérentes : %q et %q", sha1, sha256)
+	}
+}
+
+// La contrepartie du test précédent : un lien MARQUÉ dont la cible a changé
+// doit être refusé. Sans lui, « toujours propre » passerait les fixtures de
+// liens intacts sans qu'aucune assertion ne bronche.
+func TestRetireRefuseUnLienMarqueRepointe(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	ecris(t, filepath.Join(chemin, "a.txt"), "A\n")
+	ecris(t, filepath.Join(chemin, "b.txt"), "B\n")
+	if err := os.Symlink("a.txt", filepath.Join(chemin, "lien.txt")); err != nil {
+		t.Skipf("liens symboliques indisponibles : %v", err)
+	}
+	git(t, chemin, "add", ".")
+	git(t, chemin, "commit", "-m", "cibles et lien")
+	git(t, chemin, "update-index", "--skip-worktree", "lien.txt")
+
+	if err := os.Remove(filepath.Join(chemin, "lien.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("b.txt", filepath.Join(chemin, "lien.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if etat := git(t, chemin, "status", "--porcelain"); etat != "" {
+		t.Fatalf("préparation : git ne devrait rien rapporter, obtenu %q", etat)
+	}
+
+	_, err := Retire(context.Background(), NewGit(), cible)
+	if err == nil {
+		t.Fatal("un lien marqué repointé ailleurs est une modification : refus attendu")
+	}
+	if !strings.Contains(err.Error(), "lien.txt") {
+		t.Errorf("le message doit nommer lien.txt ; obtenu : %v", err)
+	}
+}
+
+// La question « ce dossier est-il lui-même ignoré ? » se pose à git UNE fois
+// pour tout le lot. Un fork par entrée coûtait 183 ms pour 300 dossiers et
+// 545 ms pour 1 000 — croissance linéaire sans borne.
+func TestRetireInterrogeGitUneSeuleFoisSurLesDossiersIgnores(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	var regles strings.Builder
+	for _, d := range []string{"cache1", "cache2", "cache3"} {
+		regles.WriteString(d + "/\n")
+		if err := os.MkdirAll(filepath.Join(chemin, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ecris(t, filepath.Join(chemin, d, "x.bin"), "cache\n")
+	}
+	ecris(t, filepath.Join(chemin, ".gitignore"), regles.String())
+	git(t, chemin, "add", ".gitignore")
+	git(t, chemin, "commit", "-m", "ignore les caches")
+
+	espion := &gitEspion{reel: NewGit()}
+	if _, err := Retire(context.Background(), espion, cible); err != nil {
+		t.Fatalf("trois dossiers ignorés en bloc ne doivent pas bloquer : %v", err)
+	}
+	if n := espion.compte("check-ignore"); n != 1 {
+		t.Errorf("check-ignore doit être appelé une seule fois pour les 3 dossiers ; obtenu %d ; appels : %v",
+			n, espion.appels)
+	}
 }
 
 func ecris(t *testing.T, chemin, contenu string) {

@@ -47,7 +47,11 @@ type gitFactice struct {
 	appels [][]string
 }
 
-func (g *gitFactice) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
+func (g *gitFactice) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return g.RunAvecEntree(ctx, dir, nil, args...)
+}
+
+func (g *gitFactice) RunAvecEntree(_ context.Context, _ string, _ []byte, args ...string) ([]byte, error) {
 	g.appels = append(g.appels, args)
 	return nil, fmt.Errorf("git factice : appel refusé pour %v", args)
 }

@@ -6,8 +6,12 @@ package worktree
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +24,11 @@ import (
 // Git est l'accès à la CLI git, injecté pour rester substituable.
 type Git interface {
 	Run(ctx context.Context, dir string, args ...string) ([]byte, error)
+	// RunAvecEntree alimente en plus l'entrée standard de git. Elle existe pour
+	// les sous-commandes qui n'acceptent une liste de chemins SANS CITATION que
+	// par `--stdin` : `check-ignore -z` répond pour mille dossiers en un fork
+	// là où l'argv en exigeait mille, et git refuse `-z` hors de `--stdin`.
+	RunAvecEntree(ctx context.Context, dir string, entree []byte, args ...string) ([]byte, error)
 }
 
 type gitExec struct{}
@@ -59,10 +68,19 @@ func environnementNeutre() []string {
 	return propre
 }
 
-func (gitExec) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+func (g gitExec) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return g.RunAvecEntree(ctx, dir, nil, args...)
+}
+
+func (gitExec) RunAvecEntree(ctx context.Context, dir string, entree []byte, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = environnementNeutre()
+	// Stdin laissé nil (donc /dev/null) quand il n'y a rien à écrire : une
+	// sous-commande qui lirait l'entrée standard bloquerait sinon sans borne.
+	if entree != nil {
+		cmd.Stdin = bytes.NewReader(entree)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -714,7 +732,11 @@ func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("état de %s : %w", dir, err)
 	}
-	var sales []string
+	// Deux passes : on lit d'abord tous les enregistrements, puis on pose à git
+	// UNE seule question pour tous les dossiers candidats. Décider entrée par
+	// entrée coûtait un fork par entrée (voir dossiersIgnores).
+	type enregistrement struct{ etat, chemin string }
+	var lus []enregistrement
 	enregistrements := strings.Split(string(out), "\x00")
 	for i := 0; i < len(enregistrements); i++ {
 		e := enregistrements[i]
@@ -745,10 +767,26 @@ func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
 		if etat[0] == 'R' || etat[0] == 'C' || etat[1] == 'R' || etat[1] == 'C' {
 			i++
 		}
-		if etat == "!!" && strings.HasSuffix(chemin, "/") && dossierIgnore(ctx, g, dir, chemin) {
+		lus = append(lus, enregistrement{etat, chemin})
+	}
+
+	var candidats []string
+	for _, e := range lus {
+		if estDossierIgnorable(e.etat, e.chemin) {
+			candidats = append(candidats, strings.TrimSuffix(e.chemin, "/"))
+		}
+	}
+	ignores := map[string]bool{}
+	if len(candidats) > 0 {
+		ignores = dossiersIgnores(ctx, g, dir, candidats)
+	}
+
+	var sales []string
+	for _, e := range lus {
+		if estDossierIgnorable(e.etat, e.chemin) && ignores[strings.TrimSuffix(e.chemin, "/")] {
 			continue
 		}
-		sales = append(sales, chemin)
+		sales = append(sales, e.chemin)
 	}
 
 	marques, err := fichiersMarques(ctx, g, dir)
@@ -763,23 +801,51 @@ func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
 	return sales, nil
 }
 
-// dossierIgnore dit si le dossier LUI-MÊME est couvert par une règle d'ignorance,
-// par opposition à un dossier simplement non suivi dont le contenu se trouve
-// ignoré.
+// estDossierIgnorable dit si l'enregistrement est un dossier ignoré collapsé,
+// donc un candidat à la question posée par dossiersIgnores.
+func estDossierIgnorable(etat, chemin string) bool {
+	return etat == "!!" && strings.HasSuffix(chemin, "/")
+}
+
+// dossiersIgnores rend, parmi les dossiers donnés, ceux qui sont couverts
+// EUX-MÊMES par une règle d'ignorance — par opposition à un dossier simplement
+// non suivi dont le contenu se trouve ignoré.
 //
-// Le « / » final est retiré avant d'interroger git, et ce n'est pas cosmétique :
-// dans le wildmatch de git, `*` et `**` matchent la chaîne vide, et git applique
-// le `.gitignore` du dossier lui-même au composant vide qui suit le « / ».
+// Le « / » final est retiré par l'appelant, et ce n'est pas cosmétique : dans le
+// wildmatch de git, `*` et `**` matchent la chaîne vide, et git applique le
+// `.gitignore` du dossier lui-même au composant vide qui suit le « / ».
 // Demander `conf/` répond donc « ignoré » dès que le .gitignore porte `conf/*`,
 // `conf/**`, ou un `.gitignore` imbriqué valant `*` — trois idiomes courants —
-// alors que l'utilisateur n'a jamais rendu `conf/` jetable. Un fichier
-// d'exclusion malformé suffisait de la même façon à tout rouvrir.
+// alors que l'utilisateur n'a jamais rendu `conf/` jetable.
 //
-// En cas de doute (git en erreur), on répond faux : l'entrée reste sale et la
-// suppression est refusée. C'est le seul sens sûr pour une opération destructrice.
-func dossierIgnore(ctx context.Context, g Git, dir, chemin string) bool {
-	_, err := g.Run(ctx, dir, "check-ignore", "-q", "--", strings.TrimSuffix(chemin, "/"))
-	return err == nil
+// UN SEUL appel pour tout le lot. Un fork par entrée coûtait 183 ms pour
+// 300 dossiers et 545 ms pour 1 000, croissance linéaire sans borne — le motif
+// « un fork par entrée » qu'un correctif précédent venait de retirer ailleurs.
+// `-z` est imposé par la citation (sans lui, `données/` ressort en octal et den
+// ne le reconnaît plus), et `--stdin` est imposé par `-z`, que git refuse sur un
+// argv (« fatal: -z only makes sense with --stdin », mesuré).
+//
+// En cas de doute, la table est vide et toutes les entrées restent sales : la
+// mise à la corbeille est refusée. Le rc=1 de « aucun ne matche » tombe dans la
+// même branche, et rend la même réponse — aucune des deux ne désigne un dossier
+// jetable. C'est déjà le sens que la sonde par entrée appliquait.
+func dossiersIgnores(ctx context.Context, g Git, dir string, chemins []string) map[string]bool {
+	var entree strings.Builder
+	for _, c := range chemins {
+		entree.WriteString(c)
+		entree.WriteByte(0)
+	}
+	ignores := map[string]bool{}
+	out, err := g.RunAvecEntree(ctx, dir, []byte(entree.String()), "check-ignore", "-z", "--stdin")
+	if err != nil {
+		return ignores
+	}
+	for _, c := range strings.Split(string(out), "\x00") {
+		if c != "" {
+			ignores[c] = true
+		}
+	}
+	return ignores
 }
 
 // fichiersMarques rend les fichiers suivis que l'index marque « ne regarde
@@ -894,19 +960,59 @@ func liensModifies(ctx context.Context, g Git, dir string, index map[string]entr
 			modifies = append(modifies, chemin)
 			continue
 		}
+		// Readlink vient après un Lstat réussi sur le MÊME chemin : seul un
+		// remplacement concurrent peut le faire échouer, et cette fenêtre n'est
+		// pas reproductible en test. L'erreur remonte quand même — ne pas avoir
+		// pu lire le lien n'autorise pas à le déclarer propre.
 		cible, err := os.Readlink(complet)
 		if err != nil {
 			return nil, fmt.Errorf("lecture du lien %s : %w", complet, err)
 		}
-		attendu, err := g.Run(ctx, dir, "cat-file", "blob", entree.empreinte)
+		attendu, err := empreinteBlob(cible, len(entree.empreinte))
 		if err != nil {
-			return nil, fmt.Errorf("lecture de l'objet du lien %s : %w", complet, err)
+			return nil, fmt.Errorf("empreinte du lien %s : %w", complet, err)
 		}
-		if string(attendu) != cible {
+		if attendu != entree.empreinte {
 			modifies = append(modifies, chemin)
 		}
 	}
 	return modifies, nil
+}
+
+// empreinteBlob calcule l'empreinte que git donne au blob dont le contenu est
+// exactement ce texte : hash("blob <n>\x00<texte>").
+//
+// Elle sert au TEXTE D'UN LIEN, que git stocke tel quel comme contenu de
+// l'objet — aucun filtre de .gitattributes ne s'applique à un lien symbolique,
+// et c'est ce qui rend le calcul local légitime là où il ne le serait pas pour
+// un fichier régulier (voir cheminsModifies).
+//
+// Ce calcul remplace un fork `cat-file blob` PAR LIEN MARQUÉ, mesuré à 3,83 s
+// pour 8 000 liens. Il supprime en prime la dépendance à l'object store : un
+// lien dont le blob manque — clone partiel, objet promis non rapatrié — faisait
+// échouer den à perpétuité.
+//
+// L'algorithme se déduit de la LONGUEUR de l'empreinte que porte l'index (40
+// caractères hexadécimaux pour SHA-1, 64 pour SHA-256), ce qui évite un
+// `git rev-parse --show-object-format` — indisponible avant git 2.29 — et toute
+// hypothèse sur le format d'objets du dépôt. Une longueur inconnue est une
+// erreur, pas un pari : comparer contre le mauvais algorithme rendrait
+// « modifié » pour toujours.
+func empreinteBlob(texte string, longueurEmpreinte int) (string, error) {
+	var h hash.Hash
+	switch longueurEmpreinte {
+	case 2 * sha1.Size:
+		// SHA-1 est ici le format d'objets de git, pas un choix cryptographique.
+		h = sha1.New()
+	case 2 * sha256.Size:
+		h = sha256.New()
+	default:
+		return "", fmt.Errorf(
+			"format d'objets git inconnu : l'index porte une empreinte de %d caractères hexadécimaux",
+			longueurEmpreinte)
+	}
+	fmt.Fprintf(h, "blob %d\x00%s", len(texte), texte)
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // tailleLot borne la longueur de l'argv des sondes d'empreinte.
@@ -992,6 +1098,23 @@ func empreintesIndex(ctx context.Context, g Git, dir string) (map[string]entreeI
 
 // empreintesDisque calcule l'empreinte du contenu réellement présent, dans
 // l'ordre des chemins demandés.
+//
+// `hash-object` LIT LE CONTENU INTÉGRAL de chaque fichier, et rien ne le borne :
+// mesuré à 499 ms pour 4 fichiers de 64 Mio marqués, soit le débit du disque.
+// C'est assumé, faute de meilleure question à poser :
+//   - le calcul ne peut pas migrer en Go comme celui du texte des liens, parce
+//     que `hash-object` applique les filtres de .gitattributes — sans quoi un
+//     dépôt en autocrlf verrait toutes ses lignes changer (voir cheminsModifies) ;
+//   - comparer d'abord les TAILLES ne conclurait rien : un filtre `clean` ou
+//     `core.autocrlf` fait légitimement différer la taille du blob de celle du
+//     disque, donc une taille différente ne prouve pas la modification, et une
+//     taille égale ne prouve pas la propreté ;
+//   - la mémoire, elle, reste bornée : git streame, et den ne reçoit que des
+//     empreintes.
+//
+// L'ensemble concerné est celui des fichiers MARQUÉS, vide sur un dépôt
+// ordinaire. Le cas coûteux est `core.ignoreStat = true`, qui marque tout le
+// dépôt — 20 000 petits fichiers y coûtent 70 ms au total, mesuré.
 func empreintesDisque(ctx context.Context, g Git, dir string, chemins []string) ([]string, error) {
 	out, err := g.Run(ctx, dir, append([]string{"hash-object", "--"}, chemins...)...)
 	if err != nil {
