@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/doctor"
+	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/spf13/cobra"
 )
 
@@ -27,6 +29,16 @@ func executeCmd(t *testing.T, cmd *cobra.Command, args ...string) (string, error
 func run(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	return executeCmd(t, NewRootCmd(), args...)
+}
+
+// executeCmdAvecSbx exécute l'arbre de commandes avec un sbx.Runner injecté
+// (les accès doctor restant réels : aucun test qui passe par ici n'appelle
+// `den doctor`). C'est ce qui permet à `den ls` (et au spawn qu'il partage
+// avec) d'être exercé sans que le binaire sbx — absent de cette machine — soit
+// jamais sollicité.
+func executeCmdAvecSbx(t *testing.T, r sbx.Runner, args ...string) (string, error) {
+	t.Helper()
+	return executeCmd(t, NewRootCmdAvec(doctor.DepsSysteme(), r), args...)
 }
 
 func TestVersionAfficheLaVersion(t *testing.T) {
