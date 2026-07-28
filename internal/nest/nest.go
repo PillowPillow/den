@@ -52,6 +52,12 @@ type Nest struct {
 
 // LoadNest lit <denHome>/nests/<name>.yaml.
 func LoadNest(denHome, name string) (*Nest, error) {
+	// ValiderNom AVANT ValiderComposantSandbox, dans cet ordre précis : les deux
+	// se recouvrent (le charset sandbox rejette déjà "/", "." et ".."), mais
+	// ValiderNom rend un message qui nomme l'INTENTION (« c'est un identifiant
+	// dans ~/.den, pas un chemin ») pour ../../etc/passwd. Inverser l'ordre
+	// ferait remonter « le caractère "/" est interdit », vrai mais qui manque
+	// le vrai problème : une tentative de sortir du den home.
 	if err := config.ValiderNom("nest", name); err != nil {
 		return nil, err
 	}

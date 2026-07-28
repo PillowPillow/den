@@ -50,8 +50,11 @@ Un **nest** est un terrier multi-galeries : plusieurs repos co-montés dans une 
 
 **Contrainte de nommage.** Le nom d'un nest devient un nom de sandbox, que `sbx create --name`
 restreint à « letters, numbers, hyphens, periods, plus signs and minus signs ». den impose plus
-strict encore sur les nests et les worktrees : `[A-Za-z0-9+-]+`, **le point exclu** — il est réservé
-au rôle de séparateur dans `<nest>.<worktree>`. Un `-w feature/123` est donc refusé avec un message
+strict encore sur les nests et les worktrees : `[A-Za-z0-9][A-Za-z0-9+-]*`, **le point exclu** — il
+est réservé au rôle de séparateur dans `<nest>.<worktree>` — et le **premier caractère alphanumérique
+obligatoire** : un nom qui commence par `-` ou `+` est indiscernable d'un flag, aussi bien pour
+`sbx create --name` que pour den lui-même (`den nest show -api` échoue sur un flag inconnu avant
+même d'atteindre la résolution du nest). Un `-w feature/123` est donc refusé avec un message
 actionnable, jamais normalisé en silence : normaliser casserait l'aller-retour
 `den <nest> -w <wt>` → nom de sandbox → `den ls`.
 

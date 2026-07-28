@@ -253,12 +253,19 @@ func TestListNestsTriDivergeDeLOrdreFichier(t *testing.T) {
 	}
 }
 
+// L'assertion mentionne le caractère fautif « _ » : sans ça, le test passerait
+// aussi si LoadNest échouait pour une tout autre raison, sans rapport avec le
+// charset de sandbox.
 func TestLoadNestRefuseUnNomNonSandboxable(t *testing.T) {
 	denHome := t.TempDir()
 	ecrisNest(t, denHome, "mon_api", "stack: devx\nrepos: []\n")
 
-	if _, err := LoadNest(denHome, "mon_api"); err == nil {
+	_, err := LoadNest(denHome, "mon_api")
+	if err == nil {
 		t.Fatal("un nom de nest non convertible en nom de sandbox doit être refusé au chargement")
+	}
+	if !strings.Contains(err.Error(), "_") {
+		t.Errorf("erreur = %q, attendu une mention du caractère fautif « _ »", err.Error())
 	}
 }
 

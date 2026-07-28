@@ -1,6 +1,9 @@
 package sbx
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNomSandbox(t *testing.T) {
 	cas := []struct {
@@ -22,16 +25,26 @@ func TestNomSandbox(t *testing.T) {
 	}
 }
 
+// genreAttendu verrouille QUEL composant a été rejeté : une inversion des
+// arguments à l'intérieur de NomSandbox (par exemple valider le worktree avec
+// le genre "nest") laisserait passer un test qui ne vérifie que la présence
+// d'une erreur, tout en rendant un message trompeur à l'appelant.
 func TestNomSandboxRefuseComposantsIllegaux(t *testing.T) {
-	cas := []struct{ nest, worktree string }{
-		{"mon.api", "feat"},    // point dans le nest
-		{"api", "feature/123"}, // slash dans le worktree (cas réel : nom de branche)
-		{"api", "feat.12"},     // point dans le worktree
-		{"", "feat"},           // nest vide
+	cas := []struct{ nest, worktree, genreAttendu string }{
+		{"mon.api", "feat", "nest"},        // point dans le nest
+		{"api", "feature/123", "worktree"}, // slash dans le worktree (cas réel : nom de branche)
+		{"api", "feat.12", "worktree"},     // point dans le worktree
+		{"", "feat", "nest"},               // nest vide
 	}
 	for _, c := range cas {
-		if _, err := NomSandbox(c.nest, c.worktree); err == nil {
+		_, err := NomSandbox(c.nest, c.worktree)
+		if err == nil {
 			t.Errorf("NomSandbox(%q,%q) doit échouer", c.nest, c.worktree)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.genreAttendu) {
+			t.Errorf("NomSandbox(%q,%q) : erreur %q doit mentionner le genre %q",
+				c.nest, c.worktree, err.Error(), c.genreAttendu)
 		}
 	}
 }
