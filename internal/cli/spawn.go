@@ -25,7 +25,9 @@ import (
 func configureSpawn(root *cobra.Command, denHome *string, deps spawn.Deps) {
 	var o spawn.Options
 
-	root.Use = "den <nest> [flags]"
+	// Sans « [flags] » : la mention est ajoutée en français par le gabarit
+	// d'usage, et DisableFlagsInUseLine empêche cobra d'y remettre le sien.
+	root.Use = "den <nest>"
 	root.Args = cobra.MaximumNArgs(1)
 	// Explicite, parce que cobra ne l'applique PAS sur ce chemin : le défaut de
 	// 2 est posé dans findSuggestions(), qui sert la branche « unknown command »

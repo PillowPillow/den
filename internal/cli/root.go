@@ -107,6 +107,10 @@ func NewRootCmdAvec(deps Deps) *cobra.Command {
 		Git:    deps.Git,
 		Policy: deps.Policy,
 	})
+	// En DERNIER aussi, et pour la même raison que configureSpawn : la
+	// francisation parcourt l'arbre des commandes pour y poser l'usage du flag
+	// --help, et ne verrait pas une commande ajoutée après elle.
+	franciseCobra(root)
 	return root
 }
 
