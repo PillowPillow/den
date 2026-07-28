@@ -89,6 +89,9 @@ func NewRootCmdAvec(deps Deps) *cobra.Command {
 	// Même deps.Sbx que `den ls` et que le spawn : il n'y a qu'un seul
 	// sbx.Runner dans cette structure, et c'est celui-là.
 	root.AddCommand(newShCmd(deps.Sbx))
+	// Idem pour deps.Git : le seul worktree.Git de cette structure, celui que
+	// le spawn utilise pour `den <nest> -w`.
+	root.AddCommand(newRmCmd(&denHome, deps.Sbx, deps.Git))
 
 	// spawn.Deps est ASSEMBLÉE ici, à partir des mêmes champs que newLsCmd
 	// vient de recevoir : deps.Sbx est la SEULE source, il n'y a pas de
