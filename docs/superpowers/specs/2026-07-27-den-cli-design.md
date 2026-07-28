@@ -464,3 +464,56 @@ internal/
   en entier, quitte à dupliquer. Risque assumé. Si la duplication devient douloureuse, ajouter un
   `extends: <nest>` explicite, pas des anchors YAML (qui rendraient les fichiers illisibles et
   contourneraient le décodage strict du §12).
+
+---
+
+## 14.1 Hypothèses non vérifiées contre un `sbx` réel (inventaire A1→A9)
+
+**Versé le 2026-07-28** (tâche 17b), depuis l'inventaire dressé en tâche 11. Toutes ces
+affirmations sont **vertes contre le double de test (`sbx.Fake`) et invérifiables contre le réel** :
+`sbx` n'est pas installé sur la machine de développement, et aucune ne peut être tranchée sans lui.
+Elles ne sont **pas** des bugs connus — ce sont les endroits où la suite ne prouve rien.
+
+**Ce que la tâche 11 a fait de la plupart d'entre elles :** neutraliser leur conséquence plutôt
+qu'attendre le smoke. Quand la colonne « den y survit » dit oui, la fausseté de l'hypothèse ne
+casse plus den ; il reste utile de la vérifier, mais ce n'est plus bloquant.
+
+| # | Hypothèse sur `sbx` | Ce qui la falsifierait au premier smoke réel | den y survit ? |
+|---|---|---|---|
+| A1 | `sbx` sort en **échec** quand un hôte est simplement refusé par la policy | Un hôte refusé fait sortir `sbx` en 0 : le settle-loop conclurait à une erreur au 1er tour en accusant un hôte innocent | **Oui** — `hoteAutorise` décode la sortie AVANT de conclure à l'erreur : un `allowed` exploitable est un verdict, on boucle |
+| A2 | Le verdict part sur **stdout** | Verdict sur stderr ⇒ stdout vide ⇒ den échoue en disant « sortie vide », sans attacher | **Oui**, fail-closed et message dédié — mais den n'attachera jamais tant que ce n'est pas corrigé |
+| A3 | stdout porte le verdict dans sa **première valeur JSON** | Une bannière AVANT le JSON : den refuse (délibéré — on ne cherche pas un verdict au milieu d'un flux incompris). Du bruit APRÈS est toléré | **Oui**, et c'est un choix explicite, pas un effet de bord |
+| A4 | **L'argv lui-même** : `policy check network --sandbox S --json HÔTE` — noms des flags, leur ordre, l'existence de `--json`, le nom du champ `allowed`, le code de sortie sur hôte refusé | **Tout faux, tout vert.** Le double répond à l'argv qu'on lui donne : aucun test ne peut détecter que la commande n'existe pas sous cette forme | **NON — le trou le plus lourd de l'inventaire.** Seul un `sbx` réel, ou un `den doctor` qui sonde la commande, peut trancher |
+| A5 | Le `Run` d'un runner **honore le `ctx`** | Le double l'ignorait : une annulation en cours de passe accusait un hôte au lieu de dire « interrompu » | **Oui** — `Settle` reconnaît l'annulation lui-même, et depuis 17b `sbx.Exec.Run` joint le motif du contexte à sa chaîne d'erreurs |
+| A6 | `sbx` répond **vite** à `policy check` | 20 hôtes lents : le temps réel dépasse les 60 s annoncés, le timeout n'étant vérifié qu'entre deux tours et non pendant une passe. Le `ctx` de l'appelant reste la vraie borne | **Partiellement** — la borne existe, sa granularité est le tour |
+| A7 | La réponse ne dépend que de `(sandbox, hôte)`, jamais transitoire | Un `sbx` qui flanche une fois (VM pas encore prête) ferait échouer tout le settle | **Oui**, même correctif qu'A1 |
+| A8 | La sandbox existe et tourne quand `policy check` est appelé | Idem A1 | **Oui** pour la garde de nom de sandbox |
+| A9 | `sbx` ne rend **jamais** `allowed:false` en échouant pour une raison **étrangère à la policy** | Une sandbox inexistante diagnostiquée `not found` **tout en** rendant `allowed:false` : den brûlerait ses 60 s en accusant l'allowlist | **Oui** — la dernière erreur runner observée est jointe au message de timeout, la vraie cause reste visible |
+
+### Hypothèses assumées de den lui-même
+
+Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibérés**. Elles sont
+écrites ici pour qu'aucune ne passe pour un oubli.
+
+- **La liste blanche de statut `{"running"}`** (tâche 14, `internal/sbx/ls.go`) : den ne considère
+  vivante qu'une sandbox dont le statut est exactement `running`. Un statut **transitoire**
+  (`starting`, `booting`, `resuming`…) serait donc traité comme « absente », et `den <nest>`
+  tenterait de recréer une sandbox en train de démarrer. **Comportement non changé** : la liste
+  blanche est le choix sûr tant que l'ensemble réel des statuts de `sbx` n'est pas connu.
+  *Falsifié par :* un `sbx ls --json` réel montrant un statut intermédiaire.
+- **L'ordre des `--kit`** n'est vérifié que par nos propres tests (le mixin en dernier). Que sbx
+  applique bien les kits dans l'ordre de la ligne de commande n'est vérifié nulle part.
+  *Falsifié par :* la lecture de `/var/log/sbx-kit-startup.log` au premier smoke.
+- **`ssh.mode: agent-forward` n'ajoute AUCUN argument** — vérifié dans `internal/spawn/spawn.go` :
+  seul le mode `mount` produit un effet (un workspace en plus, et le contrôle d'existence de
+  `ssh.dir`). `agent-forward`, qui est pourtant le **défaut**, et `none` sont aujourd'hui
+  indiscernables pour den. Le forwarding est donc entièrement à la charge de `sbx`. **C'est la
+  tâche 18**, pas une régression.
+  *Falsifié par :* un agent SSH indisponible dans la VM alors que `ssh.mode` vaut `agent-forward`.
+- **L'image de stack n'est pas contrôlée avant `sbx create`.** Le §11 prévoit « lance
+  `den build <stack>` » quand l'image manque, mais `den build` est du **Plan 4** et n'existe pas.
+  Mesuré : den passe l'image verbatim à `--template` et se contente de relayer le refus de sbx —
+  `création de la sandbox api : template "devx:v1" not found`. L'écart avec le §11 est donc le
+  **conseil**, pas la détection : le message ne dit pas quoi faire. Aucun contrôle n'est ajouté ici,
+  il exigerait d'interroger sbx sur ses templates (et retomberait sous A4).
+  *Falsifié par :* un premier spawn sur une stack jamais construite.
