@@ -169,6 +169,18 @@ func Retire(ctx context.Context, g Git, cheminRepo, cheminWorktree string, force
 		if _, err := g.Run(ctx, cheminRepo, "worktree", "prune"); err != nil {
 			return fmt.Errorf("nettoyage des enregistrements de worktree de %s : %w", cheminRepo, err)
 		}
+		// `prune` saute SILENCIEUSEMENT les worktrees verrouillés (rc=0, aucune
+		// sortie) — et `git worktree lock` existe précisément pour les volumes
+		// amovibles et les montages réseau, donc pour le cas où le dossier
+		// disparaît légitimement. Sans cette revérification, den rendrait nil en
+		// prétendant avoir nettoyé, et Assure renverrait ensuite l'utilisateur
+		// vers `den rm` — la commande qui vient de lui dire qu'elle a réussi.
+		if estEnregistre(ctx, g, cheminRepo, cheminWorktree) {
+			return fmt.Errorf(
+				"l'enregistrement du worktree %s survit dans %s alors que son dossier a disparu — "+
+					"il est probablement verrouillé : lance `git worktree unlock %s` dans %s, puis relance",
+				cheminWorktree, cheminRepo, cheminWorktree, cheminRepo)
+		}
 		return nil
 	}
 
@@ -378,33 +390,63 @@ func brancheParDefaut(ctx context.Context, g Git, cheminRepo string) (string, bo
 // filet de `git worktree remove` — ce sont pourtant exactement les fichiers
 // qu'on ne commite pas ET qu'on ne retrouve pas.
 //
-// Parmi les entrées ignorées, on écarte celles qui désignent un DOSSIER (suffixe
-// « / ») : git réduit un dossier entièrement ignoré à une seule entrée
-// (node_modules/, target/), qui est du cache régénérable ; refuser dessus
-// rendrait `den rm` inutilisable sur tout projet JS ou Python.
+// Parmi les entrées ignorées, on écarte les DOSSIERS RÉELLEMENT IGNORÉS :
+// git réduit un dossier entièrement ignoré à une seule entrée (node_modules/,
+// target/), qui est du cache régénérable ; refuser dessus rendrait `den rm`
+// inutilisable sur tout projet JS ou Python. Le suffixe « / » ne suffit PAS à
+// les reconnaître — git collapse de la même façon un dossier que l'utilisateur
+// n'a jamais ignoré mais dont tout le contenu l'est (`.gitignore` = `*.env`,
+// la façon la plus répandue d'ignorer des secrets, et `conf/prod.env` sort en
+// `!! conf/`). D'où la question posée à git pour chaque entrée : le dossier
+// LUI-MÊME est-il ignoré ?
 //
-// Angle mort assumé : un secret enfoui DANS un dossier ignoré en bloc reste
-// invisible, puisque git ne l'énumère pas séparément.
+// -z plutôt que `-c core.quotePath=false` : par défaut git cite et échappe les
+// chemins « spéciaux », si bien qu'un cache nommé `données/` ou `mon cache/`
+// ressort en `"donn\303\251es/"` — sans le « / » final, donc jugé sale, et
+// affiché à l'utilisateur en octal. quotePath=false ne lève que l'échappement
+// non-ASCII : les espaces, guillemets et retours à la ligne restent cités. La
+// sortie NUL-séparée, elle, n'est jamais citée — le problème est fermé à la
+// source plutôt que contourné.
+//
+// Angle mort restant : un secret placé dans un dossier lui-même ignoré en bloc
+// (`config/` ignoré, `config/.env` dedans) reste invisible, git ne l'énumérant
+// pas séparément.
 func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
-	out, err := g.Run(ctx, dir, "status", "--porcelain", "--ignored=traditional")
+	out, err := g.Run(ctx, dir, "status", "--porcelain", "--ignored=traditional", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("état de %s : %w", dir, err)
 	}
 	var sales []string
-	for _, ligne := range strings.Split(string(out), "\n") {
-		if len(ligne) < 4 {
+	enregistrements := strings.Split(string(out), "\x00")
+	for i := 0; i < len(enregistrements); i++ {
+		e := enregistrements[i]
+		if len(e) < 4 || e[2] != ' ' {
 			continue
 		}
-		etat, chemin := ligne[:2], strings.TrimSpace(ligne[3:])
-		if chemin == "" {
-			continue
+		etat, chemin := e[:2], e[3:]
+		// En -z, un renommage ou une copie occupe DEUX enregistrements : le
+		// second porte le chemin source, sans préfixe d'état. On le consomme
+		// pour ne pas le relire comme une entrée à part entière.
+		if etat[0] == 'R' || etat[0] == 'C' {
+			i++
 		}
-		if etat == "!!" && strings.HasSuffix(chemin, "/") {
+		if etat == "!!" && strings.HasSuffix(chemin, "/") && dossierIgnore(ctx, g, dir, chemin) {
 			continue
 		}
 		sales = append(sales, chemin)
 	}
 	return sales, nil
+}
+
+// dossierIgnore dit si le dossier LUI-MÊME est couvert par une règle d'ignorance,
+// par opposition à un dossier simplement non suivi dont le contenu se trouve
+// ignoré.
+//
+// En cas de doute (git en erreur), on répond faux : l'entrée reste sale et la
+// suppression est refusée. C'est le seul sens sûr pour une opération destructrice.
+func dossierIgnore(ctx context.Context, g Git, dir, chemin string) bool {
+	_, err := g.Run(ctx, dir, "check-ignore", "-q", "--", chemin)
+	return err == nil
 }
 
 // listeCourte nomme les fichiers en cause sans noyer le message.

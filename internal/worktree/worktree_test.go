@@ -12,6 +12,16 @@ import (
 	"testing"
 )
 
+// TestMain neutralise la configuration git de la machine. Le module lit les
+// règles d'ignorance pour décider d'une suppression, et un ~/.gitignore_global
+// (celui de cette machine porte « .sbx ») rendrait les verdicts de saleté
+// dépendants du poste qui lance la suite.
+func TestMain(m *testing.M) {
+	os.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	os.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	os.Exit(m.Run())
+}
+
 func TestChemin(t *testing.T) {
 	cas := []struct {
 		layout, root, wt, repo, attendu string
@@ -659,6 +669,158 @@ func TestRetireNArmePasForceSansDemande(t *testing.T) {
 				t.Errorf("--force présent = %v, attendu %v ; argv = %v", got, cas.attendForce, argv)
 			}
 		})
+	}
+}
+
+// Le suffixe « / » seul n'est pas un discriminant : git réduit à une entrée
+// unique `!! conf/` un dossier que l'utilisateur n'a JAMAIS ignoré, dès lors que
+// tout son contenu l'est. Or `*.env` est la façon la plus répandue d'ignorer des
+// secrets — le dossier collapsé n'est pas du cache régénérable.
+func TestRetireRefuseUnSecretDansUnDossierNonIgnore(t *testing.T) {
+	repo := depotTest(t, "api")
+	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+	if err != nil {
+		t.Fatalf("préparation : %v", err)
+	}
+	ecris(t, filepath.Join(chemin, ".gitignore"), "*.env\n")
+	git(t, chemin, "add", ".gitignore")
+	git(t, chemin, "commit", "-m", "ignore les .env")
+	if err := os.MkdirAll(filepath.Join(chemin, "conf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(chemin, "conf", "prod.env")
+	ecris(t, secret, "SECRET=hunter2\n")
+
+	// Le dossier lui-même n'est pas ignoré : seul son contenu l'est.
+	if _, err := gitTolerant(t, chemin, "check-ignore", "-q", "--", "conf/"); err == nil {
+		t.Fatal("préparation : conf/ ne devrait pas être ignoré lui-même")
+	}
+
+	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	if err == nil {
+		t.Fatal("un dossier non ignoré dont le contenu l'est doit être refusé sans force")
+	}
+	if !strings.Contains(err.Error(), "conf/") {
+		t.Errorf("le message doit nommer conf/ ; obtenu : %v", err)
+	}
+	contenu, err := os.ReadFile(secret)
+	if err != nil || string(contenu) != "SECRET=hunter2\n" {
+		t.Errorf("le secret doit être INTACT ; lu %q, err %v", contenu, err)
+	}
+}
+
+// Faux positif symétrique : git cite et échappe les chemins « spéciaux », si
+// bien qu'un dossier ignoré en bloc au nom non-ASCII ou avec une espace ne finit
+// plus par « / » et ferait refuser den rm sur du simple cache — en affichant un
+// chemin en octal que l'utilisateur ne reconnaîtrait pas.
+func TestRetireAccepteUnDossierIgnoreAuNomCite(t *testing.T) {
+	repo := depotTest(t, "api")
+	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+	if err != nil {
+		t.Fatalf("préparation : %v", err)
+	}
+	ecris(t, filepath.Join(chemin, ".gitignore"), "données/\nmon cache/\n")
+	git(t, chemin, "add", ".gitignore")
+	git(t, chemin, "commit", "-m", "ignore les caches")
+	for _, nom := range []string{"données", "mon cache"} {
+		if err := os.MkdirAll(filepath.Join(chemin, nom), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ecris(t, filepath.Join(chemin, nom, "x.bin"), "cache\n")
+	}
+
+	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+		t.Fatalf("un dossier ignoré en bloc au nom cité ne doit pas bloquer la suppression : %v", err)
+	}
+}
+
+// `git worktree prune` saute silencieusement les worktrees verrouillés — et
+// `lock` existe précisément pour les volumes amovibles, donc pour le cas où le
+// dossier disparaît légitimement. Sans revérification, Retire rendrait nil en
+// prétendant avoir nettoyé et Assure renverrait vers `den rm` : boucle fermée.
+func TestRetireSignaleUnWorktreeVerrouille(t *testing.T) {
+	repo := depotTest(t, "api")
+	root := t.TempDir()
+	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+	if err != nil {
+		t.Fatalf("préparation : %v", err)
+	}
+	git(t, repo, "worktree", "lock", chemin)
+	if err := os.RemoveAll(chemin); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, force := range []bool{false, true} {
+		err := Retire(context.Background(), NewGit(), repo, chemin, force)
+		if err == nil {
+			t.Fatalf("force=%v : Retire ne doit pas prétendre avoir nettoyé un enregistrement verrouillé", force)
+		}
+		for _, attendu := range []string{chemin, "git worktree unlock"} {
+			if !strings.Contains(err.Error(), attendu) {
+				t.Errorf("force=%v : le message doit contenir %q ; obtenu : %v", force, attendu, err)
+			}
+		}
+	}
+}
+
+// En -z, un renommage occupe deux enregistrements et le second, le chemin
+// source, n'a pas de préfixe d'état. Non consommé, il est relu comme une entrée
+// à part entière dès que son 3e caractère est une espace — et den nomme alors à
+// l'utilisateur un fichier qui n'existe pas.
+func TestRetireNInventePasDeFichierSurUnRenommage(t *testing.T) {
+	repo := depotTest(t, "api")
+	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+	if err != nil {
+		t.Fatalf("préparation : %v", err)
+	}
+	ecris(t, filepath.Join(chemin, "ab cd.txt"), "contenu\n")
+	git(t, chemin, "add", "ab cd.txt")
+	git(t, chemin, "commit", "-m", "ajoute ab cd.txt")
+	git(t, chemin, "mv", "ab cd.txt", "xy.txt")
+
+	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	if err == nil {
+		t.Fatal("un renommage non commité est une modification : refus attendu")
+	}
+	if !strings.Contains(err.Error(), "xy.txt") {
+		t.Errorf("le message doit nommer le fichier renommé ; obtenu : %v", err)
+	}
+	// « cd.txt » est ce que produit la relecture du chemin source « ab cd.txt ».
+	if strings.Contains(err.Error(), "cd.txt") {
+		t.Errorf("le message invente un fichier issu du chemin source ; obtenu : %v", err)
+	}
+}
+
+// Sur macOS, /var et $TMPDIR sont des liens symboliques : worktree_root y est
+// atteint par un lien en pratique. git répond avec le chemin RÉSOLU là où den
+// manipule celui qu'on lui a donné — sans résolution, l'idempotence et la
+// suppression cassent toutes les deux. Linux ne peut pas voir la régression
+// tout seul, /tmp n'y étant pas un lien.
+func TestAssureSuitUnWorktreeRootParLienSymbolique(t *testing.T) {
+	repo := depotTest(t, "api")
+	base := t.TempDir()
+	reel := filepath.Join(base, "reel")
+	if err := os.MkdirAll(reel, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lien := filepath.Join(base, "lien")
+	if err := os.Symlink(reel, lien); err != nil {
+		t.Skipf("liens symboliques indisponibles : %v", err)
+	}
+
+	premier, err := Assure(context.Background(), NewGit(), "central", lien, "feat12", repo)
+	if err != nil {
+		t.Fatalf("premier appel : %v", err)
+	}
+	second, err := Assure(context.Background(), NewGit(), "central", lien, "feat12", repo)
+	if err != nil {
+		t.Fatalf("l'idempotence doit tenir à travers le lien : %v", err)
+	}
+	if premier != second {
+		t.Errorf("chemins divergents : %q puis %q", premier, second)
+	}
+	if err := Retire(context.Background(), NewGit(), repo, premier, false); err != nil {
+		t.Errorf("la suppression doit tenir à travers le lien : %v", err)
 	}
 }
 
