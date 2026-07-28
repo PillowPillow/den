@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/PillowPillow/den/internal/doctor"
+	"github.com/PillowPillow/den/internal/spawn"
 	"github.com/spf13/cobra"
 )
 
@@ -44,7 +45,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newDoctorCmd(&denHome, doctor.DepsSysteme()))
 	// En DERNIER : configureSpawn pose Args sur la racine, ce qui n'a de sens
 	// qu'une fois les sous-commandes enregistrées.
-	configureSpawn(root, &denHome)
+	configureSpawn(root, &denHome, spawn.DepsSysteme())
 	return root
 }
 

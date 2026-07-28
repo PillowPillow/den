@@ -2,6 +2,7 @@ package spawn
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -209,8 +210,37 @@ func TestSpawnAttacheSansRecreerSiLaSandboxExiste(t *testing.T) {
 	if f.AAppele("create") {
 		t.Errorf("aucun create ne doit avoir lieu sur une sandbox vivante ; appels : %v", f.Appels)
 	}
+	// Le settle-loop doit tourner AUSSI sur cette branche — c'est celle
+	// qu'emprunte tout spawn après le premier. Sans cette assertion, un
+	// settle-loop replié dans la branche `create` laisse la suite verte
+	// pendant que `den api` attache un shell sans avoir vérifié la policy.
+	if !f.AAppele("policy", "check", "network", "--sandbox", "api", "--json", "github.com") {
+		t.Errorf("le settle-loop doit tourner aussi sur une sandbox vivante ; appels : %v", f.Appels)
+	}
 	if !f.AAttache("exec", "-it", "-w", repo, "api", "bash", "-l") {
 		t.Errorf("l'attache doit avoir lieu ; attaches : %v", f.Attaches)
+	}
+}
+
+// C'est le nom COMPLET, worktree inclus, qui doit être cherché parmi les
+// sandboxes vivantes. Chercher `o.Nest` reviendrait à confondre `api` et
+// `api.feat12` : indétectable tant que le seul test à sandbox vivante n'a pas
+// de worktree, puisque les deux valeurs y coïncident.
+func TestSpawnChercheLeNomWorktreeeParmiLesSandboxesVivantes(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := depsTest()
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["/w"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if f.AAppele("create") {
+		t.Errorf("aucun create ne doit avoir lieu sur api.feat12 vivante ; appels : %v", f.Appels)
+	}
+	if !f.AAttache("exec", "-it", "-w", filepath.Join(denHome, "worktrees", "feat12", "api"), "api.feat12", "bash", "-l") {
+		t.Errorf("l'attache doit viser api.feat12 ; attaches : %v", f.Attaches)
 	}
 }
 
@@ -308,6 +338,19 @@ func TestSpawnStoppeAvantCreateSiUnRepoManque(t *testing.T) {
 	if len(f.Appels) != 0 {
 		t.Errorf("aucun appel sbx ne doit avoir eu lieu ; appels : %v", f.Appels)
 	}
+	// Et aucun effet de bord SUR DISQUE. Le spec §11 écrit « stop avant tout
+	// create », mais l'intention est « avant tout effet de bord » : sans ces
+	// deux contrôles, déplacer la garde juste avant le bloc spawn-or-attach
+	// laisserait derrière elle le profil agent et le mixin, tout en gardant
+	// l'assertion sur f.Appels vraie.
+	for _, chemin := range []string{
+		filepath.Join(denHome, "agents", "claude"),
+		filepath.Join(denHome, "cache", "mixins"),
+	} {
+		if _, err := os.Stat(chemin); err == nil {
+			t.Errorf("aucun effet de bord ne doit avoir eu lieu, or %s existe", chemin)
+		}
+	}
 }
 
 // Le profil agent est monté RW : un config_dir vide monterait un chemin vide, et
@@ -400,19 +443,102 @@ func TestSpawnEcritLeMixin(t *testing.T) {
 	}
 }
 
-func TestSpawnPropageLesFlagsDeSelectionDeRepos(t *testing.T) {
+// Les trois options de cascade doivent atteindre nest.Resolve.
+//
+// Chacune est exercée par une valeur INVALIDE : c'est le seul moyen d'obtenir,
+// sans sbx, un message qui dépend de la VALEUR passée — donc la preuve qu'elle
+// a traversé. Une option muette (`Only` ou `Agent` non transmis) fait retomber
+// le spawn sur le défaut et réussit en silence : `--agent claude-next`
+// monterait le profil de l'agent par défaut et écrirait SES variables
+// d'environnement dans le mixin, sans un mot.
+func TestSpawnPropageLesOptionsDeCascade(t *testing.T) {
+	cas := []struct {
+		nom     string
+		options Options
+		attendu string
+	}{
+		{"Without", Options{Nest: "api", Without: []string{"inconnu"}}, `--without : repo "inconnu"`},
+		{"Only", Options{Nest: "api", Only: []string{"inconnu"}}, `--only : repo "inconnu"`},
+		{"Agent", Options{Nest: "api", Agent: "inconnu"}, `agent "inconnu"`},
+	}
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			denHome, _ := denTest(t)
+			f, d := depsTest()
+
+			err := Spawn(context.Background(), denHome, c.options, d)
+			if err == nil {
+				t.Fatalf("%s avec une valeur inconnue doit faire échouer le spawn", c.nom)
+			}
+			if !strings.Contains(err.Error(), c.attendu) {
+				t.Errorf("%s n'atteint pas la cascade (attendu %q) ; obtenu : %v", c.nom, c.attendu, err)
+			}
+			if len(f.Appels) != 0 {
+				t.Errorf("aucun appel sbx ne doit avoir eu lieu ; appels : %v", f.Appels)
+			}
+		})
+	}
+}
+
+// L'échec de `sbx create` doit être recontextualisé. Le message brut d'Exec.Run
+// est préfixé de l'argv COMPLET — une ligne géante avec tous les --kit et tous
+// les workspaces — dans laquelle l'étape qui a échoué devient illisible.
+func TestSpawnNommeLEtapeQuandLeCreateEchoue(t *testing.T) {
 	denHome, _ := denTest(t)
 	f, d := depsTest()
+	f.Defaut = sbx.Reponse{Err: errors.New("boum")}
 
-	err := Spawn(context.Background(), denHome, Options{Nest: "api", Without: []string{"inconnu"}}, d)
+	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
 	if err == nil {
-		t.Fatal("--without sur un repo inconnu doit faire échouer le spawn")
+		t.Fatal("un create en échec doit faire échouer le spawn")
 	}
-	if !strings.Contains(err.Error(), "--without") {
-		t.Errorf("le message doit venir de la sélection de repos ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "création de la sandbox api") {
+		t.Errorf("le message doit nommer l'étape et la sandbox ; obtenu : %v", err)
+	}
+	if !strings.Contains(err.Error(), "boum") {
+		t.Errorf("le message doit conserver la cause ; obtenu : %v", err)
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("aucune attache ne doit avoir lieu ; attaches : %v", f.Attaches)
+	}
+}
+
+// Spawn refuse un den home relatif AVANT tout effet de bord.
+//
+// C'est cet invariant — garanti par nest.Resolve — qui rend `denHome` et
+// `r.DenHome` interchangeables, et donc INDÉTECTABLE par construction le choix
+// de celui qu'on passe à EcrisMixin : Resolve pose r.DenHome = denHome dès lors
+// qu'il est absolu, et refuse tout le reste. Ce qui se teste ici n'est pas le
+// choix, c'est l'invariant qui le rend sans conséquence.
+func TestSpawnRefuseUnDenHomeRelatif(t *testing.T) {
+	denHome, _ := denTest(t)
+	t.Chdir(filepath.Dir(denHome))
+	f, d := depsTest()
+
+	err := Spawn(context.Background(), filepath.Base(denHome), Options{Nest: "api"}, d)
+	if err == nil {
+		t.Fatal("un den home relatif doit faire échouer le spawn")
+	}
+	if !strings.Contains(err.Error(), "non absolu") {
+		t.Errorf("le message doit nommer la cause ; obtenu : %v", err)
 	}
 	if len(f.Appels) != 0 {
 		t.Errorf("aucun appel sbx ne doit avoir eu lieu ; appels : %v", f.Appels)
+	}
+}
+
+// Une Sortie nil ne doit pas paniquer au milieu d'un spawn : l'appelant qui
+// oublie de la remplir a déjà, à ce stade, une sandbox créée et démarrée.
+func TestSpawnTolereUneSortieNil(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := depsTest()
+	d.Sortie = nil
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if !f.AAppele("create", "--name", "api") {
+		t.Errorf("le spawn doit s'être déroulé ; appels : %v", f.Appels)
 	}
 }
 

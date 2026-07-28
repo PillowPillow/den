@@ -2,10 +2,7 @@ package cli
 
 import (
 	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/policy"
-	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
-	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -16,7 +13,11 @@ import (
 // À appeler APRÈS les root.AddCommand : poser Args sur la racine désactive le
 // legacyArgs de cobra (« unknown command »), et c'est cette bascule qui rend un
 // nom de nest recevable en première position.
-func configureSpawn(root *cobra.Command, denHome *string) {
+//
+// deps est pris en paramètre plutôt que construit ici, comme newDoctorCmd :
+// c'est ce qui rend vérifiable le branchement des flags sur spawn.Options — un
+// flag débranché est silencieux — sans qu'un test tente d'exécuter le vrai `sbx`.
+func configureSpawn(root *cobra.Command, denHome *string, deps spawn.Deps) {
 	var o spawn.Options
 
 	root.Use = "den <nest> [flags]"
@@ -30,12 +31,11 @@ func configureSpawn(root *cobra.Command, denHome *string) {
 		if err != nil {
 			return err
 		}
-		return spawn.Spawn(cmd.Context(), home, o, spawn.Deps{
-			Sbx:    sbx.NewExec(""),
-			Git:    worktree.NewGit(),
-			Policy: policy.OptionsDefaut(),
-			Sortie: cmd.OutOrStdout(),
-		})
+		// Copie locale : seule la Sortie est décidée ici, à l'exécution, parce
+		// qu'elle seule dépend de la commande (et donc du SetOut des tests).
+		d := deps
+		d.Sortie = cmd.OutOrStdout()
+		return spawn.Spawn(cmd.Context(), home, o, d)
 	}
 
 	root.Flags().StringVarP(&o.Worktree, "worktree", "w", "", "worktree à propager sur tous les repos")

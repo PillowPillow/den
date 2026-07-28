@@ -28,6 +28,23 @@ type Deps struct {
 	Sortie io.Writer
 }
 
+// DepsSysteme branche la séquence sur le monde réel : le binaire `sbx` du PATH,
+// git, et la patience par défaut du settle-loop.
+//
+// Elle existe pour que le câblage cobra puisse recevoir ses accès en paramètre
+// plutôt que de les construire en dur — même raison que doctor.DepsSysteme :
+// sans cette injection, le branchement des flags de `den <nest>` sur Options
+// n'est vérifiable nulle part, et un test qui atteindrait `sbx create`
+// tenterait d'exécuter le vrai binaire.
+func DepsSysteme() Deps {
+	return Deps{
+		Sbx:    sbx.NewExec(""),
+		Git:    worktree.NewGit(),
+		Policy: policy.OptionsDefaut(),
+		Sortie: os.Stdout,
+	}
+}
+
 // Options porte les flags de `den <nest>`.
 type Options struct {
 	Nest     string
@@ -49,6 +66,13 @@ type Options struct {
 // bord — un worktree créé puis abandonné parce que le nom de sandbox était
 // invalide laisserait l'utilisateur nettoyer à la main.
 func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
+	// Une Sortie oubliée ne doit pas paniquer au milieu de la séquence :
+	// l'appelant fautif a déjà, au premier Fprintf, une sandbox créée et
+	// démarrée derrière lui. Perdre le journal coûte moins cher que ça.
+	if d.Sortie == nil {
+		d.Sortie = io.Discard
+	}
+
 	// 1. Résolution de la cascade.
 	g, err := config.LoadGlobal(denHome)
 	if err != nil {
@@ -159,8 +183,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			return err
 		}
 		fmt.Fprintf(d.Sortie, "création de la sandbox %s (image %s)…\n", nomSandbox, r.Stack.Image)
+		// Recontextualisé : Exec.Run préfixe déjà son message de l'argv COMPLET
+		// — tous les --kit et tous les workspaces sur une seule ligne — où
+		// l'étape qui a échoué se perd.
 		if _, err := d.Sbx.Run(ctx, argv...); err != nil {
-			return err
+			return fmt.Errorf("création de la sandbox %s : %w", nomSandbox, err)
 		}
 	}
 

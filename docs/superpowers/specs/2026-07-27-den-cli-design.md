@@ -210,7 +210,10 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
    **Spawn-or-attach** : si le nom existe déjà → attache au lieu de recréer.
 7. **Policy + settle-loop** (cf. §7).
 8. **SSH** selon `ssh.mode` : `agent-forward` (défaut) / `mount ~/.ssh_sbx` / `none`.
-9. **Attache.** `sbx exec -it <name> -w <workdir> bash -l` → shell, sauf `--detach`. Pas
+9. **Attache.** `sbx exec -it -w <workdir> <name> bash -l` → shell, sauf `--detach`. Les flags
+   restent **avant** le nom de sandbox : la signature est `sbx exec [flags] SANDBOX COMMAND
+   [ARG...]`, donc un `-w` postposé serait lu comme un argument de la COMMAND et arriverait tel
+   quel à `bash -l`. Pas
    `sbx run` : celui-ci lance la commande du flavor de l'image (souvent `claude`), n'a aucun flag
    pour la remplacer, et son `-- ARGS` ne fait qu'*ajouter* des arguments. **Les ports ne sont PAS
    publiés au spawn** → `den ports <nest>` à la demande.
