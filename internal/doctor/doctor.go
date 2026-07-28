@@ -91,10 +91,15 @@ func Run(denHome string, d Deps) []Check {
 	}
 
 	// 6. nests : stack référencée existante, repos présents sur disque
-	nests, err := nest.ListNests(denHome)
+	nests, casses, err := nest.ListNests(denHome)
 	if err != nil {
 		ajoute("nests", false, "%v", err)
 		return checks
+	}
+	// Un nest cassé est signalé nommément et n'empêche pas de diagnostiquer les
+	// autres : c'est précisément le rôle de doctor.
+	for _, c := range casses {
+		ajoute("nest "+c.Nom, false, "illisible : %v", c.Err)
 	}
 	for _, n := range nests {
 		nomStack := n.Stack
@@ -110,8 +115,8 @@ func Run(denHome string, d Deps) []Check {
 			}
 		}
 	}
-	if len(nests) > 0 {
-		ajoute("nests", true, "%d déclaré(s)", len(nests))
+	if len(nests) > 0 || len(casses) > 0 {
+		ajoute("nests", len(casses) == 0, "%d déclaré(s), %d illisible(s)", len(nests), len(casses))
 	}
 
 	return checks

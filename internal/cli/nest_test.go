@@ -67,6 +67,27 @@ func TestNestLsListeLesNests(t *testing.T) {
 	}
 }
 
+// `den nest ls` affiche les nests sains ET signale les cassés nommément, mais
+// retourne quand même une erreur (code de sortie non nul) : la liste est
+// consultable, mais il reste quelque chose à réparer.
+func TestNestLsSignaleLesCassesEtRetourneUneErreur(t *testing.T) {
+	dir := denHomeAvecNest(t, "api")
+	if err := os.WriteFile(filepath.Join(dir, "nests", "casse.yaml"), []byte("egres: [x]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := run(t, "nest", "ls", "--den-home", dir)
+	if err == nil {
+		t.Fatal("attendu une erreur : un nest est cassé")
+	}
+	if !strings.Contains(out, "api") {
+		t.Errorf("le nest sain doit rester listé ; obtenu :\n%s", out)
+	}
+	if !strings.Contains(out, "casse") {
+		t.Errorf("le nest cassé doit être signalé nommément ; obtenu :\n%s", out)
+	}
+}
+
 func TestNestShowAfficheLaResolution(t *testing.T) {
 	denHomeDeTest(t)
 	out, err := run(t, "nest", "show", "fullstack")

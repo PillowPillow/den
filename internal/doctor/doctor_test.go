@@ -148,6 +148,57 @@ func TestRunRepoDeNestIntrouvable(t *testing.T) {
 	}
 }
 
+// TestRunSignaleUnNestCasseSansMasquerLesAutres verrouille la dette de la
+// tâche 16 : un nest illisible ne doit ni masquer la section nests de doctor,
+// ni empêcher le diagnostic RÉEL des autres nests. Le nest "sain" pointe vers
+// un repo absent avec un Stat truqué qui ne rate QUE sur ce chemin précis :
+// avec un Deps toujours-OK (depsOK), un nest sans anomalie ne produit aucun
+// check individuel, et sa seule présence dans la liste ne prouverait rien —
+// il faut une vraie anomalie détectée pour prouver qu'il a été diagnostiqué,
+// pas seulement listé.
+func TestRunSignaleUnNestCasseSansMasquerLesAutres(t *testing.T) {
+	dir := denHomeValide(t) // config valide, stack devx, nest "api"
+	if err := os.WriteFile(filepath.Join(dir, "nests", "sain.yaml"),
+		[]byte("stack: devx\nrepos:\n  - { path: /dev/sain-manquant }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nests", "casse.yaml"), []byte("egres: [x]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := depsOK()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/dev/sain-manquant" {
+			return nil, errors.New("introuvable")
+		}
+		return nil, nil
+	}
+
+	checks := Run(dir, d)
+
+	var vuCasse, vuSainDiagnostique, vuNestsEnEchec bool
+	for _, c := range checks {
+		if c.Nom == "nest casse" && !c.OK {
+			vuCasse = true
+		}
+		if c.Nom == "nest sain" && !c.OK && strings.Contains(c.Detail, "/dev/sain-manquant") {
+			vuSainDiagnostique = true
+		}
+		if c.Nom == "nests" && !c.OK {
+			vuNestsEnEchec = true
+		}
+	}
+	if !vuCasse {
+		t.Errorf("le nest cassé doit être signalé en échec ; checks : %+v", checks)
+	}
+	if !vuSainDiagnostique {
+		t.Errorf("le nest sain doit rester réellement diagnostiqué (pas seulement listé) ; checks : %+v", checks)
+	}
+	if !vuNestsEnEchec {
+		t.Errorf("le check récapitulatif 'nests' doit être en échec quand il y a des cassés ; checks : %+v", checks)
+	}
+}
+
 func TestRunAgentSansCommandeUpdate(t *testing.T) {
 	dir := t.TempDir()
 	contenu := "agents:\n  claude:\n    config_dir: /tmp/c\ndefaults:\n  agent: claude\n  stack: devx\n"

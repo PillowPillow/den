@@ -67,6 +67,17 @@ func executeCmdAvecSbx(t *testing.T, r sbx.Runner, args ...string) (string, erro
 	return executeCmd(t, NewRootCmdAvec(deps), args...)
 }
 
+// executeCmdAvecSbxFluxSepares combine executeCmdAvecSbx (Runner injecté) et
+// executeCmdFluxSepares (stdout/stderr distincts) : nécessaire pour les tests
+// qui vérifient qu'un message part sur l'un des deux flux et PAS sur l'autre,
+// sur une commande qui a par ailleurs besoin d'un sbx.Runner (den ls).
+func executeCmdAvecSbxFluxSepares(t *testing.T, r sbx.Runner, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	deps := DepsSysteme()
+	deps.Sbx = r
+	return executeCmdFluxSepares(t, NewRootCmdAvec(deps), args...)
+}
+
 func TestVersionAfficheLaVersion(t *testing.T) {
 	// Version est une variable de paquet : la restaurer évite de contaminer les
 	// tests suivants avec une valeur de test.

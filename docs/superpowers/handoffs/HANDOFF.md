@@ -3,11 +3,22 @@
 > Pour l'agent qui reprend le sujet **sans contexte de conversation**. Lis ce fichier en entier,
 > puis le spec, avant toute action. Réponds en français (préférence utilisateur).
 >
-> Dernière mise à jour : **2026-07-27**, à la fin de l'exécution du Plan 1.
+> Dernière mise à jour : **2026-07-28**, à la fin de la rédaction du Plan 2.
+
+> ⚠️ **Le Plan 2 est écrit et pas exécuté.** Si tu reprends le sujet pour l'implémenter, lis
+> d'abord `docs/superpowers/handoffs/2026-07-28-HANDOFF-plan2-ultracode.md` : il porte l'état
+> courant, l'affectation des modèles par tâche et les pièges d'orchestration. Ce fichier-ci reste
+> la référence pour le **contexte** (vocabulaire, décisions verrouillées, faits sbx des spikes).
 
 ## 0. TL;DR — où on en est
 
-- **Phase actuelle : Plan 1 exécuté, revu et vérifié. Le socle est en place et fonctionne.**
+- **Phase actuelle : Plan 1 exécuté et vérifié. Plan 2 écrit, revu, PAS exécuté.**
+- ⚠️ **Le sondage de la CLI `sbx` du 2026-07-28 a falsifié la décision verrouillée n°10**
+  (état par labels) : `sbx create` n'a aucun `--label`. L'identité d'une sandbox passe désormais par
+  son **nom** `<nest>[.<worktree>]`. Deux autres points du spec sont tombés — la colonne « âge » de
+  `den ls` et le schéma de kit (`caps.network.allow` / `environment.variables`, pas `network.allow`
+  / `env`). **La tâche 1 du Plan 2 amende le spec ; elle n'a pas encore été exécutée, donc le spec
+  du dépôt porte encore ces trois erreurs.**
 - **Spec (source de vérité) :** `docs/superpowers/specs/2026-07-27-den-cli-design.md`.
   ⚠️ Il a été **amendé** pendant l'exécution du Plan 1 (§2, §4.2, §4.3, §12, §13, §14) — voir §2bis
   ci-dessous. Lis la version du dépôt, pas ton souvenir.
@@ -176,10 +187,6 @@ que du câblage cobra et de l'affichage.
 
 ## 9. Dette connue et parquée (à trancher au plan 2)
 
-- **`ListNests` échoue en bloc au premier nest illisible** — un seul nest fautif fait sortir
-  `den nest ls` en erreur sans lister les autres, et masque la section nests de `doctor`. Le
-  décodage strict (décision 12) a élargi la classe des « illisibles », donc la question gagne en
-  poids : un nest cassé doit-il masquer les autres ? Question de politique produit, non tranchée.
 - **`LoadNest`/`LoadGlobal` ne distinguent pas « absent » d'« illisible »** (seul `LoadStack` le
   fait). Vérifié : ça ne produit aucun diagnostic trompeur dans `doctor`, c'est cosmétique.
 - **`TestLoadStacksIndexeParLeNomDeDossier` n'a plus de mordant** : l'identité étant verrouillée en
@@ -251,10 +258,17 @@ sur des configs hostiles », plutôt qu'un simple pas-à-pas de vérification no
 
 ## 14. Prochaine action concrète
 
-Écrire le **Plan 2 — Spawn** avec `superpowers:writing-plans` : `internal/sbx` (interface `Runner` +
-argv en golden files), `internal/worktree`, `internal/agent` (mixin généré, **commande de fraîcheur
-en dernière startup command et `export PATH` construit depuis `bin_dirs`**, cf. §10 et §11.1),
-`internal/policy` (settle-loop fail-closed), puis `den <nest>`, `den ls`, `den sh`, `den rm`.
+~~Écrire le Plan 2~~ — **fait le 2026-07-28** :
+`docs/superpowers/plans/2026-07-28-den-plan2-spawn.md` (17 tâches, 128 étapes).
 
-Ordre d'implémentation global inchangé : ~~`config/` → `nest/`~~ (faits) → `sbx/` (Runner + argv
-golden files) → `worktree/` → `agent/`+mixin → `policy/`+settle-loop → `ports/` → `build`.
+**Prochaine action : l'exécuter.** Le handoff dédié
+`docs/superpowers/handoffs/2026-07-28-HANDOFF-plan2-ultracode.md` porte l'ordre des tâches, le
+graphe de dépendances (deux vagues parallélisables, le reste séquentiel), l'affectation des modèles
+et les cinq pièges qui font échouer un agent naïf sur ce plan.
+
+**Sa tâche 1 doit passer en premier** : elle amende le spec, dont cinq affirmations sont falsifiées
+par le sondage `sbx` du 2026-07-28. Tant qu'elle n'est pas faite, le spec du dépôt ment.
+
+Ordre d'implémentation global : ~~`config/` → `nest/`~~ (faits) → `sbx/` (Runner + argv golden
+files) → `worktree/` → `agent/`+mixin → `policy/`+settle-loop → `spawn/`+CLI → *(Plan 3)* `ports/`
+→ *(Plan 4)* `build`.

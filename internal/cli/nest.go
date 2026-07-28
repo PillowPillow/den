@@ -32,11 +32,11 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			nests, err := nest.ListNests(home)
+			nests, casses, err := nest.ListNests(home)
 			if err != nil {
 				return err
 			}
-			if len(nests) == 0 {
+			if len(nests) == 0 && len(casses) == 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "aucun nest déclaré dans %s/nests\n", home)
 				return nil
 			}
@@ -50,7 +50,18 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 				}
 				fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", n.Name, n.Stack, len(n.Repos), base)
 			}
-			return w.Flush()
+			if err := w.Flush(); err != nil {
+				return err
+			}
+
+			if len(casses) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout())
+				for _, c := range casses {
+					fmt.Fprintf(cmd.OutOrStdout(), "! %s : %v\n", c.Nom, c.Err)
+				}
+				return fmt.Errorf("%d nest(s) illisible(s) sur %d", len(casses), len(nests)+len(casses))
+			}
+			return nil
 		},
 	}
 }

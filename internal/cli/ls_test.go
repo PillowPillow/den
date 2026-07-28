@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -102,6 +104,50 @@ func TestLsMarqueLesSandboxesNonDeclarees(t *testing.T) {
 	}
 	if !strings.Contains(ligneInconnue, "?") {
 		t.Errorf("le nest non déclaré doit être marqué ; ligne : %q", ligneInconnue)
+	}
+}
+
+// `den ls` ne doit ni échouer ni masquer une VM vivante à cause d'un nest
+// cassé, mais il doit AVERTIR sur stderr en le nommant — c'est la dette
+// relevée à la relecture de T13 : sans ça, un seul nest cassé fait marquer
+// "?" sur toutes les sandboxes, y compris celles dont le nest est valide,
+// sans le moindre signal. Le test vérifie les deux sens : le nom du nest
+// cassé est sur stderr et PAS sur stdout ; la sandbox dont le nest est sain
+// sort bien sur stdout, sans le marqueur "?".
+func TestLsSignaleUnNestCasseSurStderrSansMasquerLesSains(t *testing.T) {
+	dir := denHomeDeTest(t) // nest "api" y est déclaré, DEN_HOME pointé dessus
+	if err := os.WriteFile(filepath.Join(dir, "nests", "casse.yaml"), []byte("egres: [x]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
+		"ls --json": {Sortie: []byte(
+			`{"sandboxes":[{"name":"api","status":"running"}]}`)},
+	}}
+
+	stdout, stderr, err := executeCmdAvecSbxFluxSepares(t, f, "ls")
+	if err != nil {
+		t.Fatalf("den ls ne doit jamais retourner d'erreur pour un nest cassé : %v", err)
+	}
+	if !strings.Contains(stderr, "casse") {
+		t.Errorf("le nest cassé doit être nommé sur stderr ; obtenu :\n%s", stderr)
+	}
+	if strings.Contains(stdout, "casse") {
+		t.Errorf("le nom du nest cassé ne doit pas apparaître sur stdout ; obtenu :\n%s", stdout)
+	}
+
+	var ligneApi string
+	for _, ligne := range strings.Split(stdout, "\n") {
+		champs := strings.Fields(ligne)
+		if len(champs) > 0 && champs[0] == "api" {
+			ligneApi = ligne
+		}
+	}
+	if ligneApi == "" {
+		t.Fatalf("la sandbox 'api', dont le nest est sain, doit apparaître sur stdout ; obtenu :\n%s", stdout)
+	}
+	if strings.Contains(ligneApi, "?") {
+		t.Errorf("le nest sain 'api' ne doit porter aucun marqueur '?' à cause du voisin cassé ; ligne : %q", ligneApi)
 	}
 }
 

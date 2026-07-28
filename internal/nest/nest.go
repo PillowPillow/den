@@ -98,15 +98,30 @@ func LoadNest(denHome, name string) (*Nest, error) {
 	return &n, nil
 }
 
-// ListNests charge tous les nests déclarés, triés par nom. Dossier absent = liste vide.
-func ListNests(denHome string) ([]*Nest, error) {
+// NestCasse est un nest présent sur disque mais non chargeable.
+type NestCasse struct {
+	Nom string
+	Err error
+}
+
+// ListNests charge tous les nests déclarés, triés par nom.
+//
+// Un nest illisible ne masque PAS les autres : il est renvoyé à part. Le
+// décodage strict rend un simple `egres:` fatal au chargement, et faire
+// disparaître toute la liste pour une faute de frappe dans un fichier laisserait
+// l'utilisateur sans le moyen de voir lequel — `den nest ls` et `den doctor`
+// sont précisément les outils censés le lui dire.
+//
+// L'erreur renvoyée est réservée aux échecs STRUCTURELS (dossier nests/
+// illisible) : là, il n'y a rien à lister du tout.
+func ListNests(denHome string) ([]*Nest, []NestCasse, error) {
 	racine := filepath.Join(denHome, "nests")
 	entrees, err := os.ReadDir(racine)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("lecture de %s : %w", racine, err)
+		return nil, nil, fmt.Errorf("lecture de %s : %w", racine, err)
 	}
 
 	var noms []string
@@ -119,12 +134,14 @@ func ListNests(denHome string) ([]*Nest, error) {
 	sort.Strings(noms)
 
 	nests := make([]*Nest, 0, len(noms))
+	var casses []NestCasse
 	for _, nom := range noms {
 		n, err := LoadNest(denHome, nom)
 		if err != nil {
-			return nil, err
+			casses = append(casses, NestCasse{Nom: nom, Err: err})
+			continue
 		}
 		nests = append(nests, n)
 	}
-	return nests, nil
+	return nests, casses, nil
 }

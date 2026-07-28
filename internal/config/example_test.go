@@ -34,9 +34,17 @@ func TestExempleDenHomeEstValide(t *testing.T) {
 		t.Errorf("defaults.stack = %q absent des stacks de l'exemple", g.Defaults.Stack)
 	}
 
-	nests, err := nest.ListNests(home)
+	nests, casses, err := nest.ListNests(home)
 	if err != nil {
 		t.Fatalf("chargement des nests de l'exemple : %v", err)
+	}
+	if len(casses) != 0 {
+		var noms []string
+		for _, c := range casses {
+			noms = append(noms, c.Nom)
+		}
+		t.Fatalf("l'exemple livré doit être irréprochable, %d nest(s) cassé(s) : %v (détail : %+v)",
+			len(casses), noms, casses)
 	}
 	if len(nests) == 0 {
 		t.Fatal("l'exemple ne déclare aucun nest")

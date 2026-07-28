@@ -210,9 +210,12 @@ func TestListNestsTriParNom(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	nests, err := ListNests(denHome)
+	nests, casses, err := ListNests(denHome)
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if len(casses) != 0 {
+		t.Fatalf("aucun nest cassé attendu, obtenu %v", casses)
 	}
 	var noms []string
 	for _, n := range nests {
@@ -239,9 +242,12 @@ func TestListNestsTriDivergeDeLOrdreFichier(t *testing.T) {
 	ecrisNest(t, denHome, "web-2", "stack: devx\n")
 	ecrisNest(t, denHome, "api", "stack: devx\n")
 
-	nests, err := ListNests(denHome)
+	nests, casses, err := ListNests(denHome)
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if len(casses) != 0 {
+		t.Fatalf("aucun nest cassé attendu, obtenu %v", casses)
 	}
 	var noms []string
 	for _, n := range nests {
@@ -269,12 +275,113 @@ func TestLoadNestRefuseUnNomNonSandboxable(t *testing.T) {
 	}
 }
 
-func TestListNestsDossierAbsent(t *testing.T) {
-	nests, err := ListNests(t.TempDir())
+func TestListNestsListeLesSainsEtSignaleLesCasses(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	ecrisNest(t, denHome, "casse", "stack: devx\negres:\n  - typo.exemple.test\n")
+	ecrisNest(t, denHome, "web", "stack: devx\nrepos: []\n")
+
+	nests, casses, err := ListNests(denHome)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("un nest fautif ne doit pas être une erreur structurelle : %v", err)
 	}
-	if len(nests) != 0 {
-		t.Errorf("attendu 0 nest, obtenu %d", len(nests))
+
+	if len(nests) != 2 || nests[0].Name != "api" || nests[1].Name != "web" {
+		t.Errorf("les nests sains doivent être listés et triés ; obtenu %v", nomsDe(nests))
 	}
+	if len(casses) != 1 || casses[0].Nom != "casse" {
+		t.Fatalf("le nest fautif doit être signalé ; obtenu %v", casses)
+	}
+	// Le diagnostic doit rester exploitable : fichier, ligne, clé.
+	msg := casses[0].Err.Error()
+	for _, attendu := range []string{"casse.yaml", "egres"} {
+		if !strings.Contains(msg, attendu) {
+			t.Errorf("le diagnostic doit contenir %q ; obtenu : %s", attendu, msg)
+		}
+	}
+}
+
+func TestListNestsToutSain(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+
+	nests, casses, err := ListNests(denHome)
+	if err != nil || len(nests) != 1 || len(casses) != 0 {
+		t.Errorf("nests=%v casses=%v err=%v", nomsDe(nests), casses, err)
+	}
+}
+
+func TestListNestsDossierAbsent(t *testing.T) {
+	nests, casses, err := ListNests(t.TempDir())
+	if err != nil {
+		t.Errorf("un ~/.den sans dossier nests n'est pas une erreur : %v", err)
+	}
+	if len(nests) != 0 || len(casses) != 0 {
+		t.Errorf("nests=%v casses=%v", nests, casses)
+	}
+}
+
+// TestListNestsRacineIllisible verrouille la distinction entre un nest cassé
+// (2e valeur de retour) et un échec STRUCTUREL (3e valeur) : quand la racine
+// nests/ elle-même est illisible, il n'y a rien à lister du tout, et
+// ListNests doit le dire par une erreur nommant le chemin complet plutôt que
+// de renvoyer une liste vide silencieuse.
+func TestListNestsRacineIllisible(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("test non fiable en root : les permissions sont ignorées")
+	}
+	denHome := t.TempDir()
+	racine := filepath.Join(denHome, "nests")
+	if err := os.MkdirAll(racine, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(racine, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// os.Geteuid() == 0 ne couvre pas tous les cas (conteneurs, CFS particuliers
+	// qui ignorent aussi les permissions) : on vérifie EMPIRIQUEMENT que la
+	// lecture échoue avant d'asserter quoi que ce soit, plutôt que de supposer
+	// que 0o000 suffit sur ce poste.
+	if _, err := os.ReadDir(racine); err == nil {
+		if err := os.Chmod(racine, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Skip("la lecture d'un dossier 0o000 réussit sur cet environnement : test non fiable ici")
+	}
+	t.Cleanup(func() {
+		// t.TempDir() doit pouvoir nettoyer derrière nous.
+		if err := os.Chmod(racine, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	nests, casses, err := ListNests(denHome)
+	if err == nil {
+		t.Fatal("attendu une erreur structurelle pour une racine nests/ illisible")
+	}
+	if nests != nil || casses != nil {
+		t.Errorf("nests=%v casses=%v, attendu nil sur un échec structurel", nests, casses)
+	}
+	if !strings.Contains(err.Error(), racine) {
+		t.Errorf("erreur = %q, attendu le chemin complet %q", err.Error(), racine)
+	}
+}
+
+// Demander UN nest précis reste dur : répondre « il est cassé » est la seule
+// réponse honnête quand on a nommé celui-là.
+func TestLoadNestResteDur(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "casse", "egres: [x]\n")
+
+	if _, err := LoadNest(denHome, "casse"); err == nil {
+		t.Fatal("LoadNest doit rester dur sur un nest illisible")
+	}
+}
+
+func nomsDe(nests []*Nest) []string {
+	out := make([]string, 0, len(nests))
+	for _, n := range nests {
+		out = append(out, n.Name)
+	}
+	return out
 }
