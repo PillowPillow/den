@@ -1,0 +1,46 @@
+schemaVersion: 2
+kind: mixin
+name: den-api-feat12
+version: 0.0.0
+description: Mixin genere par den pour la sandbox api.feat12. Regenere a chaque spawn, ne pas editer a la main.
+caps:
+  network:
+    allow:
+      - api.anthropic.com
+      - github.com
+environment:
+  variables:
+    CLAUDE_CONFIG_DIR: /home/moi/.den/agents/claude
+    SOME_VAR: value
+commands:
+  startup:
+    - command:
+        - bash
+        - -c
+        - |
+          set -uo pipefail
+
+          # su non-login : PATH minimal, on rétablit les bin_dirs de l'agent.
+          export PATH="$HOME/.local/bin:$HOME/.claude/local:$PATH"
+
+          if ! command -v claude >/dev/null 2>&1; then
+            echo "agent claude : FATAL binaire claude introuvable (PATH=$PATH)" >&2
+            exit 127
+          fi
+
+          tentative=1
+          while [ "$tentative" -le 3 ]; do
+            if sortie="$(claude update 2>&1)"; then
+              echo "agent claude : à jour"
+              exit 0
+            fi
+            echo "agent claude : tentative ${tentative}/3 échouée :" >&2
+            echo "$sortie" >&2
+            if [ "$tentative" -lt 3 ]; then
+              sleep 10
+            fi
+            tentative=$((tentative + 1))
+          done
+
+          echo "agent claude : FATAL mise à jour impossible après 3 tentatives (fail-closed)" >&2
+          exit 1
