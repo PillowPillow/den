@@ -201,3 +201,60 @@ func TestLoadStacksDossierAbsent(t *testing.T) {
 		t.Errorf("attendu 0 stack, obtenu %d", len(stacks))
 	}
 }
+
+func TestLoadStackResoutLesKitsTransverses(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisStack(t, denHome, "devx", `image: devx:v1
+kit: ./kit
+kits:
+  - ../../kits/ssh-known-hosts
+  - /absolu/deja
+`)
+
+	s, err := LoadStack(denHome, "devx")
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+
+	attendus := []string{
+		filepath.Join(denHome, "kits", "ssh-known-hosts"),
+		"/absolu/deja",
+	}
+	if len(s.Kits) != len(attendus) {
+		t.Fatalf("Kits = %v, attendu %d entrées", s.Kits, len(attendus))
+	}
+	for i, a := range attendus {
+		if s.Kits[i] != a {
+			t.Errorf("Kits[%d] = %q, attendu %q", i, s.Kits[i], a)
+		}
+	}
+}
+
+// L'ordre est un ordre de LAYERING : le trier casserait la sémantique.
+func TestLoadStackPreserveLOrdreDesKits(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisStack(t, denHome, "devx", `image: devx:v1
+kits: [./z-dernier, ./a-premier]
+`)
+
+	s, err := LoadStack(denHome, "devx")
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if filepath.Base(s.Kits[0]) != "z-dernier" || filepath.Base(s.Kits[1]) != "a-premier" {
+		t.Errorf("l'ordre déclaré doit être préservé ; obtenu %v", s.Kits)
+	}
+}
+
+func TestLoadStackSansKits(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+
+	s, err := LoadStack(denHome, "devx")
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if len(s.Kits) != 0 {
+		t.Errorf("Kits = %v, attendu vide", s.Kits)
+	}
+}

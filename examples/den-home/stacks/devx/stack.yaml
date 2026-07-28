@@ -1,3 +1,5 @@
 image: devx:v1
 kit: ./kit
+# kits:               # kits transverses, layerés AVANT `kit`. L'ordre compte.
+#   - ../../kits/ssh-known-hosts
 egress: []

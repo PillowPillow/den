@@ -12,10 +12,15 @@ import (
 type Stack struct {
 	// Name vient du nom du dossier, JAMAIS du contenu : un objet a une seule
 	// identité, non falsifiable (spec §2).
-	Name   string   `yaml:"-"`
-	Image  string   `yaml:"image"`
-	Parent string   `yaml:"parent"` // arête du DAG de build
-	Kit    string   `yaml:"kit"`    // relatif au dossier de la stack dans le YAML, absolu après chargement
+	Name   string `yaml:"-"`
+	Image  string `yaml:"image"`
+	Parent string `yaml:"parent"` // arête du DAG de build
+	Kit    string `yaml:"kit"`    // relatif au dossier de la stack dans le YAML, absolu après chargement
+	// Kits : kits transverses layerés AVANT Kit (ex. ssh-known-hosts).
+	// Relatifs au dossier de la stack dans le YAML, absolus après chargement.
+	// L'ORDRE EST SIGNIFIANT : c'est un ordre de layering sbx, pas un ensemble —
+	// ne jamais le trier.
+	Kits   []string `yaml:"kits"`
 	Egress []string `yaml:"egress"`
 
 	Dir string `yaml:"-"` // dossier de la stack, rempli au chargement
@@ -48,6 +53,11 @@ func LoadStack(denHome, name string) (*Stack, error) {
 	s.Dir = dir
 	if s.Kit != "" && !filepath.IsAbs(s.Kit) {
 		s.Kit = filepath.Join(dir, s.Kit)
+	}
+	for i, k := range s.Kits {
+		if k != "" && !filepath.IsAbs(k) {
+			s.Kits[i] = filepath.Join(dir, k)
+		}
 	}
 	return &s, nil
 }
