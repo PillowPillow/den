@@ -1,0 +1,10 @@
+create
+--name
+api
+--template
+devx:v1
+--kit
+/den/cache/mixins/api
+shell
+/dev/api
+/home/moi/.den/agents/claude
