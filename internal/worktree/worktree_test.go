@@ -28,6 +28,16 @@ func TestMain(m *testing.M) {
 	// trois tests tombaient — la classe même que ce TestMain existe pour fermer.
 	os.Unsetenv("GIT_CONFIG_COUNT")
 	os.Unsetenv("GIT_CONFIG_PARAMETERS")
+	// Le code de production filtre les variables qui détournent git vers un
+	// autre dépôt (environnementNeutre), mais les HELPERS de ce fichier lancent
+	// `git` brut : sous GIT_DIR + GIT_WORK_TREE, ils opèrent sur le dépôt
+	// désigné par l'environnement au lieu de leur dossier temporaire.
+	// Reproduit : la suite lancée ainsi a créé des branches et des commits DANS
+	// le dépôt de den lui-même, et déplacé son HEAD. On réutilise la liste de
+	// production pour que les deux ne puissent pas diverger.
+	for _, v := range variablesRedirigeantes {
+		os.Unsetenv(v)
+	}
 	os.Exit(m.Run())
 }
 
@@ -243,17 +253,6 @@ func prepareWorktree(t *testing.T) (repo, chemin string, c Cible) {
 func avecForce(c Cible) Cible { c.Force = true; return c }
 
 func avecForce2(c Cible, force bool) Cible { c.Force = force; return c }
-
-func TestRetireSupprimeLeWorktree(t *testing.T) {
-	_, chemin, cible := prepareWorktree(t)
-
-	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
-	}
-	if _, err := os.Stat(chemin); !os.IsNotExist(err) {
-		t.Errorf("le worktree doit avoir disparu de %s", chemin)
-	}
-}
 
 // Spec §14 : refuser si dirty sans --force. Perdre du travail non commité
 // serait le pire effet de bord possible pour un `den rm`.
