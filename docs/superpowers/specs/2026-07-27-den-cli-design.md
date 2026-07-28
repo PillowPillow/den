@@ -417,9 +417,45 @@ internal/
 - **Surface `sbx` figée le 2026-07-28** (v0.35.0) : `policy check network [--sandbox S] [--json]
   TARGET` confirmé (`--sandbox` existe, l'évaluation scopée est donc possible) ; `--label`
   **n'existe pas** → identité par le nom. À revalider si sbx passe en v0.37+.
-- **Nettoyage des worktrees au `rm`** : par défaut on retire les worktrees créés par `den` (git
-  worktree remove) ; `--keep-worktrees` pour conserver. Attention aux modifs non commitées → refuser
-  si dirty sans `--force`.
+- **Nettoyage des worktrees au `rm`** : par défaut `den` retire les worktrees qu'il a créés ;
+  `--keep-worktrees` pour conserver.
+
+  **`den` ne supprime jamais un worktree : il le DÉPLACE** vers
+  `<den_home>/trash/<horodatage>-<nest>-<repo>`, puis élague l'enregistrement (`git worktree prune`).
+  Repli sous `<worktree_root>/.trash` — ou `<repo>/.den/.trash` en layout per-repo — quand
+  `os.Rename` échoue en `EXDEV`, `den_home` et `worktree_root` étant deux réglages indépendants qui
+  peuvent vivre sur deux systèmes de fichiers. Rétention de 30 jours, purgée à chaque mise à la
+  corbeille réussie.
+
+  Ce n'est pas une précaution d'implémentation, c'est la conclusion de cinq tours de relecture de
+  `internal/worktree` : l'énumération des façons dont `git status` cache du travail **ne converge
+  pas** (git ajoute un mécanisme de cache par version — untracked cache en 2.8, fsmonitor par hook en
+  2.16, `core.fsmonitor=true` en 2.37), et le filet de `git worktree remove` tombe **avec** celui de
+  `status`, parce que c'est le même code. Il n'y a pas de second filet. La corbeille ne ferme donc
+  pas un membre de plus : elle fait passer tous les membres futurs, et l'angle mort assumé ci-dessous,
+  de « perte de données » à « un dossier que l'utilisateur remonte d'un `mv` ». Ce qu'elle ne rend
+  pas : le dossier déplacé n'est plus un worktree opérationnel, son enregistrement ayant été élagué —
+  on récupère des fichiers. Les commits, eux, n'ont jamais été en jeu : la branche survit.
+
+- **« dirty » ne veut PAS dire « `git status` n'est pas vide »**. Le sens a été payé sur cinq tours de
+  correction et une lecture naïve le reperdrait. `den` refuse sans `--force` si le worktree porte
+  l'un de ces quatre états :
+  1. des modifications de fichiers **suivis** non commitées, renommages compris ;
+  2. des fichiers **non suivis** — demandés explicitement, `status.showUntrackedFiles = no` étant un
+     réglage de performance répandu qui les cacherait sinon ;
+  3. des fichiers **ignorés isolés** (`.env`, base sqlite locale) : exactement ce qu'on ne commite pas
+     ET qu'on ne retrouve pas. Les **dossiers réellement ignorés** (`node_modules/`, `target/`) sont
+     au contraire écartés, sans quoi `den rm` serait inutilisable sur tout projet JS ou Python ;
+  4. des fichiers **marqués localement** `skip-worktree` / `assume-unchanged` dont le contenu diffère
+     réellement de l'index — git ne rapporte rien sur eux, ni dans `status`, ni dans le filet de
+     `remove`.
+
+  `core.fsmonitor` est neutralisé à l'appel (`-c core.fsmonitor=`) : un démon menteur ou périmé
+  répond « rien n'a changé », et git le croit.
+
+  **Angle mort assumé** : un secret placé dans un dossier réellement ignoré reste invisible au
+  verdict. C'est le prix explicite de l'utilisabilité sur `node_modules/`, et l'un des cas que la
+  corbeille rend réversible.
 - **Emplacement final** du dépôt CLI (nouveau repo) et migration de l'exemple `sbx-devbox` vers
   `~/.den/stacks/`.
 - **Commande `update` de codex** (§4.1) : placeholder non vérifié, à confirmer le jour où l'agent

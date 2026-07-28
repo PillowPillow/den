@@ -3,6 +3,7 @@ package worktree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -218,15 +219,35 @@ func TestAssureDistingueUnRepoInaccessible(t *testing.T) {
 	}
 }
 
-func TestRetireSupprimeLeWorktree(t *testing.T) {
-	repo := depotTest(t, "api")
-	root := t.TempDir()
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+// prepareWorktree monte le décor commun à presque tous les tests de Retire : un
+// dépôt « api », son worktree « feat12 » en layout central, et la Cible qui le
+// désigne — den_home compris, puisque c'est là que vit la corbeille.
+func prepareWorktree(t *testing.T) (repo, chemin string, c Cible) {
+	t.Helper()
+	repo = depotTest(t, "api")
+	c = Cible{
+		DenHome:    t.TempDir(),
+		Layout:     "central",
+		Root:       t.TempDir(),
+		Nest:       "api.feat12",
+		Worktree:   "feat12",
+		CheminRepo: repo,
+	}
+	chemin, err := Assure(context.Background(), NewGit(), c.Layout, c.Root, c.Worktree, c.CheminRepo)
 	if err != nil {
 		t.Fatalf("préparation : %v", err)
 	}
+	return repo, chemin, c
+}
 
-	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+func avecForce(c Cible) Cible { c.Force = true; return c }
+
+func avecForce2(c Cible, force bool) Cible { c.Force = force; return c }
+
+func TestRetireSupprimeLeWorktree(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
 	if _, err := os.Stat(chemin); !os.IsNotExist(err) {
@@ -237,17 +258,12 @@ func TestRetireSupprimeLeWorktree(t *testing.T) {
 // Spec §14 : refuser si dirty sans --force. Perdre du travail non commité
 // serait le pire effet de bord possible pour un `den rm`.
 func TestRetireRefuseUnWorktreeSale(t *testing.T) {
-	repo := depotTest(t, "api")
-	root := t.TempDir()
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	if err := os.WriteFile(filepath.Join(chemin, "brouillon.txt"), []byte("wip"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	_, err := Retire(context.Background(), NewGit(), cible)
 	if err == nil {
 		t.Fatal("un worktree avec des modifications non commitées doit être refusé sans force")
 	}
@@ -263,7 +279,7 @@ func TestRetireRefuseUnWorktreeSale(t *testing.T) {
 		t.Errorf("le worktree refusé doit être INTACT : %v", err)
 	}
 
-	if err := Retire(context.Background(), NewGit(), repo, chemin, true); err != nil {
+	if _, err := Retire(context.Background(), NewGit(), avecForce(cible)); err != nil {
 		t.Fatalf("avec force, la suppression doit passer : %v", err)
 	}
 }
@@ -271,22 +287,18 @@ func TestRetireRefuseUnWorktreeSale(t *testing.T) {
 // Idempotence de la suppression : `den rm` peut retomber sur un worktree déjà
 // retiré à la main. Sans cette branche, git échouerait sur un chemin absent.
 func TestRetireSurUnWorktreeDejaAbsentEstIdempotent(t *testing.T) {
-	repo := depotTest(t, "api")
-	root := t.TempDir()
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
-	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+	_, _, cible := prepareWorktree(t)
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 		t.Fatalf("première suppression : %v", err)
 	}
 
-	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 		t.Errorf("un worktree déjà absent doit rendre nil ; obtenu : %v", err)
 	}
-	// Un chemin qui n'a jamais existé est traité pareil.
-	jamais := filepath.Join(root, "feat12", "jamais-cree")
-	if err := Retire(context.Background(), NewGit(), repo, jamais, false); err != nil {
+	// Un worktree que den n'a jamais créé est traité pareil.
+	jamais := cible
+	jamais.Worktree = "jamais-cree"
+	if _, err := Retire(context.Background(), NewGit(), jamais); err != nil {
 		t.Errorf("un worktree jamais créé doit rendre nil ; obtenu : %v", err)
 	}
 }
@@ -296,12 +308,7 @@ func TestRetireSurUnWorktreeDejaAbsentEstIdempotent(t *testing.T) {
 // regarderait que les fichiers non suivis (`git ls-files --others`) passerait
 // le test du brouillon tout en détruisant ce travail-ci.
 func TestRetireRefuseUnFichierSuiviModifie(t *testing.T) {
-	repo := depotTest(t, "api")
-	root := t.TempDir()
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	fichier := filepath.Join(chemin, "suivi.txt")
 	if err := os.WriteFile(fichier, []byte("commité\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -314,7 +321,7 @@ func TestRetireRefuseUnFichierSuiviModifie(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	_, err := Retire(context.Background(), NewGit(), cible)
 	if err == nil {
 		t.Fatal("une modification non commitée d'un fichier suivi doit être refusée sans force")
 	}
@@ -396,17 +403,13 @@ func TestAssureRepliQuandLeRepoNaPasDOrigine(t *testing.T) {
 // pas : ni git status --porcelain ni le filet de git worktree remove ne le
 // voient. C'est le seul cas où Retire détruisait sans que rien ne l'ait dit.
 func TestRetireRefuseUnFichierIgnore(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	ecris(t, filepath.Join(chemin, ".gitignore"), ".env\n")
 	git(t, chemin, "add", ".gitignore")
 	git(t, chemin, "commit", "-m", "ignore .env")
 	ecris(t, filepath.Join(chemin, ".env"), "SECRET=hunter2\n")
 
-	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	_, err := Retire(context.Background(), NewGit(), cible)
 	if err == nil {
 		t.Fatal("un fichier ignoré non retrouvable doit être refusé sans force")
 	}
@@ -424,11 +427,7 @@ func TestRetireRefuseUnFichierIgnore(t *testing.T) {
 // Contrepartie : un dossier ignoré en bloc est du cache régénérable. Refuser
 // dessus rendrait den rm inutilisable sur tout projet JS ou Python.
 func TestRetireAccepteUnDossierIgnoreEnBloc(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	ecris(t, filepath.Join(chemin, ".gitignore"), "node_modules/\n")
 	git(t, chemin, "add", ".gitignore")
 	git(t, chemin, "commit", "-m", "ignore node_modules")
@@ -437,7 +436,7 @@ func TestRetireAccepteUnDossierIgnoreEnBloc(t *testing.T) {
 	}
 	ecris(t, filepath.Join(chemin, "node_modules", "pkg", "index.js"), "module.exports={}\n")
 
-	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 		t.Fatalf("un dossier ignoré en bloc ne doit pas bloquer la suppression : %v", err)
 	}
 }
@@ -445,12 +444,8 @@ func TestRetireAccepteUnDossierIgnoreEnBloc(t *testing.T) {
 // Dossier disparu : l'enregistrement git survit et bloque tout Assure ultérieur.
 // Rendre nil sans rien faire, c'était mentir sur un nettoyage non effectué.
 func TestRetireEffaceUnEnregistrementOrphelin(t *testing.T) {
-	repo := depotTest(t, "api")
-	root := t.TempDir()
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	repo, chemin, cible := prepareWorktree(t)
+	root := cible.Root
 	if err := os.RemoveAll(chemin); err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +453,7 @@ func TestRetireEffaceUnEnregistrementOrphelin(t *testing.T) {
 		t.Fatalf("préparation : enregistrement orphelin attendu, obtenu :\n%s", liste)
 	}
 
-	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
 	if liste := git(t, repo, "worktree", "list"); strings.Contains(liste, "prunable") {
@@ -473,17 +468,13 @@ func TestRetireEffaceUnEnregistrementOrphelin(t *testing.T) {
 // Tant que l'enregistrement orphelin est là, Assure doit dire quoi faire en
 // français, pas relayer le « fatal: … missing but already registered » de git.
 func TestAssureSignaleUnEnregistrementOrphelin(t *testing.T) {
-	repo := depotTest(t, "api")
-	root := t.TempDir()
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	repo, chemin, cible := prepareWorktree(t)
+	root := cible.Root
 	if err := os.RemoveAll(chemin); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+	_, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
 	if err == nil {
 		t.Fatal("un enregistrement orphelin doit produire une erreur actionnable")
 	}
@@ -606,12 +597,23 @@ func TestRetireRefuseUnWorktreeDunAutreRepo(t *testing.T) {
 	creeDepot(t, repoA)
 	creeDepot(t, repoB)
 
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repoA)
+	root := t.TempDir()
+	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repoA)
 	if err != nil {
 		t.Fatalf("préparation : %v", err)
 	}
 
-	err = Retire(context.Background(), NewGit(), repoB, chemin, true)
+	// Les deux dépôts s'appellent « api » : Chemin, qui ne retient que le
+	// basename, désigne pour repoB le worktree que repoA vient d'obtenir.
+	cibleB := Cible{
+		DenHome: t.TempDir(), Layout: "central", Root: root,
+		Nest: "beta.feat12", Worktree: "feat12", CheminRepo: repoB, Force: true,
+	}
+	if got := Chemin(cibleB.Layout, cibleB.Root, cibleB.Worktree, cibleB.CheminRepo); got != chemin {
+		t.Fatalf("préparation : les deux cibles doivent viser le même dossier ; %q contre %q", got, chemin)
+	}
+
+	_, err = Retire(context.Background(), NewGit(), cibleB)
 	if err == nil {
 		t.Fatal("Retire doit refuser un worktree étranger au repo donné")
 	}
@@ -648,33 +650,24 @@ func (g *gitEspion) appel(prefixe ...string) []string {
 	return nil
 }
 
-// Sans force, den délègue le dernier mot à git : ajouter --force en toutes
-// circonstances désarmerait le second filet sans qu'aucun test ne le voie.
-func TestRetireNArmePasForceSansDemande(t *testing.T) {
-	for _, cas := range []struct {
-		nom         string
-		force       bool
-		attendForce bool
-	}{
-		{"sans force", false, false},
-		{"avec force", true, true},
-	} {
-		t.Run(cas.nom, func(t *testing.T) {
-			repo := depotTest(t, "api")
-			chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-			if err != nil {
-				t.Fatalf("préparation : %v", err)
-			}
+// den ne supprime PLUS : il déplace. `git worktree remove` porte son propre
+// filet de sécurité, mais ce filet est le MÊME code que `git status` — mesuré
+// sur cinq tours de relecture : quand status ne voit rien, remove ne voit rien
+// non plus. Un appel à `remove` réintroduirait donc l'irréversible sans rien
+// ajouter à la protection.
+func TestRetireNAppelleJamaisWorktreeRemove(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		t.Run(fmt.Sprintf("force=%v", force), func(t *testing.T) {
+			_, _, cible := prepareWorktree(t)
 			espion := &gitEspion{reel: NewGit()}
-			if err := Retire(context.Background(), espion, repo, chemin, cas.force); err != nil {
+			if _, err := Retire(context.Background(), espion, avecForce2(cible, force)); err != nil {
 				t.Fatalf("erreur inattendue : %v", err)
 			}
-			argv := espion.appel("worktree", "remove")
-			if argv == nil {
-				t.Fatalf("aucun `git worktree remove` émis ; appels : %v", espion.appels)
+			if argv := espion.appel("worktree", "remove"); argv != nil {
+				t.Errorf("`git worktree remove` a été émis : %v", argv)
 			}
-			if got := slices.Contains(argv, "--force"); got != cas.attendForce {
-				t.Errorf("--force présent = %v, attendu %v ; argv = %v", got, cas.attendForce, argv)
+			if argv := espion.appel("worktree", "prune"); argv == nil {
+				t.Errorf("l'enregistrement doit être élagué ; appels : %v", espion.appels)
 			}
 		})
 	}
@@ -685,11 +678,7 @@ func TestRetireNArmePasForceSansDemande(t *testing.T) {
 // tout son contenu l'est. Or `*.env` est la façon la plus répandue d'ignorer des
 // secrets — le dossier collapsé n'est pas du cache régénérable.
 func TestRetireRefuseUnSecretDansUnDossierNonIgnore(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	ecris(t, filepath.Join(chemin, ".gitignore"), "*.env\n")
 	git(t, chemin, "add", ".gitignore")
 	git(t, chemin, "commit", "-m", "ignore les .env")
@@ -704,7 +693,7 @@ func TestRetireRefuseUnSecretDansUnDossierNonIgnore(t *testing.T) {
 		t.Fatal("préparation : conf/ ne devrait pas être ignoré lui-même")
 	}
 
-	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	_, err := Retire(context.Background(), NewGit(), cible)
 	if err == nil {
 		t.Fatal("un dossier non ignoré dont le contenu l'est doit être refusé sans force")
 	}
@@ -722,11 +711,7 @@ func TestRetireRefuseUnSecretDansUnDossierNonIgnore(t *testing.T) {
 // plus par « / » et ferait refuser den rm sur du simple cache — en affichant un
 // chemin en octal que l'utilisateur ne reconnaîtrait pas.
 func TestRetireAccepteUnDossierIgnoreAuNomCite(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	ecris(t, filepath.Join(chemin, ".gitignore"), "données/\nmon cache/\n")
 	git(t, chemin, "add", ".gitignore")
 	git(t, chemin, "commit", "-m", "ignore les caches")
@@ -737,7 +722,7 @@ func TestRetireAccepteUnDossierIgnoreAuNomCite(t *testing.T) {
 		ecris(t, filepath.Join(chemin, nom, "x.bin"), "cache\n")
 	}
 
-	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 		t.Fatalf("un dossier ignoré en bloc au nom cité ne doit pas bloquer la suppression : %v", err)
 	}
 }
@@ -747,19 +732,14 @@ func TestRetireAccepteUnDossierIgnoreAuNomCite(t *testing.T) {
 // dossier disparaît légitimement. Sans revérification, Retire rendrait nil en
 // prétendant avoir nettoyé et Assure renverrait vers `den rm` : boucle fermée.
 func TestRetireSignaleUnWorktreeVerrouille(t *testing.T) {
-	repo := depotTest(t, "api")
-	root := t.TempDir()
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	repo, chemin, cible := prepareWorktree(t)
 	git(t, repo, "worktree", "lock", chemin)
 	if err := os.RemoveAll(chemin); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, force := range []bool{false, true} {
-		err := Retire(context.Background(), NewGit(), repo, chemin, force)
+		_, err := Retire(context.Background(), NewGit(), avecForce2(cible, force))
 		if err == nil {
 			t.Fatalf("force=%v : Retire ne doit pas prétendre avoir nettoyé un enregistrement verrouillé", force)
 		}
@@ -788,11 +768,7 @@ func TestRetireRefuseUnSecretSousUneRegleDeContenu(t *testing.T) {
 	}
 	for _, c := range cas {
 		t.Run(c.nom, func(t *testing.T) {
-			repo := depotTest(t, "api")
-			chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-			if err != nil {
-				t.Fatalf("préparation : %v", err)
-			}
+			_, chemin, cible := prepareWorktree(t)
 			ecris(t, filepath.Join(chemin, ".gitignore"), c.racine)
 			git(t, chemin, "add", ".gitignore")
 			git(t, chemin, "commit", "-m", "regles")
@@ -810,7 +786,7 @@ func TestRetireRefuseUnSecretSousUneRegleDeContenu(t *testing.T) {
 				t.Fatal("préparation : conf (sans /) ne devrait pas être ignoré")
 			}
 
-			err = Retire(context.Background(), NewGit(), repo, chemin, false)
+			_, err := Retire(context.Background(), NewGit(), cible)
 			if err == nil {
 				t.Fatal("une règle qui ne couvre que le CONTENU ne rend pas le dossier jetable")
 			}
@@ -828,15 +804,11 @@ func TestRetireRefuseUnSecretSousUneRegleDeContenu(t *testing.T) {
 // gros dépôts. den lit git sous la config de l'utilisateur : sans demander
 // explicitement les fichiers non suivis, toute la garde du spec §14 se désarme.
 func TestRetireVoitLeTravailNonSuiviMalgreLaConfigDuDepot(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	git(t, chemin, "config", "status.showUntrackedFiles", "no")
 	ecris(t, filepath.Join(chemin, "brouillon.txt"), "wip\n")
 
-	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	_, err := Retire(context.Background(), NewGit(), cible)
 	if err == nil {
 		t.Fatal("le brouillon non suivi doit être refusé quelle que soit la config du dépôt")
 	}
@@ -858,11 +830,7 @@ func TestRetireVoitLeTravailNonSuiviMalgreLaConfigDuDepot(t *testing.T) {
 func TestRetireRefuseUnFichierMarqueLocalement(t *testing.T) {
 	for _, drapeau := range []string{"--skip-worktree", "--assume-unchanged"} {
 		t.Run(drapeau, func(t *testing.T) {
-			repo := depotTest(t, "api")
-			chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-			if err != nil {
-				t.Fatalf("préparation : %v", err)
-			}
+			_, chemin, cible := prepareWorktree(t)
 			ecris(t, filepath.Join(chemin, "local.conf"), "v1\n")
 			git(t, chemin, "add", "local.conf")
 			git(t, chemin, "commit", "-m", "ajoute local.conf")
@@ -874,7 +842,7 @@ func TestRetireRefuseUnFichierMarqueLocalement(t *testing.T) {
 				t.Fatalf("préparation : git ne devrait rien rapporter, obtenu %q", etat)
 			}
 
-			err = Retire(context.Background(), NewGit(), repo, chemin, false)
+			_, err := Retire(context.Background(), NewGit(), cible)
 			if err == nil {
 				t.Fatal("un fichier marqué localement modifié ne doit pas être détruit sans force")
 			}
@@ -895,11 +863,7 @@ func TestRetireRefuseUnFichierMarqueLocalement(t *testing.T) {
 // la présence : un fichier marqué ET présent porte un contenu local que git
 // refuse de regarder ; marqué et absent, il est simplement hors du cône.
 func TestRetireAccepteUnSparseCheckout(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	for _, d := range []string{"garde", "exclu"} {
 		if err := os.MkdirAll(filepath.Join(chemin, d), 0o755); err != nil {
 			t.Fatal(err)
@@ -922,7 +886,7 @@ func TestRetireAccepteUnSparseCheckout(t *testing.T) {
 		t.Fatalf("préparation : le fichier hors du cône devrait être absent du disque")
 	}
 
-	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 		t.Fatalf("un sparse-checkout ne doit pas bloquer la suppression : %v", err)
 	}
 }
@@ -932,13 +896,9 @@ func TestRetireAccepteUnSparseCheckout(t *testing.T) {
 // worktree parfaitement propre — et les bits SURVIVENT au réglage, donc le
 // blocage était définitif.
 func TestRetireAccepteUnDepotSousIgnoreStat(t *testing.T) {
-	prepare := func(t *testing.T) (repo, chemin string) {
+	prepare := func(t *testing.T) (chemin string, cible Cible) {
 		t.Helper()
-		repo = depotTest(t, "api")
-		chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-		if err != nil {
-			t.Fatalf("préparation : %v", err)
-		}
+		_, chemin, cible = prepareWorktree(t)
 		git(t, chemin, "config", "core.ignoreStat", "true")
 		// Contenus DISTINCTS : avec trois fichiers identiques, toute permutation
 		// des empreintes serait un no-op et l'assertion « les fichiers intacts ne
@@ -951,12 +911,12 @@ func TestRetireAccepteUnDepotSousIgnoreStat(t *testing.T) {
 		if drapeaux := git(t, chemin, "ls-files", "-v"); !strings.Contains(drapeaux, "h f1.txt") {
 			t.Fatalf("préparation : bit assume-unchanged attendu, obtenu :\n%s", drapeaux)
 		}
-		return repo, chemin
+		return chemin, cible
 	}
 
 	t.Run("reglage actif", func(t *testing.T) {
-		repo, chemin := prepare(t)
-		if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+		_, cible := prepare(t)
+		if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 			t.Fatalf("un worktree propre doit rester supprimable : %v", err)
 		}
 	})
@@ -964,25 +924,25 @@ func TestRetireAccepteUnDepotSousIgnoreStat(t *testing.T) {
 	// Le cas qui rend le blocage définitif : le réglage est retiré, les bits
 	// restent. Lire core.ignoreStat ne suffirait donc pas à débloquer.
 	t.Run("reglage retire mais bits persistants", func(t *testing.T) {
-		repo, chemin := prepare(t)
+		chemin, cible := prepare(t)
 		git(t, chemin, "config", "--unset", "core.ignoreStat")
 		if drapeaux := git(t, chemin, "ls-files", "-v"); !strings.Contains(drapeaux, "h f1.txt") {
 			t.Fatalf("préparation : les bits doivent survivre au --unset, obtenu :\n%s", drapeaux)
 		}
-		if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+		if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 			t.Fatalf("un worktree propre doit rester supprimable : %v", err)
 		}
 	})
 
 	// Contrepartie : sous le même réglage, une VRAIE modification reste refusée.
 	t.Run("modification reelle sous le meme reglage", func(t *testing.T) {
-		repo, chemin := prepare(t)
+		chemin, cible := prepare(t)
 		ecris(t, filepath.Join(chemin, "f2.txt"), "TRAVAIL IRREMPLACABLE\n")
 		if etat := git(t, chemin, "status", "--porcelain"); etat != "" {
 			t.Fatalf("préparation : git ne devrait rien voir, obtenu %q", etat)
 		}
 
-		err := Retire(context.Background(), NewGit(), repo, chemin, false)
+		_, err := Retire(context.Background(), NewGit(), cible)
 		if err == nil {
 			t.Fatal("une modification réelle sous assume-unchanged doit être refusée")
 		}
@@ -1017,11 +977,7 @@ func TestRetireRefuseUnCheminQueGitNePeutPasHacher(t *testing.T) {
 	}
 	for _, c := range cas {
 		t.Run(c.nom, func(t *testing.T) {
-			repo := depotTest(t, "api")
-			chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-			if err != nil {
-				t.Fatalf("préparation : %v", err)
-			}
+			_, chemin, cible := prepareWorktree(t)
 			suivi := filepath.Join(chemin, "suivi.txt")
 			ecris(t, suivi, "v1\n")
 			git(t, chemin, "add", "suivi.txt")
@@ -1036,7 +992,7 @@ func TestRetireRefuseUnCheminQueGitNePeutPasHacher(t *testing.T) {
 			ctx, annule := context.WithTimeout(context.Background(), 15*time.Second)
 			defer annule()
 			debut := time.Now()
-			err = Retire(ctx, NewGit(), repo, chemin, false)
+			_, err := Retire(ctx, NewGit(), cible)
 			ecoule := time.Since(debut)
 
 			if ecoule > 5*time.Second {
@@ -1068,11 +1024,7 @@ func TestRetireAccepteUnLienSymboliqueIntact(t *testing.T) {
 	}
 	for _, c := range cas {
 		t.Run(c.nom, func(t *testing.T) {
-			repo := depotTest(t, "api")
-			chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-			if err != nil {
-				t.Fatalf("préparation : %v", err)
-			}
+			_, chemin, cible := prepareWorktree(t)
 			ecris(t, filepath.Join(chemin, "cible.txt"), "CONTENU DE LA CIBLE\n")
 			if err := os.Symlink(c.cible, filepath.Join(chemin, "lien.txt")); err != nil {
 				t.Skipf("liens symboliques indisponibles : %v", err)
@@ -1084,7 +1036,7 @@ func TestRetireAccepteUnLienSymboliqueIntact(t *testing.T) {
 				t.Fatalf("préparation : le worktree doit être propre, obtenu %q", etat)
 			}
 
-			if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+			if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 				t.Fatalf("un lien symbolique intact ne doit pas bloquer la suppression : %v", err)
 			}
 		})
@@ -1095,11 +1047,7 @@ func TestRetireAccepteUnLienSymboliqueIntact(t *testing.T) {
 // filtres de .gitattributes. Sans elle, un dépôt en autocrlf dont le disque est
 // en CRLF — donc parfaitement propre — serait refusé.
 func TestRetireAppliqueLesFiltresGitattributes(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	git(t, chemin, "config", "core.autocrlf", "true")
 	ecris(t, filepath.Join(chemin, ".gitattributes"), "* text=auto\n")
 	ecris(t, filepath.Join(chemin, "f.txt"), "une ligne\nune autre\n")
@@ -1112,7 +1060,7 @@ func TestRetireAppliqueLesFiltresGitattributes(t *testing.T) {
 		t.Fatalf("préparation : le worktree doit être propre, obtenu %q", etat)
 	}
 
-	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 		t.Fatalf("les fins de ligne converties ne sont pas une modification : %v", err)
 	}
 }
@@ -1120,11 +1068,7 @@ func TestRetireAppliqueLesFiltresGitattributes(t *testing.T) {
 // Un fichier suivi remplacé sur le disque par un lien symbolique cassé porte un
 // contenu que l'object store ne rend pas. os.Stat suit le lien et l'écartait.
 func TestRetireRefuseUnFichierMarqueRemplaceParUnLien(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	suivi := filepath.Join(chemin, "suivi.txt")
 	ecris(t, suivi, "v1\n")
 	git(t, chemin, "add", "suivi.txt")
@@ -1137,7 +1081,7 @@ func TestRetireRefuseUnFichierMarqueRemplaceParUnLien(t *testing.T) {
 		t.Skipf("liens symboliques indisponibles : %v", err)
 	}
 
-	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	_, err := Retire(context.Background(), NewGit(), cible)
 	if err == nil {
 		t.Fatal("un fichier suivi remplacé par un lien cassé ne doit pas être détruit sans force")
 	}
@@ -1151,11 +1095,7 @@ func TestRetireRefuseUnFichierMarqueRemplaceParUnLien(t *testing.T) {
 // conclurait « identique » et détruirait le fichier ; c'est le mode de l'entrée
 // d'index (100644 contre 120000) qui tranche.
 func TestRetireRefuseUnFichierRemplaceParUnLienDeMemeTexte(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	ecris(t, filepath.Join(chemin, "cible.txt"), "CONTENU\n")
 	// Contenu sans retour à la ligne, identique au texte du futur lien.
 	if err := os.WriteFile(filepath.Join(chemin, "suivi.txt"), []byte("cible.txt"), 0o644); err != nil {
@@ -1171,7 +1111,7 @@ func TestRetireRefuseUnFichierRemplaceParUnLienDeMemeTexte(t *testing.T) {
 		t.Skipf("liens symboliques indisponibles : %v", err)
 	}
 
-	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	_, err := Retire(context.Background(), NewGit(), cible)
 	if err == nil {
 		t.Fatal("un fichier suivi devenu lien symbolique est une modification, même à texte égal")
 	}
@@ -1186,11 +1126,7 @@ func TestRetireRefuseUnFichierRemplaceParUnLienDeMemeTexte(t *testing.T) {
 // MAJUSCULE dans ls-files -v : la sonde des bits d'index ne peut pas voir ce
 // cas-là, par construction.
 func TestRetireVoitUneModificationMalgreFsmonitor(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	ecris(t, filepath.Join(chemin, "suivi.txt"), "v1\n")
 	git(t, chemin, "add", "suivi.txt")
 	git(t, chemin, "commit", "-m", "ajoute suivi.txt")
@@ -1212,7 +1148,7 @@ func TestRetireVoitUneModificationMalgreFsmonitor(t *testing.T) {
 		t.Fatalf("préparation : drapeau majuscule attendu, obtenu :\n%s", drapeaux)
 	}
 
-	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	_, err := Retire(context.Background(), NewGit(), cible)
 	if err == nil {
 		t.Fatal("une modification cachée par fsmonitor ne doit pas être détruite sans force")
 	}
@@ -1238,18 +1174,14 @@ func (g gitDefaillant) Run(ctx context.Context, dir string, args ...string) ([]b
 func TestRetireRefuseQuandUneSondeEstMuette(t *testing.T) {
 	for _, sonde := range []string{"ls-files", "hash-object"} {
 		t.Run(sonde, func(t *testing.T) {
-			repo := depotTest(t, "api")
-			chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-			if err != nil {
-				t.Fatalf("préparation : %v", err)
-			}
+			_, chemin, cible := prepareWorktree(t)
 			ecris(t, filepath.Join(chemin, "local.conf"), "v1\n")
 			git(t, chemin, "add", "local.conf")
 			git(t, chemin, "commit", "-m", "ajoute local.conf")
 			git(t, chemin, "update-index", "--skip-worktree", "local.conf")
 
 			g := gitDefaillant{reel: NewGit(), sur: sonde}
-			err = Retire(context.Background(), g, repo, chemin, false)
+			_, err := Retire(context.Background(), g, cible)
 			if err == nil {
 				t.Fatalf("une panne de git %s ne doit pas autoriser la suppression", sonde)
 			}
@@ -1270,7 +1202,7 @@ func TestRetireRefuseQuandUneSondeEstMuette(t *testing.T) {
 // deux chaînes brutes différentes. Sur macOS, $TMPDIR vit sous /var → private/var :
 // la résolution est structurellement absente là où on en a besoin.
 func TestGardesDeCul2DeSacTiennentSousUnLienSymbolique(t *testing.T) {
-	prepare := func(t *testing.T) (repo, chemin string) {
+	prepare := func(t *testing.T) (repo, chemin string, c Cible) {
 		t.Helper()
 		repo = depotTest(t, "api")
 		base := t.TempDir()
@@ -1282,20 +1214,24 @@ func TestGardesDeCul2DeSacTiennentSousUnLienSymbolique(t *testing.T) {
 		if err := os.Symlink(reel, lien); err != nil {
 			t.Skipf("liens symboliques indisponibles : %v", err)
 		}
-		chemin, err := Assure(context.Background(), NewGit(), "central", lien, "feat12", repo)
+		c = Cible{
+			DenHome: t.TempDir(), Layout: "central", Root: lien,
+			Nest: "api.feat12", Worktree: "feat12", CheminRepo: repo,
+		}
+		chemin, err := Assure(context.Background(), NewGit(), c.Layout, c.Root, c.Worktree, c.CheminRepo)
 		if err != nil {
 			t.Fatalf("préparation : %v", err)
 		}
-		return repo, chemin
+		return repo, chemin, c
 	}
 
 	t.Run("Retire sur un enregistrement verrouille", func(t *testing.T) {
-		repo, chemin := prepare(t)
+		repo, chemin, cible := prepare(t)
 		git(t, repo, "worktree", "lock", chemin)
 		if err := os.RemoveAll(chemin); err != nil {
 			t.Fatal(err)
 		}
-		err := Retire(context.Background(), NewGit(), repo, chemin, false)
+		_, err := Retire(context.Background(), NewGit(), cible)
 		if err == nil {
 			t.Fatal("Retire ne doit pas prétendre avoir nettoyé un enregistrement verrouillé")
 		}
@@ -1305,7 +1241,7 @@ func TestGardesDeCul2DeSacTiennentSousUnLienSymbolique(t *testing.T) {
 	})
 
 	t.Run("Assure sur un enregistrement orphelin", func(t *testing.T) {
-		repo, chemin := prepare(t)
+		repo, chemin, _ := prepare(t)
 		git(t, repo, "worktree", "lock", chemin)
 		if err := os.RemoveAll(chemin); err != nil {
 			t.Fatal(err)
@@ -1328,17 +1264,13 @@ func TestGardesDeCul2DeSacTiennentSousUnLienSymbolique(t *testing.T) {
 // à part entière dès que son 3e caractère est une espace — et den nomme alors à
 // l'utilisateur un fichier qui n'existe pas.
 func TestRetireNInventePasDeFichierSurUnRenommage(t *testing.T) {
-	repo := depotTest(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
-	if err != nil {
-		t.Fatalf("préparation : %v", err)
-	}
+	_, chemin, cible := prepareWorktree(t)
 	ecris(t, filepath.Join(chemin, "ab cd.txt"), "contenu\n")
 	git(t, chemin, "add", "ab cd.txt")
 	git(t, chemin, "commit", "-m", "ajoute ab cd.txt")
 	git(t, chemin, "mv", "ab cd.txt", "xy.txt")
 
-	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	_, err := Retire(context.Background(), NewGit(), cible)
 	if err == nil {
 		t.Fatal("un renommage non commité est une modification : refus attendu")
 	}
@@ -1379,8 +1311,259 @@ func TestAssureSuitUnWorktreeRootParLienSymbolique(t *testing.T) {
 	if premier != second {
 		t.Errorf("chemins divergents : %q puis %q", premier, second)
 	}
-	if err := Retire(context.Background(), NewGit(), repo, premier, false); err != nil {
+	cible := Cible{
+		DenHome: t.TempDir(), Layout: "central", Root: lien,
+		Nest: "api.feat12", Worktree: "feat12", CheminRepo: repo,
+	}
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 		t.Errorf("la suppression doit tenir à travers le lien : %v", err)
+	}
+}
+
+// ── La corbeille ─────────────────────────────────────────────────────────────
+//
+// Cinq tours de relecture de la tâche 10 ont prouvé que l'énumération des
+// façons dont git cache du travail ne converge pas, et que le filet de
+// `git worktree remove` tombe AVEC celui de `git status` puisque c'est le même
+// code. La réponse n'est pas un verdict de plus : c'est de ne jamais supprimer.
+
+// lisEntrees rend les noms des entrées d'un dossier, ou nil s'il n'existe pas.
+func lisEntrees(t *testing.T, dir string) []string {
+	t.Helper()
+	entrees, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("lecture de %s : %v", dir, err)
+	}
+	var noms []string
+	for _, e := range entrees {
+		noms = append(noms, e.Name())
+	}
+	slices.Sort(noms)
+	return noms
+}
+
+// La propriété structurelle : le dossier n'est pas détruit, il est déplacé.
+func TestRetireMetLeWorktreeALaCorbeille(t *testing.T) {
+	repo, chemin, cible := prepareWorktree(t)
+	ecris(t, filepath.Join(chemin, "suivi.txt"), "commité\n")
+	git(t, chemin, "add", "suivi.txt")
+	git(t, chemin, "commit", "-m", "ajoute suivi.txt")
+
+	dest, err := Retire(context.Background(), NewGit(), cible)
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+
+	if _, err := os.Stat(chemin); !os.IsNotExist(err) {
+		t.Errorf("le worktree doit avoir quitté %s ; obtenu : %v", chemin, err)
+	}
+	corbeille := filepath.Join(cible.DenHome, "trash")
+	if dest == "" {
+		t.Fatal("Retire doit rendre le chemin de l'entrée de corbeille")
+	}
+	if filepath.Dir(dest) != corbeille {
+		t.Errorf("l'entrée doit vivre sous %s ; obtenu %s", corbeille, dest)
+	}
+	// Le nom doit permettre à l'utilisateur de retrouver SON dossier parmi
+	// d'autres : sans le nest ni le repo, la corbeille est un tas anonyme.
+	for _, attendu := range []string{cible.Nest, filepath.Base(repo)} {
+		if !strings.Contains(filepath.Base(dest), attendu) {
+			t.Errorf("le nom de l'entrée doit contenir %q ; obtenu %q", attendu, filepath.Base(dest))
+		}
+	}
+	if contenu, err := os.ReadFile(filepath.Join(dest, "suivi.txt")); err != nil || string(contenu) != "commité\n" {
+		t.Errorf("le contenu doit avoir suivi le déplacement ; lu %q, err %v", contenu, err)
+	}
+
+	// L'enregistrement git doit être élagué, sans quoi Assure refuserait pour
+	// toujours de recréer ce worktree.
+	if liste := git(t, repo, "worktree", "list"); strings.Contains(liste, chemin) {
+		t.Errorf("l'enregistrement doit être élagué, obtenu :\n%s", liste)
+	}
+	if _, err := Assure(context.Background(), NewGit(), cible.Layout, cible.Root, cible.Worktree, cible.CheminRepo); err != nil {
+		t.Errorf("le re-spawn doit repartir après la mise à la corbeille : %v", err)
+	}
+	// La branche survit : les commits de l'utilisateur ne sont pas en jeu.
+	if _, err := gitTolerant(t, repo, "show-ref", "--verify", "refs/heads/"+cible.Worktree); err != nil {
+		t.Errorf("la branche %s doit survivre : %v", cible.Worktree, err)
+	}
+}
+
+// LE cas que la corbeille existe pour rendre réversible : --force ne perd plus
+// rien. Un fichier IGNORÉ est le pire des trois — invisible à `git status`, au
+// filet de `git worktree remove`, et absent de l'object store.
+func TestRetireAvecForceConserveLeTravailDansLaCorbeille(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	ecris(t, filepath.Join(chemin, ".gitignore"), ".env\n")
+	git(t, chemin, "add", ".gitignore")
+	git(t, chemin, "commit", "-m", "ignore .env")
+	ecris(t, filepath.Join(chemin, ".env"), "SECRET=hunter2\n")
+	ecris(t, filepath.Join(chemin, "brouillon.txt"), "TRAVAIL IRREMPLACABLE\n")
+
+	dest, err := Retire(context.Background(), NewGit(), avecForce(cible))
+	if err != nil {
+		t.Fatalf("avec force, la mise à la corbeille doit passer : %v", err)
+	}
+	for _, cas := range []struct{ nom, contenu string }{
+		{".env", "SECRET=hunter2\n"},
+		{"brouillon.txt", "TRAVAIL IRREMPLACABLE\n"},
+	} {
+		lu, err := os.ReadFile(filepath.Join(dest, cas.nom))
+		if err != nil || string(lu) != cas.contenu {
+			t.Errorf("%s doit être récupérable dans %s ; lu %q, err %v", cas.nom, dest, lu, err)
+		}
+	}
+}
+
+// den_home et worktree_root peuvent vivre sur des systèmes de fichiers
+// différents : os.Rename échoue alors en EXDEV. Recopier à la main un gros
+// worktree serait long et interruptible — la corbeille bascule sous
+// worktree_root, qui porte le worktree donc partage forcément son système.
+func TestRetireRepliQuandLaCorbeilleEstSurUnAutreSysteme(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	ailleurs, err := os.MkdirTemp("/dev/shm", "den-corbeille-")
+	if err != nil {
+		t.Skipf("pas de second système de fichiers accessible : %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(ailleurs) })
+	if peripherique(t, ailleurs) == peripherique(t, chemin) {
+		t.Skip("/dev/shm est sur le même système de fichiers que le worktree")
+	}
+	cible.DenHome = ailleurs
+	ecris(t, filepath.Join(chemin, "brouillon.txt"), "TRAVAIL IRREMPLACABLE\n")
+
+	dest, err := Retire(context.Background(), NewGit(), avecForce(cible))
+	if err != nil {
+		t.Fatalf("un den_home sur un autre système ne doit pas empêcher la corbeille : %v", err)
+	}
+	if filepath.Dir(dest) != filepath.Join(cible.Root, ".trash") {
+		t.Errorf("le repli doit vivre sous %s ; obtenu %s", filepath.Join(cible.Root, ".trash"), dest)
+	}
+	if lu, err := os.ReadFile(filepath.Join(dest, "brouillon.txt")); err != nil ||
+		string(lu) != "TRAVAIL IRREMPLACABLE\n" {
+		t.Errorf("le travail doit être récupérable ; lu %q, err %v", lu, err)
+	}
+	if _, err := os.Stat(chemin); !os.IsNotExist(err) {
+		t.Errorf("le worktree doit avoir quitté %s ; obtenu : %v", chemin, err)
+	}
+}
+
+func peripherique(t *testing.T, chemin string) uint64 {
+	t.Helper()
+	infos, err := os.Stat(chemin)
+	if err != nil {
+		t.Fatalf("stat de %s : %v", chemin, err)
+	}
+	st, ok := infos.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skipf("numéro de périphérique indisponible pour %s", chemin)
+	}
+	return uint64(st.Dev)
+}
+
+// Une corbeille sans rétention est une fuite de disque. La purge se fait sur
+// l'HORODATAGE DU NOM — celui que den a posé — et jamais sur un nom qu'elle ne
+// sait pas lire : un dossier que l'utilisateur a rangé là ne doit pas partir.
+func TestRetirePurgeLesEntreesTropAnciennes(t *testing.T) {
+	_, _, cible := prepareWorktree(t)
+	corbeille := filepath.Join(cible.DenHome, "trash")
+	if err := os.MkdirAll(corbeille, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vieux := time.Now().Add(-retentionCorbeille - 24*time.Hour).Format(formatHorodatage)
+	recent := time.Now().Add(-24 * time.Hour).Format(formatHorodatage)
+	temoins := []string{
+		vieux + "-api.feat12-api",
+		recent + "-api.feat12-api",
+		"rangé-à-la-main",
+	}
+	for _, nom := range temoins {
+		if err := os.MkdirAll(filepath.Join(corbeille, nom), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ecris(t, filepath.Join(corbeille, nom, "marqueur"), "x\n")
+	}
+
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+
+	restant := lisEntrees(t, corbeille)
+	if slices.Contains(restant, temoins[0]) {
+		t.Errorf("l'entrée expirée %q doit être purgée ; reste : %v", temoins[0], restant)
+	}
+	for _, garde := range temoins[1:] {
+		if !slices.Contains(restant, garde) {
+			t.Errorf("l'entrée %q ne doit PAS être purgée ; reste : %v", garde, restant)
+		}
+	}
+}
+
+// `git worktree lock` existe pour les volumes amovibles et les montages réseau.
+// git refuse d'y toucher ; den doit refuser AVANT de déplacer, sans quoi il
+// laisse un dossier en corbeille ET un enregistrement que `prune` saute
+// silencieusement.
+func TestRetireRefuseUnWorktreeVerrouilleEncorePresent(t *testing.T) {
+	repo, chemin, cible := prepareWorktree(t)
+	git(t, repo, "worktree", "lock", chemin)
+
+	_, err := Retire(context.Background(), NewGit(), avecForce(cible))
+	if err == nil {
+		t.Fatal("un worktree verrouillé ne doit pas être mis à la corbeille")
+	}
+	if !strings.Contains(err.Error(), "git worktree unlock") {
+		t.Errorf("le message doit citer git worktree unlock ; obtenu : %v", err)
+	}
+	if _, err := os.Stat(chemin); err != nil {
+		t.Errorf("le worktree verrouillé doit être INTACT à sa place : %v", err)
+	}
+	if noms := lisEntrees(t, filepath.Join(cible.DenHome, "trash")); len(noms) != 0 {
+		t.Errorf("rien ne doit avoir été déplacé ; corbeille : %v", noms)
+	}
+}
+
+// Sans den_home, il n'y a pas de corbeille — et sans corbeille, den ne touche à
+// rien. C'est un appelant fautif, pas un cas utilisateur : le refus doit le
+// nommer plutôt que d'inventer un emplacement.
+func TestRetireRefuseSansDenHome(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	cible.DenHome = ""
+
+	if _, err := Retire(context.Background(), NewGit(), avecForce(cible)); err == nil {
+		t.Fatal("une Cible sans DenHome doit être refusée")
+	}
+	if _, err := os.Stat(chemin); err != nil {
+		t.Errorf("le worktree doit être INTACT : %v", err)
+	}
+}
+
+// Deux mises à la corbeille du même nest et du même repo dans la même seconde
+// portent le même nom calculé. Testé sur la fonction plutôt que sur deux appels
+// de Retire : la collision ne se produirait sinon que si l'horloge veut bien.
+func TestEntreeLibreEviteLesCollisions(t *testing.T) {
+	corbeille := t.TempDir()
+	occupe := filepath.Join(corbeille, "20260728-184530-api.feat12-api")
+	if err := os.MkdirAll(occupe, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ecris(t, filepath.Join(occupe, "deja-la"), "x\n")
+
+	libre, err := entreeLibre(corbeille, "20260728-184530-api.feat12-api")
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if libre == occupe {
+		t.Fatalf("entreeLibre rend un chemin déjà occupé : %s", libre)
+	}
+	if _, err := os.Stat(libre); !os.IsNotExist(err) {
+		t.Errorf("%s doit être libre ; obtenu : %v", libre, err)
+	}
+	// Le nom d'origine doit rester reconnaissable : un suffixe, pas un autre nom.
+	if !strings.HasPrefix(filepath.Base(libre), "20260728-184530-api.feat12-api") {
+		t.Errorf("le nom doit rester reconnaissable ; obtenu %q", filepath.Base(libre))
 	}
 }
 

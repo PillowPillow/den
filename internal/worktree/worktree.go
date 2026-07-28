@@ -6,12 +6,15 @@ package worktree
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // Git est l'accès à la CLI git, injecté pour rester substituable.
@@ -158,16 +161,51 @@ func Assure(ctx context.Context, g Git, layout, root, wt, cheminRepo string) (st
 	return chemin, nil
 }
 
-// Retire supprime un worktree. Refuse si l'arbre est sale et que force est
-// faux : perdre du travail non commité serait le pire effet de bord d'un
-// `den rm` (spec §14).
-func Retire(ctx context.Context, g Git, cheminRepo, cheminWorktree string, force bool) error {
+// Cible désigne le worktree à retirer. Retire en DÉRIVE le chemin par Chemin
+// plutôt que de le recevoir : la garde « ce dossier appartient-il bien à ce
+// repo ? » reposait sinon entièrement sur l'appelant, et den n'a aucune raison
+// de retirer un dossier qu'il n'aurait pas lui-même placé.
+type Cible struct {
+	DenHome    string // racine de den ; la corbeille vit sous <DenHome>/trash
+	Layout     string // « central » ou « per-repo » (spec §13.5)
+	Root       string // worktree_root
+	Nest       string // identité lisible du nest (« api », « api.feat12 ») : nomme l'entrée de corbeille
+	Worktree   string // nom du worktree, qui est aussi celui de la branche
+	CheminRepo string
+	Force      bool
+}
+
+// Retire met le worktree à la corbeille et rend le chemin de l'entrée créée —
+// ou « » si le dossier avait déjà disparu. Refuse si l'arbre est sale et que
+// Force est faux (spec §14).
+//
+// den ne SUPPRIME jamais, il déplace. Ce n'est pas de la prudence
+// d'implémentation, c'est le résultat d'une mesure : cinq tours de relecture
+// ont établi que l'énumération des façons dont `git status` cache du travail
+// NE CONVERGE PAS — git ajoute un mécanisme de cache par version (untracked
+// cache en 2.8, fsmonitor par hook en 2.16, `core.fsmonitor=true` en 2.37) — et
+// que le filet de `git worktree remove` tombe AVEC celui de `status`, parce que
+// c'est le même code. Il n'y a pas de second filet.
+//
+// La corbeille change donc la NATURE du problème plutôt que d'en fermer un
+// membre de plus : tout ce que le verdict rate — les mécanismes de cache à
+// venir, et l'angle mort assumé des règles d'ignorance (voir fichiersSales) —
+// passe de « perte de données » à « un dossier que l'utilisateur remonte d'un
+// `mv` ». fichiersSales subsiste, mais comme ERGONOMIE : prévenir avant
+// d'agir, plus protéger.
+//
+// Ce que la corbeille ne rend PAS : le worktree déplacé garde un fichier `.git`
+// qui pointe vers un enregistrement désormais élagué. On récupère des FICHIERS,
+// pas un worktree opérationnel. Les commits, eux, n'ont jamais été en jeu — la
+// branche survit dans le dépôt.
+func Retire(ctx context.Context, g Git, c Cible) (string, error) {
+	cheminRepo, cheminWorktree, force := c.CheminRepo, Chemin(c.Layout, c.Root, c.Worktree, c.CheminRepo), c.Force
 	if _, err := os.Stat(cheminWorktree); os.IsNotExist(err) {
 		// Le dossier est parti (rm -rf de l'utilisateur, `add` interrompu) mais
 		// l'enregistrement git lui survit et bloquerait tout Assure ultérieur.
 		// Rendre nil sans rien faire, c'était prétendre avoir nettoyé.
 		if _, err := g.Run(ctx, cheminRepo, "worktree", "prune"); err != nil {
-			return fmt.Errorf("nettoyage des enregistrements de worktree de %s : %w", cheminRepo, err)
+			return "", fmt.Errorf("nettoyage des enregistrements de worktree de %s : %w", cheminRepo, err)
 		}
 		// `prune` saute SILENCIEUSEMENT les worktrees verrouillés (rc=0, aucune
 		// sortie) — et `git worktree lock` existe précisément pour les volumes
@@ -176,39 +214,234 @@ func Retire(ctx context.Context, g Git, cheminRepo, cheminWorktree string, force
 		// prétendant avoir nettoyé, et Assure renverrait ensuite l'utilisateur
 		// vers `den rm` — la commande qui vient de lui dire qu'elle a réussi.
 		if estEnregistre(ctx, g, cheminRepo, cheminWorktree) {
-			return fmt.Errorf(
+			return "", fmt.Errorf(
 				"l'enregistrement du worktree %s survit dans %s alors que son dossier a disparu — "+
 					"il est probablement verrouillé : lance `git worktree unlock %s` dans %s, puis relance",
 				cheminWorktree, cheminRepo, cheminWorktree, cheminRepo)
 		}
-		return nil
+		return "", nil
 	}
 
 	if err := verifieAppartenance(ctx, g, cheminWorktree, cheminRepo); err != nil {
-		return err
+		return "", err
+	}
+
+	// Le verrou se contrôle AVANT de déplacer. `git worktree lock` existe pour
+	// les volumes amovibles et les montages réseau, et `prune` saute
+	// SILENCIEUSEMENT les worktrees verrouillés (rc=0, aucune sortie) : déplacer
+	// d'abord laisserait un dossier en corbeille ET un enregistrement vivant qui
+	// bloque tout Assure ultérieur, sans que rien ne le dise.
+	verrouille, err := estVerrouille(ctx, g, cheminRepo, cheminWorktree)
+	if err != nil {
+		return "", err
+	}
+	if verrouille {
+		return "", fmt.Errorf(
+			"le worktree %s est verrouillé dans %s — lance `git worktree unlock %s` dans %s, puis relance",
+			cheminWorktree, cheminRepo, cheminWorktree, cheminRepo)
 	}
 
 	if !force {
 		sales, err := fichiersSales(ctx, g, cheminWorktree)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if len(sales) > 0 {
-			return fmt.Errorf(
+			return "", fmt.Errorf(
 				"le worktree %s contient des modifications non commitées (%s) — commite-les, ou "+
-					"relance avec --force pour les perdre, ou avec --keep-worktrees pour garder le dossier",
-				cheminWorktree, listeCourte(sales))
+					"relance avec --force pour l'envoyer à la corbeille %s, ou avec --keep-worktrees "+
+					"pour garder le dossier en place",
+				cheminWorktree, listeCourte(sales), corbeillePrincipale(c))
 		}
 	}
 
-	args := []string{"worktree", "remove", cheminWorktree}
-	if force {
-		args = append(args, "--force")
+	dest, err := metALaCorbeille(c, cheminWorktree)
+	if err != nil {
+		return "", err
 	}
-	if _, err := g.Run(ctx, cheminRepo, args...); err != nil {
-		return fmt.Errorf("suppression du worktree %s : %w", cheminWorktree, err)
+
+	// Le dossier a bougé, donc l'enregistrement est devenu élaguable. Sans ce
+	// prune, Assure refuserait pour toujours de recréer ce worktree.
+	if _, err := g.Run(ctx, cheminRepo, "worktree", "prune"); err != nil {
+		// Le déplacement, lui, a bien eu lieu : le taire enverrait l'utilisateur
+		// chercher son travail là où il n'est plus.
+		return dest, fmt.Errorf(
+			"le worktree %s est à la corbeille (%s) mais son enregistrement n'a pas pu être "+
+				"élagué dans %s : %w", cheminWorktree, dest, cheminRepo, err)
 	}
-	return nil
+
+	purgeCorbeille(filepath.Dir(dest), time.Now())
+	return dest, nil
+}
+
+// corbeillePrincipale est l'emplacement nominal de la corbeille.
+func corbeillePrincipale(c Cible) string { return filepath.Join(c.DenHome, "trash") }
+
+// corbeilleDeRepli désigne un emplacement qui partage FORCÉMENT le système de
+// fichiers du worktree, puisque c'est le dossier qui le porte :
+//
+//	central  : <worktree_root>/.trash
+//	per-repo : <repo>/.den/.trash    — déjà exclu par excludeDossierDen
+//
+// Le point initial n'est pas cosmétique. Sans lui, `<worktree_root>/trash`
+// entrerait en collision avec le worktree d'un nest lancé avec `-w trash` ; git
+// refuse en revanche tout composant de ref commençant par un point, si bien
+// que « .trash » ne peut pas être un nom de worktree.
+func corbeilleDeRepli(c Cible) string {
+	if c.Layout == "per-repo" {
+		return filepath.Join(c.CheminRepo, ".den", ".trash")
+	}
+	return filepath.Join(c.Root, ".trash")
+}
+
+// metALaCorbeille déplace le worktree et rend le chemin de l'entrée créée.
+//
+// Le repli sur EXDEV n'est pas une commodité : den_home et worktree_root sont
+// deux réglages indépendants, et rien n'oblige un worktree_root posé sur un
+// disque rapide à partager le système de fichiers de ~/.den. Recopier octet à
+// octet pour contourner serait long sur un gros worktree, et interruptible — au
+// milieu, l'utilisateur aurait deux demi-copies. Le repli, lui, reste un
+// rename : atomique ou rien.
+func metALaCorbeille(c Cible, cheminWorktree string) (string, error) {
+	if c.DenHome == "" {
+		return "", fmt.Errorf(
+			"mise à la corbeille de %s : aucun den_home fourni — den ne supprime pas les "+
+				"worktrees, il les déplace, et il lui faut donc un emplacement où les poser",
+			cheminWorktree)
+	}
+	base := nomEntreeCorbeille(time.Now(), c.Nest, c.CheminRepo)
+
+	dest, err := deplaceVers(corbeillePrincipale(c), base, cheminWorktree)
+	if err == nil {
+		return dest, nil
+	}
+	if !errors.Is(err, syscall.EXDEV) {
+		return "", err
+	}
+	repli, errRepli := deplaceVers(corbeilleDeRepli(c), base, cheminWorktree)
+	if errRepli != nil {
+		return "", fmt.Errorf("%w ; le repli sous %s a échoué lui aussi : %v",
+			err, corbeilleDeRepli(c), errRepli)
+	}
+	return repli, nil
+}
+
+func deplaceVers(dirCorbeille, base, src string) (string, error) {
+	if err := os.MkdirAll(dirCorbeille, 0o755); err != nil {
+		return "", fmt.Errorf("création de la corbeille %s : %w", dirCorbeille, err)
+	}
+	dest, err := entreeLibre(dirCorbeille, base)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(src, dest); err != nil {
+		return "", fmt.Errorf("déplacement de %s vers %s : %w", src, dest, err)
+	}
+	return dest, nil
+}
+
+// nomEntreeCorbeille nomme une entrée « <horodatage>-<nest>-<repo> » : sans le
+// nest ni le repo, une corbeille de plusieurs entrées est un tas anonyme dans
+// lequel l'utilisateur ne retrouve pas SON dossier.
+func nomEntreeCorbeille(quand time.Time, nest, cheminRepo string) string {
+	return fmt.Sprintf("%s-%s-%s",
+		quand.Format(formatHorodatage), composantSur(nest), composantSur(filepath.Base(cheminRepo)))
+}
+
+// composantSur rend une chaîne utilisable comme composant de nom de dossier.
+// Le nom du nest est validé ailleurs, mais le basename du repo vient d'un
+// chemin de configuration : « .. » y désignerait le parent de la corbeille.
+func composantSur(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '/' || r == filepath.Separator || r < ' ' {
+			return '_'
+		}
+		return r
+	}, s)
+	if s == "" || s == "." || s == ".." {
+		return "_"
+	}
+	return s
+}
+
+// formatHorodatage préfixe les entrées de corbeille. Trié lexicalement il est
+// trié chronologiquement, ce qui rend un `ls` de la corbeille lisible.
+const formatHorodatage = "20060102-150405"
+
+// retentionCorbeille est le délai au-delà duquel une entrée est purgée.
+//
+// Trente jours, et la purge se déclenche à chaque mise à la corbeille réussie
+// plutôt que depuis une commande dédiée. Le raisonnement : une corbeille que
+// personne ne vide est une fuite de disque silencieuse, et une commande `den
+// gc` qu'il faut penser à lancer ne serait lancée que par ceux qui n'en ont pas
+// besoin. Trente jours couvrent largement le délai réel entre « j'ai lancé
+// `den rm` » et « il me manque quelque chose » ; en deçà, un mois de vacances
+// suffirait à perdre le fichier que la corbeille existe pour garder.
+//
+// Conséquence assumée : qui ne relance jamais `den rm` ne purge jamais. C'est
+// le bon sens du compromis — den ne tourne pas en tâche de fond, et une purge
+// qui s'exécuterait sans qu'on ait rien demandé serait une suppression
+// spontanée, exactement ce que la corbeille existe pour supprimer.
+const retentionCorbeille = 30 * 24 * time.Hour
+
+// entreeLibre rend un chemin d'entrée non occupé sous dirCorbeille : deux
+// worktrees du même nest et du même repo mis à la corbeille dans la MÊME
+// SECONDE portent sinon le même nom, et os.Rename écraserait ou échouerait.
+func entreeLibre(dirCorbeille, base string) (string, error) {
+	const maxTentatives = 1000
+	for i := 0; i < maxTentatives; i++ {
+		candidat := filepath.Join(dirCorbeille, base)
+		if i > 0 {
+			candidat = filepath.Join(dirCorbeille, fmt.Sprintf("%s-%d", base, i+1))
+		}
+		// Lstat et non Stat : une entrée de corbeille qui serait un lien
+		// symbolique cassé occupe le nom tout autant.
+		_, err := os.Lstat(candidat)
+		if os.IsNotExist(err) {
+			return candidat, nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("inspection de l'entrée de corbeille %s : %w", candidat, err)
+		}
+	}
+	return "", fmt.Errorf(
+		"corbeille %s : %d entrées portent déjà le nom %q", dirCorbeille, maxTentatives, base)
+}
+
+// purgeCorbeille efface les entrées dont la rétention est dépassée.
+//
+// La date lue est celle du NOM, posée par den au moment du déplacement, et non
+// la mtime du dossier : un worktree dont les fichiers datent de six mois serait
+// purgé le jour même de sa mise à la corbeille. Une entrée dont le nom ne porte
+// pas d'horodatage lisible n'est JAMAIS effacée — l'utilisateur a le droit de
+// ranger quelque chose là, et une purge est elle-même une suppression.
+//
+// Les erreurs sont ignorées, entrée par entrée : le worktree est déjà à
+// l'abri à ce stade, et échouer sur le ménage donnerait à l'appelant une erreur
+// pour une opération qui a réussi. Une entrée qui résiste sera réexaminée à la
+// prochaine mise à la corbeille.
+func purgeCorbeille(dirCorbeille string, maintenant time.Time) {
+	entrees, err := os.ReadDir(dirCorbeille)
+	if err != nil {
+		return
+	}
+	for _, e := range entrees {
+		if !e.IsDir() {
+			continue
+		}
+		nom := e.Name()
+		if len(nom) <= len(formatHorodatage) || nom[len(formatHorodatage)] != '-' {
+			continue
+		}
+		quand, err := time.ParseInLocation(formatHorodatage, nom[:len(formatHorodatage)], time.Local)
+		if err != nil {
+			continue
+		}
+		if maintenant.Sub(quand) <= retentionCorbeille {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(dirCorbeille, nom))
+	}
 }
 
 // verifieRepo distingue l'absence du refus d'accès : diagnostiquer
@@ -341,6 +574,34 @@ func estEnregistre(ctx context.Context, g Git, cheminRepo, chemin string) bool {
 		}
 	}
 	return false
+}
+
+// estVerrouille dit si git a verrouillé ce worktree.
+//
+// `worktree list --porcelain` émet un bloc par worktree, terminé par une ligne
+// vide ; « locked » (seul, ou suivi de la raison) y appartient au bloc ouvert
+// par la ligne « worktree <chemin> » qui le précède.
+//
+// En cas de panne de git, l'erreur remonte et Retire refuse : ne pas savoir si
+// le worktree est verrouillé, c'est ne pas savoir si `prune` va faire son
+// travail — et le seul sens sûr avant un déplacement est l'abstention.
+func estVerrouille(ctx context.Context, g Git, cheminRepo, chemin string) (bool, error) {
+	out, err := g.Run(ctx, cheminRepo, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("inventaire des worktrees de %s : %w", cheminRepo, err)
+	}
+	dansLeBloc := false
+	for _, ligne := range strings.Split(string(out), "\n") {
+		ligne = strings.TrimSpace(ligne)
+		if enregistre, ok := strings.CutPrefix(ligne, "worktree "); ok {
+			dansLeBloc = memeChemin(enregistre, chemin)
+			continue
+		}
+		if dansLeBloc && (ligne == "locked" || strings.HasPrefix(ligne, "locked ")) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ligneExclusionDen est ce qu'on ajoute à .git/info/exclude en layout per-repo.
