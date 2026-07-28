@@ -6,8 +6,10 @@ import (
 	"fmt"
 
 	"github.com/PillowPillow/den/internal/doctor"
+	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
+	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -15,21 +17,22 @@ import (
 var Version = "dev"
 
 // Deps regroupe TOUS les accès système que la racine cobra distribue à ses
-// sous-commandes. Une construction par test permet de remplacer chaque accès
-// individuellement (doctor, sbx, git, policy) sans qu'aucun ne retombe
-// implicitement sur le monde réel : la version précédente de ce paquet
-// laissait Git et Policy câblés en dur sur spawn.DepsSysteme() à l'intérieur
-// de NewRootCmdAvec, avec un commentaire qui AFFIRMAIT qu'aucun test ne les
-// atteignait — vrai par accident (le seul repo de la fixture de test
-// n'existe pas sur disque), pas par construction. Un futur test de spawn
-// passant par NewRootCmdAvec avec un repo réel aurait silencieusement
-// atteint git réel. D'où ce champ : plus aucune garantie non vérifiable, la
-// garantie est maintenant que l'appelant contrôle explicitement CE QU'IL
-// FOURNIT.
+// sous-commandes. Sbx est UNIQUE : `den ls` et le spawn le consomment tous
+// les deux depuis CE champ, il n'existe nulle part ailleurs dans cette
+// structure.
+//
+// Une version antérieure de ce type embarquait une spawn.Deps entière (avec
+// son propre champ Sbx), et NewRootCmdAvec devait ÉCRASER
+// spawnDeps.Sbx = deps.Sbx pour que les deux chemins restent d'accord — une
+// ligne qu'un refactor pouvait supprimer sans qu'aucun test ne le remarque
+// (mesuré : le retrait de cette ligne laissait la suite verte). La structure
+// actuelle rend cette divergence impossible plutôt que de la tester : il n'y
+// a structurellement qu'un seul Sbx à fournir.
 type Deps struct {
 	Doctor doctor.Deps
 	Sbx    sbx.Runner
-	Spawn  spawn.Deps
+	Git    worktree.Git
+	Policy policy.Options
 }
 
 // DepsSysteme branche tous les accès système réels : sbx du PATH, git réel,
@@ -38,7 +41,8 @@ func DepsSysteme() Deps {
 	return Deps{
 		Doctor: doctor.DepsSysteme(),
 		Sbx:    sbx.NewExec(""),
-		Spawn:  spawn.DepsSysteme(),
+		Git:    worktree.NewGit(),
+		Policy: policy.OptionsDefaut(),
 	}
 }
 
@@ -83,18 +87,20 @@ func NewRootCmdAvec(deps Deps) *cobra.Command {
 	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor))
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
 
-	// deps.Spawn.Sbx est ÉCRASÉ par deps.Sbx : c'est ce qui garantit que
-	// `den ls` et le settle-loop du spawn parlent au même sbx.Runner — un
-	// Fake scripté sur `ls --json` répond de façon cohérente qu'on passe par
-	// `den ls` ou par `den <nest>`. deps.Spawn.Git et deps.Spawn.Policy, eux,
-	// restent EXACTEMENT ce que l'appelant a fourni dans deps.Spawn : rien
-	// n'est forcé au réel ici — DepsSysteme() les branche sur git/policy
-	// réels, mais un test qui veut les isoler les fournit lui-même.
-	spawnDeps := deps.Spawn
-	spawnDeps.Sbx = deps.Sbx
+	// spawn.Deps est ASSEMBLÉE ici, à partir des mêmes champs que newLsCmd
+	// vient de recevoir : deps.Sbx est la SEULE source, il n'y a pas de
+	// second Sbx caché dans une spawn.Deps embarquée qu'il faudrait
+	// synchroniser à la main. Sortie n'est pas renseignée : configureSpawn
+	// l'écrase à chaque exécution avec cmd.OutOrStdout() (seule façon de
+	// suivre le SetOut d'un test).
+	//
 	// En DERNIER : configureSpawn pose Args sur la racine, ce qui n'a de sens
 	// qu'une fois les sous-commandes enregistrées.
-	configureSpawn(root, &denHome, spawnDeps)
+	configureSpawn(root, &denHome, spawn.Deps{
+		Sbx:    deps.Sbx,
+		Git:    deps.Git,
+		Policy: deps.Policy,
+	})
 	return root
 }
 
