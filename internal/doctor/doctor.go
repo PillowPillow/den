@@ -178,15 +178,12 @@ func Run(denHome string, d Deps) []Check {
 	// une VM qui meurt, pas un message de den. Tri des noms de stacks : la liste
 	// est destinée à l'affichage, une map Go n'est pas ordonnée.
 	for _, nomStack := range slices.Sorted(maps.Keys(stacks)) {
-		s := stacks[nomStack]
-		// `kits:` d'abord, puis `kit:` : l'ordre du diagnostic suit l'ordre de
-		// layering de sbx, pour que l'utilisateur lise ses kits comme il les
-		// a écrits.
-		cheminsKits := append(append([]string{}, s.Kits...), s.Kit)
-		for _, k := range cheminsKits {
-			if k == "" {
-				continue // aucun kit déclaré : ce n'est pas une faute (spec §4.2)
-			}
+		// KitsDeclares est la source UNIQUE de « quels kits, dans quel ordre » :
+		// elle rend `kits:` puis `kit:`, entrées vides filtrées. Recomposer la
+		// liste ici — ce que faisait la version précédente — laissait doctor et
+		// le chemin de spawn diverger sur les entrées vides, chacun restant vert
+		// de son côté.
+		for _, k := range stacks[nomStack].KitsDeclares() {
 			if _, err := d.Stat(k); err != nil {
 				ajoute("stack "+nomStack, false, "kit introuvable : %s", k)
 			}

@@ -62,6 +62,18 @@ func ArgvCreate(c Create) ([]string, error) {
 	}
 
 	argv := []string{"create", "--name", c.Nom, "--template", c.Image}
+	// Garde de FRONTIÈRE, pas doublon de config.Stack.KitsDeclares — qui filtre
+	// déjà les entrées vides chez l'unique appelant de production.
+	//
+	// ArgvCreate est exportée et reçoit une struct que n'importe qui peut
+	// remplir : elle garde son entrée elle-même, comme valideWorkspace juste en
+	// dessous et pour la même raison (doctrine retenue en T7 pour EcrisMixin et
+	// en T9 pour ValiderNomSandbox). Un `--kit ""` atteindrait sbx, qui n'a
+	// aucune raison de le refuser proprement.
+	//
+	// La retirer rendrait ArgvCreate correcte SEULEMENT tant que tous ses
+	// appelants filtrent — une propriété qu'aucun test de ce paquet ne peut
+	// vérifier, puisqu'elle porte sur du code d'un autre paquet.
 	for _, k := range c.KitsStack {
 		if k == "" {
 			continue

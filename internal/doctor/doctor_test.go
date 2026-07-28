@@ -500,6 +500,34 @@ ssh:
 	}
 }
 
+// Pendant exact de TestSpawnIgnoreUneEntreeVideDansKits, côté doctor : une
+// entrée vide dans `kits:` n'est pas un kit manquant, c'est une ligne sans
+// contenu. Les deux tests tiennent la MÊME propriété par les deux bouts, depuis
+// que `kits:` et `kit:` sont composés par une source unique
+// (config.Stack.KitsDeclares) : neutraliser le filtre dans cette source doit
+// faire rougir les deux, et c'est ce qui prouve qu'il n'y en a plus qu'une.
+func TestRunIgnoreUneEntreeVideDansKits(t *testing.T) {
+	dir := denHomeValide(t)
+	if err := os.WriteFile(filepath.Join(dir, "stacks", "devx", "stack.yaml"),
+		[]byte("image: devx:v1\nkits: [\"\", transverse]\nkit: devx-kit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Stat échoue sur le chemin VIDE et sur lui seul : avec un depsOK
+	// toujours-OK, un contrôle qui sonderait l'entrée vide ne se trahirait pas.
+	d := depsOK()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "" {
+			return nil, errors.New("chemin vide")
+		}
+		return nil, nil
+	}
+
+	checks := Run(dir, d)
+	if !tousOK(checks) {
+		t.Errorf("une entrée vide dans kits: ne doit produire aucun échec ; checks : %+v", checks)
+	}
+}
+
 func TestRunAgentSansCommandeUpdate(t *testing.T) {
 	dir := t.TempDir()
 	contenu := "agents:\n  claude:\n    config_dir: /tmp/c\ndefaults:\n  agent: claude\n  stack: devx\n"

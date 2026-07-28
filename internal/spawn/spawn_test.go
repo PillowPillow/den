@@ -830,6 +830,44 @@ func TestSpawnRefuseUnKitInexistant(t *testing.T) {
 	}
 }
 
+// Une entrée VIDE dans `kits:` (pluriel) doit être ignorée, comme elle l'est
+// déjà par doctor et par sbx.ArgvCreate. Le premier jet de F3 ne filtrait que
+// le `kit:` SINGULIER vide : mesuré, `kits: ["", "transverse"]` passait
+// `den doctor` en « tout est en ordre » et faisait refuser `den <nest>` avec un
+// « kit introuvable :  » au chemin vide. Deux juges du même champ ne jugeaient
+// pas pareil — le motif même de T2-min-5.
+//
+// Le pendant côté doctor est TestRunIgnoreUneEntreeVideDansKits : les deux
+// tiennent la MÊME propriété par les deux bouts, et c'est ce qui rend visible
+// toute divergence future entre les deux chemins.
+func TestSpawnIgnoreUneEntreeVideDansKits(t *testing.T) {
+	denHome, _ := denTest(t)
+	ecris(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
+		"image: devx:v1\nkits: [\"\", transverse]\nkit: devx-kit\n")
+	f, d := depsTest()
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("une entrée vide dans kits: doit être ignorée, pas refusée : %v", err)
+	}
+	// Et elle ne doit pas non plus se glisser dans l'argv : un `--kit ""`
+	// atteindrait sbx.
+	kits := kitsDe(appelCommencantPar(f, "create"))
+	for i, k := range kits {
+		if k == "" {
+			t.Errorf("--kit n°%d est vide ; kits = %v", i, kits)
+		}
+	}
+	// L'ordre de layering reste celui de la déclaration, l'entrée vide retirée.
+	attendu := []string{
+		filepath.Join(denHome, "stacks", "devx", "transverse"),
+		filepath.Join(denHome, "stacks", "devx", "devx-kit"),
+		filepath.Join(denHome, "cache", "mixins", "api"),
+	}
+	if !slices.Equal(kits, attendu) {
+		t.Errorf("kits = %v, attendu %v", kits, attendu)
+	}
+}
+
 // La contrepartie : une stack qui ne déclare AUCUN kit est parfaitement valide
 // (spec §4.2) et ne doit rien exiger. Sans ce cas, un contrôle qui refuserait
 // la chaîne vide casserait toutes les stacks sans kit.

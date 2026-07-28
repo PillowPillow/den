@@ -26,6 +26,37 @@ type Stack struct {
 	Dir string `yaml:"-"` // dossier de la stack, rempli au chargement
 }
 
+// KitsDeclares rend les kits que cette stack déclare, dans l'ORDRE DE LAYERING
+// de sbx : `kits:` (transverses) d'abord, `kit:` ensuite. Les entrées vides
+// sont filtrées — une ligne sans contenu n'est pas un kit manquant.
+//
+// SOURCE UNIQUE de « quels kits cette stack déclare, et dans quel ordre ».
+// Le filtre des entrées vides existait auparavant à trois endroits qui ne
+// s'accordaient pas : sbx.ArgvCreate et doctor filtraient, la composition du
+// chemin de spawn ne filtrait que le `kit:` SINGULIER vide. Mesuré, avec
+// `kits: ["", "transverse"]` : `den doctor` rendait « tout est en ordre » et
+// `den <nest>` refusait sur un « kit introuvable :  » au chemin vide. Deux
+// juges d'un même champ doivent juger pareil ; ils n'y arrivent durablement
+// qu'en n'étant qu'un seul.
+//
+// L'ORDRE EST UNE PROPRIÉTÉ DE SÛRETÉ, pas une commodité d'affichage : sbx
+// layere les kits dans l'ordre des `--kit`, et le mixin — ajouté APRÈS cette
+// liste par sbx.ArgvCreate — doit rester le dernier pour que sa commande de
+// fraîcheur soit la dernière startup jouée (spec §9.1). Ne jamais trier cette
+// liste, ne jamais en inverser les deux moitiés.
+func (s *Stack) KitsDeclares() []string {
+	kits := make([]string, 0, len(s.Kits)+1)
+	for _, k := range s.Kits {
+		if k != "" {
+			kits = append(kits, k)
+		}
+	}
+	if s.Kit != "" {
+		kits = append(kits, s.Kit)
+	}
+	return kits
+}
+
 // LoadStack lit <denHome>/stacks/<name>/stack.yaml.
 func LoadStack(denHome, name string) (*Stack, error) {
 	if err := ValiderNom("stack", name); err != nil {

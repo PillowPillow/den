@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -243,6 +244,73 @@ kits: [./z-dernier, ./a-premier]
 	}
 	if filepath.Base(s.Kits[0]) != "z-dernier" || filepath.Base(s.Kits[1]) != "a-premier" {
 		t.Errorf("l'ordre déclaré doit être préservé ; obtenu %v", s.Kits)
+	}
+}
+
+// KitsDeclares est la SOURCE UNIQUE de « quels kits, dans quel ordre » :
+// doctor et le chemin de spawn la consomment tous deux. Ses deux propriétés
+// sont donc testées ici, à la source, et non deux fois chez les consommateurs.
+func TestStackKitsDeclares(t *testing.T) {
+	cas := []struct {
+		nom     string
+		stack   Stack
+		attendu []string
+	}{
+		{
+			// L'ordre de LAYERING : `kits:` (transverses) puis `kit:`. Le
+			// mixin est ajouté après par sbx.ArgvCreate et doit rester dernier.
+			"ordre de layering : kits: puis kit:",
+			Stack{Kits: []string{"/k/transverse", "/k/autre"}, Kit: "/k/devx"},
+			[]string{"/k/transverse", "/k/autre", "/k/devx"},
+		},
+		{
+			// La dette du fix round 2 : le filtre ne portait que sur le `kit:`
+			// singulier, jamais sur une entrée vide DANS `kits:`.
+			"entree vide dans kits: (pluriel)",
+			Stack{Kits: []string{"", "/k/transverse", ""}, Kit: "/k/devx"},
+			[]string{"/k/transverse", "/k/devx"},
+		},
+		{
+			"kit: singulier vide",
+			Stack{Kits: []string{"/k/transverse"}, Kit: ""},
+			[]string{"/k/transverse"},
+		},
+		{
+			// Une stack sans kit est valide (spec §4.2) : liste vide, pas nil
+			// piégeux ni entrée fantôme.
+			"aucun kit declare",
+			Stack{},
+			[]string{},
+		},
+		{
+			"que des entrees vides",
+			Stack{Kits: []string{"", ""}, Kit: ""},
+			[]string{},
+		},
+	}
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			obtenu := c.stack.KitsDeclares()
+			if !slices.Equal(obtenu, c.attendu) {
+				t.Errorf("KitsDeclares() = %v, attendu %v", obtenu, c.attendu)
+			}
+		})
+	}
+}
+
+// KitsDeclares ne doit pas écrire dans la stack qu'elle lit : elle est appelée
+// deux fois sur le chemin de spawn (contrôle d'existence, puis argv), et un
+// aliasing du slice sous-jacent ferait diverger le second appel du premier.
+func TestStackKitsDeclaresNeModifiePasLaStack(t *testing.T) {
+	s := Stack{Kits: []string{"/k/a", "/k/b"}, Kit: "/k/c"}
+	premier := s.KitsDeclares()
+	premier[0] = "/k/ECRASE"
+
+	if !slices.Equal(s.Kits, []string{"/k/a", "/k/b"}) {
+		t.Errorf("Kits modifiée par l'appelant : %v", s.Kits)
+	}
+	if second := s.KitsDeclares(); !slices.Equal(second, []string{"/k/a", "/k/b", "/k/c"}) {
+		t.Errorf("second appel = %v, attendu identique au premier", second)
 	}
 }
 
