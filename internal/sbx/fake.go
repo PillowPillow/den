@@ -23,7 +23,9 @@ type Fake struct {
 	Appels [][]string
 
 	// Reponses associe une réponse à un appel exact, clé = args joints par un
-	// espace (ex. "ls --json").
+	// espace (ex. "ls --json"). Un argument qui contient lui-même une espace
+	// (un chemin de workspace, par exemple) peut donc produire une clé
+	// ambiguë avec un autre appel : à éviter en scriptant Reponses.
 	Reponses map[string]Reponse
 
 	// Defaut sert quand aucune entrée de Reponses ne correspond.
@@ -34,12 +36,15 @@ type Fake struct {
 	ErreurAttach error
 }
 
+// Run renvoie une COPIE de la sortie scriptée (jamais la slice sous-jacente) :
+// un appelant qui modifierait le résultat reçu ne doit pas corrompre les
+// appels suivants qui retombent sur la même entrée de Reponses ou sur Defaut.
 func (f *Fake) Run(_ context.Context, args ...string) ([]byte, error) {
 	f.Appels = append(f.Appels, slices.Clone(args))
 	if r, ok := f.Reponses[strings.Join(args, " ")]; ok {
-		return r.Sortie, r.Err
+		return slices.Clone(r.Sortie), r.Err
 	}
-	return f.Defaut.Sortie, f.Defaut.Err
+	return slices.Clone(f.Defaut.Sortie), f.Defaut.Err
 }
 
 func (f *Fake) Attach(_ context.Context, args ...string) error {

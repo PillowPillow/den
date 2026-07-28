@@ -76,5 +76,26 @@ func TestFakeAttachPeutEchouer(t *testing.T) {
 	}
 }
 
+// Run doit renvoyer une copie de la sortie scriptée : un appelant qui
+// modifierait la slice reçue ne doit pas corrompre les appels suivants du
+// même Fake.
+func TestFakeRunRenvoieUneCopieDeLaSortie(t *testing.T) {
+	f := &Fake{Defaut: Reponse{Sortie: []byte("original")}}
+
+	premier, err := f.Run(context.Background(), "ls", "--json")
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	premier[0] = 'X'
+
+	second, err := f.Run(context.Background(), "ls", "--json")
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if string(second) != "original" {
+		t.Errorf("sortie = %q, attendu %q (la mutation du premier appel ne doit pas fuiter)", second, "original")
+	}
+}
+
 // Garde-fou de compilation : Fake doit rester substituable à Runner.
 var _ Runner = (*Fake)(nil)
