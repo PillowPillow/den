@@ -58,6 +58,38 @@ var VariablesRedirigeantes = []string{
 	"GIT_NAMESPACE",
 }
 
+// NeutraliseEnvironnementGit rend l'environnement du PROCESSUS DE TEST
+// hermétique à la configuration git de la machine et aux variables qui
+// redirigent git vers un autre dépôt (VariablesRedirigeantes) — à appeler
+// depuis le TestMain de tout paquet dont les tests lancent du git réel, que ce
+// soit via ce paquet ou en direct (exec.Command("git", …)).
+//
+// Vit dans un fichier de PRODUCTION, pas dans un _test.go, à dessein : un
+// TestMain d'un autre paquet (internal/cli, internal/spawn) l'importe comme
+// n'importe quelle dépendance normale — les symboles d'un _test.go ne sont
+// visibles que dans leur propre paquet. Même raison que sbx.Fake vit dans le
+// paquet de production (voir son commentaire).
+//
+// Née d'un défaut apparu DEUX FOIS après sa première fermeture : ce paquet
+// avait fermé le trou pour lui-même (voir son propre TestMain), puis
+// internal/cli l'a rouvert sans le savoir, puis internal/spawn — mesuré : un
+// `go test ./internal/spawn/...` lancé sous GIT_DIR/GIT_WORK_TREE désignant un
+// dépôt tiers y a ajouté 32 commits. Centraliser la neutralisation ici ne
+// l'IMPOSE à aucun paquet ; TestExigeNeutraliseEnvironnementGitSiGitEstLanceEnClair,
+// dans hermetisme_test.go, ferme structurellement le trou plutôt que de
+// compter sur la mémoire d'un futur auteur de test.
+func NeutraliseEnvironnementGit() {
+	os.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	os.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	// Neutraliser les deux fichiers ne suffit pas : git accepte aussi de la
+	// configuration par l'environnement.
+	os.Unsetenv("GIT_CONFIG_COUNT")
+	os.Unsetenv("GIT_CONFIG_PARAMETERS")
+	for _, v := range VariablesRedirigeantes {
+		os.Unsetenv(v)
+	}
+}
+
 // environnementNeutre rend l'environnement courant privé des variables qui
 // détourneraient git vers un autre dépôt que celui demandé.
 func environnementNeutre() []string {

@@ -15,29 +15,18 @@ import (
 	"time"
 )
 
-// TestMain neutralise la configuration git de la machine. Le module lit les
-// règles d'ignorance pour décider d'une suppression, et un ~/.gitignore_global
-// (celui de cette machine porte « .sbx ») rendrait les verdicts de saleté
-// dépendants du poste qui lance la suite.
+// TestMain neutralise la configuration git de la machine ET les variables de
+// redirection, via NeutraliseEnvironnementGit (voir worktree.go) : le module
+// lit les règles d'ignorance pour décider d'une suppression (un
+// ~/.gitignore_global — celui de cette machine porte « .sbx » — rendrait les
+// verdicts de saleté dépendants du poste qui lance la suite), et les HELPERS
+// de ce fichier lancent `git` brut, que GIT_DIR + GIT_WORK_TREE détournerait
+// sinon vers le dépôt désigné par l'environnement au lieu du dossier
+// temporaire du test — reproduit une fois : la suite lancée ainsi avait créé
+// des branches et des commits DANS le dépôt de den lui-même, et déplacé son
+// HEAD.
 func TestMain(m *testing.M) {
-	os.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	os.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
-	// Neutraliser les deux fichiers ne suffit pas : git accepte aussi de la
-	// configuration par l'environnement. Sous
-	// GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.ignoreStat GIT_CONFIG_VALUE_0=true,
-	// trois tests tombaient — la classe même que ce TestMain existe pour fermer.
-	os.Unsetenv("GIT_CONFIG_COUNT")
-	os.Unsetenv("GIT_CONFIG_PARAMETERS")
-	// Le code de production filtre les variables qui détournent git vers un
-	// autre dépôt (environnementNeutre), mais les HELPERS de ce fichier lancent
-	// `git` brut : sous GIT_DIR + GIT_WORK_TREE, ils opèrent sur le dépôt
-	// désigné par l'environnement au lieu de leur dossier temporaire.
-	// Reproduit : la suite lancée ainsi a créé des branches et des commits DANS
-	// le dépôt de den lui-même, et déplacé son HEAD. On réutilise la liste de
-	// production pour que les deux ne puissent pas diverger.
-	for _, v := range VariablesRedirigeantes {
-		os.Unsetenv(v)
-	}
+	NeutraliseEnvironnementGit()
 	os.Exit(m.Run())
 }
 
