@@ -56,10 +56,13 @@ func run(t *testing.T, args ...string) (string, error) {
 // deps.Git, lui, EST exercé pour de vrai par les tests de `den rm` qui
 // passent par ici (rm_test.go, ex. TestRmNeDetruitPasLaSandboxSiUnWorktreeEstSale) :
 // ils touchent donc du git réel — c'est le TestMain de main_test.go qui rend
-// ça hermétique au poste qui exécute la suite, pas ce helper. Aucun test ne
-// passe encore par la RunE de configureSpawn (`den ls` ne l'appelle jamais).
-// Si un futur test veut exercer `den <nest>` par ce chemin, il doit fournir
-// sa PROPRE spawn.Deps isolée plutôt que réutiliser ce helper tel quel.
+// ça hermétique au poste qui exécute la suite, pas ce helper.
+//
+// Aucun appelant de CE helper ne passe par la RunE de configureSpawn (`den ls`
+// ne l'appelle jamais). runRacineComplete (spawn_test.go), lui, l'exerce depuis
+// la tâche 17b : il construit ses accès de la même façon, et dit sur place
+// pourquoi c'est sans danger — den home sans `egress:` (aucun settle-loop de
+// 60 s) et sans dépôt git (aucun appel à git).
 func executeCmdAvecSbx(t *testing.T, r sbx.Runner, args ...string) (string, error) {
 	t.Helper()
 	deps := DepsSysteme()

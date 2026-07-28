@@ -1,6 +1,8 @@
 package nest
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +137,58 @@ func TestLoadNestFichierVide(t *testing.T) {
 	}
 	if n.Name != "review" {
 		t.Errorf("Name = %q, attendu %q déduit du fichier", n.Name, "review")
+	}
+}
+
+// L'ABSENCE d'un nest est le seul échec de chargement qui veut dire « cet objet
+// n'existe pas », et la CLI s'en sert pour décider de proposer une sous-commande
+// proche (`den doctr` ⇒ `den doctor`). Elle doit donc être reconnaissable
+// autrement qu'en lisant le message.
+func TestLoadNestAbsentEstUnTypeReconnaissable(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "api", "stack: devx\n") // le dossier nests/ existe
+
+	_, err := LoadNest(denHome, "absent")
+	var introuvable *ErreurNestIntrouvable
+	if !errors.As(err, &introuvable) {
+		t.Fatalf("errors.As(err, &ErreurNestIntrouvable) doit réussir ; err = %v (%T)", err, err)
+	}
+	if introuvable.Nom != "absent" {
+		t.Errorf("Nom = %q, attendu %q", introuvable.Nom, "absent")
+	}
+	if attendu := filepath.Join(denHome, "nests", "absent.yaml"); introuvable.Chemin != attendu {
+		t.Errorf("Chemin = %q, attendu %q", introuvable.Chemin, attendu)
+	}
+	// fs.ErrNotExist doit rester dans la chaîne : du code qui teste déjà
+	// os.IsNotExist sur cette erreur ne doit pas cesser de marcher.
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("fs.ErrNotExist doit rester repérable dans la chaîne ; err = %v", err)
+	}
+	// Le message ne change pas : ce type change ce que le code inspecte, pas ce
+	// que l'utilisateur lit.
+	for _, attendu := range []string{`nest "absent"`, filepath.Join(denHome, "nests", "absent.yaml")} {
+		if !strings.Contains(err.Error(), attendu) {
+			t.Errorf("message = %q, attendu contenant %q", err.Error(), attendu)
+		}
+	}
+}
+
+// La contrepartie : un nest PRÉSENT mais illisible n'est pas « introuvable ».
+// Un dossier à la place du fichier, et non un chmod 0000 : la suite tourne en
+// root, où les droits ne bloquent rien.
+func TestLoadNestIllisibleNEstPasIntrouvable(t *testing.T) {
+	denHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(denHome, "nests", "api.yaml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadNest(denHome, "api")
+	if err == nil {
+		t.Fatal("un nest illisible doit être une erreur de chargement")
+	}
+	var introuvable *ErreurNestIntrouvable
+	if errors.As(err, &introuvable) {
+		t.Errorf("un nest présent ne doit pas être rapporté introuvable ; err = %v", err)
 	}
 }
 

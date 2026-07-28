@@ -50,6 +50,31 @@ type Nest struct {
 	Agents map[string]string `yaml:"agents"` // override du config_dir par agent
 }
 
+// ErreurNestIntrouvable signale le seul échec de LoadNest qui veut dire « cet
+// objet n'existe pas » : le fichier de nest est ABSENT. Type exporté, et pas
+// simple message, parce que la CLI doit distinguer ce cas des autres pour
+// décider si elle propose une sous-commande proche (`den doctr` ⇒ `den doctor`).
+//
+// La discrimination porte sur fs.ErrNotExist et sur rien d'autre : un fichier
+// présent mais illisible (droits, EISDIR) est un nest qui EXISTE, et suggérer
+// une commande à sa place enverrait l'utilisateur sur une fausse piste alors
+// qu'il a juste un problème de permissions.
+//
+// Le message est identique, au caractère près, à celui de l'échec de lecture
+// générique : ce type change ce que le code peut INSPECTER, pas ce que
+// l'utilisateur lit.
+type ErreurNestIntrouvable struct {
+	Nom    string
+	Chemin string
+	Err    error
+}
+
+func (e *ErreurNestIntrouvable) Error() string {
+	return fmt.Sprintf("nest %q : lecture de %s : %v", e.Nom, e.Chemin, e.Err)
+}
+
+func (e *ErreurNestIntrouvable) Unwrap() error { return e.Err }
+
 // LoadNest lit <denHome>/nests/<name>.yaml.
 func LoadNest(denHome, name string) (*Nest, error) {
 	// ValiderNom AVANT ValiderComposantSandbox, dans cet ordre précis : les deux
@@ -70,6 +95,9 @@ func LoadNest(denHome, name string) (*Nest, error) {
 
 	brut, err := os.ReadFile(chemin)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, &ErreurNestIntrouvable{Nom: name, Chemin: chemin, Err: err}
+		}
 		return nil, fmt.Errorf("nest %q : lecture de %s : %w", name, chemin, err)
 	}
 
