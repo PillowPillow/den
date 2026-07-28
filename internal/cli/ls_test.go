@@ -7,6 +7,11 @@ import (
 	"github.com/PillowPillow/den/internal/sbx"
 )
 
+// Le nom scripté "api.feat12" contient déjà les sous-chaînes "api" et
+// "feat12" : une assertion par strings.Contains sur la sortie ENTIÈRE serait
+// donc vraie même si la décomposition NEST/WORKTREE était totalement cassée
+// (la colonne NAME, seule, suffit à la satisfaire). Les assertions portent
+// donc colonne par colonne, sur les champs de chaque ligne.
 func TestLsAfficheLesColonnes(t *testing.T) {
 	denHomeDeTest(t) // nest "api" y est déclaré
 
@@ -19,11 +24,37 @@ func TestLsAfficheLesColonnes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
-	for _, attendu := range []string{"NAME", "NEST", "WORKTREE", "STATUS", "api.feat12", "api", "feat12", "running"} {
-		if !strings.Contains(sortie, attendu) {
-			t.Errorf("la sortie doit contenir %q ; obtenu :\n%s", attendu, sortie)
+
+	lignes := strings.Split(strings.TrimRight(sortie, "\n"), "\n")
+	if len(lignes) < 2 {
+		t.Fatalf("attendu un en-tête et une ligne de données ; obtenu :\n%s", sortie)
+	}
+
+	entete := strings.Fields(lignes[0])
+	attenduEntete := []string{"NAME", "NEST", "WORKTREE", "STATUS", "WORKSPACES"}
+	if len(entete) != len(attenduEntete) {
+		t.Fatalf("en-tête = %v, attendu %v", entete, attenduEntete)
+	}
+	for i, col := range attenduEntete {
+		if entete[i] != col {
+			t.Errorf("en-tête colonne %d = %q, attendu %q ; en-tête complet : %v", i, entete[i], col, entete)
 		}
 	}
+
+	champs := strings.Fields(lignes[1])
+	// NAME reste le nom complet ; NEST et WORKTREE sont les morceaux
+	// DÉCOMPOSÉS par sbx.Sandbox.Nest()/Worktree(), pas retrouvés par
+	// accident dans NAME.
+	attenduLigne := []string{"api.feat12", "api", "feat12", "running"}
+	if len(champs) < len(attenduLigne) {
+		t.Fatalf("ligne de données = %v, attendu au moins %v", champs, attenduLigne)
+	}
+	for i, val := range attenduLigne {
+		if champs[i] != val {
+			t.Errorf("colonne %d = %q, attendu %q ; ligne complète : %v", i, champs[i], val, champs)
+		}
+	}
+
 	// L'âge n'existe pas dans sbx ls --json : ne jamais prétendre le connaître.
 	if strings.Contains(strings.ToUpper(sortie), "AGE") {
 		t.Errorf("aucune colonne d'âge ne doit exister ; obtenu :\n%s", sortie)

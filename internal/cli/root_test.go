@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/spf13/cobra"
 )
@@ -31,14 +30,18 @@ func run(t *testing.T, args ...string) (string, error) {
 	return executeCmd(t, NewRootCmd(), args...)
 }
 
-// executeCmdAvecSbx exécute l'arbre de commandes avec un sbx.Runner injecté
-// (les accès doctor restant réels : aucun test qui passe par ici n'appelle
-// `den doctor`). C'est ce qui permet à `den ls` (et au spawn qu'il partage
-// avec) d'être exercé sans que le binaire sbx — absent de cette machine — soit
-// jamais sollicité.
+// executeCmdAvecSbx exécute l'arbre de commandes avec un sbx.Runner injecté ;
+// les accès Doctor et Spawn.Git/Spawn.Policy restent ceux de DepsSysteme()
+// (réels). Sans danger pour les tests qui passent par ici aujourd'hui : aucun
+// n'appelle `den doctor`, et aucun n'atteint la RunE de configureSpawn (`den
+// ls` ne l'appelle jamais). Si un futur test veut exercer `den <nest>` par ce
+// chemin, il doit fournir sa PROPRE spawn.Deps isolée plutôt que réutiliser
+// ce helper tel quel.
 func executeCmdAvecSbx(t *testing.T, r sbx.Runner, args ...string) (string, error) {
 	t.Helper()
-	return executeCmd(t, NewRootCmdAvec(doctor.DepsSysteme(), r), args...)
+	deps := DepsSysteme()
+	deps.Sbx = r
+	return executeCmd(t, NewRootCmdAvec(deps), args...)
 }
 
 func TestVersionAfficheLaVersion(t *testing.T) {
