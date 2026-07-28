@@ -85,6 +85,13 @@ func (gitExec) RunAvecEntree(ctx context.Context, dir string, entree []byte, arg
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// Le CONTEXTE est en français, le DÉTAIL reste celui de git, donc en
+		// anglais : « … : fatal: … ». C'est une décision de projet, tenue par
+		// tout le module. Traduire supposerait de reconnaître les messages de
+		// git — un jeu ouvert, qui change à chaque version — et un message
+		// approximatif vaut moins que le message exact, cherchable tel quel.
+		// Là où l'anglais de git serait la SEULE chose que l'utilisateur lise,
+		// den nomme lui-même la sortie (voir Assure et Retire).
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = err.Error()
@@ -280,6 +287,12 @@ func Retire(ctx context.Context, g Git, c Cible) (string, error) {
 
 	// Le dossier a bougé, donc l'enregistrement est devenu élaguable. Sans ce
 	// prune, Assure refuserait pour toujours de recréer ce worktree.
+	//
+	// `prune` est GLOBAL au dépôt : il efface aussi les enregistrements
+	// orphelins d'autres nests visant le même repo. Cas dégénéré assumé — ce
+	// qu'il efface est par définition un enregistrement dont le dossier a déjà
+	// disparu, donc aucun travail n'est en jeu ; et l'autre nest se
+	// re-spawnerait de toute façon. git n'offre pas d'élagage ciblé.
 	if _, err := g.Run(ctx, cheminRepo, "worktree", "prune"); err != nil {
 		// Le déplacement, lui, a bien eu lieu : le taire enverrait l'utilisateur
 		// chercher son travail là où il n'est plus.
@@ -485,6 +498,13 @@ func verifieRepo(cheminRepo string) error {
 //   - worktree_root est global et Chemin ne retient que le basename du repo :
 //     deux nests visant des repos homonymes tombent sur le même dossier, et le
 //     second repartirait avec le worktree du premier.
+//
+// Elle ne ferme pas — et ne PEUT pas fermer — le cas de deux repos homonymes
+// qui sont le MÊME dépôt (un clone et l'un de ses worktrees, deux chemins vers
+// un même `--git-common-dir`) : le discriminant EST le dossier git commun, donc
+// il les déclare identiques, à raison. Cas dégénéré assumé ; l'utilisateur y
+// obtient bien le worktree du dépôt qu'il a nommé, seul le chemin par lequel il
+// l'a nommé diffère.
 func verifieAppartenance(ctx context.Context, g Git, chemin, cheminRepo string) error {
 	racine, commun, err := identifie(ctx, g, chemin)
 	if err != nil {
@@ -712,9 +732,16 @@ func brancheParDefaut(ctx context.Context, g Git, cheminRepo string) (string, bo
 // sortie NUL-séparée, elle, n'est jamais citée — le problème est fermé à la
 // source plutôt que contourné.
 //
-// Angle mort restant : un secret placé dans un dossier lui-même ignoré en bloc
-// (`config/` ignoré, `config/.env` dedans) reste invisible, git ne l'énumérant
-// pas séparément.
+// ANGLE MORT ASSUMÉ (S3) : un secret placé dans un dossier lui-même ignoré en
+// bloc (`config/` ignoré, `config/.env` dedans) reste invisible, git ne
+// l'énumérant pas séparément. Un `core.excludesFile` hostile — ou seulement
+// malformé — étend le trou à volonté, puisqu'il décide de ce que « réellement
+// ignoré » veut dire.
+//
+// C'est un arbitrage explicite, pas un oubli : le fermer voudrait dire refuser
+// sur tout `node_modules/`, c'est-à-dire rendre `den rm` inutilisable. Le prix
+// est payé une fois et pour de bon depuis que Retire déplace au lieu de
+// supprimer : ce que ce verdict rate finit dans la corbeille, pas au néant.
 func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
 	// --untracked-files=normal est passé EXPLICITEMENT : den lit git sous la
 	// config de l'utilisateur, et `status.showUntrackedFiles = no` — réglage de
@@ -895,6 +922,22 @@ func fichiersMarques(ctx context.Context, g Git, dir string) ([]string, error) {
 			// JAMAIS les voir. Sur un fifo il se bloque sans borne (mesuré : il ne
 			// rend jamais la main, il n'échoue pas), sur un dossier il sort en
 			// `fatal:` anglais. Le verdict reste donc celui de den.
+			//
+			// Un SOUS-MODULE tombe ici : son gitlink est un dossier sur le disque.
+			// Marqué, il est donc refusé alors que `git status` ne rapporte rien
+			// (mesuré sur git 2.53 : `update-index --skip-worktree sm` puis
+			// `status --porcelain` vide, et den rend « sm »). C'est un faux
+			// positif assumé, pas corrigé, et deux mesures encadrent le coût :
+			//   - `git worktree remove --force` NE refuse PAS un worktree à
+			//     sous-module sur git 2.53 (rc=0, vérifié) : contrairement à ce
+			//     qu'on a longtemps cru, il n'y avait pas là de filet équivalent —
+			//     et den ne l'appelle de toute façon plus ;
+			//   - le refus se lève par --force, qui déplace au lieu de détruire.
+			//     Le sous-module déplacé garde tous ses fichiers ; son `.git`
+			//     porte en revanche un chemin RELATIF (mesuré :
+			//     « gitdir: ../../parent/.git/worktrees/wt/modules/sm »), donc il
+			//     n'est plus un dépôt exploitable depuis la corbeille. On récupère
+			//     des fichiers, ce qui est exactement le contrat de la corbeille.
 			sales = append(sales, chemin)
 		}
 	}
@@ -1032,9 +1075,18 @@ const tailleLot = 256
 // `ls-files -m` sont tous aveugles dessus (mesuré). Il faut donc comparer les
 // empreintes soi-même. `hash-object` applique les filtres de `.gitattributes`,
 // si bien qu'un filtre `clean` ou `core.autocrlf` ne fabrique pas de fausse
-// modification (mesuré) — en contrepartie, un filtre `clean` qui masque un
-// secret rend les deux empreintes identiques, angle mort assumé et de toute
-// façon partagé avec git.
+// modification (mesuré). Deux contreparties, toutes deux assumées :
+//
+//   - un filtre `clean` qui MASQUE un secret rend les deux empreintes
+//     identiques : le fichier passe pour propre, et il part. C'est exactement
+//     le cas que la corbeille rend réversible — il part dans un dossier, pas
+//     dans le néant (voir Retire) ;
+//   - un filtre `clean` NON DÉTERMINISTE (qui injecte un horodatage, un
+//     compteur, un aléa) rend une empreinte différente à chaque appel : le
+//     fichier est alors sale à perpétuité et `den rm` exige `--force` pour
+//     toujours. Faux positif, donc direction sûre, et git se comporte
+//     identiquement hors marquage — un tel dépôt n'a jamais un `git status`
+//     vide.
 //
 // En cas de panne d'une sonde, l'erreur remonte : une sonde muette ne doit
 // jamais autoriser une destruction.
