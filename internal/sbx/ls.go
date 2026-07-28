@@ -60,19 +60,40 @@ func Ls(ctx context.Context, r Runner) ([]Sandbox, error) {
 		return nil, fmt.Errorf("sbx ls : %w", err)
 	}
 
-	var doc struct {
-		Sandboxes []Sandbox `json:"sandboxes"`
-	}
-	if err := json.Unmarshal(sortie, &doc); err != nil {
+	// Décodage en deux temps, exprès : un objet JSON valide mais SANS la clé
+	// "sandboxes" (sbx qui la renommerait) doit être une ERREUR, pas un zéro
+	// silencieux. Ls n'a pas de canal de sortie autre que l'erreur pour le
+	// signaler, et le silence coûte plus cher ailleurs que sur den ls lui-même :
+	// den sh/den rm liraient une liste vide et affirmeraient à l'utilisateur
+	// qu'une sandbox bien vivante n'existe pas, au lieu de dire que la lecture a
+	// échoué. Même politique que le champ `allowed` de `sbx policy check`
+	// (task 11), pour la même raison.
+	//
+	// HYPOTHÈSE NON VÉRIFIÉE (sbx n'est pas installé sur cette machine) : le cas
+	// « zéro sandbox vivante » émet la clé "sandboxes" avec un tableau vide ou
+	// nul, jamais son absence totale (`{}` nu). Si un premier smoke test sur une
+	// vraie machine montre un `{}` nu quand rien ne tourne, cette garde doit
+	// être relâchée.
+	var champs map[string]json.RawMessage
+	if err := json.Unmarshal(sortie, &champs); err != nil {
 		// La sortie brute est dans le message : sans elle, un changement de
 		// schéma côté sbx serait indiagnosticable.
 		return nil, fmt.Errorf("sbx ls : sortie JSON illisible (%w) : %s", err, string(sortie))
 	}
+	brut, presente := champs["sandboxes"]
+	if !presente {
+		return nil, fmt.Errorf("sbx ls : clé %q absente de la sortie JSON : %s", "sandboxes", string(sortie))
+	}
 
-	sort.Slice(doc.Sandboxes, func(i, j int) bool {
-		return doc.Sandboxes[i].Nom < doc.Sandboxes[j].Nom
+	var boxes []Sandbox
+	if err := json.Unmarshal(brut, &boxes); err != nil {
+		return nil, fmt.Errorf("sbx ls : sortie JSON illisible (%w) : %s", err, string(sortie))
+	}
+
+	sort.Slice(boxes, func(i, j int) bool {
+		return boxes[i].Nom < boxes[j].Nom
 	})
-	return doc.Sandboxes, nil
+	return boxes, nil
 }
 
 // Existe indique si une sandbox de ce nom tourne déjà. C'est ce qui fait du

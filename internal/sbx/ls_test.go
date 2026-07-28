@@ -112,6 +112,42 @@ func TestLsSortieIllisible(t *testing.T) {
 	}
 }
 
+// Une sortie JSON valide mais au mauvais schéma (sbx renommerait "sandboxes")
+// ne doit pas se lire comme « aucune sandbox » : c'est indiscernable d'un
+// vrai zéro pour l'appelant, et den ls/sh/rm affirmeraient alors à tort
+// qu'aucune sandbox ne tourne. La sortie brute doit rester dans le message,
+// pour la même raison que pour un JSON illisible.
+func TestLsCleSandboxesAbsente(t *testing.T) {
+	f := &Fake{Reponses: map[string]Reponse{
+		"ls --json": {Sortie: []byte(`{"autrechose":[]}`)},
+	}}
+
+	if _, err := Ls(context.Background(), f); err == nil {
+		t.Fatal("une clé sandboxes absente doit produire une erreur")
+	} else if !contientTout(err.Error(), "sbx ls", "sandboxes", "autrechose") {
+		t.Errorf("message peu actionnable : %v", err)
+	}
+}
+
+// La clé "sandboxes" présente mais vide ou nulle reste un succès à zéro
+// sandbox : sbx ls --json n'a jamais été observé sans sandbox vivante, et
+// rien ne garantit lequel des deux JSON produit. Les deux doivent marcher.
+func TestLsZeroSandboxeVideOuNil(t *testing.T) {
+	for _, sortie := range []string{`{"sandboxes":[]}`, `{"sandboxes":null}`} {
+		f := &Fake{Reponses: map[string]Reponse{
+			"ls --json": {Sortie: []byte(sortie)},
+		}}
+
+		boxes, err := Ls(context.Background(), f)
+		if err != nil {
+			t.Fatalf("sortie %s : erreur inattendue : %v", sortie, err)
+		}
+		if len(boxes) != 0 {
+			t.Errorf("sortie %s : boxes = %v, attendu vide", sortie, boxes)
+		}
+	}
+}
+
 func TestLsPropageLErreurDuRunner(t *testing.T) {
 	sentinelle := errors.New("sbx introuvable")
 	f := &Fake{Defaut: Reponse{Err: sentinelle}}
