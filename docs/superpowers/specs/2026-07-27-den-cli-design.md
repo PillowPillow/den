@@ -36,7 +36,7 @@ en une commande, sans retaper mixin/kits/policy à la main. La microVM reste la 
 |---|---|---|
 | La CLI + le home de config | **den** / `~/.den/` | binaire `den` |
 | Recette d'**image** buildable (cattle) | **stack** | `~/.den/stacks/<n>/` |
-| Overlay env/policy (artefact natif sbx) | **kit** | dans la stack, + `policy-baseline` |
+| Overlay env/policy (artefact natif sbx) | **kit** | dans la stack (`kit`), + kits transverses `~/.den/kits/<n>/` |
 | **Objet spawnable** (repos + stack + egress + ports) | **nest** 🕳️ | `~/.den/nests/<n>.yaml` |
 | La VM qui tourne | *sandbox* (terme sbx) | `sbx ls` |
 | Profil d'un agent IA (Claude, Codex…) | **agent profile** | `config_dir` monté RW |
@@ -47,6 +47,13 @@ une seule source d'identité, non falsifiable.
 
 Un **nest** est un terrier multi-galeries : plusieurs repos co-montés dans une seule VM. On le
 **spawn** ; on peut y propager un **worktree** sur tous ses repos d'un coup.
+
+**Contrainte de nommage.** Le nom d'un nest devient un nom de sandbox, que `sbx create --name`
+restreint à « letters, numbers, hyphens, periods, plus signs and minus signs ». den impose plus
+strict encore sur les nests et les worktrees : `[A-Za-z0-9+-]+`, **le point exclu** — il est réservé
+au rôle de séparateur dans `<nest>.<worktree>`. Un `-w feature/123` est donc refusé avec un message
+actionnable, jamais normalisé en silence : normaliser casserait l'aller-retour
+`den <nest> -w <wt>` → nom de sandbox → `den ls`.
 
 ---
 
@@ -66,14 +73,17 @@ Un **nest** est un terrier multi-galeries : plusieurs repos co-montés dans une 
   nests/
     review.yaml
     fullstack.yaml
+  kits/                    # kits transverses non-egress, layerés avant `kit` (cf. §4.2)
+    ssh-known-hosts/
   worktrees/               # worktrees générés (layout central par défaut)
     <wt>/<repo>/
   cache/                   # optionnel, reconstructible — jamais source de vérité
 ```
 
-La **vérité de « ce qui tourne »** vient de `sbx ls` filtré par label `den.managed=1` — **pas de
-base de données parallèle** (approche A). Un cache reconstructible n'est ajouté que si un besoin
-de statut riche émerge (approche A + un peu de B).
+La **vérité de « ce qui tourne »** vient de `sbx ls --json` : l'identité de chaque sandbox est
+attribuée à un nest (et un worktree) par décomposition de son **nom** — **pas de base de données
+parallèle** (approche A). Un cache reconstructible n'est ajouté que si un besoin de statut riche
+émerge.
 
 ---
 
@@ -113,8 +123,13 @@ egress:                                  # allowlist baseline, TOUTES sandboxes
 image: dgdevx:v1        # passé à `sbx create --template`
 parent: devx            # DAG de build (build devx avant dgdevx)
 kit: ./kit              # kit par défaut de la stack (env + egress toolchain)
+kits:                   # optionnel : kits transverses layerés AVANT `kit`
+  - ../../kits/ssh-known-hosts
 egress: []              # ajouts egress niveau stack
 ```
+
+Les chemins de `kit` et `kits` sont résolus **relativement au dossier de la stack**. L'ordre de
+`kits` est préservé : c'est un ordre de layering, pas un ensemble.
 
 ### 4.3 `nests/<n>.yaml` (objet spawnable)
 
@@ -122,7 +137,7 @@ egress: []              # ajouts egress niveau stack
 stack: dgdevx
 env:                                 # optionnel, per-nest → injecté via le mixin généré
   SOME_VAR: value
-egress:                              # optionnel, per-nest → network.allow scopé sandbox
+egress:                              # optionnel, per-nest → caps.network.allow scopé sandbox
   - 10.22.11.54:27017                # ex. IP:port DB projet
 repos:
   - { path: ~/dev/review-mgmt }               # requis
@@ -149,7 +164,7 @@ sandbox**.
 | Commande | Rôle |
 |---|---|
 | `den <nest> [-w <wt>] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell |
-| `den ls` | sandboxes vivantes (`sbx ls` filtré `den.managed=1`, colonnes nest/worktree/état/âge) |
+| `den ls` | sandboxes vivantes (`sbx ls --json` filtré sur le motif de nommage, colonnes nom/nest/worktree/statut/workspaces) |
 | `den sh <name>` | shell dans une sandbox existante |
 | `den ports <nest> [--add H:C]` | **publie à la demande** la fenêtre déclarée + affiche le tableau |
 | `den rm <name> [--keep-worktrees]` | teardown (profil agent persiste ; worktrees nettoyés sauf `--keep`) |
@@ -175,20 +190,23 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
    actif (défaut global ou `--agent`) ; résout son `config_dir` (**override nest s'il existe, sinon
    global**) ; garantit l'existence du dossier ; le monte **RW**.
 5. **Mixin généré.** `den` génère **un seul kit jetable** portant : les **env vars de l'agent**
-   (`{config_dir}` → chemin in-VM), les **env nest**, l'**egress nest** en `network.allow`, et en
-   **dernière** `commands.startup` la **commande de fraîcheur de l'agent** (§9.1). Dernière et pas
-   ailleurs : elle est fail-closed, et le dispatcher sbx interrompt toute la suite au premier échec.
+   (`{config_dir}` → chemin in-VM) et les **env nest**, toutes deux sous **`environment.variables`** ;
+   l'**egress nest** en **`caps.network.allow`** ; et en **dernière** `commands.startup` la
+   **commande de fraîcheur de l'agent** (§9.1). Dernière et pas ailleurs : elle est fail-closed, et
+   le dispatcher sbx interrompt toute la suite au premier échec.
 6. **Assemblage `sbx create`** :
-   `--name <nest>[-<wt>]`, `--template <stack.image>`,
-   `--kit policy-baseline --kit stacks/<stack>/kit --kit <mixin généré>`
+   `--name <nest>[.<wt>]`, `--template <stack.image>`,
+   `--kit <stacks/<stack>/kits[i]>…  --kit stacks/<stack>/kit  --kit <mixin généré>`
    (**le mixin généré reste le dernier `--kit`** — même raison qu'au point 5),
-   `--label den.managed=1 --label den.nest=<nest> --label den.worktree=<wt>`,
+   agent positionnel **`shell`** (obligatoire : `sbx create [flags] AGENT PATH [PATH...]`), puis
    positionnels = chemins worktree/repo + `config_dir` (+ `~/.ssh_sbx` si `ssh.mode=mount`).
    **Spawn-or-attach** : si le nom existe déjà → attache au lieu de recréer.
 7. **Policy + settle-loop** (cf. §7).
 8. **SSH** selon `ssh.mode` : `agent-forward` (défaut) / `mount ~/.ssh_sbx` / `none`.
-9. **Attache.** `sbx run --name <name>` → shell, sauf `--detach`. **Les ports ne sont PAS publiés
-   au spawn** → `den ports <nest>` à la demande.
+9. **Attache.** `sbx exec -it <name> -w <workdir> bash -l` → shell, sauf `--detach`. Pas
+   `sbx run` : celui-ci lance la commande du flavor de l'image (souvent `claude`), n'a aucun flag
+   pour la remplacer, et son `-- ARGS` ne fait qu'*ajouter* des arguments. **Les ports ne sont PAS
+   publiés au spawn** → `den ports <nest>` à la demande.
 
 ### Build DAG — `den build [stack] [--force]`
 - Parse tous les `stacks/*/stack.yaml` → graphe via `parent`.
@@ -201,13 +219,20 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
 
 ## 7. Policy réseau & settle-loop (douleur #1)
 
-- Egress effectif (§4) posé en **`network.allow` du mixin généré** → **auto-scopé** à la sandbox au
-  `create` (aucune règle globale qui fuite d'un projet à l'autre) et **présent dès le create-time**
-  (pas de pose paresseuse — la propagation sbx n'est pas instantanée).
+- Egress effectif (§4) posé en **`caps.network.allow` du mixin généré** → **auto-scopé** à la sandbox
+  au `create` (aucune règle globale qui fuite d'un projet à l'autre) et **présent dès le
+  create-time** (pas de pose paresseuse — la propagation sbx n'est pas instantanée).
 - **Settle-loop fail-closed** : après create, `den` boucle sur
   `sbx policy check network --sandbox <name> <host>` pour chaque hôte jusqu'à ALLOW, **timeout
   borné**. Si un hôte ne passe pas → `den` **n'attache pas**, liste les hôtes bloqués, sort en
   erreur. Jamais de « ça marche à moitié ».
+
+**Schéma de kit (relevé sur les kits réels, pas déduit) :** `schemaVersion: 2`, `kind: mixin`,
+`name`, `version`, `description` ; les capacités réseau vivent sous **`caps.network.allow`** (liste
+de `host`, `host:port`, `ip` ou `ip:port`), les variables sous **`environment.variables`**, les
+commandes de boot sous **`commands.startup[].command`** (tableau argv). `sbx policy check network`
+évalue un hôte nu **sur le port 443** : une entrée egress nue est donc cohérente de bout en bout,
+den ne normalise rien.
 
 ---
 
@@ -231,7 +256,7 @@ sandboxes tournent.
 
 **Affichage type :**
 ```
-nest: web   sandbox: web-feat123   window: 9100-9109 (canonical)
+nest: web   sandbox: web.feat123   window: 9100-9109 (canonical)
   NAME  CONTAINER  URL
   vite  5173       http://127.0.0.1:9100   [opened]
   api   3000       http://127.0.0.1:9101
@@ -299,9 +324,14 @@ signale un agent périmé.
 
 ## 11. État, labels & gestion d'erreurs
 
-**État (approche A + un peu de B) :** labels sbx au create (`den.managed=1`, `den.nest`,
-`den.worktree`). `den ls` = `sbx ls` filtré. Cache `~/.den/cache/` optionnel, reconstructible,
-jamais source de vérité.
+**État (approche A) :** `sbx create` **n'a pas de flag `--label`** (vérifié le 2026-07-28,
+sbx v0.35.0 : ses seuls flags sont `--clone --cpus --kit --memory --name --profile --quiet
+--template`). L'identité d'une sandbox est donc portée par son **nom** : `<nest>` sans worktree,
+`<nest>.<worktree>` avec. `den ls` liste `sbx ls --json` et attribue chaque sandbox par
+décomposition de son nom. Le séparateur est `.` et non `-` : il est interdit dans les noms de nest
+et de worktree, ce qui rend la décomposition **exacte** au lieu de dépendre d'un plus-long-préfixe
+contre la liste des nests déclarés — une sandbox reste attribuable même après suppression de son
+nest. Cache `~/.den/cache/` reconstructible, jamais source de vérité.
 
 | Situation | Comportement |
 |---|---|
@@ -360,9 +390,10 @@ internal/
 7. SSH **défaut `agent-forward`**, `mount ~/.ssh_sbx` override courant.
 8. Ports : **fenêtre déterministe + publication à la demande** (`den ports`), loopback-only strict,
    CDP loopback-locked, tunnel SSH pour l'accès distant.
-9. Policy **déclarative** (baseline ∪ stack ∪ nest) matérialisée en `network.allow` scopé +
+9. Policy **déclarative** (baseline ∪ stack ∪ nest) matérialisée en `caps.network.allow` scopé +
    **settle-loop fail-closed**.
-10. État sans DB (labels sbx) ; cache reconstructible optionnel.
+10. État sans DB : identité portée par le **nom de sandbox** `<nest>[.<worktree>]` (`--label`
+    n'existe pas dans sbx) ; cache reconstructible optionnel.
 11. **Fraîcheur de l'agent au boot**, déclarée dans le registre (`update` + `bin_dirs`), rendue en
     dernière startup command du mixin généré, **fail-closed avec retries bornés** (§9.1).
 12. **Identité par le chemin, jamais par le contenu** (§2) ; **décodage YAML strict** sur toute la
@@ -373,10 +404,9 @@ internal/
 ## 14. Questions ouvertes / risques
 
 - **Découverte des branches par défaut** par repo (worktree `-w`) : `git symbolic-ref` vs config.
-- **Sémantique exacte de `sbx policy check`** (nom/format de sous-commande) à valider au build du
-  module `policy/`.
-- **Format des labels sbx** (`sbx create --label` supporté ?) à confirmer ; fallback = préfixe de
-  nommage si non supporté.
+- **Surface `sbx` figée le 2026-07-28** (v0.35.0) : `policy check network [--sandbox S] [--json]
+  TARGET` confirmé (`--sandbox` existe, l'évaluation scopée est donc possible) ; `--label`
+  **n'existe pas** → identité par le nom. À revalider si sbx passe en v0.37+.
 - **Nettoyage des worktrees au `rm`** : par défaut on retire les worktrees créés par `den` (git
   worktree remove) ; `--keep-worktrees` pour conserver. Attention aux modifs non commitées → refuser
   si dirty sans `--force`.
