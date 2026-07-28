@@ -187,8 +187,12 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
    ou **checklist interactive** (`-i`).
 3. **Worktrees** (si `-w`). Pour chaque repo sélectionné : `git worktree add` de `<wt>` au chemin
    résolu (`worktree_root/<wt>/<repo>` en central, `<repo>/.den/<wt>` en per-repo). Branche `<wt>`
-   depuis la branche par défaut du repo, ou checkout si elle existe déjà. **Idempotent** (skip si
-   déjà présent). Conflit (branche différente sur ce worktree) → stop actionnable.
+   créée **sans suivi** (`--no-track`) depuis la branche par défaut du repo, découverte par
+   `git symbolic-ref --short refs/remotes/origin/HEAD` ; **repli sur le HEAD courant** quand le dépôt
+   n'a pas d'`origin/HEAD` (un dépôt purement local est légitime). Checkout si la branche existe
+   déjà — son point de départ n'est alors pas retouché. **Idempotent** (skip si déjà présent, à
+   condition que le dossier soit bien la **racine d'un worktree de ce repo**). Conflit (branche
+   différente sur ce worktree) → stop actionnable.
 4. **Profil agent** (orthogonal à la stack — sans effet quel que soit le template). Résout l'agent
    actif (défaut global ou `--agent`) ; résout son `config_dir` (**override nest s'il existe, sinon
    global**) ; garantit l'existence du dossier ; le monte **RW**.
@@ -406,7 +410,6 @@ internal/
 
 ## 14. Questions ouvertes / risques
 
-- **Découverte des branches par défaut** par repo (worktree `-w`) : `git symbolic-ref` vs config.
 - **Surface `sbx` figée le 2026-07-28** (v0.35.0) : `policy check network [--sandbox S] [--json]
   TARGET` confirmé (`--sandbox` existe, l'évaluation scopée est donc possible) ; `--label`
   **n'existe pas** → identité par le nom. À revalider si sbx passe en v0.37+.
