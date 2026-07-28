@@ -1,6 +1,7 @@
 package spawn
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -22,6 +23,10 @@ func denTest(t *testing.T) (denHome, repo string) {
 	t.Helper()
 	return denTestSSH(t, "  mode: agent-forward\n")
 }
+
+// egressUnHote est l'`egress:` de tous les tests qui ne jouent pas sur la
+// dérive de configuration.
+const egressUnHote = "  - github.com\n"
 
 // denTestSSH permet de faire varier le bloc `ssh:` — c'est le seul levier qui
 // ajoute un TROISIÈME workspace, et donc le seul qui rende leur ordre observable.
@@ -46,6 +51,21 @@ func denTestSSH(t *testing.T, blocSSH string) (denHome, repo string) {
 		}
 	}
 
+	ecrisConfig(t, denHome, blocSSH, egressUnHote)
+	// Deux kits déclarés, pas zéro : sans eux, le mixin serait le seul `--kit`
+	// de l'argv et « le mixin est layeré en dernier » se vérifierait tout seul.
+	ecris(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
+		"image: devx:v1\nkits: [transverse]\nkit: devx-kit\n")
+	ecris(t, filepath.Join(denHome, "nests", "api.yaml"), "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	return denHome, repo
+}
+
+// ecrisConfig (ré)écrit le config.yaml du den home. Extrait de denTestSSH pour
+// que les tests de dérive puissent RÉÉCRIRE la cascade entre deux spawns : c'est
+// le seul moyen de reproduire une config qui a bougé sous une VM qui, elle, n'a
+// pas bougé.
+func ecrisConfig(t *testing.T, denHome, blocSSH, blocEgress string) {
+	t.Helper()
 	ecris(t, filepath.Join(denHome, "config.yaml"), `agents:
   claude:
     config_dir: `+filepath.Join(denHome, "agents", "claude")+`
@@ -59,14 +79,7 @@ ssh:
 `+blocSSH+`worktree_layout: central
 worktree_root: `+filepath.Join(denHome, "worktrees")+`
 egress:
-  - github.com
-`)
-	// Deux kits déclarés, pas zéro : sans eux, le mixin serait le seul `--kit`
-	// de l'argv et « le mixin est layeré en dernier » se vérifierait tout seul.
-	ecris(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
-		"image: devx:v1\nkits: [transverse]\nkit: devx-kit\n")
-	ecris(t, filepath.Join(denHome, "nests", "api.yaml"), "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
-	return denHome, repo
+`+blocEgress)
 }
 
 func ecris(t *testing.T, chemin, contenu string) {
@@ -226,6 +239,11 @@ func TestSpawnAttacheSansRecreerSiLaSandboxExiste(t *testing.T) {
 // sandboxes vivantes. Chercher `o.Nest` reviendrait à confondre `api` et
 // `api.feat12` : indétectable tant que le seul test à sandbox vivante n'a pas
 // de worktree, puisque les deux valeurs y coïncident.
+//
+// Le `-w` attendu est `/w`, le workspace que la VM déclare — et non le chemin de
+// worktree que la cascade recalculerait. Cette attente-là appartient au test
+// dédié ci-dessous (TestSpawnAttacheDansLeWorkdirRemonteParLaVM) ; ici, elle
+// n'est qu'une conséquence.
 func TestSpawnChercheLeNomWorktreeeParmiLesSandboxesVivantes(t *testing.T) {
 	denHome, _ := denTest(t)
 	f, d := depsTest()
@@ -239,8 +257,274 @@ func TestSpawnChercheLeNomWorktreeeParmiLesSandboxesVivantes(t *testing.T) {
 	if f.AAppele("create") {
 		t.Errorf("aucun create ne doit avoir lieu sur api.feat12 vivante ; appels : %v", f.Appels)
 	}
-	if !f.AAttache("exec", "-it", "-w", filepath.Join(denHome, "worktrees", "feat12", "api"), "api.feat12", "bash", "-l") {
+	if !f.AAttache("exec", "-it", "-w", "/w", "api.feat12", "bash", "-l") {
 		t.Errorf("l'attache doit viser api.feat12 ; attaches : %v", f.Attaches)
+	}
+}
+
+// D2 — le `-w` d'une sandbox VIVANTE vient du workspace que la VM MONTE, jamais
+// d'un chemin recalculé depuis la configuration courante.
+//
+// Une VM monte les workspaces de son `sbx create` d'origine : si le premier repo
+// du nest a changé de chemin depuis (ou si `-w` a été ajouté), le chemin
+// recalculé n'existe tout simplement pas dedans, et `sbx exec -w` échoue — ou
+// pire, atterrit ailleurs. sbx.Sandbox.Workdir existe depuis la tâche 8
+// exactement pour ça.
+//
+// Le `:ro` du fixture n'est pas décoratif : il distingue `b.Workdir()` (qui le
+// retire) de `b.Workspaces[0]` (qui le garderait), et sépare donc les deux
+// implémentations possibles.
+func TestSpawnAttacheDansLeWorkdirRemonteParLaVM(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := depsTest()
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running",` +
+			`"workspaces":["/monte/par/la/vm:ro","/profil"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if !f.AAttache("exec", "-it", "-w", "/monte/par/la/vm", "api", "bash", "-l") {
+		t.Errorf("le -w doit venir du workspace de la VM ; attaches : %v", f.Attaches)
+	}
+	// Et surtout PAS le chemin que la cascade recalcule : c'est lui, le défaut.
+	for _, a := range f.Attaches {
+		if slices.Contains(a, repo) {
+			t.Errorf("le -w ne doit pas être le chemin recalculé %s ; attache : %v", repo, a)
+		}
+	}
+}
+
+// D1 — une sandbox trouvée mais qui NE TOURNE PAS n'est pas une sandbox vivante.
+//
+// Avant ce contrôle, sbx.Existe ne rendait qu'un booléen et jetait le Statut :
+// `den api` sur une VM `exited` affichait « déjà vivante : attache » puis
+// lançait un `sbx exec` dans une VM arrêtée.
+//
+// La liste blanche (« running » et rien d'autre) est délibérée et FAIL-CLOSED :
+// les autres valeurs de `status` que sbx peut émettre ne sont pas connues ici
+// (sbx n'est pas installable sur cette machine). Une liste NOIRE
+// — {"exited","stopped"} — attacherait dans tout statut qu'une version
+// ultérieure de sbx introduirait. Le prix assumé : un statut transitoire de
+// démarrage ferait échouer un `den api` lancé trop tôt, avec un message qui
+// nomme le statut lu.
+func TestSpawnRefuseUneSandboxQuiNeTournePas(t *testing.T) {
+	for _, statut := range []string{"exited", "stopped", "paused", "Running", ""} {
+		t.Run("statut="+statut, func(t *testing.T) {
+			denHome, _ := denTest(t)
+			f, d := depsTest()
+			f.Reponses["ls --json"] = sbx.Reponse{
+				Sortie: []byte(`{"sandboxes":[{"name":"api","status":"` + statut +
+					`","workspaces":["/w"]}]}`),
+			}
+
+			err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+			if err == nil {
+				t.Fatalf("un statut %q ne doit pas être traité comme vivant", statut)
+			}
+			// Le message doit rendre le statut LU : sans lui, l'utilisateur ne
+			// sait pas de quoi den se plaint ni quoi taper ensuite.
+			if !strings.Contains(err.Error(), statut) || !strings.Contains(err.Error(), "running") {
+				t.Errorf("le message doit rendre le statut lu et celui attendu ; obtenu : %v", err)
+			}
+			if !strings.Contains(err.Error(), "api") {
+				t.Errorf("le message doit nommer la sandbox ; obtenu : %v", err)
+			}
+			if len(f.Attaches) != 0 {
+				t.Errorf("aucune attache dans une VM arrêtée ; attaches : %v", f.Attaches)
+			}
+			// Ni create (le nom est pris) ni settle-loop : den s'arrête net.
+			if f.AAppele("create") {
+				t.Errorf("aucun create ne doit être tenté sur un nom déjà pris ; appels : %v", f.Appels)
+			}
+		})
+	}
+}
+
+// D3 — rien ne réapplique un mixin à une VM en marche.
+//
+// Un `egress:` RÉTRÉCI passe donc le settle-loop en silence : la policy large
+// que la VM porte depuis son create autorise évidemment la liste étroite qu'on
+// lui soumet. L'utilisateur croit sa sandbox resserrée alors qu'elle est restée
+// ouverte. (Le sens inverse, élargir, échoue proprement sur le settle-loop.)
+//
+// PIÈGE D'ORDRE, et raison d'être de ce test : Spawn RÉÉCRIT le mixin à chaque
+// passage (étape 5), AVANT la branche spawn-or-attach. Une comparaison faite
+// après cette écriture compare le mixin à lui-même et ne détecte JAMAIS rien,
+// avec une suite parfaitement verte. C'est la mutation tueuse : déplacer le
+// LisMixin après le EcrisMixin.
+func TestSpawnAvertitQuandLaConfigADeriveSousLaSandbox(t *testing.T) {
+	denHome, repo := denTest(t)
+	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
+
+	// Premier passage : la sandbox est créée, et c'est CE mixin-là qu'elle porte.
+	f, d := depsTest()
+	journal := &bytes.Buffer{}
+	d.Sortie = journal
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("premier spawn : erreur inattendue : %v", err)
+	}
+	if !f.AAppele("create", "--name", "api") {
+		t.Fatalf("le premier spawn doit créer la sandbox ; appels : %v", f.Appels)
+	}
+
+	// La configuration se resserre. La VM, elle, ne bouge pas.
+	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+	journal.Reset()
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("second spawn : erreur inattendue : %v", err)
+	}
+	sortie := journal.String()
+	if !strings.Contains(sortie, "api.anthropic.com") {
+		t.Errorf("l'avertissement doit NOMMER l'egress qui a disparu de la config ;\n%s", sortie)
+	}
+	if !strings.Contains(sortie, "attention") {
+		t.Errorf("la dérive doit être annoncée comme un avertissement ;\n%s", sortie)
+	}
+	// On AVERTIT, on ne refuse pas : refuser casserait un `den api` qui marchait
+	// hier pour un YAML anodin (décision arrêtée, cf. handoff T12 §6).
+	if len(f.Attaches) != 1 {
+		t.Errorf("la dérive avertit puis attache ; attaches : %v", f.Attaches)
+	}
+}
+
+// Le pendant indispensable : sans dérive, aucun avertissement. Un avertissement
+// qui sort à CHAQUE attache ne serait plus lu du tout — et rendrait le test
+// ci-dessus vert sans rien prouver.
+func TestSpawnNAvertitPasSansDerive(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := depsTest()
+	journal := &bytes.Buffer{}
+	d.Sortie = journal
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("premier spawn : erreur inattendue : %v", err)
+	}
+
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+	journal.Reset()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("second spawn : erreur inattendue : %v", err)
+	}
+	if sortie := journal.String(); strings.Contains(sortie, "attention") {
+		t.Errorf("une configuration inchangée ne doit rien signaler ;\n%s", sortie)
+	}
+}
+
+// La branche CREATE ne doit jamais avertir : c'est le create qui POSE le mixin,
+// il ne peut pas avoir dérivé de lui-même.
+//
+// Le cas piégeux est un cache/ qui survit à la sandbox : le spec §3 déclare
+// cache/ reconstructible et den ne le purge pas, donc un `sbx rm` suivi d'un
+// `den api` retrouve le mixin de la sandbox DÉFUNTE sur le disque. Un
+// avertissement hissé hors de la branche « vivante » sortirait là, sur une
+// sandbox qui reçoit pourtant la configuration exacte.
+func TestSpawnNAvertitPasSurLaBrancheCreate(t *testing.T) {
+	denHome, _ := denTest(t)
+	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
+
+	f, d := depsTest()
+	journal := &bytes.Buffer{}
+	d.Sortie = journal
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("premier spawn : erreur inattendue : %v", err)
+	}
+
+	// La config change, la sandbox a disparu (`sbx rm`), le cache reste.
+	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
+	journal.Reset()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("second spawn : erreur inattendue : %v", err)
+	}
+	if !f.AAppele("create", "--name", "api") {
+		t.Fatalf("le second spawn doit créer ; appels : %v", f.Appels)
+	}
+	if sortie := journal.String(); strings.Contains(sortie, "attention") {
+		t.Errorf("un create pose le mixin : rien à signaler ;\n%s", sortie)
+	}
+}
+
+// Le mixin sur disque est la RÉFÉRENCE du `create` : il ne doit pas être
+// réécrit quand la sandbox est déjà vivante.
+//
+// Sinon la dérive s'efface elle-même : le premier `den api` avertit, réécrit la
+// référence au passage, et le second se tait — alors que la VM, elle, n'a
+// toujours pas bougé. C'est le défaut le plus coûteux du lot, parce qu'il rend
+// la détection MUETTE exactement dans le cas où elle sert, sans jamais rien
+// faire échouer.
+func TestSpawnNeReecritPasLeMixinDUneSandboxVivante(t *testing.T) {
+	denHome, repo := denTest(t)
+	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
+
+	f, d := depsTest()
+	journal := &bytes.Buffer{}
+	d.Sortie = journal
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("premier spawn : erreur inattendue : %v", err)
+	}
+	spec := filepath.Join(denHome, "cache", "mixins", "api", "spec.yaml")
+	reference, err := os.ReadFile(spec)
+	if err != nil {
+		t.Fatalf("le create doit avoir écrit %s : %v", spec, err)
+	}
+
+	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	// Deux attaches d'affilée : la seconde est celle qui trahit une référence
+	// écrasée par la première.
+	for tour := 1; tour <= 2; tour++ {
+		journal.Reset()
+		if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+			t.Fatalf("tour %d : erreur inattendue : %v", tour, err)
+		}
+		apres, err := os.ReadFile(spec)
+		if err != nil {
+			t.Fatalf("tour %d : lecture de %s : %v", tour, spec, err)
+		}
+		if string(apres) != string(reference) {
+			t.Fatalf("tour %d : le mixin de référence a été réécrit sur une sandbox vivante ;\n"+
+				"avant :\n%s\naprès :\n%s", tour, reference, apres)
+		}
+		if !strings.Contains(journal.String(), "api.anthropic.com") {
+			t.Errorf("tour %d : la dérive doit rester signalée ;\n%s", tour, journal.String())
+		}
+	}
+}
+
+// Une référence ILLISIBLE n'est pas une absence de référence. L'absence est
+// normale (premier spawn, ou cache/ purgé) et se tait ; un spec.yaml corrompu
+// veut dire que den ne peut PAS répondre à la question, et se taire là-dessus
+// laisserait croire que la configuration n'a pas dérivé.
+func TestSpawnSignaleUneDeriveNonVerifiable(t *testing.T) {
+	denHome, repo := denTest(t)
+	ecris(t, filepath.Join(denHome, "cache", "mixins", "api", "spec.yaml"), "\tpas du yaml")
+
+	f, d := depsTest()
+	journal := &bytes.Buffer{}
+	d.Sortie = journal
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	sortie := journal.String()
+	if !strings.Contains(sortie, "non vérifiable") {
+		t.Errorf("une référence illisible doit être signalée comme telle ;\n%s", sortie)
+	}
+	// Et l'attache a bien lieu : une dérive invérifiable ne bloque pas.
+	if len(f.Attaches) != 1 {
+		t.Errorf("l'attache doit avoir lieu ; attaches : %v", f.Attaches)
 	}
 }
 

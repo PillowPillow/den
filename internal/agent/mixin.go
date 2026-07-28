@@ -150,12 +150,35 @@ func valideNomSandbox(nom string) error {
 	return sbx.ValiderNomSandbox(nom)
 }
 
+// dossierMixin et cheminMixin sont l'UNIQUE définition de l'emplacement du
+// mixin. Écriture (EcrisMixin) et relecture (LisMixin) doivent y converger : si
+// les deux composaient leur chemin séparément et divergeaient, LisMixin rendrait
+// éternellement os.ErrNotExist, que Spawn traite — à raison — comme un premier
+// spawn. La dérive de configuration deviendrait alors indétectable EN SILENCE.
+// Verrouillé par TestLisMixinRelitCeQuEcrisMixinEcrit.
+func dossierMixin(denHome, nomSandbox string) string {
+	return filepath.Join(denHome, "cache", "mixins", nomSandbox)
+}
+
+func cheminMixin(denHome, nomSandbox string) string {
+	return filepath.Join(dossierMixin(denHome, nomSandbox), "spec.yaml")
+}
+
 // EcrisMixin matérialise le mixin sous <denHome>/cache/mixins/<sandbox>/ et
 // renvoie le DOSSIER — c'est ce que `sbx create --kit` attend.
 //
 // Sous cache/ et non dans un mktemp : cache/ est déclaré reconstructible par le
-// spec §3, et un mixin qui s'évapore rend indébogable un boot raté. Il est
-// réécrit à chaque spawn et reflète toujours la configuration courante.
+// spec §3, et un mixin qui s'évapore rend indébogable un boot raté.
+//
+// Le fichier décrit ce qu'une VM a reçu à son `sbx create`, pas la configuration
+// du moment : Spawn n'appelle EcrisMixin que sur la branche create, et s'en sert
+// ensuite de RÉFÉRENCE pour détecter une configuration qui a dérivé sous une
+// sandbox vivante (cf. LisMixin et Differences). Le réécrire à chaque passage
+// détruirait cette référence — verrouillé par
+// TestSpawnNeReecritPasLeMixinDUneSandboxVivante, dans internal/spawn.
+//
+// Corollaire : le fichier survit à la sandbox (den ne purge pas cache/), et un
+// `sbx rm` suivi d'un nouveau spawn le remplace.
 //
 // Droits restrictifs (0700/0600) : spec.yaml porte environment.variables,
 // c'est-à-dire l'env fusionné agent ∪ nest — de l'env utilisateur libre, où
@@ -172,7 +195,7 @@ func EcrisMixin(denHome, nomSandbox string, m Mixin) (string, error) {
 	if err := valideNomSandbox(nomSandbox); err != nil {
 		return "", fmt.Errorf("écriture du mixin : %w", err)
 	}
-	dir := filepath.Join(denHome, "cache", "mixins", nomSandbox)
+	dir := dossierMixin(denHome, nomSandbox)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("création de %s : %w", dir, err)
 	}
@@ -180,7 +203,7 @@ func EcrisMixin(denHome, nomSandbox string, m Mixin) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	chemin := filepath.Join(dir, "spec.yaml")
+	chemin := cheminMixin(denHome, nomSandbox)
 	if err := os.WriteFile(chemin, contenu, 0o600); err != nil {
 		return "", fmt.Errorf("écriture de %s : %w", chemin, err)
 	}

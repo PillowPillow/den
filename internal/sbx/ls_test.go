@@ -157,21 +157,6 @@ func TestLsPropageLErreurDuRunner(t *testing.T) {
 	}
 }
 
-func TestExiste(t *testing.T) {
-	f := &Fake{Reponses: map[string]Reponse{
-		"ls --json": {Sortie: []byte(`{"sandboxes":[{"name":"api"}]}`)},
-	}}
-
-	ok, err := Existe(context.Background(), f, "api")
-	if err != nil || !ok {
-		t.Errorf("Existe(api) = %v, %v", ok, err)
-	}
-	ok, err = Existe(context.Background(), f, "absente")
-	if err != nil || ok {
-		t.Errorf("Existe(absente) = %v, %v", ok, err)
-	}
-}
-
 func contientTout(s string, morceaux ...string) bool {
 	for _, m := range morceaux {
 		if !strings.Contains(s, m) {

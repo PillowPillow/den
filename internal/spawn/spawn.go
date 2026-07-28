@@ -6,6 +6,7 @@ package spawn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -155,19 +156,75 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	if err != nil {
 		return err
 	}
-	dirMixin, err := agent.EcrisMixin(r.DenHome, nomSandbox, m)
-	if err != nil {
-		return err
-	}
+	// Le mixin sur disque est la RÉFÉRENCE du `create` : ce que la VM a
+	// réellement reçu, et la seule chose à quoi comparer la configuration
+	// d'aujourd'hui pour détecter une dérive (étape 6). Il se lit ici, et il ne
+	// se réécrit QUE sur la branche create, plus bas.
+	//
+	// Le réécrire à chaque passage — ce que faisait la version précédente —
+	// détruisait la référence : la comparaison portait alors sur le mixin et
+	// lui-même, ne détectait jamais rien, et laissait la suite parfaitement
+	// verte. Cantonner l'écriture à la branche qui la justifie rend ce défaut
+	// impossible plutôt que seulement testé.
+	ancien, errAncien := agent.LisMixin(r.DenHome, nomSandbox)
 
 	// 6. Spawn-or-attach : un nom déjà vivant n'est pas une erreur (spec §11).
-	vivante, err := sbx.Existe(ctx, d.Sbx, nomSandbox)
+	//
+	// La Sandbox trouvée est GARDÉE, pas réduite à un booléen : elle seule porte
+	// le statut réel et les workspaces que la VM monte vraiment. Une version
+	// antérieure appelait un sbx.Existe qui jetait les deux, d'où l'attache dans
+	// une VM arrêtée et le -w recalculé qui suivent.
+	boxes, err := sbx.Ls(ctx, d.Sbx)
 	if err != nil {
 		return err
 	}
-	if vivante {
+	var vivante *sbx.Sandbox
+	for i := range boxes {
+		if boxes[i].Nom == nomSandbox {
+			vivante = &boxes[i]
+			break
+		}
+	}
+
+	// Le workdir de l'attache : celui de la config sur la branche create (la VM
+	// va monter exactement ces workspaces-là), celui de la VM sur l'autre.
+	workdir := premier(workspaces)
+
+	if vivante != nil {
+		// Un nom pris par une VM qui ne tourne pas n'est pas un
+		// spawn-or-attach. Liste blanche (cf. sbx.StatutEnMarche) : on refuse
+		// tout statut qui n'est pas explicitement « en marche », plutôt que
+		// d'attacher dans une VM dont on ne sait rien.
+		if vivante.Statut != sbx.StatutEnMarche {
+			return fmt.Errorf(
+				"sandbox %s : statut %q, attendu %q — den n'attache pas dans une VM qui ne tourne pas ; "+
+					"détruis-la (`sbx rm --force %s`) puis relance la même commande",
+				nomSandbox, vivante.Statut, sbx.StatutEnMarche, nomSandbox)
+		}
+
+		// Le -w vient des workspaces que la VM MONTE (ceux de son `create`
+		// d'origine), pas de ceux que la cascade recalcule maintenant. Si le
+		// premier repo du nest a changé de chemin depuis, le chemin recalculé
+		// n'existe pas dans la VM. Vide si la VM ne monte rien : Attache omet
+		// alors le -w plutôt que d'inventer un chemin.
+		workdir = vivante.Workdir()
+
+		// Dérive de configuration. RIEN ne réapplique un mixin à une VM en
+		// marche : elle garde la policy et l'env de son create. On AVERTIT sans
+		// refuser (refuser casserait un `den <nest>` qui marchait hier pour un
+		// YAML anodin) et sans recréer (destruction non demandée d'une VM qui
+		// porte peut-être du travail en cours).
+		signaleDerive(d.Sortie, nomSandbox, ancien, errAncien, m)
+
 		fmt.Fprintf(d.Sortie, "sandbox %s déjà vivante : attache\n", nomSandbox)
 	} else {
+		// Le mixin n'est matérialisé QUE là : c'est le seul moment où il est
+		// posé sur une VM, et donc le seul où le fichier peut prétendre décrire
+		// ce que cette VM porte.
+		dirMixin, err := agent.EcrisMixin(r.DenHome, nomSandbox, m)
+		if err != nil {
+			return err
+		}
 		kits := append([]string{}, r.Stack.Kits...)
 		if r.Stack.Kit != "" {
 			kits = append(kits, r.Stack.Kit)
@@ -207,7 +264,43 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			nomSandbox, nomSandbox)
 		return nil
 	}
-	return Attache(ctx, d.Sbx, nomSandbox, premier(workspaces))
+	return Attache(ctx, d.Sbx, nomSandbox, workdir)
+}
+
+// signaleDerive rend, sur la sortie de la séquence, ce qui a changé entre le
+// mixin que la sandbox a reçu à son `create` et celui que la configuration
+// produirait maintenant.
+//
+// Appelée UNIQUEMENT sur la branche « sandbox vivante » : sur un create, c'est
+// le create qui pose le mixin, il ne peut pas avoir dérivé de lui-même — et le
+// cache/ d'une sandbox détruite survit à celle-ci (spec §3 : cache/
+// reconstructible, den ne le purge pas), donc une comparaison hissée hors de
+// cette branche crierait à la dérive sur une sandbox parfaitement à jour.
+//
+// L'ABSENCE de référence est silencieuse (premier spawn, ou cache/ purgé) ;
+// une référence illisible ne l'est pas : den ne peut alors pas répondre à la
+// question, et se taire là-dessus se lit comme « rien n'a changé ».
+func signaleDerive(sortie io.Writer, nomSandbox string, ancien agent.Mixin, errAncien error, nouveau agent.Mixin) {
+	if errAncien != nil {
+		if errors.Is(errAncien, os.ErrNotExist) {
+			return
+		}
+		fmt.Fprintf(sortie, "attention : dérive de configuration non vérifiable : %v\n", errAncien)
+		return
+	}
+	diffs := agent.Differences(ancien, nouveau)
+	if len(diffs) == 0 {
+		return
+	}
+	fmt.Fprintf(sortie,
+		"attention : la sandbox %s tourne avec le mixin de son `sbx create`, pas avec la configuration actuelle :\n",
+		nomSandbox)
+	for _, ligne := range diffs {
+		fmt.Fprintf(sortie, "  - %s\n", ligne)
+	}
+	fmt.Fprintf(sortie,
+		"  rien ne réapplique un mixin à une VM en marche : `sbx rm --force %s` puis relance pour l'appliquer.\n",
+		nomSandbox)
 }
 
 // Attache ouvre un shell interactif dans la sandbox.

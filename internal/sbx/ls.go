@@ -53,6 +53,17 @@ func (s Sandbox) Workdir() string {
 	return strings.TrimSuffix(s.Workspaces[0], ":ro")
 }
 
+// StatutEnMarche est la valeur de `status` pour laquelle une sandbox accepte un
+// `sbx exec`. Relevée le 2026-07-28 sur le schéma de sbx v0.35.0 ; les AUTRES
+// valeurs que sbx peut émettre ne sont pas connues, sbx n'étant pas installable
+// sur cette machine.
+//
+// C'est pour ça que les appelants doivent la traiter en LISTE BLANCHE — statut
+// différent, on n'attache pas — et non en liste noire {"exited","stopped"} :
+// celle-ci attacherait dans tout statut qu'une version ultérieure de sbx
+// introduirait, y compris un statut d'erreur.
+const StatutEnMarche = "running"
+
 // Ls liste les sandboxes vivantes, triées par nom.
 func Ls(ctx context.Context, r Runner) ([]Sandbox, error) {
 	sortie, err := r.Run(ctx, "ls", "--json")
@@ -94,20 +105,4 @@ func Ls(ctx context.Context, r Runner) ([]Sandbox, error) {
 		return boxes[i].Nom < boxes[j].Nom
 	})
 	return boxes, nil
-}
-
-// Existe indique si une sandbox de ce nom tourne déjà. C'est ce qui fait du
-// spawn un « spawn-or-attach » (spec §6.6) : un nom déjà vivant n'est pas une
-// erreur.
-func Existe(ctx context.Context, r Runner, nom string) (bool, error) {
-	boxes, err := Ls(ctx, r)
-	if err != nil {
-		return false, err
-	}
-	for _, b := range boxes {
-		if b.Nom == nom {
-			return true, nil
-		}
-	}
-	return false, nil
 }
