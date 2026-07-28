@@ -2,6 +2,7 @@ package sbx
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
@@ -60,6 +61,11 @@ func ArgvCreate(c Create) ([]string, error) {
 		return nil, fmt.Errorf(
 			"sandbox %q : aucun workspace à monter — `sbx create` exige au moins un chemin", c.Nom)
 	}
+	for i, w := range c.Workspaces {
+		if err := valideWorkspace(c.Nom, i, w); err != nil {
+			return nil, err
+		}
+	}
 
 	argv := []string{"create", "--name", c.Nom, "--template", c.Image}
 	for _, k := range c.KitsStack {
@@ -72,4 +78,32 @@ func ArgvCreate(c Create) ([]string, error) {
 	argv = append(argv, AgentPositionnel)
 	argv = append(argv, c.Workspaces...)
 	return argv, nil
+}
+
+// valideWorkspace garde une entrée de Workspaces, désignée par sa position
+// (indice 0) dans la liste.
+//
+// La garde est ici et non chez l'appelant parce que c'est ArgvCreate qui
+// transforme ces valeurs en ligne de commande : un chemin relatif se
+// résoudrait contre un répertoire courant que rien ne garantit au moment où
+// sbx l'utilise, et un chemin commençant par « - » serait lu comme un flag —
+// la même classe de panne que le charset des noms de sandbox referme un cran
+// plus tôt dans l'argv.
+func valideWorkspace(nomSandbox string, i int, w string) error {
+	if strings.TrimSpace(w) == "" {
+		return fmt.Errorf(
+			"sandbox %q : workspace n°%d vide — `sbx create` recevrait un argument "+
+				"positionnel vide, qui ne monte rien", nomSandbox, i+1)
+	}
+	// Le « :ro » est une option de montage de sbx, pas une partie du chemin :
+	// on le retire pour juger, et il repart verbatim dans l'argv.
+	chemin := strings.TrimSuffix(w, ":ro")
+	if !filepath.IsAbs(chemin) {
+		return fmt.Errorf(
+			"sandbox %q : workspace n°%d (%q) n'est pas un chemin absolu — un chemin relatif "+
+				"se résoudrait contre un répertoire courant qui n'est plus garanti au moment "+
+				"où sbx l'utilise, et un chemin commençant par « - » serait lu comme un flag",
+			nomSandbox, i+1, w)
+	}
+	return nil
 }

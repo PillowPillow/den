@@ -153,6 +153,60 @@ func TestArgvCreateRefuseLesEntreesIncompletes(t *testing.T) {
 	}
 }
 
+// Le contenu des workspaces est gardé ICI, et pas chez l'appelant : c'est
+// `ArgvCreate` qui transforme ces valeurs en ligne de commande, et « l'appelant
+// garantit que les chemins sont absolus » est un contrat écrit nulle part.
+// `config.ExpandPath` n'expanse qu'un « ~ » en tête : un `worktree_root:
+// mes-worktrees` dans config.yaml arriverait relatif jusqu'ici.
+func TestArgvCreateRefuseLesWorkspacesDouteux(t *testing.T) {
+	cas := []struct {
+		nom        string
+		workspaces []string
+		position   string // la position doit figurer dans l'erreur
+		fautif     string // le chemin fautif aussi
+	}{
+		{"entrée vide", []string{"/dev/api", ""}, "n°2", ""},
+		{"chemin relatif", []string{"/dev/api", "mes-worktrees/api"}, "n°2", "mes-worktrees/api"},
+		{"chemin lu comme un flag", []string{"/dev/api", "-api"}, "n°2", "-api"},
+		{"le repo lui-même relatif", []string{"mes-worktrees/api"}, "n°1", "mes-worktrees/api"},
+		{"suffixe :ro sans chemin", []string{"/dev/api", ":ro"}, "n°2", ":ro"},
+	}
+	for _, cas := range cas {
+		c := createComplet()
+		c.Workspaces = cas.workspaces
+		_, err := ArgvCreate(c)
+		if err == nil {
+			t.Errorf("%s : doit être refusé", cas.nom)
+			continue
+		}
+		// Une garde qui dit « un workspace est invalide » sans dire lequel
+		// laisse l'utilisateur chercher dans une liste qu'il n'a pas écrite.
+		if !strings.Contains(err.Error(), cas.position) {
+			t.Errorf("%s : l'erreur ne situe pas le workspace (%s) : %v", cas.nom, cas.position, err)
+		}
+		if cas.fautif != "" && !strings.Contains(err.Error(), cas.fautif) {
+			t.Errorf("%s : l'erreur ne nomme pas le chemin fautif %q : %v", cas.nom, cas.fautif, err)
+		}
+	}
+}
+
+// Le « :ro » est une option de montage, pas une partie du chemin : la garde
+// doit le retirer avant de juger l'absoluité. Sans ce test, un resserrement
+// casserait le montage en lecture seule sans que rien ne le signale.
+func TestArgvCreateAccepteLeSuffixeRO(t *testing.T) {
+	c := createComplet()
+	c.Workspaces = []string{"/dev/api", "/home/moi/.ssh_sbx:ro"}
+
+	argv, err := ArgvCreate(c)
+	if err != nil {
+		t.Fatalf("le suffixe :ro doit rester accepté : %v", err)
+	}
+	// Et il part VERBATIM : c'est sbx qui l'interprète, pas den.
+	if !slices.Contains(argv, "/home/moi/.ssh_sbx:ro") {
+		t.Errorf("le suffixe :ro doit traverser intact : %v", argv)
+	}
+}
+
 // Le nom composé porte un point : la validation doit accepter le séparateur
 // tout en refusant les caractères que `sbx create --name` rejette.
 func TestArgvCreateAccepteLeNomCompose(t *testing.T) {
