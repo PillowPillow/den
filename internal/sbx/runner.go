@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -58,7 +59,7 @@ type ErreurExec struct {
 
 func (e *ErreurExec) Error() string {
 	detail := e.Stderr
-	if detail == "" {
+	if detail == "" && e.Err != nil {
 		detail = e.Err.Error()
 	}
 	return fmt.Sprintf("%s %s : %s", e.Bin, strings.Join(e.Args, " "), detail)
@@ -80,7 +81,7 @@ func (e *Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 	if err := cmd.Run(); err != nil {
 		return stdout.Bytes(), &ErreurExec{
 			Bin:    e.Bin,
-			Args:   args,
+			Args:   slices.Clone(args),
 			Stderr: strings.TrimSpace(stderr.String()),
 			Err:    err,
 		}
@@ -99,12 +100,13 @@ func (e *Exec) Attach(ctx context.Context, args ...string) error {
 	// driver tty au groupe de processus au premier plan, pas relayé via ce
 	// contexte — den n'a donc rien à faire quand ce contexte se termine ici.
 	//
-	// cmd.Cancel = func() error { return nil } NE SUFFIT PAS : d'après la doc
-	// de os/exec, Wait renvoie quand même une erreur (dérivée du contexte) dès
-	// que Cancel a été appelé, même s'il ne renvoie aucune erreur lui-même et
-	// même si le process se termine ensuite avec succès. Seul Cancel = nil
-	// laisse le process — et son code de sortie réel — totalement inaffecté
-	// par le contexte (vérifié empiriquement, pas seulement lu dans la doc).
+	// cmd.Cancel = func() error { return nil } NE SUFFIT PAS : dans watchCtx
+	// (os/exec), un Cancel qui renvoie nil sans être os.ErrProcessDone déclenche
+	// quand même `err = ctx.Err()` après coup, même si le process se termine
+	// ensuite avec succès (vérifié empiriquement, pas seulement lu dans la
+	// doc). Renvoyer os.ErrProcessDone depuis Cancel obtiendrait le même effet
+	// que ci-dessous ; Cancel = nil est retenu parce qu'il l'exprime plus
+	// directement, pas parce que ce serait la seule forme qui marche.
 	cmd.Cancel = nil
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
