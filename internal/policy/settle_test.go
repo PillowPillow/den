@@ -668,6 +668,35 @@ func TestSettleBorneLeNombreDeTours(t *testing.T) {
 			t.Errorf("le message doit annoncer le nombre de tours réellement effectués ; obtenu : %v", err)
 		}
 	})
+
+	// Cas dégénéré : Maintenant() est supposée monotone, et une horloge qui
+	// recule n'est le fait d'aucun double plausible. Mais si elle recule, dire
+	// qu'elle « n'a avancé que de -1ms » n'a aucun sens, et la dire figée serait
+	// faux : le seul texte vrai est celui qui nomme le recul.
+	t.Run("horloge qui recule", func(t *testing.T) {
+		courant := time.Unix(0, 0)
+		o := Options{
+			Timeout:    60 * time.Second,
+			Intervalle: 2 * time.Second,
+			Sommeil:    func(time.Duration) {},
+			Maintenant: func() time.Time {
+				courant = courant.Add(-time.Millisecond)
+				return courant
+			},
+		}
+
+		err := settleBorne(t, o, f())
+		if err == nil {
+			t.Fatal("une horloge qui recule doit produire une erreur, pas un succès")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "reculé") {
+			t.Errorf("le message doit nommer le recul de l'horloge ; obtenu : %v", err)
+		}
+		if strings.Contains(msg, "figée") || strings.Contains(msg, "n'a avancé que de") {
+			t.Errorf("une horloge qui recule n'est ni figée ni lente ; obtenu : %v", err)
+		}
+	})
 }
 
 // settleBorne lance Settle sous filet : sans borne en nombre de tours, ces cas
@@ -713,6 +742,41 @@ func TestSettleJointLaDerniereErreurRunnerAuTimeout(t *testing.T) {
 	}
 	if j < i {
 		t.Errorf("l'erreur ne doit pas précéder son cadrage : elle serait présentée comme la cause ; obtenu : %v", err)
+	}
+}
+
+// Un indice qui nomme le mauvais hôte est pire que pas d'indice : il envoie
+// diagnostiquer un hôte qui n'a rien à se reprocher, dans le message même dont
+// on a payé un tour entier pour qu'il diagnostique juste. La paire (hôte,
+// erreur) ne se voit qu'avec AU MOINS DEUX hôtes bloqués portant des erreurs
+// distinctes — avec un seul, n'importe quel appariement est correct.
+//
+// Le choix, au passage : un SEUL indice est joint, celui du dernier hôte en
+// échec du dernier tour. Les empiler alourdirait le message pour un gain
+// douteux (les échecs de transport sont massivement corrélés), et surtout un
+// indice n'a de valeur que s'il est encore vrai au moment où il est affiché.
+func TestSettleAppareLIndiceAvecSonHote(t *testing.T) {
+	h := nouvelleHorloge()
+	cle := func(hote string) string { return "policy check network --sandbox api --json " + hote }
+	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
+		cle("a.test"): {Sortie: []byte(`{"allowed": false}`), Err: errors.New("panne du premier")},
+		cle("b.test"): {Sortie: []byte(`{"allowed": false}`), Err: errors.New("panne du second")},
+	}}
+
+	err := Settle(context.Background(), f, "api", []string{"a.test", "b.test"}, h.options(60*time.Second, 2*time.Second))
+	if err == nil {
+		t.Fatal("erreur de timeout attendue")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "vérification de b.test (panne du second)") {
+		t.Errorf("l'indice doit apparier l'erreur avec l'hôte dont elle provient ; obtenu : %v", err)
+	}
+	if strings.Contains(msg, "panne du premier") {
+		t.Errorf("un seul indice est joint, le dernier ; obtenu : %v", err)
+	}
+	// Les deux restent bloqués : ils doivent tous deux être listés.
+	if !strings.Contains(msg, "a.test") || !strings.Contains(msg, "b.test") {
+		t.Errorf("les deux hôtes bloqués doivent être listés ; obtenu : %v", err)
 	}
 }
 

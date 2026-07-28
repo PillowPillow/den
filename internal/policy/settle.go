@@ -23,7 +23,20 @@ import (
 type Options struct {
 	Timeout    time.Duration
 	Intervalle time.Duration
-	Sommeil    func(time.Duration)
+
+	// Sommeil doit faire progresser Maintenant d'environ Intervalle : c'est le
+	// couple, et non chaque champ pris isolément, qui fait avancer la boucle.
+	// Un Sommeil sans effet posé à côté d'une horloge réelle est le piège
+	// classique — la boucle n'atteint alors jamais sa limite et sort par la
+	// borne en tours.
+	Sommeil func(time.Duration)
+
+	// Maintenant est supposée MONOTONE non décroissante. C'est une hypothèse,
+	// pas une propriété vérifiée : Settle ne s'en défend pas. Une horloge qui
+	// recule ou qui bondit entre deux appels ne casse pas la boucle (la borne
+	// en tours tient dans tous les cas), mais rend faux le diagnostic qu'elle
+	// produit — il est établi à partir de l'avancée constatée entre le premier
+	// et le dernier appel. time.Now et tout compteur croissant conviennent.
 	Maintenant func() time.Time
 }
 
@@ -226,6 +239,16 @@ func horlogeIncoherente(sandbox string, o Options, tours int, avance time.Durati
 		"sandbox %s : l'attente de la policy a fait %d tours (Timeout %s, Intervalle %s) sans "+
 			"jamais atteindre sa limite",
 		sandbox, tours, o.Timeout, o.Intervalle)
+	// Maintenant est supposée monotone (cf. Options) ; si elle ne l'est pas, la
+	// phrase « n'a avancé que de -1ms » n'a aucun sens et « figée » serait faux.
+	// Une ligne pour ne rien affirmer de faux, sans blinder pour autant contre
+	// une horloge adversariale.
+	if avance < 0 {
+		return fmt.Errorf(
+			"%s, et Maintenant() a reculé de %s — l'horloge fournie dans policy.Options "+
+				"n'est pas monotone. C'est un défaut de l'appelant, pas un blocage réseau",
+			entete, -avance)
+	}
 	if avance == 0 {
 		return fmt.Errorf(
 			"%s, sans que Maintenant() avance d'une seule nanoseconde — l'horloge fournie "+
