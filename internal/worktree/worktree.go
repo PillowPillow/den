@@ -295,11 +295,36 @@ func memeChemin(a, b string) bool {
 	return resout(a) == resout(b)
 }
 
+// resout rend la forme canonique d'un chemin, y compris quand il N'EXISTE PLUS.
+//
+// C'est le cas déterminant, pas un cas limite : les gardes du cul-de-sac
+// (enregistrement orphelin, worktree verrouillé) ne s'exécutent QUE lorsque le
+// dossier a disparu. EvalSymlinks échoue alors des deux côtés de la comparaison,
+// qui retombait sur deux chaînes brutes — celle que den manipule, passée par un
+// lien, et celle que git a enregistrée, résolue. La résolution était donc
+// structurellement absente là où on en avait besoin, et toute la mitigation
+// restait Linux-seulement : sur macOS, $TMPDIR et worktree_root vivent sous
+// /var → private/var.
+//
+// On résout donc le plus long ancêtre qui existe encore, et on lui rattache le
+// reste du chemin.
 func resout(chemin string) string {
+	chemin = filepath.Clean(chemin)
 	if reel, err := filepath.EvalSymlinks(chemin); err == nil {
 		return filepath.Clean(reel)
 	}
-	return filepath.Clean(chemin)
+	reste := ""
+	for courant := chemin; ; {
+		parent := filepath.Dir(courant)
+		if parent == courant {
+			return chemin // remonté jusqu'à la racine sans rien pouvoir résoudre
+		}
+		reste = filepath.Join(filepath.Base(courant), reste)
+		if reel, err := filepath.EvalSymlinks(parent); err == nil {
+			return filepath.Clean(filepath.Join(reel, reste))
+		}
+		courant = parent
+	}
 }
 
 // estEnregistre dit si git connaît encore un worktree à ce chemin, que son
@@ -412,7 +437,12 @@ func brancheParDefaut(ctx context.Context, g Git, cheminRepo string) (string, bo
 // (`config/` ignoré, `config/.env` dedans) reste invisible, git ne l'énumérant
 // pas séparément.
 func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
-	out, err := g.Run(ctx, dir, "status", "--porcelain", "--ignored=traditional", "-z")
+	// --untracked-files=normal est passé EXPLICITEMENT : den lit git sous la
+	// config de l'utilisateur, et `status.showUntrackedFiles = no` — réglage de
+	// performance répandu sur les gros dépôts — vide sinon la sortie de tout
+	// travail non suivi, désarmant la garde entière du spec §14.
+	out, err := g.Run(ctx, dir, "status", "--porcelain",
+		"--ignored=traditional", "--untracked-files=normal", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("état de %s : %w", dir, err)
 	}
@@ -435,6 +465,16 @@ func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
 		}
 		sales = append(sales, chemin)
 	}
+
+	marques, err := fichiersMarques(ctx, g, dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range marques {
+		if !slices.Contains(sales, m) {
+			sales = append(sales, m)
+		}
+	}
 	return sales, nil
 }
 
@@ -442,11 +482,58 @@ func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
 // par opposition à un dossier simplement non suivi dont le contenu se trouve
 // ignoré.
 //
+// Le « / » final est retiré avant d'interroger git, et ce n'est pas cosmétique :
+// dans le wildmatch de git, `*` et `**` matchent la chaîne vide, et git applique
+// le `.gitignore` du dossier lui-même au composant vide qui suit le « / ».
+// Demander `conf/` répond donc « ignoré » dès que le .gitignore porte `conf/*`,
+// `conf/**`, ou un `.gitignore` imbriqué valant `*` — trois idiomes courants —
+// alors que l'utilisateur n'a jamais rendu `conf/` jetable. Un fichier
+// d'exclusion malformé suffisait de la même façon à tout rouvrir.
+//
 // En cas de doute (git en erreur), on répond faux : l'entrée reste sale et la
 // suppression est refusée. C'est le seul sens sûr pour une opération destructrice.
 func dossierIgnore(ctx context.Context, g Git, dir, chemin string) bool {
-	_, err := g.Run(ctx, dir, "check-ignore", "-q", "--", chemin)
+	_, err := g.Run(ctx, dir, "check-ignore", "-q", "--", strings.TrimSuffix(chemin, "/"))
 	return err == nil
+}
+
+// fichiersMarques rend les fichiers suivis que l'index marque « ne regarde
+// pas » : skip-worktree (drapeau `S`) et assume-unchanged (drapeau en
+// minuscule). git ne rapporte alors AUCUNE modification les concernant — ni dans
+// `status`, ni dans le filet de `git worktree remove`, mesuré : les deux
+// laissent détruire le fichier sans un mot.
+//
+// Or ces bits existent précisément pour porter des modifications locales qu'on
+// ne veut pas commiter. Leur présence suffit donc à considérer l'arbre sale :
+// savoir si le contenu diffère réellement demanderait de recalculer l'empreinte
+// de chaque fichier, ce que git refuse justement de faire ici. On tranche dans
+// le sens sûr, quitte à exiger --force sur un dépôt qui pose ces bits sans avoir
+// rien modifié.
+func fichiersMarques(ctx context.Context, g Git, dir string) ([]string, error) {
+	out, err := g.Run(ctx, dir, "ls-files", "-v", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("drapeaux d'index de %s : %w", dir, err)
+	}
+	var marques []string
+	for _, e := range strings.Split(string(out), "\x00") {
+		if len(e) < 3 || e[1] != ' ' {
+			continue
+		}
+		drapeau, chemin := e[0], e[2:]
+		if drapeau != 'S' && (drapeau < 'a' || drapeau > 'z') {
+			continue
+		}
+		// Le sparse-checkout pose LES MÊMES bits, sur des fichiers volontairement
+		// absents du disque : les compter rendrait `den rm` impossible sans
+		// --force sur tout dépôt en sparse-checkout. Un fichier marqué ET présent
+		// porte un contenu local que git refuse de regarder ; marqué et absent,
+		// il est simplement hors du cône.
+		if _, err := os.Stat(filepath.Join(dir, chemin)); err != nil {
+			continue
+		}
+		marques = append(marques, chemin)
+	}
+	return marques, nil
 }
 
 // listeCourte nomme les fichiers en cause sans noyer le message.
