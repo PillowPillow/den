@@ -124,21 +124,39 @@ func ListNests(denHome string) ([]*Nest, []NestCasse, error) {
 		return nil, nil, fmt.Errorf("lecture de %s : %w", racine, err)
 	}
 
-	var noms []string
+	// candidat porte à la fois le nom tronqué (l'identité, utilisée pour le
+	// tri et pour LoadNest) et le nom de fichier complet (repli d'affichage
+	// pour un fichier ".yaml" dont le nom tronqué est vide, voir plus bas).
+	type candidat struct{ nom, fichier string }
+	var candidats []candidat
 	for _, e := range entrees {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
-		noms = append(noms, strings.TrimSuffix(e.Name(), ".yaml"))
+		candidats = append(candidats, candidat{
+			nom:     strings.TrimSuffix(e.Name(), ".yaml"),
+			fichier: e.Name(),
+		})
 	}
-	sort.Strings(noms)
+	// Trier par nom tronqué, PAS par nom de fichier : ils divergent dès que
+	// deux noms partagent un préfixe ('-' précède '.' en ASCII), voir
+	// TestListNestsTriDivergeDeLOrdreFichier.
+	sort.Slice(candidats, func(i, j int) bool { return candidats[i].nom < candidats[j].nom })
 
-	nests := make([]*Nest, 0, len(noms))
+	nests := make([]*Nest, 0, len(candidats))
 	var casses []NestCasse
-	for _, nom := range noms {
-		n, err := LoadNest(denHome, nom)
+	for _, c := range candidats {
+		n, err := LoadNest(denHome, c.nom)
 		if err != nil {
-			casses = append(casses, NestCasse{Nom: nom, Err: err})
+			nomAffiche := c.nom
+			if nomAffiche == "" {
+				// Fichier littéralement nommé ".yaml" : le nom tronqué est
+				// vide. Retomber sur le nom de fichier complet pour que
+				// l'avertissement nomme quelque chose — sinon l'utilisateur
+				// n'a aucun moyen de savoir quel fichier supprimer.
+				nomAffiche = c.fichier
+			}
+			casses = append(casses, NestCasse{Nom: nomAffiche, Err: err})
 			continue
 		}
 		nests = append(nests, n)
