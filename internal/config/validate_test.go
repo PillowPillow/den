@@ -112,6 +112,83 @@ func TestValidateRefuseUnUpdateBlanc(t *testing.T) {
 	}
 }
 
+// --- D4 : bin_dirs est une liste de CHEMINS, pas de code (T2-min-4) ---------
+//
+// agent.CommandeFraicheur injecte les bin_dirs littéralement dans un
+// `export PATH=%q`, sans échappement, parce que le `$HOME` qu'ils contiennent
+// DOIT être expansé par le bash de la VM (invariant 1 de CommandeFraicheur).
+// Mesuré sur bash : cette même absence d'échappement fait exécuter `$(...)` et
+// les backticks, rend une tabulation en `\t` littéral, et laisse un élément
+// vide devenir « le répertoire courant » dans le PATH.
+//
+// Échapper serait donc contradictoire — cela tuerait `$HOME`. Le défaut est de
+// TYPAGE : ces valeurs ne sont pas des chemins, et c'est là qu'on les refuse.
+// Aucune escalade de privilège n'est en jeu (c'est la config de l'utilisateur,
+// et `update:` est du shell arbitraire par contrat) : ce qui est corrigé, c'est
+// qu'un champ documenté « liste de chemins » accepte autre chose que des chemins.
+func TestValidateRefuseUnBinDirQuiNEstPasUnChemin(t *testing.T) {
+	cas := []struct {
+		nom     string
+		valeur  string
+		attendu string // fragment que le message doit porter
+	}{
+		{"substitution de commande", "/opt/$(id -un)", "$("},
+		{"backtick", "/opt/`id -un`", "`"},
+		{"substitution imbriquee dans une expansion", "${x:-$(id)}", "$("},
+		{"tabulation", "/opt/a\tb", "caractère de contrôle"},
+		{"retour a la ligne", "/opt/a\nb", "caractère de contrôle"},
+		{"entree vide", "", "vide"},
+	}
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			g := globalValide()
+			a := g.Agents["claude"]
+			a.BinDirs = []string{c.valeur}
+			g.Agents["claude"] = a
+
+			errs := g.Validate()
+			if len(errs) == 0 {
+				t.Fatalf("bin_dirs[0] = %q : attendu un refus, obtenu aucune erreur", c.valeur)
+			}
+			var tout []string
+			for _, e := range errs {
+				tout = append(tout, e.Error())
+			}
+			joint := strings.Join(tout, " | ")
+			// La clé INDEXÉE : avec quatre bin_dirs, « bin_dirs » seul ne dit
+			// pas lequel corriger.
+			if !strings.Contains(joint, "agents.claude.bin_dirs[0]") {
+				t.Errorf("erreurs = %q, attendu la clé indexée agents.claude.bin_dirs[0]", joint)
+			}
+			if !strings.Contains(joint, c.attendu) {
+				t.Errorf("erreurs = %q, attendu la cause nommée (%q)", joint, c.attendu)
+			}
+		})
+	}
+}
+
+// La contrepartie indispensable : `$HOME` et `${HOME}` visent le home DE LA VM
+// et doivent traverser INTACTS (invariant 1 de agent.CommandeFraicheur). Un
+// refus trop large les casserait, et le test ci-dessus ne le verrait pas.
+func TestValidateAccepteLesBinDirsLegitimes(t *testing.T) {
+	for _, valeur := range []string{
+		"$HOME/.local/bin",
+		"${HOME}/.local/bin",
+		"/usr/local/bin",
+		"$HOME/.claude/local",
+	} {
+		t.Run(valeur, func(t *testing.T) {
+			g := globalValide()
+			a := g.Agents["claude"]
+			a.BinDirs = []string{valeur}
+			g.Agents["claude"] = a
+			if errs := g.Validate(); len(errs) != 0 {
+				t.Errorf("bin_dirs[0] = %q refusé alors qu'il doit traverser intact : %v", valeur, errs)
+			}
+		})
+	}
+}
+
 func TestValidateCumuleLesErreurs(t *testing.T) {
 	g := globalValide()
 	g.SSH.Mode = "vpn"
