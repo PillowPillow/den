@@ -321,8 +321,12 @@ func TestSettleUtiliseLeVerdictMemeQuandSbxSortEnErreur(t *testing.T) {
 		if !strings.Contains(err.Error(), "fail-closed") {
 			t.Errorf("l'échec doit être celui du timeout fail-closed, pas un échec de transport ; obtenu : %v", err)
 		}
-		if strings.Contains(err.Error(), "exit status 1") {
-			t.Errorf("le code de sortie ne doit pas être présenté comme la cause ; obtenu : %v", err)
+		// Le code de sortie ne doit pas être présenté comme LA cause — mais rien
+		// n'interdit de le MENTIONNER comme indice. Ce qui est interdit, c'est
+		// l'attribution : il ne doit apparaître qu'après le cadrage « Indice ».
+		msg := err.Error()
+		if i, j := strings.Index(msg, "Indice"), strings.Index(msg, "exit status 1"); j >= 0 && (i < 0 || j < i) {
+			t.Errorf("l'échec de commande ne doit apparaître que sous le cadrage « Indice » ; obtenu : %v", err)
 		}
 	})
 
@@ -491,20 +495,35 @@ func TestSettleRefuseUnNomDeSandboxInvalide(t *testing.T) {
 }
 
 // Mineur — un « - » égaré dans le YAML d'allowlist produit un hôte vide. Sondé
-// tel quel, il enverrait `--json ""` et Settle pourrait rendre nil.
+// tel quel, il enverrait `--json ""` et Settle pourrait rendre nil. Un hôte fait
+// de blancs vient du même égarement (« -   » ou une valeur quotée vide) et
+// n'est pas plus sondable ; sans le cas ci-dessous, rien ne distinguerait
+// TrimSpace(h) == "" de h == "".
 func TestSettleRefuseUnHoteVide(t *testing.T) {
-	o, _ := optionsTest(t)
-	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": true}`)}}
+	cas := []struct {
+		nom  string
+		hote string
+	}{
+		{"chaîne vide", ""},
+		{"espaces", "   "},
+		{"tabulation et saut de ligne", "\t\n"},
+	}
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			o, _ := optionsTest(t)
+			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": true}`)}}
 
-	err := Settle(context.Background(), f, "api", []string{"github.com", ""}, o)
-	if err == nil {
-		t.Fatal("un hôte vide dans l'allowlist doit être refusé")
-	}
-	if !strings.Contains(err.Error(), "vide") {
-		t.Errorf("le message doit dire que l'hôte est vide ; obtenu : %v", err)
-	}
-	if len(f.Appels) != 0 {
-		t.Errorf("aucune sonde ne doit partir avec une allowlist invalide ; appels : %v", f.Appels)
+			err := Settle(context.Background(), f, "api", []string{"github.com", c.hote}, o)
+			if err == nil {
+				t.Fatal("un hôte vide dans l'allowlist doit être refusé")
+			}
+			if !strings.Contains(err.Error(), "vide") {
+				t.Errorf("le message doit dire que l'hôte est vide ; obtenu : %v", err)
+			}
+			if len(f.Appels) != 0 {
+				t.Errorf("aucune sonde ne doit partir avec une allowlist invalide ; appels : %v", f.Appels)
+			}
+		})
 	}
 }
 
@@ -589,32 +608,209 @@ func TestOptionsDefautValeurs(t *testing.T) {
 // double d'horloge naïf à la tâche 12 bloquerait `go test ./...` du projet
 // entier sans que rien ne désigne policy.
 func TestSettleBorneLeNombreDeTours(t *testing.T) {
-	o := Options{
-		Timeout:    60 * time.Second,
-		Intervalle: 2 * time.Second,
-		Sommeil:    func(time.Duration) {},                      // ne fait rien
-		Maintenant: func() time.Time { return time.Unix(0, 0) }, // n'avance jamais
-	}
-	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": false}`)}}
+	f := func() *sbx.Fake { return &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": false}`)}} }
 
-	fini := make(chan error, 1)
-	go func() { fini <- Settle(context.Background(), f, "api", []string{"github.com"}, o) }()
+	// Deux causes distinctes tombent dans la même borne, et le message doit les
+	// distinguer : l'horloge figée, et l'horloge qui avance — mais moins vite
+	// qu'un Intervalle par tour, parce que Sommeil ne la fait pas avancer. Le
+	// second profil est le double le plus plausible d'un appelant : « Sommeil
+	// no-op pour ne pas attendre en test » + une horloge réelle.
+	t.Run("horloge figée", func(t *testing.T) {
+		o := Options{
+			Timeout:    60 * time.Second,
+			Intervalle: 2 * time.Second,
+			Sommeil:    func(time.Duration) {},
+			Maintenant: func() time.Time { return time.Unix(0, 0) },
+		}
 
-	select {
-	case err := <-fini:
+		err := settleBorne(t, o, f())
 		if err == nil {
 			t.Fatal("une horloge figée doit produire une erreur, pas un succès")
 		}
-		if !strings.Contains(err.Error(), "horloge") {
-			t.Errorf("le message doit désigner l'horloge, pas accuser le réseau ; obtenu : %v", err)
+		msg := err.Error()
+		if !strings.Contains(msg, "horloge") || !strings.Contains(msg, "figée") {
+			t.Errorf("le message doit désigner une horloge figée ; obtenu : %v", err)
 		}
-	// Seul endroit du paquet où une horloge RÉELLE intervient : c'est le
-	// filet qui transforme « le test se bloque pour toujours » en « le test
-	// échoue en nommant la cause ». Il ne coûte rien quand la borne existe.
+		if !strings.Contains(msg, "fait 31 tours") {
+			t.Errorf("le message doit annoncer le nombre de tours réellement effectués ; obtenu : %v", err)
+		}
+	})
+
+	t.Run("horloge trop lente", func(t *testing.T) {
+		courant := time.Unix(0, 0)
+		o := Options{
+			Timeout:    60 * time.Second,
+			Intervalle: 2 * time.Second,
+			Sommeil:    func(time.Duration) {}, // ne fait PAS avancer l'horloge
+			Maintenant: func() time.Time { // ...qui avance quand même, trop peu
+				courant = courant.Add(time.Second)
+				return courant
+			},
+		}
+
+		err := settleBorne(t, o, f())
+		if err == nil {
+			t.Fatal("une horloge trop lente doit produire une erreur, pas un succès")
+		}
+		msg := err.Error()
+		// L'horloge a bel et bien avancé (de plus d'une minute, ici) : la dire
+		// figée serait faux, et enverrait corriger le mauvais champ.
+		if strings.Contains(msg, "figée") {
+			t.Errorf("l'horloge avance : le message ne doit pas la dire figée ; obtenu : %v", err)
+		}
+		if !strings.Contains(msg, "n'a avancé que de") {
+			t.Errorf("le message doit rapporter l'AVANCÉE de l'horloge ; obtenu : %v", err)
+		}
+		if !strings.Contains(msg, "Sommeil") {
+			t.Errorf("le message doit désigner Sommeil, qui est le champ à corriger ; obtenu : %v", err)
+		}
+		if !strings.Contains(msg, "fait 31 tours") {
+			t.Errorf("le message doit annoncer le nombre de tours réellement effectués ; obtenu : %v", err)
+		}
+	})
+}
+
+// settleBorne lance Settle sous filet : sans borne en nombre de tours, ces cas
+// ne rendraient JAMAIS la main. Seul endroit du paquet où une horloge réelle
+// intervient — et elle ne coûte rien tant que la borne existe.
+func settleBorne(t *testing.T, o Options, r sbx.Runner) error {
+	t.Helper()
+	fini := make(chan error, 1)
+	go func() { fini <- Settle(context.Background(), r, "api", []string{"github.com"}, o) }()
+	select {
+	case err := <-fini:
+		return err
 	case <-time.After(2 * time.Second):
 		t.Fatal("Settle n'a jamais rendu la main : la boucle n'est pas bornée en nombre de tours")
+		return nil
 	}
 }
+
+// Le ruling de la revue (lire le verdict avant de conclure de l'erreur) a un
+// prix : quand sbx échoue POUR UNE AUTRE RAISON tout en rendant un refus, den
+// boucle jusqu'au timeout et rend un message qui envoie vérifier l'allowlist —
+// alors que la vraie cause était sous les yeux à chaque tour. L'erreur ne doit
+// pas devenir LA cause (ce serait revenir en arrière), mais elle doit être
+// jointe comme indice.
+func TestSettleJointLaDerniereErreurRunnerAuTimeout(t *testing.T) {
+	h := nouvelleHorloge()
+	f := &sbx.Fake{Defaut: sbx.Reponse{
+		Sortie: []byte(`{"allowed": false}`),
+		Err:    errors.New(`sandbox "api" not found`),
+	}}
+
+	err := Settle(context.Background(), f, "api", []string{"github.com"}, h.options(60*time.Second, 2*time.Second))
+	if err == nil {
+		t.Fatal("erreur de timeout attendue")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "fail-closed") {
+		t.Errorf("le fail-closed reste l'échec principal ; obtenu : %v", err)
+	}
+	i, j := strings.Index(msg, "Indice"), strings.Index(msg, `sandbox "api" not found`)
+	if i < 0 || j < 0 {
+		t.Fatalf("l'erreur observée à chaque tour doit être jointe sous le cadrage « Indice » ; obtenu : %v", err)
+	}
+	if j < i {
+		t.Errorf("l'erreur ne doit pas précéder son cadrage : elle serait présentée comme la cause ; obtenu : %v", err)
+	}
+}
+
+// Symétrique du précédent : sans échec d'invocation, il n'y a pas d'indice à
+// donner, et en inventer un enverrait sur une fausse piste.
+func TestSettleSansIndiceQuandLInvocationReussit(t *testing.T) {
+	h := nouvelleHorloge()
+	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": false}`)}}
+
+	err := Settle(context.Background(), f, "api", []string{"github.com"}, h.options(60*time.Second, 2*time.Second))
+	if err == nil {
+		t.Fatal("erreur de timeout attendue")
+	}
+	if strings.Contains(err.Error(), "Indice") {
+		t.Errorf("aucune invocation n'a échoué : pas d'indice à joindre ; obtenu : %v", err)
+	}
+}
+
+// L'indice ne doit pas rouvrir la porte que la propriété du brief ferme : une
+// erreur observée sur un hôte qui a FINI par passer ne doit pas revenir dans le
+// message de timeout, ni sous forme d'hôte ni sous forme de diagnostic.
+func TestSettleNeJointPasLIndiceDUnHoteDejaPasse(t *testing.T) {
+	h := nouvelleHorloge()
+	f := &fakeIndicePassager{}
+
+	err := Settle(context.Background(), f, "api",
+		[]string{"passe.test", "bloque.test"}, h.options(60*time.Second, 2*time.Second))
+	if err == nil {
+		t.Fatal("erreur de timeout attendue")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "passe.test") {
+		t.Errorf("l'hôte finalement autorisé ne doit pas revenir dans le message ; obtenu : %v", err)
+	}
+	if strings.Contains(msg, "panne passagère") {
+		t.Errorf("l'indice d'un hôte qui est passé ne doit pas survivre ; obtenu : %v", err)
+	}
+	if !strings.Contains(msg, "bloque.test") {
+		t.Errorf("l'hôte réellement bloqué doit être nommé ; obtenu : %v", err)
+	}
+}
+
+// La sortie de sbx atterrit dans un message d'erreur, qui atterrit dans un
+// terminal. Une sortie de plusieurs kilo-octets recrachée telle quelle noie le
+// diagnostic qu'elle est censée porter.
+func TestSettleTronqueUneSortieEnorme(t *testing.T) {
+	gros := strings.Repeat("x", 4096)
+	cas := []struct {
+		nom    string
+		sortie string
+	}{
+		{"sortie illisible", gros},
+		{"sortie sans champ allowed", `{"note":"` + gros + `"}`},
+		// La coupe tombe ici au MILIEU d'un « é » (le préfixe fait exactement 511
+		// octets). Couper là produirait un U+FFFD dans le message, donnant à
+		// croire que sbx a émis des octets invalides. Le cas passe par la branche
+		// « schéma », en %s : la branche illisible, elle, est en %q, qui échappe
+		// l'octet orphelin et masquerait le défaut.
+		{"coupe au milieu d'une rune", `{"note":"` + strings.Repeat("x", 502) + strings.Repeat("é", 2000) + `"}`},
+	}
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			o, _ := optionsTest(t)
+			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(c.sortie)}}
+
+			err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
+			if err == nil {
+				t.Fatal("erreur attendue")
+			}
+			if n := len(err.Error()); n > 1024 {
+				t.Errorf("message de %d octets : la sortie brute doit être bornée", n)
+			}
+			if !strings.Contains(err.Error(), "tronquée") {
+				t.Errorf("une sortie tronquée doit être annoncée comme telle ; obtenu (%d octets) : %.200v", len(err.Error()), err)
+			}
+			if strings.ContainsRune(err.Error(), '�') {
+				t.Errorf("la coupe doit tomber sur une frontière de rune ; obtenu : %.200v", err)
+			}
+		})
+	}
+}
+
+// fakeIndicePassager : « passe.test » échoue au transport tout en rendant un
+// refus, puis passe ; « bloque.test » reste refusé sans jamais d'erreur.
+type fakeIndicePassager struct{ appels int }
+
+func (f *fakeIndicePassager) Run(_ context.Context, args ...string) ([]byte, error) {
+	if args[len(args)-1] != "passe.test" {
+		return []byte(`{"allowed": false}`), nil
+	}
+	f.appels++
+	if f.appels == 1 {
+		return []byte(`{"allowed": false}`), errors.New("panne passagère de passe.test")
+	}
+	return []byte(`{"allowed": true}`), nil
+}
+
+func (f *fakeIndicePassager) Attach(_ context.Context, _ ...string) error { return nil }
 
 // fakeAnnulant annule le contexte PENDANT la passe, puis échoue comme le ferait
 // un sbx tué : une erreur de transport qui n'enveloppe aucun motif de contexte.

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PillowPillow/den/internal/sbx"
 )
@@ -134,29 +135,31 @@ func Settle(ctx context.Context, r sbx.Runner, sandbox string, hotes []string, o
 		return nil
 	}
 
-	limite := o.Maintenant().Add(o.Timeout)
+	debut := o.Maintenant()
+	limite := debut.Add(o.Timeout)
 	toursMax := o.toursMax()
+
+	// indice : dernière erreur d'invocation observée SUR UN HÔTE ENCORE BLOQUÉ,
+	// remise à zéro à chaque tour. Elle ne peut donc jamais faire réapparaître
+	// dans le message un hôte qui a fini par passer.
+	var indice error
+	var hoteIndice string
 
 	for tour := 1; ; tour++ {
 		if err := ctx.Err(); err != nil {
 			return interrompue(sandbox, err)
 		}
 		if tour > toursMax {
-			return fmt.Errorf(
-				"sandbox %s : la boucle d'attente a dépassé %d tours (Timeout %s, Intervalle %s) "+
-					"alors que Maintenant() rend toujours %s — l'horloge fournie dans "+
-					"policy.Options n'avance pas. C'est un défaut de l'appelant, pas un "+
-					"blocage réseau",
-				sandbox, toursMax, o.Timeout, o.Intervalle,
-				o.Maintenant().Format(time.RFC3339Nano))
+			return horlogeIncoherente(sandbox, o, tour-1, o.Maintenant().Sub(debut))
 		}
 
 		// Seuls les hôtes ENCORE bloqués sont resondés : une allowlist longue
 		// dont un seul hôte traîne ne doit pas rejouer toute la liste à chaque
 		// tour, et un hôte déjà autorisé n'a pas à revenir dans le message.
 		var encoreBloques []string
+		indice, hoteIndice = nil, ""
 		for _, h := range restants {
-			ok, err := hoteAutorise(ctx, r, sandbox, h)
+			ok, ind, err := hoteAutorise(ctx, r, sandbox, h)
 			if err != nil {
 				// Une annulation arrive presque toujours PENDANT une passe, pas
 				// entre deux tours : sbx est tué et le runner rend une erreur de
@@ -172,6 +175,9 @@ func Settle(ctx context.Context, r sbx.Runner, sandbox string, hotes []string, o
 			}
 			if !ok {
 				encoreBloques = append(encoreBloques, h)
+				if ind != nil {
+					indice, hoteIndice = ind, h
+				}
 			}
 		}
 		restants = encoreBloques
@@ -184,15 +190,54 @@ func Settle(ctx context.Context, r sbx.Runner, sandbox string, hotes []string, o
 		// dernier échec rencontré, et jamais des hôtes déjà passés.
 		if !o.Maintenant().Before(limite) {
 			slices.Sort(restants) // déterminisme du message
+			// Quand le verdict a été retenu MALGRÉ une invocation en échec, cette
+			// erreur est la seule chose que den ait vue de la vraie cause : sans
+			// elle, un `sandbox "api" not found` répété trente fois se solde par
+			// « vérifie ton allowlist », qui est une fausse piste. Elle est jointe
+			// comme INDICE, jamais comme cause : la cause reste le fail-closed.
+			detail := ""
+			if indice != nil {
+				detail = fmt.Sprintf(
+					" Indice : `sbx` a AUSSI échoué à la dernière vérification de %s (%v) — "+
+						"la cause est peut-être là, et non dans l'allowlist.", hoteIndice, indice)
+			}
 			return fmt.Errorf(
 				"sandbox %s : la policy réseau n'autorise toujours pas %d hôte(s) après %s — "+
-					"den n'attache pas (fail-closed). Hôtes bloqués : %s. "+
+					"den n'attache pas (fail-closed). Hôtes bloqués : %s.%s "+
 					"Vérifie l'allowlist du nest et de la stack, puis "+
 					"`sbx policy check network --sandbox %s --verbose <hôte>`",
-				sandbox, len(restants), o.Timeout, strings.Join(restants, ", "), sandbox)
+				sandbox, len(restants), o.Timeout, strings.Join(restants, ", "), detail, sandbox)
 		}
 		o.Sommeil(o.Intervalle)
 	}
+}
+
+// horlogeIncoherente explique le franchissement de la borne en tours.
+//
+// Deux causes distinctes y mènent, et les confondre envoie corriger le mauvais
+// champ : l'horloge peut être FIGÉE, ou simplement avancer de moins d'un
+// Intervalle par tour — typiquement un Sommeil sans effet posé à côté d'une
+// horloge réelle. Le message rapporte donc l'AVANCÉE constatée et non
+// l'horodatage courant : dire « Maintenant() rend toujours 00:01:00 » d'une
+// horloge qui a avancé d'une minute est faux, et se contredit d'autant plus que
+// la date affichée peut être postérieure à la limite du timeout.
+func horlogeIncoherente(sandbox string, o Options, tours int, avance time.Duration) error {
+	entete := fmt.Sprintf(
+		"sandbox %s : l'attente de la policy a fait %d tours (Timeout %s, Intervalle %s) sans "+
+			"jamais atteindre sa limite",
+		sandbox, tours, o.Timeout, o.Intervalle)
+	if avance == 0 {
+		return fmt.Errorf(
+			"%s, sans que Maintenant() avance d'une seule nanoseconde — l'horloge fournie "+
+				"dans policy.Options est figée. C'est un défaut de l'appelant, pas un "+
+				"blocage réseau", entete)
+	}
+	return fmt.Errorf(
+		"%s : Maintenant() n'a avancé que de %s, là où %d sommeils de %s en promettaient %s — "+
+			"l'horloge avance moins vite que Sommeil ne le prétend (un Sommeil sans effet "+
+			"posé à côté d'une horloge réelle donne exactement ça). C'est un défaut de "+
+			"l'appelant, pas un blocage réseau",
+		entete, avance, tours, o.Intervalle, time.Duration(tours)*o.Intervalle)
 }
 
 // interrompue : message unique de l'annulation, d'où qu'elle soit constatée. Il
@@ -241,20 +286,25 @@ func allowlistNettoyee(hotes []string) ([]string, error) {
 // pas (den n'attache pas). Croire un « oui » sorti d'une invocation ratée —
 // stdout tronqué, flag inconnu, sandbox absente — serait le seul chemin par
 // lequel ce paquet pourrait ouvrir un shell sur une policy jamais vérifiée.
-func hoteAutorise(ctx context.Context, r sbx.Runner, sandbox, hote string) (bool, error) {
+//
+// indice est non nil dans le seul cas où un verdict a été retenu MALGRÉ une
+// invocation en échec. Il n'interrompt rien, mais l'appelant le garde : si la
+// boucle finit en timeout, c'est la seule trace de ce qui a réellement cloché,
+// et sans elle den envoie vérifier une allowlist qui n'y est pour rien.
+func hoteAutorise(ctx context.Context, r sbx.Runner, sandbox, hote string) (autorise bool, indice, err error) {
 	sortie, errRun := r.Run(ctx, "policy", "check", "network", "--sandbox", sandbox, "--json", hote)
 	verdict, errLecture := litVerdict(sortie)
 
 	if errRun != nil {
 		if verdict != nil && !*verdict {
-			return false, nil // refus explicite : c'est un verdict, on reboucle
+			return false, errRun, nil // refus explicite : c'est un verdict, on reboucle
 		}
-		return false, fmt.Errorf("sandbox %s : vérification de %s : %w", sandbox, hote, errRun)
+		return false, nil, fmt.Errorf("sandbox %s : vérification de %s : %w", sandbox, hote, errRun)
 	}
 	if errLecture != nil {
-		return false, fmt.Errorf("sandbox %s : vérification de %s : %w", sandbox, hote, errLecture)
+		return false, nil, fmt.Errorf("sandbox %s : vérification de %s : %w", sandbox, hote, errLecture)
 	}
-	return *verdict, nil
+	return *verdict, nil, nil
 }
 
 // litVerdict extrait le champ `allowed` de la sortie de sbx.
@@ -276,6 +326,8 @@ func litVerdict(sortie []byte) (*bool, error) {
 				"vérifie que le flag --json existe et que le verdict ne part pas sur stderr")
 	}
 
+	extrait, suffixe := extraitDeSortie(sortie)
+
 	var doc struct {
 		Allowed *bool `json:"allowed"`
 	}
@@ -284,17 +336,40 @@ func litVerdict(sortie []byte) (*bool, error) {
 		// caractère visible, ou être pleine de caractères de contrôle. Un
 		// message qui se termine par « : » et rien ne laisse aucune piste.
 		return nil, fmt.Errorf(
-			"sortie de `sbx policy check network` illisible (%w) : %q", err, string(sortie))
+			"sortie de `sbx policy check network` illisible (%w) : %q%s", err, extrait, suffixe)
 	}
 	if doc.Allowed == nil {
 		// La sortie brute est montrée telle quelle — le brief l'exige, et c'est
 		// la seule chose qui permette de voir ce que sbx rend désormais. Elle
 		// est ANNONCÉE, parce qu'un sbx verbeux y cite volontiers d'autres hôtes
-		// que celui sondé : l'appelant a préfixé « vérification de <hôte> », et
-		// ce qui suit « Sortie brute : » appartient à sbx, pas au verdict de den.
+		// que celui sondé : la propriété tenue ici n'est pas « ne nomme pas un
+		// hôte déjà passé » — montrer la sortie brute la rend intenable — mais
+		// « ne lui ATTRIBUE rien ». L'appelant a préfixé « vérification de
+		// <hôte> », et ce qui suit « Sortie brute : » appartient à sbx.
 		return nil, fmt.Errorf(
 			"la sortie de `sbx policy check network` ne porte pas de champ \"allowed\" — "+
-				"le schéma de sbx a probablement changé. Sortie brute : %s", string(sortie))
+				"le schéma de sbx a probablement changé. Sortie brute : %s%s", extrait, suffixe)
 	}
 	return doc.Allowed, nil
+}
+
+// tailleMaxSortie borne ce qu'un message d'erreur reprend de la sortie de sbx.
+// Assez pour un objet JSON de verdict, ou pour le début d'un usage ; pas assez
+// pour qu'une sortie de plusieurs kilo-octets noie le diagnostic qu'elle est
+// censée porter dans le terminal de l'utilisateur.
+const tailleMaxSortie = 512
+
+// extraitDeSortie rend la portion citable de la sortie et, le cas échéant, la
+// mention de troncature à coller derrière. La coupe se fait sur une frontière
+// de rune : couper au milieu d'un caractère produirait un remplacement U+FFFD
+// dans le message, en donnant à croire que sbx a émis des octets invalides.
+func extraitDeSortie(sortie []byte) (extrait, suffixe string) {
+	if len(sortie) <= tailleMaxSortie {
+		return string(sortie), ""
+	}
+	coupe := tailleMaxSortie
+	for coupe > 0 && !utf8.RuneStart(sortie[coupe]) {
+		coupe--
+	}
+	return string(sortie[:coupe]), fmt.Sprintf(" (tronquée, %d octets au total)", len(sortie))
 }
