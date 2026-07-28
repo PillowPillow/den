@@ -37,7 +37,7 @@ func TestExempleDenHomeEstValide(t *testing.T) {
 		t.Fatal("l'exemple ne déclare aucun nest")
 	}
 	for _, n := range nests {
-		if _, err := nest.Resolve(g, stacks, n, nest.Options{}); err != nil {
+		if _, err := nest.Resolve(home, g, stacks, n, nest.Options{}); err != nil {
 			t.Errorf("nest %q de l'exemple ne se résout pas : %v", n.Name, err)
 		}
 	}

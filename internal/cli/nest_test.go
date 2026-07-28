@@ -97,6 +97,20 @@ func TestNestShowNestInconnu(t *testing.T) {
 	}
 }
 
+func TestNestShowAfficheLEnvSubstitue(t *testing.T) {
+	denHomeDeTest(t)
+	out, err := run(t, "nest", "show", "api")
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if !strings.Contains(out, "CLAUDE_CONFIG_DIR=/tmp/den-agents/claude") {
+		t.Errorf("l'env affiché doit être substitué ; obtenu :\n%s", out)
+	}
+	if strings.Contains(out, "{config_dir}") {
+		t.Errorf("le jeton {config_dir} ne doit jamais s'afficher ; obtenu :\n%s", out)
+	}
+}
+
 func TestNestShowRespecteLesFlagsDeSelection(t *testing.T) {
 	denHomeDeTest(t)
 	out, err := run(t, "nest", "show", "fullstack", "--without", "front")

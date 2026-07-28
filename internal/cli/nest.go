@@ -78,7 +78,7 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			r, err := nest.Resolve(g, stacks, n, opts)
+			r, err := nest.Resolve(home, g, stacks, n, opts)
 			if err != nil {
 				return err
 			}
@@ -115,12 +115,12 @@ func ecrisResolution(w io.Writer, r *nest.Resolved) {
 		fmt.Fprintf(w, "  - %s\n", h)
 	}
 
-	if len(r.Nest.Env) > 0 {
-		fmt.Fprintln(w, "env:")
+	if len(r.Env) > 0 {
+		fmt.Fprintln(w, "env (résolu):")
 		// L'ordre d'itération des maps Go n'est pas déterministe : tout ce qui
 		// s'affiche est trié.
-		for _, k := range slices.Sorted(maps.Keys(r.Nest.Env)) {
-			fmt.Fprintf(w, "  %s=%s\n", k, r.Nest.Env[k])
+		for _, k := range slices.Sorted(maps.Keys(r.Env)) {
+			fmt.Fprintf(w, "  %s=%s\n", k, r.Env[k])
 		}
 	}
 

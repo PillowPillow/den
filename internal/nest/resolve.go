@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
 )
@@ -15,15 +16,27 @@ type Options struct {
 	Only    []string // --only
 }
 
+// jetonConfigDir est le marqueur substitué dans les valeurs d'env de l'agent.
+// Il vise un chemin HÔTE : sbx monte chaque workspace au MÊME chemin absolu
+// dans la VM, donc le chemin hôte du profil est aussi son chemin in-VM.
+const jetonConfigDir = "{config_dir}"
+
 // Resolved est un nest entièrement résolu : plus rien à recalculer en aval.
 // Le plan Spawn le consomme tel quel pour fabriquer le mixin et l'argv sbx create.
 type Resolved struct {
+	DenHome string // le mixin généré s'écrit sous <DenHome>/cache/mixins/
+
 	Nest  *Nest
 	Stack *config.Stack
 
 	AgentName      string
 	Agent          config.Agent
 	AgentConfigDir string // override nest s'il existe, sinon registre global
+
+	// Env est l'union PRÊTE À POSER : env de l'agent (avec {config_dir} déjà
+	// substitué) ∪ env du nest, le nest gagnant. La substitution est une règle
+	// de cascade, pas d'affichage : elle appartient ici, pas au mixin.
+	Env map[string]string
 
 	Egress []string // union triée baseline ∪ stack ∪ nest
 	Repos  []Repo   // sélection appliquée, ordre de déclaration
@@ -32,6 +45,19 @@ type Resolved struct {
 	SSHDir         string
 	WorktreeLayout string
 	WorktreeRoot   string
+}
+
+// fusionneEnv applique la cascade agent ← nest et substitue {config_dir}.
+// Renvoie toujours une map non-nil : les consommateurs itèrent sans garde.
+func fusionneEnv(agentEnv, nestEnv map[string]string, configDir string) map[string]string {
+	out := make(map[string]string, len(agentEnv)+len(nestEnv))
+	for k, v := range agentEnv {
+		out[k] = strings.ReplaceAll(v, jetonConfigDir, configDir)
+	}
+	for k, v := range nestEnv {
+		out[k] = v // le nest est plus bas dans la cascade : il gagne
+	}
+	return out
 }
 
 // ResolveAgent détermine l'agent actif et son config_dir.
@@ -60,7 +86,7 @@ func ResolveAgent(g *config.Global, n *Nest, flagAgent string) (string, config.A
 }
 
 // Resolve applique la cascade complète global ← stack ← nest ← flags.
-func Resolve(g *config.Global, stacks map[string]*config.Stack, n *Nest, o Options) (*Resolved, error) {
+func Resolve(denHome string, g *config.Global, stacks map[string]*config.Stack, n *Nest, o Options) (*Resolved, error) {
 	nomStack := n.Stack
 	if nomStack == "" {
 		nomStack = g.Defaults.Stack
@@ -69,8 +95,8 @@ func Resolve(g *config.Global, stacks map[string]*config.Stack, n *Nest, o Optio
 	if !ok {
 		dispos := slices.Sorted(maps.Keys(stacks))
 		return nil, fmt.Errorf(
-			"nest %q : stack %q introuvable dans ~/.den/stacks (stacks déclarées : %v)",
-			n.Name, nomStack, dispos)
+			"nest %q : stack %q introuvable dans %s/stacks (stacks déclarées : %v)",
+			n.Name, nomStack, denHome, dispos)
 	}
 
 	nomAgent, agent, configDir, err := ResolveAgent(g, n, o.Agent)
@@ -84,11 +110,13 @@ func Resolve(g *config.Global, stacks map[string]*config.Stack, n *Nest, o Optio
 	}
 
 	return &Resolved{
+		DenHome:        denHome,
 		Nest:           n,
 		Stack:          s,
 		AgentName:      nomAgent,
 		Agent:          agent,
 		AgentConfigDir: configDir,
+		Env:            fusionneEnv(agent.Env, n.Env, configDir),
 		Egress:         UnionEgress(g.Egress, s.Egress, n.Egress),
 		Repos:          repos,
 		SSHMode:        g.SSH.Mode,
