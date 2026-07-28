@@ -1567,6 +1567,271 @@ func TestEntreeLibreEviteLesCollisions(t *testing.T) {
 	}
 }
 
+// ── Correctness : les gardes que la tâche 10 a laissées non pinnées ──────────
+
+// commence dit si l'argv d'un appel git débute par ce préfixe.
+func commence(args, prefixe []string) bool {
+	return len(args) >= len(prefixe) && slices.Equal(args[:len(prefixe)], prefixe)
+}
+
+// gitDefaillantSur échoue sur un PRÉFIXE d'arguments, là où gitDefaillant ne
+// sait pas distinguer `ls-files -v` de `ls-files -s` — si bien que la sonde
+// d'index tombait toujours la première et que l'erreur d'empreintesIndex
+// restait inatteignable.
+type gitDefaillantSur struct {
+	reel    Git
+	prefixe []string
+}
+
+func (g gitDefaillantSur) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if commence(args, g.prefixe) {
+		return nil, errors.New("panne simulée de git " + strings.Join(g.prefixe, " "))
+	}
+	return g.reel.Run(ctx, dir, args...)
+}
+
+// gitForge répond une sortie choisie à une sous-commande et délègue le reste.
+// Il ne sert QU'À décrire des sorties que le vrai git produit mais qu'aucune
+// fixture ne provoque de façon fiable — jamais à remplacer une observation.
+type gitForge struct {
+	reel    Git
+	prefixe []string
+	sortie  []byte
+}
+
+func (g gitForge) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if commence(args, g.prefixe) {
+		return g.sortie, nil
+	}
+	return g.reel.Run(ctx, dir, args...)
+}
+
+// Symétrique de …RefuseUnFichierRemplaceParUnLienDeMemeTexte : l'index attend un
+// LIEN (120000), le disque porte un fichier RÉGULIER dont le contenu vaut
+// exactement le texte du lien. Les empreintes coïncident alors — git hache le
+// texte du lien comme contenu du blob — et le fichier était détruit sans un mot.
+// liensModifies contrôlait le mode ; cheminsModifies l'ignorait.
+func TestRetireRefuseUnLienRemplaceParUnFichierDeMemeTexte(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	ecris(t, filepath.Join(chemin, "cible.txt"), "CONTENU\n")
+	if err := os.Symlink("cible.txt", filepath.Join(chemin, "lien.txt")); err != nil {
+		t.Skipf("liens symboliques indisponibles : %v", err)
+	}
+	git(t, chemin, "add", ".")
+	git(t, chemin, "commit", "-m", "cible et lien")
+	git(t, chemin, "update-index", "--skip-worktree", "lien.txt")
+
+	// Le lien devient un fichier régulier portant EXACTEMENT le texte du lien.
+	if err := os.Remove(filepath.Join(chemin, "lien.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chemin, "lien.txt"), []byte("cible.txt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// git ne rapporte rien : c'est tout le problème, et c'est ce qui empêche un
+	// tiers de rendre ce test vert à la place de den.
+	if etat := git(t, chemin, "status", "--porcelain"); etat != "" {
+		t.Fatalf("préparation : git ne devrait rien rapporter, obtenu %q", etat)
+	}
+
+	_, err := Retire(context.Background(), NewGit(), cible)
+	if err == nil {
+		t.Fatal("un lien suivi devenu fichier régulier est une modification, même à contenu égal")
+	}
+	if !strings.Contains(err.Error(), "lien.txt") {
+		t.Errorf("le message doit nommer lien.txt ; obtenu : %v", err)
+	}
+}
+
+// Renommage détecté dans l'ARBRE DE TRAVAIL (colonne Y) : `mv` puis `git add -N`
+// le produit avec du vrai git. La consommation du chemin source ne regardait que
+// la colonne X, si bien que « ab cd.txt » était relu comme une entrée à part
+// entière — den nommait alors « cd.txt », un fichier qui n'existe pas.
+func TestRetireNInventePasDeFichierSurUnRenommageDansLArbre(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	ecris(t, filepath.Join(chemin, "ab cd.txt"), "contenu assez long pour la detection de renommage\n")
+	git(t, chemin, "add", "ab cd.txt")
+	git(t, chemin, "commit", "-m", "ajoute ab cd.txt")
+	if err := os.Rename(filepath.Join(chemin, "ab cd.txt"), filepath.Join(chemin, "xy.txt")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, chemin, "add", "-N", "xy.txt")
+
+	// Préparation : c'est bien la colonne Y que git remplit ici, pas la X.
+	// gitBrut et non git : ce dernier TrimSpace, ce qui effacerait justement
+	// l'espace de tête qui distingue «  R » de « R ».
+	if etat := gitBrut(t, chemin, "status", "--porcelain"); !strings.HasPrefix(etat, " R ") {
+		t.Skipf("git ne produit pas de renommage en colonne Y ici : %q", etat)
+	}
+
+	_, err := Retire(context.Background(), NewGit(), cible)
+	if err == nil {
+		t.Fatal("un renommage non commité est une modification : refus attendu")
+	}
+	if !strings.Contains(err.Error(), "xy.txt") {
+		t.Errorf("le message doit nommer le fichier renommé ; obtenu : %v", err)
+	}
+	if strings.Contains(err.Error(), "cd.txt") {
+		t.Errorf("le message invente un fichier issu du chemin source ; obtenu : %v", err)
+	}
+}
+
+// empreinteBidon a la forme d'une empreinte sans désigner aucun objet : ce qui
+// compte dans ces tests est la DÉCISION de den, pas ce que git en ferait.
+var empreinteBidon = strings.Repeat("0", 40)
+
+// Le sens du doute sur le chemin des liens. Ces branches sont fail-closed dans
+// le vrai code, mais aucune ne rougissait : rien n'empêchait qu'elles dérivent.
+func TestLiensModifiesEstFailClosed(t *testing.T) {
+	_, chemin, _ := prepareWorktree(t)
+	ecris(t, filepath.Join(chemin, "pas-un-lien.txt"), "contenu\n")
+	if err := os.Symlink("cible.txt", filepath.Join(chemin, "lien.txt")); err != nil {
+		t.Skipf("liens symboliques indisponibles : %v", err)
+	}
+
+	// Readlink échoue (EINVAL sur un fichier régulier) : rendre « rien de
+	// modifié » laisserait passer un chemin que den n'a pas pu comparer.
+	t.Run("chemin illisible comme lien", func(t *testing.T) {
+		index := map[string]entreeIndex{"pas-un-lien.txt": {mode: modeLien, empreinte: empreinteBidon}}
+		modifies, err := liensModifies(context.Background(), NewGit(), chemin, index, []string{"pas-un-lien.txt"})
+		if err == nil {
+			t.Fatalf("un lien illisible doit produire une erreur ; obtenu modifies=%v", modifies)
+		}
+		if !strings.Contains(err.Error(), "pas-un-lien.txt") {
+			t.Errorf("le message doit nommer le chemin ; obtenu : %v", err)
+		}
+	})
+
+	// L'index ne connaît pas ce chemin : den n'a rien à quoi comparer, donc il
+	// le compte pour sale. La branche existe, mais rien ne la tenait.
+	t.Run("absent de l'index", func(t *testing.T) {
+		modifies, err := liensModifies(context.Background(), NewGit(), chemin, map[string]entreeIndex{}, []string{"lien.txt"})
+		if err != nil {
+			t.Fatalf("erreur inattendue : %v", err)
+		}
+		if !slices.Contains(modifies, "lien.txt") {
+			t.Errorf("un lien absent de l'index doit compter pour modifié ; obtenu %v", modifies)
+		}
+	})
+
+	// L'index attend un fichier régulier là où le disque porte un lien : c'est
+	// une modification, quel que soit le contenu.
+	t.Run("mode d'index inattendu", func(t *testing.T) {
+		index := map[string]entreeIndex{"lien.txt": {mode: "100644", empreinte: empreinteBidon}}
+		modifies, err := liensModifies(context.Background(), NewGit(), chemin, index, []string{"lien.txt"})
+		if err != nil {
+			t.Fatalf("erreur inattendue : %v", err)
+		}
+		if !slices.Contains(modifies, "lien.txt") {
+			t.Errorf("un mode d'index inattendu doit compter pour modifié ; obtenu %v", modifies)
+		}
+	})
+}
+
+// Mêmes gardes du côté des fichiers réguliers.
+func TestCheminsModifiesEstFailClosed(t *testing.T) {
+	_, chemin, _ := prepareWorktree(t)
+	for _, f := range []string{"a.txt", "b.txt"} {
+		ecris(t, filepath.Join(chemin, f), "contenu de "+f+"\n")
+	}
+
+	// Ce que ce cas pin est le COMPORTEMENT (« inconnu ⇒ modifié »), pas une
+	// branche : deux conditions le couvrent, le mode vide et l'empreinte vide.
+	// La dérive qu'il attrape est celle qui compte — écarter un chemin que
+	// l'index ne connaît pas au lieu de le compter pour sale.
+	t.Run("absent de l'index", func(t *testing.T) {
+		modifies, err := cheminsModifies(context.Background(), NewGit(), chemin, map[string]entreeIndex{}, []string{"a.txt"})
+		if err != nil {
+			t.Fatalf("erreur inattendue : %v", err)
+		}
+		if !slices.Contains(modifies, "a.txt") {
+			t.Errorf("un chemin absent de l'index doit compter pour modifié ; obtenu %v", modifies)
+		}
+	})
+
+	// Sans la garde de longueur, l'alignement argv↔sortie est rompu et den
+	// indexe hors des bornes du lot : une panique, pas un refus.
+	t.Run("sonde qui rend trop peu d'empreintes", func(t *testing.T) {
+		g := gitForge{reel: NewGit(), prefixe: []string{"hash-object"}, sortie: []byte(empreinteBidon + "\n")}
+		index := map[string]entreeIndex{
+			"a.txt": {mode: "100644", empreinte: empreinteBidon},
+			"b.txt": {mode: "100644", empreinte: empreinteBidon},
+		}
+		modifies, err := cheminsModifies(context.Background(), g, chemin, index, []string{"a.txt", "b.txt"})
+		if err == nil {
+			t.Fatalf("une sonde désalignée doit produire une erreur ; obtenu modifies=%v", modifies)
+		}
+		for _, attendu := range []string{"1", "2"} {
+			if !strings.Contains(err.Error(), attendu) {
+				t.Errorf("le message doit chiffrer le désalignement (%q) ; obtenu : %v", attendu, err)
+			}
+		}
+	})
+}
+
+// `ls-files -s` et `ls-files -v` sont deux sondes distinctes que gitDefaillant
+// ne savait pas séparer : la seconde tombait toujours la première, et l'erreur
+// d'empreintesIndex n'était atteignable par aucun test.
+func TestRetireRefuseQuandLIndexEstMuet(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	ecris(t, filepath.Join(chemin, "local.conf"), "v1\n")
+	git(t, chemin, "add", "local.conf")
+	git(t, chemin, "commit", "-m", "ajoute local.conf")
+	git(t, chemin, "update-index", "--skip-worktree", "local.conf")
+
+	g := gitDefaillantSur{reel: NewGit(), prefixe: []string{"ls-files", "-s"}}
+	_, err := Retire(context.Background(), g, cible)
+	if err == nil {
+		t.Fatal("une panne de `git ls-files -s` ne doit pas autoriser la mise à la corbeille")
+	}
+	if !strings.Contains(err.Error(), "panne simulée") {
+		t.Errorf("la panne doit remonter telle quelle ; obtenu : %v", err)
+	}
+	if _, err := os.Stat(chemin); err != nil {
+		t.Errorf("le worktree doit être INTACT : %v", err)
+	}
+}
+
+// Les gardes de parsing SAUTAIENT l'enregistrement illisible. Sauter, c'est
+// perdre une entrée sale sans le dire — la direction fail-open exacte que tout
+// le module refuse ailleurs.
+func TestSondesRefusentUneSortieIllisible(t *testing.T) {
+	_, chemin, _ := prepareWorktree(t)
+	prefixeStatus := []string{"-c", "core.fsmonitor=", "status"}
+
+	t.Run("status tronqué", func(t *testing.T) {
+		for _, sortie := range []string{"XY", "XYZfichier.txt\x00", " M\x00"} {
+			g := gitForge{reel: NewGit(), prefixe: prefixeStatus, sortie: []byte(sortie)}
+			sales, err := fichiersSales(context.Background(), g, chemin)
+			if err == nil {
+				t.Errorf("sortie %q : un enregistrement illisible doit produire une erreur ; obtenu %v", sortie, sales)
+			}
+		}
+	})
+
+	t.Run("ls-files tronqué", func(t *testing.T) {
+		for _, sortie := range []string{"H", "Hchemin.txt\x00"} {
+			g := gitForge{reel: NewGit(), prefixe: []string{"ls-files", "-v"}, sortie: []byte(sortie)}
+			marques, err := fichiersMarques(context.Background(), g, chemin)
+			if err == nil {
+				t.Errorf("sortie %q : un enregistrement illisible doit produire une erreur ; obtenu %v", sortie, marques)
+			}
+		}
+	})
+
+	// Contrepartie indispensable : la sortie d'un worktree PROPRE est vide, et
+	// une sortie bien formée se termine par un NUL — donc par un enregistrement
+	// vide. Refuser dessus rendrait `den rm` inutilisable.
+	t.Run("sorties légitimes", func(t *testing.T) {
+		for _, sortie := range []string{"", "?? brouillon.txt\x00", "R  neuf.txt\x00ancien.txt\x00"} {
+			g := gitForge{reel: NewGit(), prefixe: prefixeStatus, sortie: []byte(sortie)}
+			if _, err := fichiersSales(context.Background(), g, chemin); err != nil {
+				t.Errorf("sortie %q : erreur inattendue : %v", sortie, err)
+			}
+		}
+	})
+}
+
 func ecris(t *testing.T, chemin, contenu string) {
 	t.Helper()
 	if err := os.WriteFile(chemin, []byte(contenu), 0o644); err != nil {
@@ -1582,6 +1847,20 @@ func gitTolerant(t *testing.T, dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
+}
+
+// gitBrut ne rogne PAS la sortie : la colonne X de `git status --porcelain` est
+// une espace pour tout ce qui n'a lieu que dans l'arbre de travail, et la rogner
+// rend « \u00a0R » indiscernable de « R\u00a0».
+func gitBrut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v dans %s : %v\n%s", args, dir, err, out)
+	}
+	return string(out)
 }
 
 func git(t *testing.T, dir string, args ...string) string {

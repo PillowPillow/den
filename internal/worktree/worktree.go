@@ -718,14 +718,31 @@ func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
 	enregistrements := strings.Split(string(out), "\x00")
 	for i := 0; i < len(enregistrements); i++ {
 		e := enregistrements[i]
-		if len(e) < 4 || e[2] != ' ' {
+		// La sortie -z se termine par un NUL : le dernier morceau du découpage
+		// est vide, et c'est le seul enregistrement vide légitime.
+		if e == "" {
 			continue
+		}
+		// SAUTER un enregistrement illisible, c'est perdre une entrée sale sans
+		// le dire — la direction fail-open exacte que tout le reste du module
+		// refuse. Un format que den ne sait pas lire est un doute, donc un refus.
+		if len(e) < 4 || e[2] != ' ' {
+			return nil, fmt.Errorf(
+				"état de %s : enregistrement illisible dans la sortie de git status : %q", dir, e)
 		}
 		etat, chemin := e[:2], e[3:]
 		// En -z, un renommage ou une copie occupe DEUX enregistrements : le
 		// second porte le chemin source, sans préfixe d'état. On le consomme
 		// pour ne pas le relire comme une entrée à part entière.
-		if etat[0] == 'R' || etat[0] == 'C' {
+		//
+		// La détection a lieu dans l'INDEX (colonne X, ce que produit `git mv`)
+		// OU dans l'ARBRE DE TRAVAIL (colonne Y : « ␣R », « DR », « ␣C », que
+		// produit un `mv` suivi d'un `git add -N`). Ne regarder que X faisait
+		// relire « ab cd.txt » comme un enregistrement d'état « ab » et de chemin
+		// « cd.txt » : den nommait à l'utilisateur un fichier qui n'existe pas.
+		// La direction restait sûre — une entrée de plus, jamais de moins ; c'est
+		// le message qui mentait.
+		if etat[0] == 'R' || etat[0] == 'C' || etat[1] == 'R' || etat[1] == 'C' {
 			i++
 		}
 		if etat == "!!" && strings.HasSuffix(chemin, "/") && dossierIgnore(ctx, g, dir, chemin) {
@@ -783,8 +800,12 @@ func fichiersMarques(ctx context.Context, g Git, dir string) ([]string, error) {
 	}
 	var sales, reguliers, liens []string
 	for _, e := range strings.Split(string(out), "\x00") {
+		if e == "" {
+			continue // dernier morceau du découpage : la sortie -z finit par un NUL
+		}
 		if len(e) < 3 || e[1] != ' ' {
-			continue
+			return nil, fmt.Errorf(
+				"drapeaux d'index de %s : enregistrement illisible dans la sortie de git ls-files : %q", dir, e)
 		}
 		drapeau, chemin := e[0], e[2:]
 		if drapeau != 'S' && (drapeau < 'a' || drapeau > 'z') {
@@ -839,6 +860,21 @@ type entreeIndex struct {
 
 // modeLien est le mode git d'un lien symbolique.
 const modeLien = "120000"
+
+// modeRegulier dit si le mode d'index est celui d'un fichier régulier.
+//
+// C'est le pendant du contrôle que liensModifies fait sur modeLien, et son
+// absence était un FAUX NÉGATIF, pas un faux positif : un lien suivi (120000)
+// remplacé sur le disque par un fichier régulier dont le contenu vaut le texte
+// du lien produit deux empreintes IDENTIQUES — git hache le texte du lien comme
+// contenu du blob. Le fichier passait donc pour propre et était détruit.
+//
+// 100644 et 100755 sont volontairement confondus : un `chmod +x` seul sur un
+// fichier marqué reste invisible à den. C'est une perte de bit de permission,
+// pas de contenu, et la distinguer coûterait un stat par fichier pour rendre
+// « sale » un worktree dont pas un octet n'a bougé. Le mode réel, lui, vit dans
+// l'index et survit à la mise à la corbeille.
+func modeRegulier(mode string) bool { return mode == "100644" || mode == "100755" }
 
 // liensModifies compare un lien symbolique sur son TEXTE.
 //
@@ -908,7 +944,12 @@ func cheminsModifies(ctx context.Context, g Git, dir string, index map[string]en
 				dir, len(disque), len(lot))
 		}
 		for i, chemin := range lot {
-			if attendu, ok := index[chemin]; !ok || attendu.empreinte != disque[i] {
+			// Pas de branche pour « absent de l'index » : la valeur zéro rendue
+			// par la table porte un mode vide, que modeRegulier refuse. Un chemin
+			// inconnu de l'index compte donc pour modifié par le même contrôle —
+			// une condition de moins, et la même direction.
+			attendu := index[chemin]
+			if !modeRegulier(attendu.mode) || attendu.empreinte != disque[i] {
 				modifies = append(modifies, chemin)
 			}
 		}
@@ -934,14 +975,17 @@ func empreintesIndex(ctx context.Context, g Git, dir string) (map[string]entreeI
 	}
 	index := map[string]entreeIndex{}
 	for _, e := range strings.Split(string(out), "\x00") {
+		if e == "" {
+			continue // dernier morceau du découpage : la sortie -z finit par un NUL
+		}
 		// « <mode> <empreinte> <étape>\t<chemin> »
 		entete, chemin, ok := strings.Cut(e, "\t")
-		if !ok {
-			continue
+		champs := strings.Fields(entete)
+		if !ok || len(champs) < 2 {
+			return nil, fmt.Errorf(
+				"empreintes d'index de %s : enregistrement illisible dans la sortie de git ls-files : %q", dir, e)
 		}
-		if champs := strings.Fields(entete); len(champs) >= 2 {
-			index[chemin] = entreeIndex{mode: champs[0], empreinte: champs[1]}
-		}
+		index[chemin] = entreeIndex{mode: champs[0], empreinte: champs[1]}
 	}
 	return index, nil
 }
