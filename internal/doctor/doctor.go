@@ -87,6 +87,27 @@ func Run(denHome string, d Deps) []Check {
 		}
 	}
 
+	// 4bis. kits des stacks : chaque chemin doit exister AVANT que sbx ne le
+	// reçoive. Un kit manquant n'échoue pas au chargement de la config mais au
+	// boot de la microVM, où le dispatcher fait `exit $rc` : l'utilisateur voit
+	// une VM qui meurt, pas un message de den. Tri des noms de stacks : la liste
+	// est destinée à l'affichage, une map Go n'est pas ordonnée.
+	for _, nomStack := range slices.Sorted(maps.Keys(stacks)) {
+		s := stacks[nomStack]
+		// `kits:` d'abord, puis `kit:` : l'ordre du diagnostic suit l'ordre de
+		// layering de sbx, pour que l'utilisateur lise ses kits comme il les
+		// a écrits.
+		cheminsKits := append(append([]string{}, s.Kits...), s.Kit)
+		for _, k := range cheminsKits {
+			if k == "" {
+				continue // aucun kit déclaré : ce n'est pas une faute (spec §4.2)
+			}
+			if _, err := d.Stat(k); err != nil {
+				ajoute("stack "+nomStack, false, "kit introuvable : %s", k)
+			}
+		}
+	}
+
 	// 5. profils agents : le dossier peut ne pas exister encore (créé au premier spawn),
 	// on ne signale que ce qui est structurellement faux, pas l'absence.
 	// Tri des noms : toute liste destinée à l'affichage est déterministe (map Go non ordonnée).

@@ -243,6 +243,67 @@ worktree_layout: centrl
 	}
 }
 
+// D2 — 13ᵉ configuration hostile (T5) : aucun chemin de kit n'était contrôlé, ni
+// `kit:` ni `kits:`. Le dispatcher sbx échoue TARD — `exit $rc` au boot de la
+// microVM — donc l'utilisateur voyait une VM qui meurt au démarrage, jamais un
+// message de den. doctor contrôlait déjà les repos de nests ; les kits suivent
+// le même patron, avec le même d.Stat injecté.
+func TestRunKitDeStackIntrouvable(t *testing.T) {
+	dir := denHomeValide(t)
+	// `kits:` (pluriel, layerés d'abord) ET `kit:` (singulier) : les deux
+	// familles doivent être contrôlées, pas seulement celle qui a un test.
+	if err := os.WriteFile(filepath.Join(dir, "stacks", "devx", "stack.yaml"),
+		[]byte("image: devx:v1\nkits: [transverse]\nkit: devx-kit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// LoadStack rend les chemins de kits absolus, relatifs au dossier de la stack.
+	kitSingulier := filepath.Join(dir, "stacks", "devx", "devx-kit")
+	kitPluriel := filepath.Join(dir, "stacks", "devx", "transverse")
+
+	d := depsOK()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == kitSingulier || p == kitPluriel {
+			return nil, errors.New("introuvable")
+		}
+		return nil, nil
+	}
+
+	checks := Run(dir, d)
+
+	// Le chemin COMPLET, pour que le message soit actionnable sans deviner la
+	// racine à laquelle le kit était relatif.
+	for _, chemin := range []string{kitSingulier, kitPluriel} {
+		c, ok := trouve(checks, chemin)
+		if !ok {
+			t.Errorf("aucun check ne nomme le kit manquant %s ; checks : %+v", chemin, checks)
+			continue
+		}
+		if c.OK {
+			t.Errorf("le check nommant %s doit être en échec ; obtenu %+v", chemin, c)
+		}
+	}
+	// Et la stack qui les déclare doit être nommée : avec plusieurs stacks, un
+	// chemin seul ne dit pas quel fichier stack.yaml corriger.
+	if !trouveNom(checks, "stack devx") {
+		t.Errorf("aucun check nommé %q : le message doit désigner la stack fautive ; checks : %+v",
+			"stack devx", checks)
+	}
+}
+
+// Un kit présent ne doit produire AUCUN échec : sans ce cas, un contrôle qui
+// refuserait tous les kits passerait le test ci-dessus sans qu'on le voie.
+func TestRunKitsPresentsNeSignalentRien(t *testing.T) {
+	dir := denHomeValide(t)
+	if err := os.WriteFile(filepath.Join(dir, "stacks", "devx", "stack.yaml"),
+		[]byte("image: devx:v1\nkits: [transverse]\nkit: devx-kit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checks := Run(dir, depsOK()) // depsOK : tout chemin existe
+	if !tousOK(checks) {
+		t.Errorf("attendu tous les checks OK quand les kits existent, obtenu %+v", checks)
+	}
+}
+
 func TestRunAgentSansCommandeUpdate(t *testing.T) {
 	dir := t.TempDir()
 	contenu := "agents:\n  claude:\n    config_dir: /tmp/c\ndefaults:\n  agent: claude\n  stack: devx\n"
