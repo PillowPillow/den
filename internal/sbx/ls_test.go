@@ -157,6 +157,81 @@ func TestLsPropageLErreurDuRunner(t *testing.T) {
 	}
 }
 
+func TestTrouve(t *testing.T) {
+	boxes := []Sandbox{{Nom: "api"}, {Nom: "api.feat12"}, {Nom: "web"}}
+
+	b := Trouve(boxes, "api.feat12")
+	if b == nil {
+		t.Fatalf("Trouve(api.feat12) = nil, attendu la sandbox")
+	}
+	// L'ADRESSE compte : les appelants lisent Statut et Workspaces sur la
+	// sandbox trouvée. Une copie d'un autre élément passerait un test sur le
+	// seul Nom.
+	if b != &boxes[1] {
+		t.Errorf("Trouve doit rendre l'élément de la tranche ; obtenu %v", b)
+	}
+	if Trouve(boxes, "absente") != nil {
+		t.Errorf("Trouve(absente) doit rendre nil")
+	}
+	// Le nom est cherché ENTIER : « api » ne doit pas capturer « api.feat12 »,
+	// sinon un `den api` attacherait dans la sandbox du worktree.
+	if b := Trouve([]Sandbox{{Nom: "api.feat12"}}, "api"); b != nil {
+		t.Errorf("Trouve ne doit pas faire de correspondance par préfixe ; obtenu %v", b)
+	}
+}
+
+// VerifieEnMarche est la garde partagée par `den <nest>` et `den sh` : les deux
+// chemins finissent par un `sbx exec`, et les deux sont faux dans une VM
+// arrêtée.
+//
+// LISTE BLANCHE, et c'est le cœur du test : les valeurs de `status` que sbx peut
+// émettre ne sont pas connues ici (sbx n'est pas installable sur cette machine).
+// Une liste noire {"exited","stopped"} laisserait passer tout statut qu'une
+// version ultérieure introduirait — d'où les cas « paused », « Running » et « ».
+func TestVerifieEnMarche(t *testing.T) {
+	if err := (Sandbox{Nom: "api", Statut: "running"}).VerifieEnMarche(); err != nil {
+		t.Errorf("une sandbox « running » doit passer ; obtenu : %v", err)
+	}
+
+	for _, statut := range []string{"exited", "stopped", "paused", "Running", ""} {
+		t.Run("statut="+statut, func(t *testing.T) {
+			err := Sandbox{Nom: "api", Statut: statut}.VerifieEnMarche()
+			if err == nil {
+				t.Fatalf("un statut %q ne doit pas être traité comme en marche", statut)
+			}
+			// Format d'erreur du projet : le contexte, le détail, et les valeurs
+			// disponibles. Sans le statut LU, l'utilisateur ne sait pas de quoi
+			// den se plaint ; sans le statut ATTENDU, il ne sait pas ce qui
+			// aurait convenu.
+			if !contientTout(err.Error(), "api", statut, "running") {
+				t.Errorf("le message doit rendre la sandbox, le statut lu et le statut attendu ; obtenu : %v", err)
+			}
+		})
+	}
+}
+
+// Le message ne doit nommer QUE des sous-commandes sbx ATTESTÉES.
+//
+// `sbx start` n'apparaît dans aucun relevé (plan 2 : create, ls, exec, ports,
+// policy check, rm --force ; sbx-devbox ajoute stop, template save, secret,
+// inspect, login) et sbx n'est pas installable ici : personne ne peut le
+// falsifier. Suggérer une commande peut-être inexistante à l'utilisateur est
+// pire qu'un commentaire faux — le commentaire ne trompe qu'un développeur.
+func TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees(t *testing.T) {
+	err := Sandbox{Nom: "api", Statut: "exited"}.VerifieEnMarche()
+	if err == nil {
+		t.Fatal("un statut « exited » doit produire une erreur")
+	}
+	if strings.Contains(err.Error(), "sbx start") {
+		t.Errorf("`sbx start` n'est attesté nulle part et ne doit pas être suggéré ; obtenu : %v", err)
+	}
+	// Et la remédiation doit exister : un refus sans porte de sortie oblige
+	// l'utilisateur à deviner.
+	if !strings.Contains(err.Error(), "sbx rm --force api") {
+		t.Errorf("le message doit donner la remédiation exacte ; obtenu : %v", err)
+	}
+}
+
 func contientTout(s string, morceaux ...string) bool {
 	for _, m := range morceaux {
 		if !strings.Contains(s, m) {

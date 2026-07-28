@@ -25,14 +25,18 @@ func newShCmd(runner sbx.Runner) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			for _, b := range boxes {
-				if b.Nom == nom {
-					// Le workdir vient du premier workspace REMONTÉ PAR LA VM,
-					// jamais d'un chemin recalculé depuis la config : sans lui,
-					// l'utilisateur atterrit dans le home de la VM, pas dans son
-					// code.
-					return spawn.Attache(cmd.Context(), runner, b.Nom, b.Workdir())
+			if b := sbx.Trouve(boxes, nom); b != nil {
+				// Même garde que `den <nest>`, par le même helper : les deux
+				// chemins finissent par un `sbx exec`, et un shell ouvert dans
+				// une VM arrêtée est aussi faux ici que là-bas.
+				if err := b.VerifieEnMarche(); err != nil {
+					return err
 				}
+				// Le workdir vient du premier workspace REMONTÉ PAR LA VM,
+				// jamais d'un chemin recalculé depuis la config : sans lui,
+				// l'utilisateur atterrit dans le home de la VM, pas dans son
+				// code.
+				return spawn.Attache(cmd.Context(), runner, b.Nom, b.Workdir())
 			}
 
 			noms := make([]string, 0, len(boxes))

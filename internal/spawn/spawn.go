@@ -171,20 +171,12 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// 6. Spawn-or-attach : un nom déjà vivant n'est pas une erreur (spec §11).
 	//
 	// La Sandbox trouvée est GARDÉE, pas réduite à un booléen : elle seule porte
-	// le statut réel et les workspaces que la VM monte vraiment. Une version
-	// antérieure appelait un sbx.Existe qui jetait les deux, d'où l'attache dans
-	// une VM arrêtée et le -w recalculé qui suivent.
+	// le statut réel et les workspaces que la VM monte vraiment.
 	boxes, err := sbx.Ls(ctx, d.Sbx)
 	if err != nil {
 		return err
 	}
-	var vivante *sbx.Sandbox
-	for i := range boxes {
-		if boxes[i].Nom == nomSandbox {
-			vivante = &boxes[i]
-			break
-		}
-	}
+	vivante := sbx.Trouve(boxes, nomSandbox)
 
 	// Le workdir de l'attache : celui de la config sur la branche create (la VM
 	// va monter exactement ces workspaces-là), celui de la VM sur l'autre.
@@ -192,14 +184,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 
 	if vivante != nil {
 		// Un nom pris par une VM qui ne tourne pas n'est pas un
-		// spawn-or-attach. Liste blanche (cf. sbx.StatutEnMarche) : on refuse
-		// tout statut qui n'est pas explicitement « en marche », plutôt que
-		// d'attacher dans une VM dont on ne sait rien.
-		if vivante.Statut != sbx.StatutEnMarche {
-			return fmt.Errorf(
-				"sandbox %s : statut %q, attendu %q — den n'attache pas dans une VM qui ne tourne pas ; "+
-					"détruis-la (`sbx rm --force %s`) puis relance la même commande",
-				nomSandbox, vivante.Statut, sbx.StatutEnMarche, nomSandbox)
+		// spawn-or-attach. Même garde que `den sh` — et le même helper, pour
+		// que la propriété ne puisse pas être vraie d'un côté et oubliée de
+		// l'autre.
+		if err := vivante.VerifieEnMarche(); err != nil {
+			return err
 		}
 
 		// Le -w vient des workspaces que la VM MONTE (ceux de son `create`

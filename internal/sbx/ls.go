@@ -57,12 +57,53 @@ func (s Sandbox) Workdir() string {
 // `sbx exec`. Relevée le 2026-07-28 sur le schéma de sbx v0.35.0 ; les AUTRES
 // valeurs que sbx peut émettre ne sont pas connues, sbx n'étant pas installable
 // sur cette machine.
-//
-// C'est pour ça que les appelants doivent la traiter en LISTE BLANCHE — statut
-// différent, on n'attache pas — et non en liste noire {"exited","stopped"} :
-// celle-ci attacherait dans tout statut qu'une version ultérieure de sbx
-// introduirait, y compris un statut d'erreur.
 const StatutEnMarche = "running"
+
+// Trouve rend la sandbox de ce nom parmi boxes, ou nil.
+//
+// Le POINTEUR, et pas un booléen : c'est la sandbox trouvée qui porte le statut
+// réel et les workspaces que la VM monte vraiment. Une version antérieure
+// réduisait cette recherche à un `Existe` booléen, et jetait les deux — d'où
+// l'attache dans une VM arrêtée et le `-w` recalculé depuis une configuration
+// que la VM ne monte pas.
+//
+// Le nom est comparé ENTIER : « api » et « api.feat12 » sont deux sandboxes,
+// jamais l'une le préfixe de l'autre.
+func Trouve(boxes []Sandbox, nom string) *Sandbox {
+	for i := range boxes {
+		if boxes[i].Nom == nom {
+			return &boxes[i]
+		}
+	}
+	return nil
+}
+
+// VerifieEnMarche refuse une sandbox dans laquelle den ne doit pas ouvrir de
+// shell. C'est la garde partagée par `den <nest>` (spawn-or-attach) et
+// `den sh` : les deux finissent par un `sbx exec`, et les deux sont faux dans
+// une VM arrêtée.
+//
+// LISTE BLANCHE : tout ce qui n'est pas exactement StatutEnMarche est refusé.
+// Une liste noire {"exited","stopped"} laisserait passer n'importe quel statut
+// qu'une version ultérieure de sbx introduirait — y compris un statut d'erreur —
+// et den n'a aucun moyen de connaître cette liste ici. Le prix ASSUMÉ : un
+// éventuel statut transitoire de démarrage ferait échouer un `den <nest>` lancé
+// trop tôt. Le message rend le statut lu, ce qui rend le cas diagnosticable et
+// rapportable ; le premier smoke test réel dira s'il faut élargir.
+//
+// La remédiation ne nomme que des sous-commandes ATTESTÉES (`sbx ls`,
+// `sbx rm --force`). `sbx start` n'apparaît dans aucun relevé et personne ne
+// peut le falsifier ici : suggérer à l'utilisateur une commande peut-être
+// inexistante serait pire qu'un commentaire faux.
+func (s Sandbox) VerifieEnMarche() error {
+	if s.Statut == StatutEnMarche {
+		return nil
+	}
+	return fmt.Errorf(
+		"sandbox %q : statut lu %q, attendu %q — den n'attache pas dans une VM arrêtée ; "+
+			"inspecte-la avec `sbx ls`, ou détruis-la puis relance : `sbx rm --force %s`",
+		s.Nom, s.Statut, StatutEnMarche, s.Nom)
+}
 
 // Ls liste les sandboxes vivantes, triées par nom.
 func Ls(ctx context.Context, r Runner) ([]Sandbox, error) {

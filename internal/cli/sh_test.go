@@ -56,9 +56,14 @@ func TestShAttacheAvecUnTtyEtPasUnRun(t *testing.T) {
 }
 
 // `sbx run` lancerait le flavor de l'image (souvent claude) : jamais.
+//
+// Le `"status":"running"` du fixture n'est pas décoratif : `den sh` refuse
+// désormais toute sandbox dont le statut n'est pas explicitement « en marche »
+// (cf. TestShRefuseUneSandboxQuiNeTournePas), et un fixture sans `status`
+// n'atteindrait plus l'attache du tout.
 func TestShNUtiliseJamaisSbxRun(t *testing.T) {
 	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(`{"sandboxes":[{"name":"api","workspaces":["/w"]}]}`)},
+		"ls --json": {Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`)},
 	}}
 
 	if _, err := executeCmdAvecSbx(t, f, "sh", "api"); err != nil {
@@ -87,6 +92,36 @@ func TestShNomInconnu(t *testing.T) {
 	}
 	if len(f.Attaches) != 0 {
 		t.Errorf("un nom inconnu ne doit attacher nulle part ; attaches : %v", f.Attaches)
+	}
+}
+
+// La même garde que sur `den <nest>`, sur l'AUTRE chemin : les deux finissent
+// par un `sbx exec`, et les deux sont faux dans une VM arrêtée. Un `den sh` qui
+// ouvre un shell dans une sandbox `exited` n'est pas moins faux qu'un
+// `den <nest>` qui le fait — et c'est bien le même défaut, pas un cousin.
+//
+// Prouvé ICI et pas seulement dans internal/spawn : rien, au niveau de
+// sbx.VerifieEnMarche, ne garantit que newShCmd l'appelle. C'est exactement le
+// genre de propriété vraie d'un côté et oubliée de l'autre.
+func TestShRefuseUneSandboxQuiNeTournePas(t *testing.T) {
+	for _, statut := range []string{"exited", "stopped", "paused", "Running", ""} {
+		t.Run("statut="+statut, func(t *testing.T) {
+			f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
+				"ls --json": {Sortie: []byte(
+					`{"sandboxes":[{"name":"api","status":"` + statut + `","workspaces":["/w/api"]}]}`)},
+			}}
+
+			_, err := executeCmdAvecSbx(t, f, "sh", "api")
+			if err == nil {
+				t.Fatalf("un statut %q ne doit pas donner lieu à une attache", statut)
+			}
+			if !strings.Contains(err.Error(), statut) || !strings.Contains(err.Error(), "running") {
+				t.Errorf("le message doit rendre le statut lu et celui attendu ; obtenu : %v", err)
+			}
+			if len(f.Attaches) != 0 {
+				t.Errorf("aucune attache dans une VM arrêtée ; attaches : %v", f.Attaches)
+			}
+		})
 	}
 }
 
