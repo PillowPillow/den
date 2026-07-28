@@ -97,5 +97,26 @@ func TestFakeRunRenvoieUneCopieDeLaSortie(t *testing.T) {
 	}
 }
 
-// Garde-fou de compilation : Fake doit rester substituable à Runner.
-var _ Runner = (*Fake)(nil)
+// Run et Attach sont irréconciliables (cf. runner.go) : un Run dont l'argv
+// commence par "exec" ne doit jamais se faire passer pour une attache, et une
+// attache doit rester détectable indépendamment des Run. Deux traces
+// distinctes, pas une clé qu'il faudrait deviner dans Appels.
+func TestFakeDistingueRunEtAttach(t *testing.T) {
+	f := &Fake{}
+	if _, err := f.Run(context.Background(), "exec", "-it", "api", "bash", "-l"); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if f.AAttache("exec") {
+		t.Errorf("un Run ne doit jamais compter comme une attache ; attaches : %v", f.Attaches)
+	}
+
+	if err := f.Attach(context.Background(), "exec", "-it", "api"); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if !f.AAttache("exec", "-it", "api") {
+		t.Errorf("l'attache doit être enregistrée dans Attaches ; attaches : %v", f.Attaches)
+	}
+	if !f.AAppele("exec", "-it", "api") {
+		t.Errorf("Attach doit continuer d'alimenter Appels aussi")
+	}
+}
