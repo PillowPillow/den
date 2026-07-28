@@ -36,14 +36,19 @@ type gitExec struct{}
 // NewGit renvoie l'accès réel au git du PATH.
 func NewGit() Git { return gitExec{} }
 
-// variablesRedirigeantes sont les variables d'environnement qui désignent le
+// VariablesRedirigeantes sont les variables d'environnement qui désignent le
 // dépôt cible et qui sont PRIORITAIRES sur le répertoire courant : tant qu'elles
 // sont posées, cmd.Dir n'isole rien. den est fait pour tourner sous des agents
 // et depuis des hooks git, où elles sont couramment exportées ; sans ce
 // filtrage, fichiersSales déciderait d'une suppression d'après l'état d'un autre
 // dépôt. On les RETIRE de l'environnement : les poser à vide ne les neutralise
 // pas — git échoue alors sur un `not a git repository` pour chaque commande.
-var variablesRedirigeantes = []string{
+//
+// Exportée : les paquets dont les tests lancent du git réel (internal/cli en
+// particulier) doivent neutraliser le MÊME jeu de variables que le code de
+// production, sous peine d'écrire dans un dépôt tiers désigné par
+// l'environnement — voir le TestMain de ce paquet, et celui d'internal/cli.
+var VariablesRedirigeantes = []string{
 	"GIT_DIR",
 	"GIT_COMMON_DIR",
 	"GIT_WORK_TREE",
@@ -60,7 +65,7 @@ func environnementNeutre() []string {
 	propre := make([]string, 0, len(brut))
 	for _, v := range brut {
 		nom, _, _ := strings.Cut(v, "=")
-		if slices.Contains(variablesRedirigeantes, nom) {
+		if slices.Contains(VariablesRedirigeantes, nom) {
 			continue
 		}
 		propre = append(propre, v)

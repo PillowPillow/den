@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/policy"
@@ -43,16 +44,25 @@ import (
 // et refuse SYSTÉMATIQUEMENT avec un message reconnaissable. Sa seule utilité
 // est de prouver, par cette signature d'erreur, qu'il a bien été sollicité —
 // et donc qu'aucun git réel n'a été atteint par ce chemin.
+//
+// echeances enregistre en plus l'échéance du contexte de chaque appel, quand
+// il en porte une (rien n'est ajouté sinon) — den rm (rm_test.go) le
+// réutilise pour vérifier que les sondes git sont bornées, plutôt que de
+// dupliquer ce double.
 type gitFactice struct {
-	appels [][]string
+	appels    [][]string
+	echeances []time.Time
 }
 
 func (g *gitFactice) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	return g.RunAvecEntree(ctx, dir, nil, args...)
 }
 
-func (g *gitFactice) RunAvecEntree(_ context.Context, _ string, _ []byte, args ...string) ([]byte, error) {
+func (g *gitFactice) RunAvecEntree(ctx context.Context, _ string, _ []byte, args ...string) ([]byte, error) {
 	g.appels = append(g.appels, args)
+	if d, ok := ctx.Deadline(); ok {
+		g.echeances = append(g.echeances, d)
+	}
 	return nil, fmt.Errorf("git factice : appel refusé pour %v", args)
 }
 

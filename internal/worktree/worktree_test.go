@@ -35,7 +35,7 @@ func TestMain(m *testing.M) {
 	// Reproduit : la suite lancée ainsi a créé des branches et des commits DANS
 	// le dépôt de den lui-même, et déplacé son HEAD. On réutilise la liste de
 	// production pour que les deux ne puissent pas diverger.
-	for _, v := range variablesRedirigeantes {
+	for _, v := range VariablesRedirigeantes {
 		os.Unsetenv(v)
 	}
 	os.Exit(m.Run())

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sort"
+	"path/filepath"
 	"time"
 
 	"github.com/PillowPillow/den/internal/config"
@@ -19,10 +19,17 @@ import (
 // check-ignore, hash-object…) ; un dépôt sur un montage réseau mort les
 // ferait toutes pendre indéfiniment, et `den rm` ne rendrait jamais la main.
 //
-// Trente secondes : largement au-dessus du coût mesuré de ces sondes sur un
-// dépôt sain (hash-object mesuré à 499 ms pour 4 fichiers de 64 Mio marqués,
-// cf. internal/worktree/worktree.go), mais fini — un montage mort échoue avec
-// un message plutôt que de pendre pour toujours.
+// Trente secondes est un choix RAISONNÉ, pas une mesure du cas visé — aucune
+// mesure d'un montage réseau mort n'est disponible sur ce poste. Attention en
+// particulier à `hash-object` (internal/worktree/worktree.go, empreintesDisque) :
+// il lit le contenu INTÉGRAL de chaque fichier marqué (skip-worktree /
+// assume-unchanged) SANS AUCUNE BORNE — 499 ms mesurés en 15a pour 4 fichiers
+// de 64 Mio marqués, débit du disque. Ce coût est nul sur un dépôt ordinaire
+// (l'ensemble des fichiers marqués y est vide), mais un arbre marqué de
+// plusieurs Gio peut légitimement dépasser 30 s : `den rm` échouerait alors
+// sur un dépôt par ailleurs parfaitement sain, pas sur un montage mort.
+// Compromis assumé faute de mieux : borner plus court romprait ce cas
+// légitime, ne pas borner du tout expose au montage mort.
 //
 // Variable de PAQUET, pas const : un test doit pouvoir la réduire pour
 // vérifier que l'échéance est bien posée sans attendre 30 s pour de vrai
@@ -52,11 +59,14 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 				return err
 			}
 			if sbx.Trouve(boxes, nom) == nil {
+				// Déjà triées : sbx.Ls rend ses sandboxes par nom (verrouillé
+				// par TestLsTriParNom) — retrier ici dupliquerait cette
+				// connaissance sans rien garantir de plus (même choix que
+				// `den sh`, cf. sh.go).
 				noms := make([]string, 0, len(boxes))
 				for _, b := range boxes {
 					noms = append(noms, b.Nom)
 				}
-				sort.Strings(noms)
 				return fmt.Errorf("sandbox %q introuvable (vivantes : %v)", nom, noms)
 			}
 
@@ -66,7 +76,7 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 			// détruire la sandbox. L'inverse laisserait l'utilisateur sans VM
 			// et avec un message d'erreur sur un dossier.
 			if !garderWorktrees {
-				if err := nettoieWorktrees(cmd.Context(), home, nom, g, force, out); err != nil {
+				if err := nettoieWorktrees(cmd.Context(), home, nom, g, force, out, cmd.ErrOrStderr()); err != nil {
 					return err
 				}
 			}
@@ -91,14 +101,32 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 // sandbox bel et bien vivante) ; strict sur la SUPPRESSION (un worktree sale
 // arrête tout — cf. worktree.Retire).
 //
+// out reçoit les messages de succès (chemin de corbeille), avert les
+// avertissements best-effort — deux flux distincts pour qu'un script qui
+// n'examine que la sortie standard voie un `den rm` réussi sans y trouver un
+// avertissement qui compte.
+//
 // worktree.Retire ne supprime jamais un worktree : il le déplace vers la
 // corbeille de den_home et rend le chemin de l'entrée créée. Ce chemin est la
 // SEULE trace que l'utilisateur aura de l'endroit où son travail est parti :
 // il est donc annoncé pour chaque worktree effectivement déplacé.
-func nettoieWorktrees(ctx context.Context, home, nomSandbox string, g worktree.Git, force bool, out io.Writer) error {
+func nettoieWorktrees(ctx context.Context, home, nomSandbox string, g worktree.Git, force bool, out, avert io.Writer) error {
 	nomNest, wt := sbx.DecomposeNom(nomSandbox)
 	if wt == "" {
 		return nil // pas de worktree : rien à nettoyer
+	}
+
+	// sbx.Ls ne valide RIEN de ce qu'il lit : une sandbox listée par `sbx ls`
+	// peut avoir été créée hors de den, avec un nom que sbx accepte mais que
+	// den refuserait (« api../../evade », par exemple). Sans ce contrôle, ce
+	// nom traverse tel quel jusqu'à worktree.Chemin et envoie Retire hors de
+	// worktree_root — la Cible de 15a a été conçue pour rendre ce chemin
+	// inexprimable, mais seulement si le nom qui l'alimente est déjà propre.
+	// sbx.ValiderNomSandbox est la source UNIQUE de ce verdict dans le projet
+	// (internal/sbx/nom.go) — sbx.ArgvCreate et policy.Settle la consultent
+	// avant de transformer ce même genre de nom en chemin ou en argument.
+	if err := sbx.ValiderNomSandbox(nomSandbox); err != nil {
+		return fmt.Errorf("nettoyage des worktrees : %w", err)
 	}
 
 	gl, err := config.LoadGlobal(home)
@@ -107,7 +135,15 @@ func nettoieWorktrees(ctx context.Context, home, nomSandbox string, g worktree.G
 	}
 	n, err := nest.LoadNest(home, nomNest)
 	if err != nil {
-		fmt.Fprintf(out, "nest %q illisible : worktrees non nettoyés (%v)\n", nomNest, err)
+		// wt et gl.WorktreeRoot sont tous deux disponibles ici : sans eux,
+		// l'utilisateur apprend qu'un worktree a été abandonné, mais pas où
+		// aller le chercher.
+		ou := filepath.Join(gl.WorktreeRoot, wt)
+		if gl.WorktreeLayout == "per-repo" {
+			ou = fmt.Sprintf("chaque repo du nest, sous <repo>/.den/%s", wt)
+		}
+		fmt.Fprintf(avert, "nest %q illisible : le worktree %q n'a pas pu être nettoyé "+
+			"(attendu sous %s) : %v\n", nomNest, wt, ou, err)
 		return nil
 	}
 

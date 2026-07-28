@@ -31,12 +31,14 @@ func run(t *testing.T, args ...string) (string, error) {
 }
 
 // executeCmdAvecSbx exécute l'arbre de commandes avec un sbx.Runner injecté ;
-// les accès Doctor et Spawn.Git/Spawn.Policy restent ceux de DepsSysteme()
-// (réels). Sans danger pour les tests qui passent par ici aujourd'hui : aucun
-// n'appelle `den doctor`, et aucun n'atteint la RunE de configureSpawn (`den
-// ls` ne l'appelle jamais). Si un futur test veut exercer `den <nest>` par ce
-// chemin, il doit fournir sa PROPRE spawn.Deps isolée plutôt que réutiliser
-// ce helper tel quel.
+// les accès Doctor et Spawn.Policy restent ceux de DepsSysteme() (réels).
+// deps.Git, lui, EST exercé pour de vrai par les tests de `den rm` qui
+// passent par ici (rm_test.go, ex. TestRmNeDetruitPasLaSandboxSiUnWorktreeEstSale) :
+// ils touchent donc du git réel — c'est le TestMain de main_test.go qui rend
+// ça hermétique au poste qui exécute la suite, pas ce helper. Aucun test ne
+// passe encore par la RunE de configureSpawn (`den ls` ne l'appelle jamais).
+// Si un futur test veut exercer `den <nest>` par ce chemin, il doit fournir
+// sa PROPRE spawn.Deps isolée plutôt que réutiliser ce helper tel quel.
 func executeCmdAvecSbx(t *testing.T, r sbx.Runner, args ...string) (string, error) {
 	t.Helper()
 	deps := DepsSysteme()
