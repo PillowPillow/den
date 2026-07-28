@@ -157,7 +157,11 @@ func Assure(ctx context.Context, g Git, layout, root, wt, cheminRepo string) (st
 	// Dossier absent mais enregistrement toujours vivant : git refuserait avec
 	// un « fatal: … missing but already registered worktree » anglais, et rien
 	// dans den n'en sortirait. On nomme la sortie.
-	if estEnregistre(ctx, g, cheminRepo, chemin) {
+	enregistre, err := estEnregistre(ctx, g, cheminRepo, chemin)
+	if err != nil {
+		return "", err
+	}
+	if enregistre {
 		return "", fmt.Errorf(
 			"le worktree %s est encore enregistré dans %s alors que son dossier a disparu — "+
 				"lance `den rm` sur ce nest pour effacer l'enregistrement, puis re-spawne",
@@ -225,6 +229,17 @@ type Cible struct {
 // branche survit dans le dépôt.
 func Retire(ctx context.Context, g Git, c Cible) (string, error) {
 	cheminRepo, cheminWorktree, force := c.CheminRepo, Chemin(c.Layout, c.Root, c.Worktree, c.CheminRepo), c.Force
+
+	// AVANT tout le reste : sans emplacement où poser le dossier, den ne fait
+	// rien du tout. Plus bas, ce refus arrivait APRÈS le contrôle de saleté, qui
+	// invitait alors l'utilisateur à « envoyer à la corbeille trash » — un chemin
+	// relatif qui ne désigne rien.
+	if c.DenHome == "" {
+		return "", fmt.Errorf(
+			"retrait du worktree %s : aucun den_home fourni — den ne supprime pas les worktrees, "+
+				"il les déplace, et il lui faut donc un emplacement où les poser", cheminWorktree)
+	}
+
 	if _, err := os.Stat(cheminWorktree); os.IsNotExist(err) {
 		// Le dossier est parti (rm -rf de l'utilisateur, `add` interrompu) mais
 		// l'enregistrement git lui survit et bloquerait tout Assure ultérieur.
@@ -238,7 +253,11 @@ func Retire(ctx context.Context, g Git, c Cible) (string, error) {
 		// disparaît légitimement. Sans cette revérification, den rendrait nil en
 		// prétendant avoir nettoyé, et Assure renverrait ensuite l'utilisateur
 		// vers `den rm` — la commande qui vient de lui dire qu'elle a réussi.
-		if estEnregistre(ctx, g, cheminRepo, cheminWorktree) {
+		enregistre, err := estEnregistre(ctx, g, cheminRepo, cheminWorktree)
+		if err != nil {
+			return "", err
+		}
+		if enregistre {
 			return "", fmt.Errorf(
 				"l'enregistrement du worktree %s survit dans %s alors que son dossier a disparu — "+
 					"il est probablement verrouillé : lance `git worktree unlock %s` dans %s, puis relance",
@@ -334,12 +353,6 @@ func corbeilleDeRepli(c Cible) string {
 // milieu, l'utilisateur aurait deux demi-copies. Le repli, lui, reste un
 // rename : atomique ou rien.
 func metALaCorbeille(c Cible, cheminWorktree string) (string, error) {
-	if c.DenHome == "" {
-		return "", fmt.Errorf(
-			"mise à la corbeille de %s : aucun den_home fourni — den ne supprime pas les "+
-				"worktrees, il les déplace, et il lui faut donc un emplacement où les poser",
-			cheminWorktree)
-	}
 	base := nomEntreeCorbeille(time.Now(), c.Nest, c.CheminRepo)
 
 	dest, err := deplaceVers(corbeillePrincipale(c), base, cheminWorktree)
@@ -418,6 +431,13 @@ const retentionCorbeille = 30 * 24 * time.Hour
 // entreeLibre rend un chemin d'entrée non occupé sous dirCorbeille : deux
 // worktrees du même nest et du même repo mis à la corbeille dans la MÊME
 // SECONDE portent sinon le même nom, et os.Rename écraserait ou échouerait.
+//
+// TOCTOU CONNU, non fermé : entre ce contrôle et le os.Rename de l'appelant, un
+// tiers peut créer l'entrée. `rename(2)` écrase alors SILENCIEUSEMENT une
+// destination qui serait un dossier VIDE. Le fermer demanderait
+// `renameat2(RENAME_NOREPLACE)`, absent de la stdlib et de macOS ; la fenêtre
+// est de l'ordre de la microseconde et n'a d'autre acteur possible qu'un second
+// den lancé sur le même nest à la même seconde.
 func entreeLibre(dirCorbeille, base string) (string, error) {
 	const maxTentatives = 1000
 	for i := 0; i < maxTentatives; i++ {
@@ -600,18 +620,24 @@ func resout(chemin string) string {
 
 // estEnregistre dit si git connaît encore un worktree à ce chemin, que son
 // dossier existe ou non.
-func estEnregistre(ctx context.Context, g Git, cheminRepo, chemin string) bool {
+//
+// L'erreur remonte, comme dans estVerrouille. Elle était avalée : sous un git
+// défaillant sur `worktree list`, Retire rendait alors nil sur un dossier
+// disparu — il prétendait avoir nettoyé sans avoir rien pu vérifier, ce que la
+// revérification voisine existe précisément pour empêcher. Deux gardes du même
+// paragraphe ne peuvent pas avoir deux disciplines opposées.
+func estEnregistre(ctx context.Context, g Git, cheminRepo, chemin string) (bool, error) {
 	out, err := g.Run(ctx, cheminRepo, "worktree", "list", "--porcelain")
 	if err != nil {
-		return false
+		return false, fmt.Errorf("inventaire des worktrees de %s : %w", cheminRepo, err)
 	}
 	for _, ligne := range strings.Split(string(out), "\n") {
 		enregistre, ok := strings.CutPrefix(strings.TrimSpace(ligne), "worktree ")
 		if ok && memeChemin(enregistre, chemin) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // estVerrouille dit si git a verrouillé ce worktree.
