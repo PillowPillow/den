@@ -138,6 +138,16 @@ func TestValidateRefuseUnBinDirQuiNEstPasUnChemin(t *testing.T) {
 		{"tabulation", "/opt/a\tb", "caractère de contrôle"},
 		{"retour a la ligne", "/opt/a\nb", "caractère de contrôle"},
 		{"entree vide", "", "vide"},
+		// F5 — mesuré sur la ligne exactement générée par CommandeFraicheur :
+		// ENTRE GUILLEMETS DOUBLES, bash n'expanse PAS le tilde.
+		//   export PATH="~/.local/bin:$PATH"  →  ~/.local/bin:…  (littéral)
+		// Le PATH de la VM reçoit donc un répertoire nommé « ~ », qui n'existe
+		// pas : c'est exactement le `claude: exit 127` que l'invariant 1 de
+		// CommandeFraicheur existe pour empêcher. Hors guillemets bash
+		// l'expanserait — mais den ne génère pas cette forme-là, et ne peut pas
+		// la générer sans perdre la protection des espaces.
+		{"tilde", "~/.local/bin", "~"},
+		{"tilde utilisateur", "~agent/.local/bin", "~"},
 	}
 	for _, c := range cas {
 		t.Run(c.nom, func(t *testing.T) {
@@ -176,6 +186,11 @@ func TestValidateAccepteLesBinDirsLegitimes(t *testing.T) {
 		"${HOME}/.local/bin",
 		"/usr/local/bin",
 		"$HOME/.claude/local",
+		// Le refus porte sur le PRÉFIXE seul. Mesuré : `backup~` est un nom de
+		// dossier parfaitement légal, et `export PATH="/opt/backup~/bin:$PATH"`
+		// rend `/opt/backup~/bin` — un chemin exact, rien à corriger. Refuser
+		// tout `~` interdirait ce chemin sans aucune raison.
+		"/opt/backup~/bin",
 	} {
 		t.Run(valeur, func(t *testing.T) {
 			g := globalValide()

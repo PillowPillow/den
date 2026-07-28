@@ -65,9 +65,18 @@ const (
 // Git-154) », « 2.45.2.windows.1 » — donc on ne lit que les deux premiers
 // nombres et on ignore le reste.
 //
-// Une sortie illisible est une ERREUR, pas un 0.0 : la traiter comme une
-// version nulle ferait refuser un git parfaitement bon dont le packageur a
-// changé le format.
+// Une sortie illisible est une ERREUR, pas un 0.0. Ce que cela change,
+// exactement : **rien au verdict**. Run rend un check en échec dans les deux
+// cas, et `den doctor` sort non-zéro dès qu'un check échoue — un git
+// parfaitement bon dont le packageur aurait changé le format EST donc refusé,
+// des deux façons.
+//
+// Ce que cela change, c'est le MESSAGE, et c'est là tout l'intérêt : l'erreur
+// nomme la sortie réellement reçue, là où un 0.0 annoncerait « git 0.0 est trop
+// ancien, den exige 2.31 » à quelqu'un qui a peut-être git 2.99, et l'enverrait
+// chercher un problème de version qu'il n'a pas. Ce qui reste faux — le refus
+// d'un git bon au format inattendu — se répare en élargissant le parseur, pas
+// en devinant un numéro.
 func analyseVersionGit(sortie string) (majeur, mineur int, err error) {
 	illisible := func() (int, int, error) {
 		return 0, 0, fmt.Errorf("sortie de `git --version` illisible : %q", strings.TrimSpace(sortie))

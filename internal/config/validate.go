@@ -48,6 +48,21 @@ func valideBinDir(d string) error {
 			"%q contient un backtick ` — bin_dirs est une liste de chemins, "+
 				"et le bash de la VM l'exécuterait au démarrage", d)
 	}
+	// Le tilde n'est PAS expansé entre guillemets doubles — mesuré sur la ligne
+	// exactement générée : `export PATH="~/.local/bin:$PATH"` met dans le PATH
+	// de la VM un répertoire littéralement nommé « ~ ». C'est le `claude:
+	// exit 127` que l'invariant 1 de CommandeFraicheur existe pour empêcher.
+	// Hors guillemets bash l'expanserait, mais den ne génère pas cette forme et
+	// ne peut pas la générer sans perdre la protection des espaces.
+	//
+	// Le préfixe seul : un « ~ » au MILIEU d'un chemin n'est pas une expansion
+	// pour bash non plus, c'est un caractère ordinaire de nom de fichier.
+	if strings.HasPrefix(d, "~") {
+		return fmt.Errorf(
+			"%q commence par ~ — bash n'expanse pas le tilde entre guillemets doubles, "+
+				"et le PATH de la VM recevrait un dossier littéralement nommé « ~ » ; "+
+				"écris $HOME, qui est expansé, lui", d)
+	}
 	// `$HOME` et `${HOME}` restent légitimes : ce sont eux la raison d'être du
 	// champ. Seule la substitution de COMMANDE est refusée, pas l'expansion de
 	// variable.

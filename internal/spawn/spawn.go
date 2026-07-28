@@ -127,6 +127,20 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// profil de l'agent a été créé, donc un refus laisserait l'utilisateur
 	// nettoyer à la main. Le profil, lui, est créé par den et non contrôlé —
 	// c'est la différence entre « den le peuple » et « den le reçoit ».
+	//
+	// CE QUE CE PLACEMENT COÛTE, en toutes lettres : ce contrôle — comme celui
+	// des kits juste en dessous — précède l'embranchement spawn-or-attach
+	// (étape 6). Il s'applique donc AUSSI quand la sandbox est déjà vivante :
+	// si `ssh.dir` ou un kit disparaît du disque, `den <nest>` ne peut plus se
+	// RATTACHER à une VM qui tourne, alors que rien de ce chemin-là n'est
+	// relu au moment d'attacher (la VM garde les mounts de son `create`).
+	//
+	// C'est assumé, pas ignoré : déplacer ces contrôles après `sbx.Ls` les
+	// ferait dépendre d'un appel réseau et compliquerait une garde dont tout
+	// l'intérêt est de tomber avant le moindre effet de bord. La porte de
+	// sortie existe et ne passe par aucun de ces contrôles : `den sh <nom>`
+	// n'appelle que spawn.Attache (internal/cli/sh.go:38) et ne lit ni la
+	// config ni les kits.
 	if r.SSHMode == "mount" {
 		if r.SSHDir == "" {
 			return fmt.Errorf(
