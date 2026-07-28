@@ -441,7 +441,14 @@ func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
 	// config de l'utilisateur, et `status.showUntrackedFiles = no` — réglage de
 	// performance répandu sur les gros dépôts — vide sinon la sortie de tout
 	// travail non suivi, désarmant la garde entière du spec §14.
-	out, err := g.Run(ctx, dir, "status", "--porcelain",
+	//
+	// core.fsmonitor est neutralisé pour la même raison, en pire : il délègue à un
+	// démon la question « qu'est-ce qui a changé ». Un Watchman qui a perdu son
+	// état, un démon redémarré ou un montage où inotify rate des événements
+	// répondent « rien », et git les croit — le fichier modifié devient invisible
+	// sans qu'aucun drapeau d'index ne le trahisse. Pire, l'appel de den amorçait
+	// lui-même ce cache et aveuglait ensuite le filet de `git worktree remove`.
+	out, err := g.Run(ctx, dir, "-c", "core.fsmonitor=", "status", "--porcelain",
 		"--ignored=traditional", "--untracked-files=normal", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("état de %s : %w", dir, err)
@@ -504,17 +511,16 @@ func dossierIgnore(ctx context.Context, g Git, dir, chemin string) bool {
 // laissent détruire le fichier sans un mot.
 //
 // Or ces bits existent précisément pour porter des modifications locales qu'on
-// ne veut pas commiter. Leur présence suffit donc à considérer l'arbre sale :
-// savoir si le contenu diffère réellement demanderait de recalculer l'empreinte
-// de chaque fichier, ce que git refuse justement de faire ici. On tranche dans
-// le sens sûr, quitte à exiger --force sur un dépôt qui pose ces bits sans avoir
-// rien modifié.
+// ne veut pas commiter. Mais leur seule présence ne suffit pas à conclure :
+// `core.ignoreStat` les pose sur TOUT le dépôt, et le sparse-checkout sur tout
+// ce qui est hors du cône. On ne retient donc que les fichiers dont le contenu
+// diffère réellement de l'index — voir cheminsModifies.
 func fichiersMarques(ctx context.Context, g Git, dir string) ([]string, error) {
 	out, err := g.Run(ctx, dir, "ls-files", "-v", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("drapeaux d'index de %s : %w", dir, err)
 	}
-	var marques []string
+	var candidats []string
 	for _, e := range strings.Split(string(out), "\x00") {
 		if len(e) < 3 || e[1] != ' ' {
 			continue
@@ -523,17 +529,96 @@ func fichiersMarques(ctx context.Context, g Git, dir string) ([]string, error) {
 		if drapeau != 'S' && (drapeau < 'a' || drapeau > 'z') {
 			continue
 		}
-		// Le sparse-checkout pose LES MÊMES bits, sur des fichiers volontairement
-		// absents du disque : les compter rendrait `den rm` impossible sans
-		// --force sur tout dépôt en sparse-checkout. Un fichier marqué ET présent
-		// porte un contenu local que git refuse de regarder ; marqué et absent,
-		// il est simplement hors du cône.
-		if _, err := os.Stat(filepath.Join(dir, chemin)); err != nil {
+		// Lstat et non Stat : Stat suit les liens, et un fichier suivi remplacé
+		// par un lien symbolique cassé s'évanouissait ainsi du discriminant. La
+		// comparaison d'empreintes le rattrape ensuite — git hache le texte du
+		// lien, qui ne coïncide pas avec le contenu attendu.
+		if _, err := os.Lstat(filepath.Join(dir, chemin)); err != nil {
+			// Absent du disque : hors du cône d'un sparse-checkout, qui pose les
+			// mêmes bits. Il n'y a rien là à protéger.
 			continue
 		}
-		marques = append(marques, chemin)
+		candidats = append(candidats, chemin)
 	}
-	return marques, nil
+
+	return cheminsModifies(ctx, g, dir, candidats)
+}
+
+// tailleLot borne la longueur de l'argv des sondes d'empreinte.
+const tailleLot = 256
+
+// cheminsModifies rend, parmi les fichiers que l'index déclare « ne regarde
+// pas », ceux dont le contenu du disque diffère RÉELLEMENT de l'index.
+//
+// Sans cette comparaison la garde était inutilisable : `core.ignoreStat = true`
+// pose le bit assume-unchanged sur tout le dépôt, et ces bits SURVIVENT au
+// retrait du réglage — un worktree parfaitement propre devenait donc
+// définitivement non supprimable sans --force. Lire `core.ignoreStat` n'y
+// suffirait pas, puisque le blocage persiste précisément quand le réglage a
+// disparu.
+//
+// Aucune commande git ne réexamine ces entrées : `diff-files`, `diff-index` et
+// `ls-files -m` sont tous aveugles dessus (mesuré). Il faut donc comparer les
+// empreintes soi-même. `hash-object` applique les filtres de `.gitattributes`,
+// si bien qu'un filtre `clean` ou `core.autocrlf` ne fabrique pas de fausse
+// modification (mesuré) — en contrepartie, un filtre `clean` qui masque un
+// secret rend les deux empreintes identiques, angle mort assumé et de toute
+// façon partagé avec git.
+//
+// En cas de panne d'une sonde, l'erreur remonte : une sonde muette ne doit
+// jamais autoriser une destruction.
+func cheminsModifies(ctx context.Context, g Git, dir string, chemins []string) ([]string, error) {
+	var modifies []string
+	for lot := range slices.Chunk(chemins, tailleLot) {
+		index, err := empreintesIndex(ctx, g, dir, lot)
+		if err != nil {
+			return nil, err
+		}
+		disque, err := empreintesDisque(ctx, g, dir, lot)
+		if err != nil {
+			return nil, err
+		}
+		if len(disque) != len(lot) {
+			return nil, fmt.Errorf("empreintes de %s : %d valeurs rendues pour %d fichiers",
+				dir, len(disque), len(lot))
+		}
+		for i, chemin := range lot {
+			if attendu, ok := index[chemin]; !ok || attendu != disque[i] {
+				modifies = append(modifies, chemin)
+			}
+		}
+	}
+	return modifies, nil
+}
+
+// empreintesIndex lit les empreintes que l'index associe à ces chemins.
+func empreintesIndex(ctx context.Context, g Git, dir string, chemins []string) (map[string]string, error) {
+	out, err := g.Run(ctx, dir, append([]string{"ls-files", "-s", "-z", "--"}, chemins...)...)
+	if err != nil {
+		return nil, fmt.Errorf("empreintes d'index de %s : %w", dir, err)
+	}
+	empreintes := make(map[string]string, len(chemins))
+	for _, e := range strings.Split(string(out), "\x00") {
+		// « <mode> <empreinte> <étape>\t<chemin> »
+		entete, chemin, ok := strings.Cut(e, "\t")
+		if !ok {
+			continue
+		}
+		if champs := strings.Fields(entete); len(champs) >= 2 {
+			empreintes[chemin] = champs[1]
+		}
+	}
+	return empreintes, nil
+}
+
+// empreintesDisque calcule l'empreinte du contenu réellement présent, dans
+// l'ordre des chemins demandés.
+func empreintesDisque(ctx context.Context, g Git, dir string, chemins []string) ([]string, error) {
+	out, err := g.Run(ctx, dir, append([]string{"hash-object", "--"}, chemins...)...)
+	if err != nil {
+		return nil, fmt.Errorf("empreintes du disque de %s : %w", dir, err)
+	}
+	return strings.Fields(string(out)), nil
 }
 
 // listeCourte nomme les fichiers en cause sans noyer le message.

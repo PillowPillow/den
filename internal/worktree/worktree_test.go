@@ -19,6 +19,12 @@ import (
 func TestMain(m *testing.M) {
 	os.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	os.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	// Neutraliser les deux fichiers ne suffit pas : git accepte aussi de la
+	// configuration par l'environnement. Sous
+	// GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.ignoreStat GIT_CONFIG_VALUE_0=true,
+	// trois tests tombaient — la classe même que ce TestMain existe pour fermer.
+	os.Unsetenv("GIT_CONFIG_COUNT")
+	os.Unsetenv("GIT_CONFIG_PARAMETERS")
 	os.Exit(m.Run())
 }
 
@@ -902,9 +908,13 @@ func TestRetireAccepteUnSparseCheckout(t *testing.T) {
 	git(t, chemin, "commit", "-m", "deux dossiers")
 	git(t, chemin, "sparse-checkout", "set", "--no-cone", "garde")
 
-	// Préparation : git pose bien des bits S sur les fichiers hors du cône.
-	if drapeaux := git(t, chemin, "ls-files", "-v"); !strings.Contains(drapeaux, "S exclu/f.txt") {
-		t.Fatalf("préparation : bit skip-worktree attendu, obtenu :\n%s", drapeaux)
+	// Préparation : git marque bien les fichiers hors du cône. Le drapeau exact
+	// dépend de la config du dépôt (`S`, ou `s` si assume-unchanged s'y ajoute) ;
+	// seule compte la présence d'un marquage, pas sa lettre.
+	drapeaux := git(t, chemin, "ls-files", "-v")
+	if !strings.Contains(drapeaux, " exclu/f.txt") ||
+		strings.Contains(drapeaux, "H exclu/f.txt") {
+		t.Fatalf("préparation : marquage attendu sur exclu/f.txt, obtenu :\n%s", drapeaux)
 	}
 	if _, err := os.Stat(filepath.Join(chemin, "exclu", "f.txt")); !os.IsNotExist(err) {
 		t.Fatalf("préparation : le fichier hors du cône devrait être absent du disque")
@@ -912,6 +922,179 @@ func TestRetireAccepteUnSparseCheckout(t *testing.T) {
 
 	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
 		t.Fatalf("un sparse-checkout ne doit pas bloquer la suppression : %v", err)
+	}
+}
+
+// core.ignoreStat pose le bit assume-unchanged sur TOUT le dépôt. Compter ces
+// entrées sans les regarder rendait `den rm` impossible sans --force sur un
+// worktree parfaitement propre — et les bits SURVIVENT au réglage, donc le
+// blocage était définitif.
+func TestRetireAccepteUnDepotSousIgnoreStat(t *testing.T) {
+	prepare := func(t *testing.T) (repo, chemin string) {
+		t.Helper()
+		repo = depotTest(t, "api")
+		chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+		if err != nil {
+			t.Fatalf("préparation : %v", err)
+		}
+		git(t, chemin, "config", "core.ignoreStat", "true")
+		for _, f := range []string{"f1.txt", "f2.txt", "f3.txt"} {
+			ecris(t, filepath.Join(chemin, f), "contenu\n")
+		}
+		git(t, chemin, "add", ".")
+		git(t, chemin, "commit", "-m", "fichiers")
+		if drapeaux := git(t, chemin, "ls-files", "-v"); !strings.Contains(drapeaux, "h f1.txt") {
+			t.Fatalf("préparation : bit assume-unchanged attendu, obtenu :\n%s", drapeaux)
+		}
+		return repo, chemin
+	}
+
+	t.Run("reglage actif", func(t *testing.T) {
+		repo, chemin := prepare(t)
+		if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+			t.Fatalf("un worktree propre doit rester supprimable : %v", err)
+		}
+	})
+
+	// Le cas qui rend le blocage définitif : le réglage est retiré, les bits
+	// restent. Lire core.ignoreStat ne suffirait donc pas à débloquer.
+	t.Run("reglage retire mais bits persistants", func(t *testing.T) {
+		repo, chemin := prepare(t)
+		git(t, chemin, "config", "--unset", "core.ignoreStat")
+		if drapeaux := git(t, chemin, "ls-files", "-v"); !strings.Contains(drapeaux, "h f1.txt") {
+			t.Fatalf("préparation : les bits doivent survivre au --unset, obtenu :\n%s", drapeaux)
+		}
+		if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+			t.Fatalf("un worktree propre doit rester supprimable : %v", err)
+		}
+	})
+
+	// Contrepartie : sous le même réglage, une VRAIE modification reste refusée.
+	t.Run("modification reelle sous le meme reglage", func(t *testing.T) {
+		repo, chemin := prepare(t)
+		ecris(t, filepath.Join(chemin, "f2.txt"), "TRAVAIL IRREMPLACABLE\n")
+		if etat := git(t, chemin, "status", "--porcelain"); etat != "" {
+			t.Fatalf("préparation : git ne devrait rien voir, obtenu %q", etat)
+		}
+
+		err := Retire(context.Background(), NewGit(), repo, chemin, false)
+		if err == nil {
+			t.Fatal("une modification réelle sous assume-unchanged doit être refusée")
+		}
+		if !strings.Contains(err.Error(), "f2.txt") {
+			t.Errorf("le message doit nommer f2.txt ; obtenu : %v", err)
+		}
+		if strings.Contains(err.Error(), "f1.txt") || strings.Contains(err.Error(), "f3.txt") {
+			t.Errorf("les fichiers intacts ne doivent pas être nommés ; obtenu : %v", err)
+		}
+	})
+}
+
+// Un fichier suivi remplacé sur le disque par un lien symbolique cassé porte un
+// contenu que l'object store ne rend pas. os.Stat suit le lien et l'écartait.
+func TestRetireRefuseUnFichierMarqueRemplaceParUnLien(t *testing.T) {
+	repo := depotTest(t, "api")
+	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+	if err != nil {
+		t.Fatalf("préparation : %v", err)
+	}
+	suivi := filepath.Join(chemin, "suivi.txt")
+	ecris(t, suivi, "v1\n")
+	git(t, chemin, "add", "suivi.txt")
+	git(t, chemin, "commit", "-m", "ajoute suivi.txt")
+	git(t, chemin, "update-index", "--assume-unchanged", "suivi.txt")
+	if err := os.Remove(suivi); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/n/existe/pas", suivi); err != nil {
+		t.Skipf("liens symboliques indisponibles : %v", err)
+	}
+
+	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	if err == nil {
+		t.Fatal("un fichier suivi remplacé par un lien cassé ne doit pas être détruit sans force")
+	}
+	if !strings.Contains(err.Error(), "suivi.txt") {
+		t.Errorf("le message doit nommer suivi.txt ; obtenu : %v", err)
+	}
+}
+
+// core.fsmonitor délègue à un démon la question « qu'est-ce qui a changé ». Un
+// démon redémarré, un Watchman qui a perdu son état ou un montage où inotify
+// rate des événements répondent « rien », et git les croit. Le drapeau reste
+// MAJUSCULE dans ls-files -v : la sonde des bits d'index ne peut pas voir ce
+// cas-là, par construction.
+func TestRetireVoitUneModificationMalgreFsmonitor(t *testing.T) {
+	repo := depotTest(t, "api")
+	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+	if err != nil {
+		t.Fatalf("préparation : %v", err)
+	}
+	ecris(t, filepath.Join(chemin, "suivi.txt"), "v1\n")
+	git(t, chemin, "add", "suivi.txt")
+	git(t, chemin, "commit", "-m", "ajoute suivi.txt")
+
+	// Hook v2 qui répond « rien n'a changé » : un jeton, aucun chemin.
+	hook := filepath.Join(t.TempDir(), "fsmonitor.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf 'jeton\\0'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, chemin, "config", "core.fsmonitor", hook)
+	git(t, chemin, "config", "core.fsmonitorHookVersion", "2")
+	git(t, chemin, "status", "--porcelain") // amorce le cache empoisonné
+
+	ecris(t, filepath.Join(chemin, "suivi.txt"), "TRAVAIL IRREMPLACABLE\n")
+	if etat := git(t, chemin, "status", "--porcelain"); strings.Contains(etat, "suivi.txt") {
+		t.Skipf("le hook fsmonitor n'a pas pris : git rapporte %q", etat)
+	}
+	if drapeaux := git(t, chemin, "ls-files", "-v"); !strings.Contains(drapeaux, "H suivi.txt") {
+		t.Fatalf("préparation : drapeau majuscule attendu, obtenu :\n%s", drapeaux)
+	}
+
+	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	if err == nil {
+		t.Fatal("une modification cachée par fsmonitor ne doit pas être détruite sans force")
+	}
+	if !strings.Contains(err.Error(), "suivi.txt") {
+		t.Errorf("le message doit nommer suivi.txt ; obtenu : %v", err)
+	}
+}
+
+// gitDefaillant fait échouer une sous-commande précise, pour vérifier le sens du
+// doute : une sonde muette ne doit jamais autoriser une destruction.
+type gitDefaillant struct {
+	reel Git
+	sur  string
+}
+
+func (g gitDefaillant) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if len(args) > 0 && args[0] == g.sur {
+		return nil, errors.New("panne simulée de git " + g.sur)
+	}
+	return g.reel.Run(ctx, dir, args...)
+}
+
+func TestRetireRefuseQuandUneSondeEstMuette(t *testing.T) {
+	for _, sonde := range []string{"ls-files", "hash-object"} {
+		t.Run(sonde, func(t *testing.T) {
+			repo := depotTest(t, "api")
+			chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+			if err != nil {
+				t.Fatalf("préparation : %v", err)
+			}
+			ecris(t, filepath.Join(chemin, "local.conf"), "v1\n")
+			git(t, chemin, "add", "local.conf")
+			git(t, chemin, "commit", "-m", "ajoute local.conf")
+			git(t, chemin, "update-index", "--skip-worktree", "local.conf")
+
+			g := gitDefaillant{reel: NewGit(), sur: sonde}
+			if err := Retire(context.Background(), g, repo, chemin, false); err == nil {
+				t.Fatalf("une panne de git %s ne doit pas autoriser la suppression", sonde)
+			}
+			if _, err := os.Stat(chemin); err != nil {
+				t.Errorf("le worktree doit être INTACT : %v", err)
+			}
+		})
 	}
 }
 
