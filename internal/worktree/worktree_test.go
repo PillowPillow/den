@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // TestMain neutralise la configuration git de la machine. Le module lit les
@@ -938,8 +940,11 @@ func TestRetireAccepteUnDepotSousIgnoreStat(t *testing.T) {
 			t.Fatalf("préparation : %v", err)
 		}
 		git(t, chemin, "config", "core.ignoreStat", "true")
+		// Contenus DISTINCTS : avec trois fichiers identiques, toute permutation
+		// des empreintes serait un no-op et l'assertion « les fichiers intacts ne
+		// doivent pas être nommés » ne prouverait rien.
 		for _, f := range []string{"f1.txt", "f2.txt", "f3.txt"} {
-			ecris(t, filepath.Join(chemin, f), "contenu\n")
+			ecris(t, filepath.Join(chemin, f), "contenu de "+f+"\n")
 		}
 		git(t, chemin, "add", ".")
 		git(t, chemin, "commit", "-m", "fichiers")
@@ -990,6 +995,128 @@ func TestRetireAccepteUnDepotSousIgnoreStat(t *testing.T) {
 	})
 }
 
+// `git hash-object` n'est PAS sûr sur un chemin non régulier : sur un fifo il ne
+// rend jamais la main (mesuré : rc=124 au timeout, pas d'échec), sur un dossier
+// il sort en `fatal:` anglais. Un `den rm` qui ne revient jamais n'a même plus
+// de résultat à emballer.
+func TestRetireRefuseUnCheminQueGitNePeutPasHacher(t *testing.T) {
+	cas := []struct {
+		nom  string
+		pose func(t *testing.T, chemin string)
+	}{
+		{"fifo", func(t *testing.T, chemin string) {
+			if err := syscall.Mkfifo(chemin, 0o644); err != nil {
+				t.Skipf("fifo indisponible : %v", err)
+			}
+		}},
+		{"dossier", func(t *testing.T, chemin string) {
+			if err := os.Mkdir(chemin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			repo := depotTest(t, "api")
+			chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+			if err != nil {
+				t.Fatalf("préparation : %v", err)
+			}
+			suivi := filepath.Join(chemin, "suivi.txt")
+			ecris(t, suivi, "v1\n")
+			git(t, chemin, "add", "suivi.txt")
+			git(t, chemin, "commit", "-m", "ajoute suivi.txt")
+			git(t, chemin, "update-index", "--assume-unchanged", "suivi.txt")
+			if err := os.Remove(suivi); err != nil {
+				t.Fatal(err)
+			}
+			c.pose(t, suivi)
+
+			// Borné : avant correctif le fifo bloque, et seule cette limite sort.
+			ctx, annule := context.WithTimeout(context.Background(), 15*time.Second)
+			defer annule()
+			debut := time.Now()
+			err = Retire(ctx, NewGit(), repo, chemin, false)
+			ecoule := time.Since(debut)
+
+			if ecoule > 5*time.Second {
+				t.Errorf("Retire a mis %s : la sonde s'est bloquée sur le chemin non régulier", ecoule)
+			}
+			if err == nil {
+				t.Fatal("un chemin que git ne peut pas hacher ne doit pas être détruit sans force")
+			}
+			for _, attendu := range []string{"suivi.txt", "non commitées"} {
+				if !strings.Contains(err.Error(), attendu) {
+					t.Errorf("le message doit contenir %q ; obtenu : %v", attendu, err)
+				}
+			}
+			if strings.Contains(err.Error(), "fatal:") {
+				t.Errorf("le message ne doit pas relayer le fatal anglais de git ; obtenu : %v", err)
+			}
+		})
+	}
+}
+
+// git hache le TEXTE d'un lien symbolique (mode 120000) ; hash-object, lui, SUIT
+// le lien et hacherait le contenu de la cible. Les deux ne coïncident jamais, si
+// bien qu'un dépôt propre portant un seul lien suivi était refusé à perpétuité
+// dès qu'un bit d'index le marquait.
+func TestRetireAccepteUnLienSymboliqueIntact(t *testing.T) {
+	cas := []struct{ nom, cible string }{
+		{"lien valide", "cible.txt"},
+		{"lien casse", "/n/existe/pas"},
+	}
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			repo := depotTest(t, "api")
+			chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+			if err != nil {
+				t.Fatalf("préparation : %v", err)
+			}
+			ecris(t, filepath.Join(chemin, "cible.txt"), "CONTENU DE LA CIBLE\n")
+			if err := os.Symlink(c.cible, filepath.Join(chemin, "lien.txt")); err != nil {
+				t.Skipf("liens symboliques indisponibles : %v", err)
+			}
+			git(t, chemin, "add", ".")
+			git(t, chemin, "commit", "-m", "cible et lien")
+			git(t, chemin, "update-index", "--skip-worktree", "lien.txt")
+			if etat := git(t, chemin, "status", "--porcelain"); etat != "" {
+				t.Fatalf("préparation : le worktree doit être propre, obtenu %q", etat)
+			}
+
+			if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+				t.Fatalf("un lien symbolique intact ne doit pas bloquer la suppression : %v", err)
+			}
+		})
+	}
+}
+
+// La propriété qui porte tout le correctif du tour 4 : hash-object applique les
+// filtres de .gitattributes. Sans elle, un dépôt en autocrlf dont le disque est
+// en CRLF — donc parfaitement propre — serait refusé.
+func TestRetireAppliqueLesFiltresGitattributes(t *testing.T) {
+	repo := depotTest(t, "api")
+	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+	if err != nil {
+		t.Fatalf("préparation : %v", err)
+	}
+	git(t, chemin, "config", "core.autocrlf", "true")
+	ecris(t, filepath.Join(chemin, ".gitattributes"), "* text=auto\n")
+	ecris(t, filepath.Join(chemin, "f.txt"), "une ligne\nune autre\n")
+	git(t, chemin, "add", ".")
+	git(t, chemin, "commit", "-m", "texte")
+	// Ce que produirait un checkout sous autocrlf : le disque passe en CRLF.
+	ecris(t, filepath.Join(chemin, "f.txt"), "une ligne\r\nune autre\r\n")
+	git(t, chemin, "update-index", "--skip-worktree", "f.txt")
+	if etat := git(t, chemin, "status", "--porcelain"); etat != "" {
+		t.Fatalf("préparation : le worktree doit être propre, obtenu %q", etat)
+	}
+
+	if err := Retire(context.Background(), NewGit(), repo, chemin, false); err != nil {
+		t.Fatalf("les fins de ligne converties ne sont pas une modification : %v", err)
+	}
+}
+
 // Un fichier suivi remplacé sur le disque par un lien symbolique cassé porte un
 // contenu que l'object store ne rend pas. os.Stat suit le lien et l'écartait.
 func TestRetireRefuseUnFichierMarqueRemplaceParUnLien(t *testing.T) {
@@ -1013,6 +1140,40 @@ func TestRetireRefuseUnFichierMarqueRemplaceParUnLien(t *testing.T) {
 	err = Retire(context.Background(), NewGit(), repo, chemin, false)
 	if err == nil {
 		t.Fatal("un fichier suivi remplacé par un lien cassé ne doit pas être détruit sans force")
+	}
+	if !strings.Contains(err.Error(), "suivi.txt") {
+		t.Errorf("le message doit nommer suivi.txt ; obtenu : %v", err)
+	}
+}
+
+// Cas limite qui décide du contrôle de mode : un fichier suivi dont le contenu
+// vaut EXACTEMENT le texte du lien qui le remplace. Comparer les seuls octets
+// conclurait « identique » et détruirait le fichier ; c'est le mode de l'entrée
+// d'index (100644 contre 120000) qui tranche.
+func TestRetireRefuseUnFichierRemplaceParUnLienDeMemeTexte(t *testing.T) {
+	repo := depotTest(t, "api")
+	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+	if err != nil {
+		t.Fatalf("préparation : %v", err)
+	}
+	ecris(t, filepath.Join(chemin, "cible.txt"), "CONTENU\n")
+	// Contenu sans retour à la ligne, identique au texte du futur lien.
+	if err := os.WriteFile(filepath.Join(chemin, "suivi.txt"), []byte("cible.txt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, chemin, "add", ".")
+	git(t, chemin, "commit", "-m", "fichier et cible")
+	git(t, chemin, "update-index", "--skip-worktree", "suivi.txt")
+	if err := os.Remove(filepath.Join(chemin, "suivi.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("cible.txt", filepath.Join(chemin, "suivi.txt")); err != nil {
+		t.Skipf("liens symboliques indisponibles : %v", err)
+	}
+
+	err = Retire(context.Background(), NewGit(), repo, chemin, false)
+	if err == nil {
+		t.Fatal("un fichier suivi devenu lien symbolique est une modification, même à texte égal")
 	}
 	if !strings.Contains(err.Error(), "suivi.txt") {
 		t.Errorf("le message doit nommer suivi.txt ; obtenu : %v", err)
@@ -1088,8 +1249,14 @@ func TestRetireRefuseQuandUneSondeEstMuette(t *testing.T) {
 			git(t, chemin, "update-index", "--skip-worktree", "local.conf")
 
 			g := gitDefaillant{reel: NewGit(), sur: sonde}
-			if err := Retire(context.Background(), g, repo, chemin, false); err == nil {
+			err = Retire(context.Background(), g, repo, chemin, false)
+			if err == nil {
 				t.Fatalf("une panne de git %s ne doit pas autoriser la suppression", sonde)
+			}
+			// La cause réelle doit remonter : avaler l'erreur et ne refuser que
+			// par une garde en aval marcherait ici par accident.
+			if !strings.Contains(err.Error(), "panne simulée") {
+				t.Errorf("la panne doit remonter telle quelle ; obtenu : %v", err)
 			}
 			if _, err := os.Stat(chemin); err != nil {
 				t.Errorf("le worktree doit être INTACT : %v", err)

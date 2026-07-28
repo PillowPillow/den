@@ -520,7 +520,7 @@ func fichiersMarques(ctx context.Context, g Git, dir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("drapeaux d'index de %s : %w", dir, err)
 	}
-	var candidats []string
+	var sales, reguliers, liens []string
 	for _, e := range strings.Split(string(out), "\x00") {
 		if len(e) < 3 || e[1] != ' ' {
 			continue
@@ -530,18 +530,86 @@ func fichiersMarques(ctx context.Context, g Git, dir string) ([]string, error) {
 			continue
 		}
 		// Lstat et non Stat : Stat suit les liens, et un fichier suivi remplacé
-		// par un lien symbolique cassé s'évanouissait ainsi du discriminant. La
-		// comparaison d'empreintes le rattrape ensuite — git hache le texte du
-		// lien, qui ne coïncide pas avec le contenu attendu.
-		if _, err := os.Lstat(filepath.Join(dir, chemin)); err != nil {
+		// par un lien symbolique cassé s'évanouissait ainsi du discriminant.
+		infos, err := os.Lstat(filepath.Join(dir, chemin))
+		if err != nil {
 			// Absent du disque : hors du cône d'un sparse-checkout, qui pose les
 			// mêmes bits. Il n'y a rien là à protéger.
 			continue
 		}
-		candidats = append(candidats, chemin)
+		switch {
+		case infos.Mode()&os.ModeSymlink != 0:
+			liens = append(liens, chemin)
+		case infos.Mode().IsRegular():
+			reguliers = append(reguliers, chemin)
+		default:
+			// Fifo, dossier, socket, périphérique : `git hash-object` ne doit
+			// JAMAIS les voir. Sur un fifo il se bloque sans borne (mesuré : il ne
+			// rend jamais la main, il n'échoue pas), sur un dossier il sort en
+			// `fatal:` anglais. Le verdict reste donc celui de den.
+			sales = append(sales, chemin)
+		}
+	}
+	if len(reguliers)+len(liens) == 0 {
+		return sales, nil
 	}
 
-	return cheminsModifies(ctx, g, dir, candidats)
+	index, err := empreintesIndex(ctx, g, dir)
+	if err != nil {
+		return nil, err
+	}
+	modifies, err := cheminsModifies(ctx, g, dir, index, reguliers)
+	if err != nil {
+		return nil, err
+	}
+	sales = append(sales, modifies...)
+	modifies, err = liensModifies(ctx, g, dir, index, liens)
+	if err != nil {
+		return nil, err
+	}
+	return append(sales, modifies...), nil
+}
+
+// entreeIndex est ce que l'index retient d'un chemin.
+type entreeIndex struct {
+	mode      string
+	empreinte string
+}
+
+// modeLien est le mode git d'un lien symbolique.
+const modeLien = "120000"
+
+// liensModifies compare un lien symbolique sur son TEXTE.
+//
+// git stocke le texte du lien comme contenu de l'objet (mode 120000), alors que
+// `hash-object` SUIT le lien et hacherait le contenu de la cible : les deux ne
+// coïncident jamais. Sans cette distinction, un dépôt parfaitement propre
+// portant un seul lien suivi était refusé à perpétuité dès qu'un bit d'index le
+// marquait — le symptôme exact que la comparaison d'empreintes devait fermer.
+func liensModifies(ctx context.Context, g Git, dir string, index map[string]entreeIndex, liens []string) ([]string, error) {
+	var modifies []string
+	for _, chemin := range liens {
+		complet := filepath.Join(dir, chemin)
+		entree, ok := index[chemin]
+		if !ok || entree.mode != modeLien {
+			// L'index n'attend pas un lien ici : un fichier suivi a été remplacé
+			// par un lien, ce qui est bien une modification.
+			modifies = append(modifies, chemin)
+			continue
+		}
+		cible, err := os.Readlink(complet)
+		if err != nil {
+			return nil, fmt.Errorf("lecture du lien %s : %w", complet, err)
+		}
+		attendu, err := g.Run(ctx, dir, "cat-file", "blob", entree.empreinte)
+		if err != nil {
+			return nil, fmt.Errorf("lecture de l'objet du lien %s : %w", complet, err)
+		}
+		if string(attendu) != cible {
+			modifies = append(modifies, chemin)
+		}
+	}
+	return modifies, nil
 }
 
 // tailleLot borne la longueur de l'argv des sondes d'empreinte.
@@ -567,13 +635,9 @@ const tailleLot = 256
 //
 // En cas de panne d'une sonde, l'erreur remonte : une sonde muette ne doit
 // jamais autoriser une destruction.
-func cheminsModifies(ctx context.Context, g Git, dir string, chemins []string) ([]string, error) {
+func cheminsModifies(ctx context.Context, g Git, dir string, index map[string]entreeIndex, chemins []string) ([]string, error) {
 	var modifies []string
 	for lot := range slices.Chunk(chemins, tailleLot) {
-		index, err := empreintesIndex(ctx, g, dir, lot)
-		if err != nil {
-			return nil, err
-		}
 		disque, err := empreintesDisque(ctx, g, dir, lot)
 		if err != nil {
 			return nil, err
@@ -583,7 +647,7 @@ func cheminsModifies(ctx context.Context, g Git, dir string, chemins []string) (
 				dir, len(disque), len(lot))
 		}
 		for i, chemin := range lot {
-			if attendu, ok := index[chemin]; !ok || attendu != disque[i] {
+			if attendu, ok := index[chemin]; !ok || attendu.empreinte != disque[i] {
 				modifies = append(modifies, chemin)
 			}
 		}
@@ -591,13 +655,23 @@ func cheminsModifies(ctx context.Context, g Git, dir string, chemins []string) (
 	return modifies, nil
 }
 
-// empreintesIndex lit les empreintes que l'index associe à ces chemins.
-func empreintesIndex(ctx context.Context, g Git, dir string, chemins []string) (map[string]string, error) {
-	out, err := g.Run(ctx, dir, append([]string{"ls-files", "-s", "-z", "--"}, chemins...)...)
+// empreintesIndex lit TOUT l'index en un seul appel.
+//
+// Interroger `ls-files -s` avec les chemins d'un lot rebalayait l'index entier à
+// chaque lot : coût par appel linéaire en taille d'index, nombre d'appels
+// linéaire en fichiers marqués — donc quadratique (mesuré : 1 915 ms de
+// pathspecs sur 20 000 fichiers marqués, contre 6 ms pour cet appel unique).
+//
+// L'appel unique supprime en prime un faux positif : `ls-files` traite ses
+// arguments comme des PATHSPECS et non comme des chemins littéraux, si bien
+// qu'un fichier suivi nommé « :x.txt » manquait à la table et passait pour
+// modifié sur un worktree propre.
+func empreintesIndex(ctx context.Context, g Git, dir string) (map[string]entreeIndex, error) {
+	out, err := g.Run(ctx, dir, "ls-files", "-s", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("empreintes d'index de %s : %w", dir, err)
 	}
-	empreintes := make(map[string]string, len(chemins))
+	index := map[string]entreeIndex{}
 	for _, e := range strings.Split(string(out), "\x00") {
 		// « <mode> <empreinte> <étape>\t<chemin> »
 		entete, chemin, ok := strings.Cut(e, "\t")
@@ -605,10 +679,10 @@ func empreintesIndex(ctx context.Context, g Git, dir string, chemins []string) (
 			continue
 		}
 		if champs := strings.Fields(entete); len(champs) >= 2 {
-			empreintes[chemin] = champs[1]
+			index[chemin] = entreeIndex{mode: champs[0], empreinte: champs[1]}
 		}
 	}
-	return empreintes, nil
+	return index, nil
 }
 
 // empreintesDisque calcule l'empreinte du contenu réellement présent, dans
