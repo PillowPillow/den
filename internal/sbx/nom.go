@@ -3,6 +3,7 @@
 package sbx
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
@@ -40,4 +41,29 @@ func NomSandbox(nest, worktree string) (string, error) {
 func DecomposeNom(nom string) (nest, worktree string) {
 	nest, worktree, _ = strings.Cut(nom, SeparateurNom)
 	return nest, worktree
+}
+
+// ValiderNomSandbox contrôle qu'un nom est bien celui que den aurait construit.
+//
+// Source UNIQUE du verdict, exportée et consommée par tous ceux qui
+// transforment un nom en chemin hôte ou en argument de `sbx` : la validation
+// composant par composant a existé en double, et les deux copies ont divergé.
+//
+// Elle procède par aller-retour à travers le constructeur validant plutôt que
+// de redéfinir un charset — config.ValiderComposantSandbox en reste la seule
+// source — puis compare le nom reconstruit à l'original. C'est cette dernière
+// comparaison qui attrape ce que la validation par composant laisse passer :
+// « api. » se décompose en « api » + worktree vide, deux composants valides, et
+// se reconstruirait en « api ». sbx accepterait ce nom, et `sbx ls` le
+// redécomposerait en « api » : deux noms pour une même sandbox.
+func ValiderNomSandbox(nom string) error {
+	nest, worktree := DecomposeNom(nom)
+	reconstruit, err := NomSandbox(nest, worktree)
+	if err != nil {
+		return err
+	}
+	if reconstruit != nom {
+		return fmt.Errorf("nom de sandbox %q : forme non canonique (se reconstruit en %q)", nom, reconstruit)
+	}
+	return nil
 }

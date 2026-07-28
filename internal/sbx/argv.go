@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-
-	"github.com/PillowPillow/den/internal/config"
 )
 
 // AgentPositionnel est l'agent passé à `sbx create`.
@@ -38,15 +36,11 @@ type Create struct {
 
 // ArgvCreate assemble l'argv complet de `sbx create`, sans le nom du binaire.
 func ArgvCreate(c Create) ([]string, error) {
-	// Le nom porte le séparateur : on valide chaque composant, pas le tout.
-	nest, worktree := DecomposeNom(c.Nom)
-	if err := config.ValiderComposantSandbox("nom de sandbox", nest); err != nil {
+	// Source unique du verdict, partagée avec internal/agent : valider ici
+	// composant par composant laissait passer « api. », que sbx créerait
+	// vraiment et que `sbx ls` redécomposerait en « api ».
+	if err := ValiderNomSandbox(c.Nom); err != nil {
 		return nil, err
-	}
-	if worktree != "" {
-		if err := config.ValiderComposantSandbox("nom de sandbox", worktree); err != nil {
-			return nil, err
-		}
 	}
 	if strings.TrimSpace(c.Image) == "" {
 		return nil, fmt.Errorf(

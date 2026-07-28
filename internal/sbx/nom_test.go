@@ -83,3 +83,49 @@ func TestDecomposeNomEtranger(t *testing.T) {
 		t.Errorf("obtenu (%q,%q), attendu (a, b.c)", nest, wt)
 	}
 }
+
+// ValiderNomSandbox est la source unique du verdict « ce nom est-il celui que
+// den aurait construit ? ». Elle est exportée pour que `internal/agent` et
+// l'assemblage de l'argv ne puissent pas diverger : ils ont divergé, et le cas
+// « api. » passait d'un côté et pas de l'autre.
+func TestValiderNomSandbox(t *testing.T) {
+	for _, nom := range []string{"api", "api.feat12", "mon-api.feat-2", "api2", "a"} {
+		if err := ValiderNomSandbox(nom); err != nil {
+			t.Errorf("%q doit être accepté : %v", nom, err)
+		}
+	}
+
+	// Les formes non canoniques : elles se reconstruiraient en autre chose
+	// qu'elles-mêmes, donc deux noms distincts désigneraient la même sandbox.
+	refuses := []string{
+		"",             // vide
+		"api.",         // se reconstruit en « api » — le trou de la validation par composant
+		".feat12",      // nest vide
+		"api..feat",    // worktree « .feat », séparateur en tête
+		"api.feat.sup", // le séparateur ne se répète pas
+		"mon_api",      // charset
+		"-api",         // indiscernable d'un flag
+	}
+	for _, nom := range refuses {
+		if err := ValiderNomSandbox(nom); err == nil {
+			t.Errorf("%q doit être refusé", nom)
+		}
+	}
+}
+
+// La propriété qui tient l'ensemble : ValiderNomSandbox accepte EXACTEMENT
+// l'image de NomSandbox, ni plus ni moins.
+func TestValiderNomSandboxAccepteLImageDeNomSandbox(t *testing.T) {
+	for _, nest := range []string{"api", "mon-api", "a1", "x+y"} {
+		for _, worktree := range []string{"", "feat", "feat-2", "mon_wt", "-wt", ""} {
+			nom, err := NomSandbox(nest, worktree)
+			if err != nil {
+				continue // NomSandbox a déjà refusé : rien à croiser
+			}
+			if err := ValiderNomSandbox(nom); err != nil {
+				t.Errorf("NomSandbox(%q,%q) = %q mais ValiderNomSandbox le refuse : %v",
+					nest, worktree, nom, err)
+			}
+		}
+	}
+}

@@ -144,23 +144,10 @@ func sequence(vals []string) *yaml.Node {
 // valide rien (elle sert aussi aux sandboxes créées hors den), et filepath.Join
 // NETTOIE un « .. » en une vraie traversée au lieu de la rejeter.
 //
-// Le nom peut porter le séparateur « . », donc chaque composant est validé
-// séparément — par un aller-retour à travers le constructeur validant, ce qui
-// évite de redéfinir ici un charset dont config.ValiderComposantSandbox est la
-// seule source.
+// Le contrôle lui-même vit désormais dans sbx : il était dupliqué avec
+// l'assemblage de l'argv, et les deux copies avaient divergé sur « api. ».
 func valideNomSandbox(nom string) error {
-	nest, worktree := sbx.DecomposeNom(nom)
-	reconstruit, err := sbx.NomSandbox(nest, worktree)
-	if err != nil {
-		return err
-	}
-	// Attrape ce que la validation par composant laisse passer, tel un nom
-	// terminé par le séparateur : « api. » se décompose en « api » + worktree
-	// vide, deux composants valides, et se reconstruirait en « api ».
-	if reconstruit != nom {
-		return fmt.Errorf("nom de sandbox %q : forme non canonique (se reconstruit en %q)", nom, reconstruit)
-	}
-	return nil
+	return sbx.ValiderNomSandbox(nom)
 }
 
 // EcrisMixin matérialise le mixin sous <denHome>/cache/mixins/<sandbox>/ et

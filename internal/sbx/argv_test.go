@@ -248,3 +248,18 @@ func TestArgvCreateGolden(t *testing.T) {
 		}
 	}
 }
+
+// Un nom terminé par le séparateur passait la validation composant par
+// composant : « api. » se décompose en « api » + worktree vide, deux composants
+// valides. sbx accepte le point, donc la sandbox « api. » serait RÉELLEMENT
+// créée, puis `sbx ls` la redécomposerait en nest « api » — indiscernable de la
+// sandbox « api ». C'est le risque de duplication acté par le commit 3b2b42d.
+func TestArgvCreateRefuseLeNomNonCanonique(t *testing.T) {
+	for _, nom := range []string{"api.", "api.feat12.", ".feat12", "api..feat"} {
+		c := createComplet()
+		c.Nom = nom
+		if _, err := ArgvCreate(c); err == nil {
+			t.Errorf("%q doit être refusé : il désignerait une sandbox déjà nommable autrement", nom)
+		}
+	}
+}
