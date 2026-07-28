@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,10 +46,27 @@ func TestCommandeFraicheurEstFailClosed(t *testing.T) {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
 	script := argv[2]
-	for _, attendu := range []string{"claude update", "exit 127", "exit 1", "exit 0", "sleep 10"} {
+	for _, attendu := range []string{"claude update", "exit 127", "exit 0", "sleep 10"} {
 		if !strings.Contains(script, attendu) {
 			t.Errorf("le script doit contenir %q ; obtenu :\n%s", attendu, script)
 		}
+	}
+
+	// "exit 1" est une sous-chaîne de "exit 127", déjà émis plus haut : un
+	// Contains ne mordrait pas. Ce qui compte est la position — la sortie
+	// fail-closed est la DERNIÈRE chose que fait le script.
+	if !strings.HasSuffix(script, "exit 1\n") {
+		t.Errorf("le script doit se terminer sur la sortie fail-closed \"exit 1\" ; obtenu :\n%s", script)
+	}
+
+	// La boucle doit être BORNÉE : sans borne ni incrément, un agent dont
+	// l'update échoue en boucle bloquerait le boot au lieu d'échouer.
+	borne := fmt.Sprintf("while [ \"$tentative\" -le %d ]; do", tentativesFraicheur)
+	if !strings.Contains(script, borne) {
+		t.Errorf("la boucle doit être bornée par %q ; obtenu :\n%s", borne, script)
+	}
+	if !strings.Contains(script, "tentative=$((tentative + 1))") {
+		t.Errorf("la boucle doit incrémenter le compteur, sinon la borne ne borne rien :\n%s", script)
 	}
 }
 
