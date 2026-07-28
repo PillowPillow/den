@@ -83,8 +83,33 @@ func TestNestLsSignaleLesCassesEtRetourneUneErreur(t *testing.T) {
 	if !strings.Contains(out, "api") {
 		t.Errorf("le nest sain doit rester listé ; obtenu :\n%s", out)
 	}
-	if !strings.Contains(out, "casse") {
+	// Chaîne exacte, pas juste "casse" : LoadNest nomme déjà le fichier dans
+	// son erreur de décodage, ce qui rendrait Contains(out, "casse") vrai même
+	// si `den nest ls` omettait c.Nom.
+	if !strings.Contains(out, "! casse :") {
 		t.Errorf("le nest cassé doit être signalé nommément ; obtenu :\n%s", out)
+	}
+}
+
+// Un ~/.den/nests ne contenant QUE des nests cassés ne doit pas afficher
+// « aucun nest déclaré » : l'utilisateur a des nests, ils sont juste tous
+// illisibles — un message d'absence serait un mensonge doublé d'un faux
+// succès (code de sortie 0 alors qu'il y a quelque chose à réparer).
+func TestNestLsNAffichePasAucunNestDeclareSiTousCasses(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "nests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nests", "casse.yaml"), []byte("egres: [x]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := run(t, "nest", "ls", "--den-home", dir)
+	if err == nil {
+		t.Fatal("attendu une erreur : le seul nest présent est cassé")
+	}
+	if strings.Contains(out, "aucun nest déclaré") {
+		t.Errorf("un nest cassé n'est pas une absence de nest ; obtenu :\n%s", out)
 	}
 }
 

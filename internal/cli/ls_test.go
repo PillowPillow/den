@@ -129,7 +129,10 @@ func TestLsSignaleUnNestCasseSurStderrSansMasquerLesSains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("den ls ne doit jamais retourner d'erreur pour un nest cassé : %v", err)
 	}
-	if !strings.Contains(stderr, "casse") {
+	// Chaîne exacte, pas juste "casse" : LoadNest lui-même nomme déjà le
+	// fichier dans son erreur de décodage (.../nests/casse.yaml), ce qui
+	// rendrait Contains(stderr, "casse") vrai même si den ls omettait c.Nom.
+	if !strings.Contains(stderr, "nest casse illisible :") {
 		t.Errorf("le nest cassé doit être nommé sur stderr ; obtenu :\n%s", stderr)
 	}
 	if strings.Contains(stdout, "casse") {
@@ -148,6 +151,53 @@ func TestLsSignaleUnNestCasseSurStderrSansMasquerLesSains(t *testing.T) {
 	}
 	if strings.Contains(ligneApi, "?") {
 		t.Errorf("le nest sain 'api' ne doit porter aucun marqueur '?' à cause du voisin cassé ; ligne : %q", ligneApi)
+	}
+}
+
+// den ls doit avertir sur stderr quand le dossier nests/ lui-même est
+// illisible (échec STRUCTUREL, 3e valeur de retour de ListNests) : c'est
+// l'unique signal qui distingue « ces sandboxes ne sont pas déclarées » de
+// « je n'ai pas pu lire le dossier » — sans lui, toutes les sandboxes
+// vivantes se retrouvent marquées "?" sans la moindre explication.
+func TestLsSignaleUneRacineNestsIllisible(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("test non fiable en root : les permissions sont ignorées")
+	}
+	dir := denHomeDeTest(t) // nest "api" y est déclaré ; nests/ existe déjà
+	racine := filepath.Join(dir, "nests")
+	if err := os.Chmod(racine, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Vérification EMPIRIQUE, sur le modèle de TestListNestsRacineIllisible :
+	// un chmod 0o000 ne suffit pas partout (root, conteneurs, CFS
+	// particuliers qui ignorent aussi les permissions).
+	if _, err := os.ReadDir(racine); err == nil {
+		if err := os.Chmod(racine, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Skip("la lecture d'un dossier 0o000 réussit sur cet environnement : test non fiable ici")
+	}
+	t.Cleanup(func() {
+		// t.TempDir() doit pouvoir nettoyer derrière nous.
+		if err := os.Chmod(racine, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
+		"ls --json": {Sortie: []byte(
+			`{"sandboxes":[{"name":"api","status":"running"}]}`)},
+	}}
+
+	stdout, stderr, err := executeCmdAvecSbxFluxSepares(t, f, "ls")
+	if err != nil {
+		t.Fatalf("den ls ne doit jamais retourner d'erreur pour une racine nests/ illisible : %v", err)
+	}
+	if !strings.Contains(stderr, "liste des nests") {
+		t.Errorf("l'échec structurel doit être signalé sur stderr ; obtenu :\n%s", stderr)
+	}
+	if strings.Contains(stdout, "liste des nests") {
+		t.Errorf("l'avertissement ne doit pas apparaître sur stdout ; obtenu :\n%s", stdout)
 	}
 }
 

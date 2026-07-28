@@ -38,8 +38,8 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			// inconnues, jamais à les filtrer : une VM vivante doit rester
 			// visible même si son nest a été supprimé depuis ~/.den/nests.
 			//
-			// den ls ne retourne JAMAIS d'erreur et ne masque JAMAIS une VM
-			// à cause d'un problème de nests : un nest cassé (YAML invalide,
+			// den ls ne retourne JAMAIS d'erreur pour un problème de nests et
+			// ne masque JAMAIS une VM à cause de ça : un nest cassé (YAML invalide,
 			// clé inconnue) ou une racine nests/ illisible sont signalés sur
 			// stderr, nommément, mais n'empêchent ni le chargement des nests
 			// sains ni l'affichage des sandboxes. Cette propriété tient tant

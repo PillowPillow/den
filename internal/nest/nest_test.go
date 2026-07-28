@@ -362,8 +362,34 @@ func TestListNestsRacineIllisible(t *testing.T) {
 	if nests != nil || casses != nil {
 		t.Errorf("nests=%v casses=%v, attendu nil sur un échec structurel", nests, casses)
 	}
-	if !strings.Contains(err.Error(), racine) {
-		t.Errorf("erreur = %q, attendu le chemin complet %q", err.Error(), racine)
+	// Contains(racine) serait vrai par construction : le *fs.PathError brut de
+	// os.ReadDir porte déjà le chemin absolu, wrap ou pas. HasPrefix sur le
+	// préfixe propre à den prouve que ListNests ajoute bien SON contexte
+	// (« lecture de <racine> : »), pas seulement que l'OS a nommé le chemin.
+	if !strings.HasPrefix(err.Error(), "lecture de "+racine) {
+		t.Errorf("erreur = %q, attendu le préfixe %q", err.Error(), "lecture de "+racine)
+	}
+}
+
+// Un fichier littéralement nommé ".yaml" a un nom tronqué vide : sans repli,
+// l'avertissement ne nommerait ni le nest ni le fichier, et l'utilisateur
+// n'aurait aucun moyen de savoir quel fichier supprimer.
+func TestListNestsFichierYamlSansNomRetombeSurLeNomDeFichier(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisNest(t, denHome, "", "stack: devx\n")
+
+	_, casses, err := ListNests(denHome)
+	if err != nil {
+		t.Fatalf("un nest fautif ne doit pas être une erreur structurelle : %v", err)
+	}
+	if len(casses) != 1 {
+		t.Fatalf("attendu un seul nest cassé ; obtenu %v", casses)
+	}
+	if casses[0].Nom == "" {
+		t.Errorf("le nom du nest cassé ne doit jamais être vide ; Nom=%q Err=%v", casses[0].Nom, casses[0].Err)
+	}
+	if casses[0].Nom != ".yaml" {
+		t.Errorf("le nom doit retomber sur le nom de fichier complet %q ; obtenu %q", ".yaml", casses[0].Nom)
 	}
 }
 

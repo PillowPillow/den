@@ -33,8 +33,8 @@ func executeCmd(t *testing.T, cmd *cobra.Command, args ...string) (string, error
 // Fonction séparée plutôt que changement de signature d'executeCmd : ce
 // dernier a douze appelants existants dans ce paquet, dont root_deps_test.go
 // et spawn_test.go dont les assertions ne doivent pas changer — les toucher
-// tous pour un besoin qu'un seul test a (rm_test.go) aurait été le mauvais
-// compromis.
+// tous pour un besoin que seuls quelques tests ont (rm_test.go, ls_test.go)
+// aurait été le mauvais compromis.
 func executeCmdFluxSepares(t *testing.T, cmd *cobra.Command, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var outBuf, errBuf bytes.Buffer
