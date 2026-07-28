@@ -3,6 +3,8 @@ package sbx
 import (
 	"context"
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -203,7 +205,14 @@ func TestVerifieEnMarche(t *testing.T) {
 			// disponibles. Sans le statut LU, l'utilisateur ne sait pas de quoi
 			// den se plaint ; sans le statut ATTENDU, il ne sait pas ce qui
 			// aurait convenu.
-			if !contientTout(err.Error(), "api", statut, "running") {
+			//
+			// strconv.Quote et non le statut nu : sur le sous-cas statut="",
+			// `strings.Contains(err, "")` est vrai PAR CONSTRUCTION et n'assert
+			// rien du tout (mesuré : en retirant s.Statut du message, ce sous-cas
+			// restait vert alors que les quatre autres rougissaient). La forme
+			// quotée est celle que le message rend — `%q` — et elle discrimine
+			// aussi le statut vide.
+			if !contientTout(err.Error(), "api", strconv.Quote(statut), strconv.Quote(StatutEnMarche)) {
 				t.Errorf("le message doit rendre la sandbox, le statut lu et le statut attendu ; obtenu : %v", err)
 			}
 		})
@@ -212,23 +221,60 @@ func TestVerifieEnMarche(t *testing.T) {
 
 // Le message ne doit nommer QUE des sous-commandes sbx ATTESTÉES.
 //
-// `sbx start` n'apparaît dans aucun relevé (plan 2 : create, ls, exec, ports,
-// policy check, rm --force ; sbx-devbox ajoute stop, template save, secret,
-// inspect, login) et sbx n'est pas installable ici : personne ne peut le
-// falsifier. Suggérer une commande peut-être inexistante à l'utilisateur est
-// pire qu'un commentaire faux — le commentaire ne trompe qu'un développeur.
+// Suggérer à l'utilisateur une commande peut-être inexistante est pire qu'un
+// commentaire faux : le commentaire ne trompe qu'un développeur.
+//
+// LISTE BLANCHE — et c'est tout l'objet de ce test. Une version antérieure
+// interdisait la seule chaîne « sbx start » : liste NOIRE d'un élément, qui ne
+// disait rien de `sbx resume` ni d'un `den up --force` inventé demain (mesuré :
+// message enrichi des deux, suite entière verte). C'était exactement l'anti-
+// patron que VerifieEnMarche argumente contre, dix lignes plus haut, pour les
+// statuts. On extrait donc TOUT ce que le message présente comme une commande —
+// les segments entre backticks — et on exige que chacun soit attesté.
 func TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees(t *testing.T) {
+	// Relevé le 2026-07-28. Plan 2 : create, ls, exec, ports, policy check,
+	// rm --force. sbx-devbox ajoute stop, template save, secret, inspect,
+	// login. `sbx start` n'y figure pas, et sbx n'est pas installable ici :
+	// personne ne peut le falsifier. Étendre cette liste demande un relevé,
+	// pas une intuition.
+	attestees := []string{"sbx ls", "sbx rm --force api"}
+
 	err := Sandbox{Nom: "api", Statut: "exited"}.VerifieEnMarche()
 	if err == nil {
 		t.Fatal("un statut « exited » doit produire une erreur")
 	}
-	if strings.Contains(err.Error(), "sbx start") {
-		t.Errorf("`sbx start` n'est attesté nulle part et ne doit pas être suggéré ; obtenu : %v", err)
+	commandes := entreBackticks(err.Error())
+	if len(commandes) == 0 {
+		t.Fatalf("le message doit présenter sa remédiation entre backticks ; obtenu : %v", err)
 	}
-	// Et la remédiation doit exister : un refus sans porte de sortie oblige
+	for _, c := range commandes {
+		if !slices.Contains(attestees, c) {
+			t.Errorf("commande NON ATTESTÉE proposée à l'utilisateur : %q ; message : %v", c, err)
+		}
+	}
+	// Et la porte de sortie doit être là : un refus sans remédiation oblige
 	// l'utilisateur à deviner.
-	if !strings.Contains(err.Error(), "sbx rm --force api") {
+	if !slices.Contains(commandes, "sbx rm --force api") {
 		t.Errorf("le message doit donner la remédiation exacte ; obtenu : %v", err)
+	}
+}
+
+// entreBackticks rend les segments `…` d'un message, c'est-à-dire tout ce que
+// den présente à l'utilisateur comme une commande à taper.
+func entreBackticks(s string) []string {
+	var out []string
+	for {
+		i := strings.Index(s, "`")
+		if i < 0 {
+			return out
+		}
+		reste := s[i+1:]
+		j := strings.Index(reste, "`")
+		if j < 0 {
+			return out
+		}
+		out = append(out, reste[:j])
+		s = reste[j+1:]
 	}
 }
 

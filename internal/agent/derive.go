@@ -40,10 +40,18 @@ type specLu struct {
 // la sandbox a réellement reçu à son `sbx create`.
 //
 // L'absence du fichier est enveloppée avec %w : l'appelant doit pouvoir
-// distinguer « aucune référence » (premier spawn, ou cache/ purgé — le spec §3
-// le déclare reconstructible), qui est normal et silencieux, d'une lecture
-// cassée, qui doit s'annoncer.
+// distinguer « aucune référence » (cache/ purgé — le spec §3 le déclare
+// reconstructible — ou sandbox créée hors de ce den) d'une lecture cassée. Les
+// DEUX sont des « den ne sait pas » et les deux s'annoncent ; la distinction ne
+// sert qu'à dire à l'utilisateur laquelle des deux il regarde, parce qu'il n'y
+// répond pas de la même façon.
 func LisMixin(denHome, nomSandbox string) (Mixin, error) {
+	// Même garde qu'EcrisMixin, pour la même raison : cette fonction est
+	// exportée et compose un chemin hôte à partir du nom. Défense en
+	// profondeur — Spawn refuse déjà ces noms via sbx.NomSandbox.
+	if err := valideNomSandbox(nomSandbox); err != nil {
+		return Mixin{}, fmt.Errorf("lecture du mixin : %w", err)
+	}
 	chemin := cheminMixin(denHome, nomSandbox)
 	contenu, err := os.ReadFile(chemin)
 	if err != nil {

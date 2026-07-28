@@ -14,9 +14,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// versionMixin est figée : le mixin est régénéré à chaque spawn et n'a pas de
-// cycle de vie propre. Une version variable ferait diverger les golden files
-// sans rien apporter.
+// versionMixin est figée : le mixin est régénéré à chaque `sbx create` et n'a
+// pas de cycle de vie propre. Une version variable ferait diverger les golden
+// files sans rien apporter.
 const versionMixin = "0.0.0"
 
 // Mixin est le kit jetable généré par den à chaque spawn (spec §6.5).
@@ -90,7 +90,9 @@ func RendMixin(m Mixin) ([]byte, error) {
 	if len(m.Env) > 0 {
 		vars := &yaml.Node{Kind: yaml.MappingNode}
 		for _, k := range slices.Sorted(maps.Keys(m.Env)) {
-			vars.Content = append(vars.Content, scalaire(k), scalaire(m.Env[k]))
+			// La CLÉ est structurelle (un nom de variable d'environnement), la
+			// VALEUR est de la donnée utilisateur libre.
+			vars.Content = append(vars.Content, scalaire(k), scalaireTexte(m.Env[k]))
 		}
 		env := &yaml.Node{Kind: yaml.MappingNode}
 		env.Content = append(env.Content, scalaire("variables"), vars)
@@ -117,9 +119,13 @@ func RendMixin(m Mixin) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// scalaire construit un nœud scalaire. Un contenu multiligne passe en style
-// littéral (« | ») : c'est le seul style qui préserve un script bash sans
-// échappement, et le script de fraîcheur en est un.
+// scalaire construit un nœud scalaire STRUCTUREL : les clés, et les valeurs que
+// den fixe lui-même (schemaVersion, kind, name, version, description). Elles
+// sont connues, et `schemaVersion: 2` doit rester le nombre 2.
+//
+// Un contenu multiligne passe en style littéral (« | ») : c'est le seul style
+// qui préserve un script bash sans échappement, et le script de fraîcheur en est
+// un.
 func scalaire(v string) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.ScalarNode, Value: v}
 	if strings.Contains(v, "\n") {
@@ -128,21 +134,47 @@ func scalaire(v string) *yaml.Node {
 	return n
 }
 
+// scalaireTexte construit un scalaire qui doit se relire comme une CHAÎNE, quoi
+// qu'il contienne. Réservé aux DONNÉES UTILISATEUR : valeurs d'environnement,
+// hôtes d'egress, arguments de la commande de fraîcheur.
+//
+// Le tag `!!str` fait quoter par l'encodeur les seules valeurs qui, nues, se
+// reliraient autrement — `~`, `null`, `true`, `8080`… Mesuré : sur toutes les
+// valeurs qui SONT déjà des chaînes pour YAML (`value`, un chemin, `github.com`,
+// `bash`, `-c`, un bloc littéral), la sortie est identique au bit près, tag ou
+// pas. C'est pourquoi le golden n'a pas bougé.
+//
+// Sans ça : un `TILDE: ~` se relisait `""` et Differences annonçait « env
+// changé » à CHAQUE attache alors que rien n'avait bougé ; pire, une entrée
+// nulle d'une SÉQUENCE (egress, argv de fraîcheur) disparaissait purement et
+// simplement à la relecture. Un faux avertissement permanent apprend à
+// l'utilisateur à ne plus lire l'avertissement — y compris le jour où un egress
+// a vraiment été rétréci.
+func scalaireTexte(v string) *yaml.Node {
+	n := scalaire(v)
+	n.Tag = "!!str"
+	return n
+}
+
 func sequence(vals []string) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.SequenceNode}
 	for _, v := range vals {
-		n.Content = append(n.Content, scalaire(v))
+		n.Content = append(n.Content, scalaireTexte(v))
 	}
 	return n
 }
 
 // valideNomSandbox contrôle qu'un nom peut devenir un segment de chemin.
 //
-// La garde vit ici et non chez l'appelant : c'est EcrisMixin qui transforme un
-// nom en chemin hôte, elle est exportée, et « à la charge de l'appelant » est un
-// contrat écrit nulle part. sbx.DecomposeNom est délibérément TOTALE et ne
-// valide rien (elle sert aussi aux sandboxes créées hors den), et filepath.Join
-// NETTOIE un « .. » en une vraie traversée au lieu de la rejeter.
+// La garde vit ici et non chez l'appelant : ce paquet transforme un nom en
+// chemin hôte — EcrisMixin ET LisMixin, toutes deux exportées, via le même
+// cheminMixin — et « à la charge de l'appelant » est un contrat écrit nulle
+// part. sbx.DecomposeNom est délibérément TOTALE et ne valide rien (elle sert
+// aussi aux sandboxes créées hors den), et filepath.Join NETTOIE un « .. » en
+// une vraie traversée au lieu de la rejeter.
+//
+// Défense en profondeur : Spawn refuse déjà ces noms bien en amont, via
+// sbx.NomSandbox. Aucun chemin d'appel connu n'atteint la garde aujourd'hui.
 //
 // Le contrôle lui-même vit désormais dans sbx : il était dupliqué avec
 // l'assemblage de l'argv, et les deux copies avaient divergé sur « api. ».

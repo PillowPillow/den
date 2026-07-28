@@ -2,6 +2,7 @@ package cli
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,7 +12,7 @@ import (
 func TestShAttacheDansLeWorkdir(t *testing.T) {
 	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
 		"ls --json": {Sortie: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api","/profil"]}]}`)},
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profil"]}]}`)},
 	}}
 
 	if _, err := executeCmdAvecSbx(t, f, "sh", "api"); err != nil {
@@ -35,6 +36,10 @@ func TestShAttacheDansLeWorkdir(t *testing.T) {
 	}
 }
 
+// Le `:ro` du fixture n'est pas décoratif : il sépare `b.Workdir()` (qui le
+// retire) de `b.Workspaces[0]` (qui le garderait). Sans lui, les deux
+// implémentations passent — mesuré par la relecture sur ce fichier précisément.
+//
 // Complément indispensable au test ci-dessus, qui scanne f.Appels : Appels
 // CONFOND Run et Attach (cf. sbx/fake.go), donc un `Run("exec", …)` — shell muet,
 // sans tty — le satisfait tout autant qu'une vraie attache. Seul f.Attaches
@@ -44,7 +49,7 @@ func TestShAttacheDansLeWorkdir(t *testing.T) {
 func TestShAttacheAvecUnTtyEtPasUnRun(t *testing.T) {
 	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
 		"ls --json": {Sortie: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api","/profil"]}]}`)},
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profil"]}]}`)},
 	}}
 
 	if _, err := executeCmdAvecSbx(t, f, "sh", "api"); err != nil {
@@ -115,7 +120,11 @@ func TestShRefuseUneSandboxQuiNeTournePas(t *testing.T) {
 			if err == nil {
 				t.Fatalf("un statut %q ne doit pas donner lieu à une attache", statut)
 			}
-			if !strings.Contains(err.Error(), statut) || !strings.Contains(err.Error(), "running") {
+			// strconv.Quote, pas le statut nu : sur le sous-cas statut="",
+			// `strings.Contains(err, "")` est vrai par construction et n'assert
+			// rien. La forme quotée est celle que le message rend (`%q`).
+			if !strings.Contains(err.Error(), strconv.Quote(statut)) ||
+				!strings.Contains(err.Error(), strconv.Quote("running")) {
 				t.Errorf("le message doit rendre le statut lu et celui attendu ; obtenu : %v", err)
 			}
 			if len(f.Attaches) != 0 {

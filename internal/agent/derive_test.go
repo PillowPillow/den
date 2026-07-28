@@ -68,10 +68,11 @@ func TestLisMixinDecodeLeGolden(t *testing.T) {
 	}
 }
 
-// Spawn doit distinguer « pas de référence » (premier spawn, ou cache purgé —
-// cache/ est déclaré reconstructible par le spec §3) d'une lecture cassée : le
-// premier cas est normal et silencieux, le second doit s'annoncer. Sans %w, les
-// deux se confondent et Spawn ne peut que se taire sur les deux.
+// Spawn doit distinguer « pas de référence » (cache purgé, ou sandbox créée hors
+// de ce den) d'une lecture cassée : les deux s'annoncent, mais pas avec le même
+// message — l'utilisateur ne répond pas de la même façon à un cache purgé et à
+// un spec.yaml corrompu. Sans %w, les deux se confondent et Spawn ne peut plus
+// rendre qu'un seul message pour deux situations différentes.
 func TestLisMixinAbsentEstDistinguableDUneLectureCassee(t *testing.T) {
 	_, err := LisMixin(t.TempDir(), "api")
 	if err == nil {
@@ -116,9 +117,10 @@ func TestLisMixinRefuseUnYAMLIllisible(t *testing.T) {
 	}
 }
 
-// LisMixin doit relire ce qu'EcrisMixin vient d'écrire : les deux se partagent le
-// chemin, et une divergence rendrait la dérive INDÉTECTABLE en silence (LisMixin
-// rendrait toujours os.ErrNotExist, que Spawn traite comme un premier spawn).
+// LisMixin doit relire ce qu'EcrisMixin vient d'écrire : les deux se partagent
+// le chemin, et une divergence rendrait la dérive INDÉTECTABLE — LisMixin
+// rendrait éternellement os.ErrNotExist, et den n'annoncerait plus jamais qu'un
+// « non vérifiable », pour toutes les sandboxes, sans que rien n'échoue.
 // Le golden ci-dessus prouve les clés, celui-ci prouve le chemin.
 func TestLisMixinRelitCeQuEcrisMixinEcrit(t *testing.T) {
 	denHome := t.TempDir()
@@ -133,6 +135,85 @@ func TestLisMixinRelitCeQuEcrisMixinEcrit(t *testing.T) {
 	}
 	if d := Differences(m, relu); len(d) != 0 {
 		t.Errorf("un aller-retour ne doit produire aucune différence ; obtenu : %v", d)
+	}
+}
+
+// Un aller-retour doit tenir sur les valeurs que YAML résout en autre chose
+// qu'une chaîne — sinon `Differences` annonce un changement à CHAQUE attache
+// alors que rien n'a bougé.
+//
+// Le cas mesuré par la relecture : `Env{"TILDE":"~"}` s'écrivait `TILDE: ~` non
+// quoté, se relisait `""`, et produisait « env changé dans la config : TILDE »
+// en boucle. Un faux avertissement permanent ne coûte pas seulement du bruit :
+// il détruit la confiance dans l'avertissement, et donc la décision D3 tout
+// entière — l'utilisateur apprend à ne plus le lire, y compris le jour où un
+// egress a vraiment été rétréci.
+//
+// La table couvre les trois familles que YAML 1.1 résout hors chaîne : le null
+// (`~`, `null` et ses casses), les booléens, et les nombres. `mixinExemple`
+// n'en contient aucune, d'où l'angle mort.
+func TestAllerRetourSurLesValeursDEnvHostiles(t *testing.T) {
+	hostiles := map[string]string{
+		"TILDE":    "~",
+		"NULL_BAS": "null",
+		"NULL_CAP": "Null",
+		"NULL_MAJ": "NULL",
+		"VIDE":     "",
+		"NOMBRE":   "8080",
+		"FLOTTANT": "1.5",
+		"BOOLEEN":  "true",
+		"OUI":      "yes",
+		"OCTAL":    "0o17",
+		"HEXA":     "0x10",
+		"HORAIRE":  "1:30",
+		"TIRET":    "-",
+		"ETOILE":   "*",
+	}
+
+	denHome := t.TempDir()
+	m := mixinExemple(t)
+	m.Env = hostiles
+	if _, err := EcrisMixin(denHome, m.NomSandbox, m); err != nil {
+		t.Fatalf("EcrisMixin : %v", err)
+	}
+
+	relu, err := LisMixin(denHome, m.NomSandbox)
+	if err != nil {
+		t.Fatalf("LisMixin : %v", err)
+	}
+	for cle, attendu := range hostiles {
+		if relu.Env[cle] != attendu {
+			t.Errorf("Env[%q] = %q, attendu %q", cle, relu.Env[cle], attendu)
+		}
+	}
+	// Vu de l'utilisateur, c'est CE symptôme qui compte : aucun avertissement
+	// sur une configuration qui n'a pas bougé.
+	if d := Differences(m, relu); len(d) != 0 {
+		t.Errorf("une configuration inchangée ne doit produire aucune différence ; obtenu : %v", d)
+	}
+}
+
+// Même exigence sur l'egress et sur l'argv de fraîcheur : ce sont aussi des
+// données utilisateur, elles traversent le même rendu YAML, et une entrée
+// relue `null` ferait croire à une dérive permanente.
+func TestAllerRetourSurUnEgressEtUneFraicheurHostiles(t *testing.T) {
+	denHome := t.TempDir()
+	m := mixinExemple(t)
+	m.Egress = []string{"null", "8080", "~", "github.com"}
+	m.Fraicheur = []string{"bash", "-c", "true", "null", "~"}
+
+	if _, err := EcrisMixin(denHome, m.NomSandbox, m); err != nil {
+		t.Fatalf("EcrisMixin : %v", err)
+	}
+	relu, err := LisMixin(denHome, m.NomSandbox)
+	if err != nil {
+		t.Fatalf("LisMixin : %v", err)
+	}
+	if !slices.Equal(relu.Egress, m.Egress) {
+		t.Errorf("Egress = %q, attendu %q", relu.Egress, m.Egress)
+	}
+	if !slices.Equal(relu.Fraicheur, m.Fraicheur) {
+		t.Errorf("Fraicheur = %q, attendu %q", relu.Fraicheur, m.Fraicheur)
 	}
 }
 

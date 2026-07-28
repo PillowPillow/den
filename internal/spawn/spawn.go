@@ -266,12 +266,25 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 // reconstructible, den ne le purge pas), donc une comparaison hissée hors de
 // cette branche crierait à la dérive sur une sandbox parfaitement à jour.
 //
-// L'ABSENCE de référence est silencieuse (premier spawn, ou cache/ purgé) ;
-// une référence illisible ne l'est pas : den ne peut alors pas répondre à la
-// question, et se taire là-dessus se lit comme « rien n'a changé ».
+// Une référence ABSENTE s'annonce, au même titre qu'une référence illisible.
+// Une version antérieure se taisait dessus, au motif d'un « premier spawn » qui
+// ne passe JAMAIS ici : un premier spawn prend la branche create. Les cas
+// réellement atteignables sont un cache/ purgé, une sandbox créée à la main, ou
+// une sandbox créée par un den antérieur — tous des « den ne sait pas », jamais
+// des « rien n'a changé ». Le silence était donc fail-OPEN dans les seuls cas où
+// il se produisait : mesuré, un `rm -rf ~/.den/cache` — que le spec §3 déclare
+// sûr — désactivait DÉFINITIVEMENT la détection pour cette sandbox, la branche
+// attache ne reposant jamais la référence.
 func signaleDerive(sortie io.Writer, nomSandbox string, ancien agent.Mixin, errAncien error, nouveau agent.Mixin) {
 	if errAncien != nil {
+		// Le message distingue les deux causes — l'utilisateur agit
+		// différemment sur un cache purgé et sur un fichier corrompu — mais
+		// AUCUNE des deux n'est silencieuse.
 		if errors.Is(errAncien, os.ErrNotExist) {
+			fmt.Fprintf(sortie,
+				"attention : aucune référence de configuration pour la sandbox %s — dérive non vérifiable "+
+					"(cache purgé, ou sandbox créée hors de ce den) ; %v\n",
+				nomSandbox, errAncien)
 			return
 		}
 		fmt.Fprintf(sortie, "attention : dérive de configuration non vérifiable : %v\n", errAncien)

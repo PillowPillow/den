@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
@@ -39,11 +38,13 @@ func newShCmd(runner sbx.Runner) *cobra.Command {
 				return spawn.Attache(cmd.Context(), runner, b.Nom, b.Workdir())
 			}
 
+			// Déjà triés : sbx.Ls rend ses sandboxes par nom, et c'est
+			// verrouillé par TestLsTriParNom. Retrier ici dupliquerait cette
+			// connaissance sans rien garantir de plus.
 			noms := make([]string, 0, len(boxes))
 			for _, b := range boxes {
 				noms = append(noms, b.Nom)
 			}
-			sort.Strings(noms)
 			if len(noms) == 0 {
 				return fmt.Errorf("sandbox %q introuvable — aucune sandbox ne tourne", nom)
 			}

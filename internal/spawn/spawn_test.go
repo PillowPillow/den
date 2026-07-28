@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -296,6 +297,37 @@ func TestSpawnAttacheDansLeWorkdirRemonteParLaVM(t *testing.T) {
 	}
 }
 
+// Le corollaire de D2, dans le seul cas que rien ne couvrait : une VM qui ne
+// remonte AUCUN workspace n'a pas de workdir, et l'attache doit alors OMETTRE le
+// -w — jamais retomber sur le chemin recalculé depuis la configuration.
+//
+// Mesuré par la relecture : replier sur le chemin recalculé quand `Workdir()`
+// est vide laissait `go test ./...` entièrement vert. Le comportement était bon,
+// il n'était pas verrouillé — et c'est D2 à l'identique qui repointait par ce
+// trou.
+func TestSpawnNInventePasDeWorkdirQuandLaVMNeMonteRien(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := depsTest()
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running"}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if !f.AAttache("exec", "-it", "api", "bash", "-l") {
+		t.Errorf("sans workspace, l'attache doit omettre le -w ; attaches : %v", f.Attaches)
+	}
+	for _, a := range f.Attaches {
+		if slices.Contains(a, "-w") {
+			t.Errorf("aucun -w ne doit être posé ; attache : %v", a)
+		}
+		if slices.Contains(a, repo) {
+			t.Errorf("le chemin recalculé %s ne doit pas resservir ; attache : %v", repo, a)
+		}
+	}
+}
+
 // D1 — une sandbox trouvée mais qui NE TOURNE PAS n'est pas une sandbox vivante.
 //
 // Avant ce contrôle, sbx.Existe ne rendait qu'un booléen et jetait le Statut :
@@ -325,7 +357,12 @@ func TestSpawnRefuseUneSandboxQuiNeTournePas(t *testing.T) {
 			}
 			// Le message doit rendre le statut LU : sans lui, l'utilisateur ne
 			// sait pas de quoi den se plaint ni quoi taper ensuite.
-			if !strings.Contains(err.Error(), statut) || !strings.Contains(err.Error(), "running") {
+			//
+			// strconv.Quote, pas le statut nu : sur le sous-cas statut="",
+			// `strings.Contains(err, "")` est vrai par construction et n'assert
+			// rien. La forme quotée est celle que le message rend (`%q`).
+			if !strings.Contains(err.Error(), strconv.Quote(statut)) ||
+				!strings.Contains(err.Error(), strconv.Quote("running")) {
 				t.Errorf("le message doit rendre le statut lu et celui attendu ; obtenu : %v", err)
 			}
 			if !strings.Contains(err.Error(), "api") {
@@ -500,10 +537,58 @@ func TestSpawnNeReecritPasLeMixinDUneSandboxVivante(t *testing.T) {
 	}
 }
 
-// Une référence ILLISIBLE n'est pas une absence de référence. L'absence est
-// normale (premier spawn, ou cache/ purgé) et se tait ; un spec.yaml corrompu
-// veut dire que den ne peut PAS répondre à la question, et se taire là-dessus
-// laisserait croire que la configuration n'a pas dérivé.
+// Une référence ABSENTE doit s'annoncer, elle aussi.
+//
+// Mesuré par la relecture : un `rm -rf ~/.den/cache` — opération que le spec §3
+// déclare SÛRE — désactivait DÉFINITIVEMENT la détection de dérive pour cette
+// sandbox. La branche attache ne repose jamais la référence, donc le silence
+// n'était pas « une fois », il était « pour toujours » : le trou que D3 venait
+// de fermer, rouvert par une action documentée comme anodine.
+//
+// Le « premier spawn » qui justifiait ce silence ne passe JAMAIS par ici : il
+// prend la branche create. D'où les DEUX tours ci-dessous — le second est celui
+// qui prouve que rien ne se referme tout seul.
+func TestSpawnSignaleUneReferenceAbsenteApresPurgeDuCache(t *testing.T) {
+	denHome, repo := denTest(t)
+	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
+
+	f, d := depsTest()
+	journal := &bytes.Buffer{}
+	d.Sortie = journal
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("premier spawn : erreur inattendue : %v", err)
+	}
+
+	// `rm -rf ~/.den/cache`, et la config se resserre dans le dos de la VM.
+	if err := os.RemoveAll(filepath.Join(denHome, "cache")); err != nil {
+		t.Fatal(err)
+	}
+	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	for tour := 1; tour <= 2; tour++ {
+		journal.Reset()
+		if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+			t.Fatalf("tour %d : erreur inattendue : %v", tour, err)
+		}
+		sortie := journal.String()
+		if !strings.Contains(sortie, "non vérifiable") {
+			t.Errorf("tour %d : une référence absente doit être signalée ;\n%s", tour, sortie)
+		}
+		if !strings.Contains(sortie, "attention") {
+			t.Errorf("tour %d : ce doit être un avertissement ;\n%s", tour, sortie)
+		}
+	}
+	// Et l'attache a bien lieu à chaque tour : ne pas savoir ne bloque pas.
+	if len(f.Attaches) != 2 {
+		t.Errorf("chaque tour doit attacher ; attaches : %v", f.Attaches)
+	}
+}
+
+// Une référence ILLISIBLE s'annonce aussi — den ne peut pas répondre à la
+// question, et se taire là-dessus se lirait comme « rien n'a changé ».
 func TestSpawnSignaleUneDeriveNonVerifiable(t *testing.T) {
 	denHome, repo := denTest(t)
 	ecris(t, filepath.Join(denHome, "cache", "mixins", "api", "spec.yaml"), "\tpas du yaml")
