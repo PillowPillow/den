@@ -121,6 +121,16 @@ type StackCassee struct {
 type Stacks struct {
 	Saines  map[string]*Stack
 	Cassees []StackCassee
+	// Racine est <denHome>/stacks, le dossier d'où ces stacks ont été chargées.
+	// Il sert au SEUL message « introuvable », où il dit à l'utilisateur où
+	// créer la stack manquante. Porté ici plutôt que rajouté par l'appelant :
+	// colle après coup derrière l'erreur multi-ligne d'une stack ILLISIBLE, il
+	// se lisait comme la localisation de la dernière ligne du diagnostic YAML,
+	// et y était de toute façon redondant avec le chemin du stack.yaml déjà cité.
+	//
+	// Vide sur un Stacks construit à la main (tests) : le message omet alors la
+	// localisation plutôt que de nommer un dossier qui n'existe pas.
+	Racine string
 }
 
 // Get rend la stack nommée, ou une erreur qui DISTINGUE les deux façons de ne
@@ -136,10 +146,16 @@ func (s Stacks) Get(nom string) (*Stack, error) {
 	}
 	for _, c := range s.Cassees {
 		if c.Nom == nom {
+			// Aucune localisation ajoutée : l'erreur enveloppée cite déjà le
+			// chemin complet du stack.yaml fautif, et elle est multi-ligne.
 			return nil, fmt.Errorf("stack %q : illisible : %w", nom, c.Err)
 		}
 	}
-	return nil, fmt.Errorf("stack %q introuvable (stacks déclarées : %v)", nom, s.Noms())
+	if s.Racine == "" {
+		return nil, fmt.Errorf("stack %q introuvable (stacks déclarées : %v)", nom, s.Noms())
+	}
+	return nil, fmt.Errorf(
+		"stack %q introuvable dans %s (stacks déclarées : %v)", nom, s.Racine, s.Noms())
 }
 
 // Noms rend les noms des stacks SAINES, triés. Destiné à l'affichage : une map
@@ -160,12 +176,12 @@ func LoadStacks(denHome string) (Stacks, error) {
 	entrees, err := os.ReadDir(racine)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return Stacks{Saines: map[string]*Stack{}}, nil
+			return Stacks{Saines: map[string]*Stack{}, Racine: racine}, nil
 		}
 		return Stacks{}, fmt.Errorf("lecture de %s : %w", racine, err)
 	}
 
-	out := Stacks{Saines: make(map[string]*Stack)}
+	out := Stacks{Saines: make(map[string]*Stack), Racine: racine}
 	// os.ReadDir trie déjà par nom : Cassees est donc déterministe sans tri
 	// supplémentaire, et `den doctor` rend ses diagnostics dans le même ordre
 	// d'une exécution à l'autre.

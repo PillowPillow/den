@@ -399,3 +399,50 @@ func TestStacksGetDistingueIllisibleDeAbsente(t *testing.T) {
 		t.Errorf("la liste des stacks déclarées ne doit proposer que des stacks saines ; obtenu : %v", errAbsente)
 	}
 }
+
+// Le dossier des stacks n'a de valeur que sur « introuvable », et il doit
+// atterrir sur la BONNE ligne.
+//
+// L'erreur de yaml.v3 est multi-ligne. Coller « (dans <D>/stacks) » derrière
+// elle — ce que faisait l'appelant — produisait, mesuré :
+//
+//	stack "devx" : illisible : <D>/stacks/devx/stack.yaml : YAML invalide : yaml: unmarshal errors:
+//	  line 2: clé inconnue "imag" (dans <D>/stacks)
+//
+// qui se lit comme si « line 2 » se trouvait dans <D>/stacks. Le suffixe y est
+// de surcroît REDONDANT : le chemin complet du stack.yaml fautif est déjà cité
+// deux lignes plus haut. Sur « introuvable », au contraire, il est la seule
+// indication de l'endroit où créer la stack manquante.
+func TestStacksGetNeSitueQueLesStacksIntrouvables(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisStack(t, denHome, "devx", "image: devx:v1\nimag: faute\n")
+	stacks, err := LoadStacks(denHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	racine := filepath.Join(denHome, "stacks")
+
+	// Cassée : le stack.yaml fautif est déjà nommé, rien ne doit être ajouté
+	// après le diagnostic multi-ligne de yaml.v3.
+	_, errCassee := stacks.Get("devx")
+	if errCassee == nil {
+		t.Fatal("une stack cassée ne doit pas se résoudre")
+	}
+	if strings.Contains(errCassee.Error(), racine+")") {
+		t.Errorf("le dossier des stacks est collé derrière une erreur YAML multi-ligne, "+
+			"où il se lit comme la localisation de la dernière ligne ; obtenu :\n%s", errCassee)
+	}
+	// Le chemin du fichier fautif, lui, doit bien y être.
+	if !strings.Contains(errCassee.Error(), filepath.Join(racine, "devx", "stack.yaml")) {
+		t.Errorf("le message doit nommer le stack.yaml fautif ; obtenu : %s", errCassee)
+	}
+
+	// Introuvable : là, le dossier est la seule indication utile.
+	_, errAbsente := stacks.Get("jamais-declaree")
+	if errAbsente == nil {
+		t.Fatal("une stack absente ne doit pas se résoudre")
+	}
+	if !strings.Contains(errAbsente.Error(), racine) {
+		t.Errorf("le message doit dire OÙ la stack est attendue ; obtenu : %s", errAbsente)
+	}
+}

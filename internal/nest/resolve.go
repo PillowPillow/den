@@ -114,9 +114,12 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 	}
 	s, err := stacks.Get(nomStack)
 	if err != nil {
-		// Le dossier des stacks reste nommé : c'est là que l'utilisateur doit
-		// aller, et Get — qui ne connaît pas le den home — ne peut pas le dire.
-		return nil, fmt.Errorf("nest %q : %w (dans %s)", n.Name, err, filepath.Join(denHome, "stacks"))
+		// Rien n'est ajouté après l'erreur de Get : elle situe elle-même ce
+		// qu'il faut situer (le dossier des stacks sur « introuvable », le
+		// stack.yaml fautif sur « illisible »). Un suffixe collé ici atterrissait
+		// derrière le diagnostic MULTI-LIGNE de yaml.v3, où il se lisait comme la
+		// localisation de sa dernière ligne.
+		return nil, fmt.Errorf("nest %q : %w", n.Name, err)
 	}
 
 	nomAgent, agent, configDir, err := ResolveAgent(g, n, o.Agent)
