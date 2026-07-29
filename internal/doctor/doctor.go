@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -143,16 +144,18 @@ func analyseVersionGit(sortie string) (majeur, mineur int, err error) {
 // On ne s'arrête jamais au premier problème : l'utilisateur doit tout voir d'un coup.
 func Run(denHome string, d Deps) []Check {
 	var checks []Check
-	// ajoute garde sa signature booléenne : les dix-huit diagnostics existants
-	// sont bel et bien binaires, et les réécrire en Niveau explicite n'aurait
-	// rien ajouté qu'une occasion de se tromper. Seul ce qui est vraiment un
-	// avertissement passe par avertit.
 	ajoute := func(nom string, ok bool, format string, args ...any) {
 		niveau := NiveauEchec
 		if ok {
 			niveau = NiveauOK
 		}
 		checks = append(checks, Check{Nom: nom, Niveau: niveau, Detail: fmt.Sprintf(format, args...)})
+	}
+	// avertit est SÉPARÉ d'ajoute, et non un troisième argument de celui-ci :
+	// les diagnostics existants sont bel et bien binaires, et leur imposer un
+	// niveau explicite n'aurait ajouté qu'une occasion de se tromper.
+	avertit := func(nom string, format string, args ...any) {
+		checks = append(checks, Check{Nom: nom, Niveau: NiveauAvertissement, Detail: fmt.Sprintf(format, args...)})
 	}
 
 	// 1. sbx présent
@@ -273,6 +276,38 @@ func Run(denHome string, d Deps) []Check {
 					"et un chemin absent y monterait un dossier vide à la place des clés", g.SSH.Dir)
 		} else {
 			ajoute("ssh.dir", true, "%s", g.SSH.Dir)
+		}
+	}
+
+	// 4quinquies. ssh.mode agent-forward — le DÉFAUT de la configuration
+	// (config.LoadGlobalSansValider le pose quand `ssh.mode` est absent).
+	//
+	// Ce mode n'ajoute AUCUN argument à l'argv de `sbx create` et AUCUNE entrée
+	// au mixin : il repose entièrement sur le fait que le process sbx hérite de
+	// l'environnement de den, SSH_AUTH_SOCK compris. Cet héritage est PROUVÉ et
+	// non supposé — internal/sbx TestExecRunTransmetLEnvironnementDeDen — mais
+	// il n'a rien à transmettre si la variable est absente.
+	//
+	// AVERTISSEMENT et non échec, et c'est tout l'objet du type Niveau :
+	// travailler en local sans dépôt distant est parfaitement légitime, et den
+	// n'a aucun moyen de savoir si l'utilisateur a besoin de SSH. Faire échouer
+	// `den doctor` là-dessus le rendrait rouge sur une machine saine.
+	//
+	// Ce que ce contrôle ne dit PAS : que la sandbox aura effectivement un accès
+	// SSH quand la variable est présente. Que sbx propage le socket jusque DANS
+	// la microVM est une hypothèse consignée au spec (A10), invérifiable ici.
+	if g.SSH.Mode == "agent-forward" {
+		if socket := d.Getenv("SSH_AUTH_SOCK"); socket == "" {
+			avertit("ssh.mode",
+				"agent-forward, mais SSH_AUTH_SOCK est absent de l'environnement de den : "+
+					"il n'y a aucun agent SSH à transmettre, les sandboxes n'auront pas d'accès SSH "+
+					"et `git push` échouera depuis la VM, loin de la cause — démarre un agent "+
+					"(`eval $(ssh-agent)` puis `ssh-add`), ou passe `ssh.mode` à « mount » dans %s",
+				filepath.Join(denHome, "config.yaml"))
+		} else {
+			// La valeur est NOMMÉE : un « ok » qui ne dit pas ce qu'il a vu ne
+			// permet pas de repérer un socket périmé.
+			ajoute("ssh.mode", true, "agent-forward, SSH_AUTH_SOCK=%s", socket)
 		}
 	}
 

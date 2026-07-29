@@ -61,6 +61,46 @@ func TestDoctorReussitQuandToutVaBien(t *testing.T) {
 	}
 }
 
+// LA propriété de D2, et la raison d'être du troisième niveau : un
+// avertissement ne change PAS le code de sortie de `den doctor`. Sans elle, le
+// contrôle d'SSH_AUTH_SOCK rendrait `den doctor` rouge sur toute machine où
+// l'on travaille en local sans agent SSH — une configuration parfaitement
+// saine, que den n'a aucun moyen de distinguer d'une configuration fautive.
+//
+// Le test exerce la commande ENTIÈRE (Execute), et non doctor.Run : c'est cobra
+// qui traduit l'erreur rendue par RunE en code de retour, et c'est donc là que
+// la propriété se vérifie. `err == nil` est exactement ce que `den doctor`
+// rendra à un rc de 0.
+func TestDoctorNEchouePasSurUnAvertissement(t *testing.T) {
+	home := denHomeDeTest(t)
+	deps := depsSaines()
+	// Aucun agent SSH. La config du fixture ne déclare pas `ssh:`, donc le mode
+	// est le défaut, agent-forward — c'est le cas nominal, pas un cas tordu.
+	deps.Getenv = func(string) string { return "" }
+
+	out, err := runDoctor(t, home, deps)
+	if err != nil {
+		t.Fatalf("un avertissement ne doit pas faire échouer den doctor, obtenu : %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[warn]") {
+		t.Errorf("sortie = %q, attendu une ligne [warn]", out)
+	}
+	if strings.Contains(out, "[FAIL]") {
+		t.Errorf("sortie = %q, aucun échec attendu : un agent SSH absent n'en est pas un", out)
+	}
+	// L'avertissement doit rester lisible dans le résumé final : « tout est en
+	// ordre » sous une ligne [warn] se lirait comme un affichage résiduel.
+	if strings.Contains(out, "tout est en ordre") {
+		t.Errorf("sortie = %q, « tout est en ordre » contredit la ligne [warn]", out)
+	}
+	if !strings.Contains(out, "avertissement") {
+		t.Errorf("sortie = %q, le résumé final doit signaler l'avertissement", out)
+	}
+	if !strings.Contains(out, "SSH_AUTH_SOCK") {
+		t.Errorf("sortie = %q, attendu le diagnostic nommant SSH_AUTH_SOCK", out)
+	}
+}
+
 func TestDoctorEchoueQuandSbxManque(t *testing.T) {
 	home := denHomeDeTest(t)
 	deps := depsSaines()

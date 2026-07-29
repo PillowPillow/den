@@ -520,6 +520,98 @@ ssh:
 	}
 }
 
+// D2 — `ssh.mode: agent-forward` est le DÉFAUT de la configuration, et il
+// n'ajoute NI argument à l'argv de `sbx create` NI entrée au mixin : il repose
+// entièrement sur le fait que le process sbx hérite de SSH_AUTH_SOCK depuis
+// l'environnement de den. Cet héritage est prouvé, pas supposé — voir
+// internal/sbx TestExecRunTransmetLEnvironnementDeDen. Si la variable est
+// absente, il n'y a simplement rien à hériter, et l'utilisateur ne l'apprend
+// que dans la VM, au premier `git push` : très loin de la cause.
+func TestRunAvertitQuandAgentForwardSansSocketSSH(t *testing.T) {
+	d := depsOK()
+	d.Getenv = func(string) string { return "" }
+
+	checks := Run(denHomeValide(t), d)
+	c, ok := trouveNomExact(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("aucun check nommé \"ssh.mode\" ; checks : %+v", checks)
+	}
+	if c.Niveau != NiveauAvertissement {
+		t.Errorf("niveau = %v, attendu NiveauAvertissement (%v) ; obtenu %+v",
+			c.Niveau, NiveauAvertissement, c)
+	}
+	// La propriété qui compte pour l'utilisateur, et elle est SÉPARÉE du niveau
+	// : c'est elle qui décide du code de sortie de `den doctor`.
+	if c.Bloquant() {
+		t.Error("un agent SSH absent ne doit PAS faire échouer den doctor : travailler en local " +
+			"sans dépôt distant est légitime, et den n'a aucun moyen de savoir si l'utilisateur a besoin de SSH")
+	}
+	// Le message doit nommer la variable (ce qu'on cherche), le mode (pourquoi
+	// c'est lui qui la réclame) et la CONSÉQUENCE concrète — sans elle,
+	// l'utilisateur ne sait pas si la ligne le concerne.
+	for _, attendu := range []string{"SSH_AUTH_SOCK", "agent-forward", "git push"} {
+		if !strings.Contains(c.Detail, attendu) {
+			t.Errorf("détail = %q, doit contenir %q", c.Detail, attendu)
+		}
+	}
+}
+
+// Le pendant : un agent SSH en marche ne produit aucun avertissement. Sans lui,
+// un `avertit` câblé sans condition passerait le test précédent.
+func TestRunNAvertitPasQuandLAgentSSHTourne(t *testing.T) {
+	checks := Run(denHomeValide(t), depsOK())
+	c, ok := trouveNomExact(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("aucun check nommé \"ssh.mode\" ; checks : %+v", checks)
+	}
+	if c.Niveau != NiveauOK {
+		t.Errorf("un agent SSH en marche ne doit rien signaler ; obtenu %+v", c)
+	}
+	// Le socket est nommé : un diagnostic qui dit « ok » sans dire ce qu'il a vu
+	// ne permet pas de repérer un SSH_AUTH_SOCK périmé.
+	if !strings.Contains(c.Detail, socketDeTest) {
+		t.Errorf("détail = %q, doit nommer le socket vu (%q)", c.Detail, socketDeTest)
+	}
+}
+
+// Hors d'agent-forward, SSH_AUTH_SOCK n'est utilisé par rien : ni `none` ni
+// `mount` n'en dépendent, et un avertissement y serait un faux positif servi à
+// chaque `den doctor`. Même famille que
+// TestRunNeControlePasSSHDirHorsDuModeMount, par l'autre bout.
+func TestRunNAvertitPasHorsDAgentForward(t *testing.T) {
+	for _, cas := range []struct{ nom, ssh string }{
+		{"none", "ssh:\n  mode: none\n"},
+		{"mount", "ssh:\n  mode: mount\n  dir: /dev/ssh\n"},
+	} {
+		t.Run(cas.nom, func(t *testing.T) {
+			dir := denHomeValide(t)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+`+cas.ssh), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			d := depsOK()
+			// Aucun agent SSH : c'est précisément la situation qui déclenche
+			// l'avertissement en agent-forward.
+			d.Getenv = func(string) string { return "" }
+
+			checks := Run(dir, d)
+			if c, ok := trouveNomExact(checks, "ssh.mode"); ok {
+				t.Errorf("mode %q : aucun check ssh.mode attendu ; obtenu %+v", cas.nom, c)
+			}
+			if !tousOK(checks) {
+				t.Errorf("mode %q : aucun signalement attendu ; checks : %+v", cas.nom, checks)
+			}
+		})
+	}
+}
+
 // Pendant exact de TestSpawnIgnoreUneEntreeVideDansKits, côté doctor : une
 // entrée vide dans `kits:` n'est pas un kit manquant, c'est une ligne sans
 // contenu. Les deux tests tiennent la MÊME propriété par les deux bouts, depuis
