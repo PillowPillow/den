@@ -11,18 +11,30 @@ import (
 	"unicode"
 )
 
-// Sortie RÉELLE de `sbx ls --json` (sbx v0.35.0, relevée le 2026-07-28).
+// Sortie RÉELLE de `sbx ls --json` (sbx v0.35.0, relevée le 2026-07-28),
+// ANONYMISÉE : le relevé est authentique, mais les chemins et l'identifiant
+// sont remplacés.
+//
+// Ce qui est préservé est ce qui a valeur de preuve — le SCHÉMA, et lui seul :
+// clé racine `sandboxes`, les cinq champs d'une entrée, `workspaces` comme
+// tableau de chemins ABSOLUS, dont l'un porte le suffixe `:ro`, un `id` en
+// forme d'UUID (8-4-4-4-12), et l'ABSENCE de tout champ de date — c'est elle
+// qui a fait retirer la colonne « âge » du spec §5.
+//
+// Ce qui est remplacé n'en avait aucune : les chemins d'origine étaient ceux de
+// la machine de développement et nommaient un tiers. La valeur de preuve du
+// relevé est réelle ; la fuite le serait aussi si le dépôt sortait.
 const sortieLsReelle = `{
   "sandboxes": [
     {
       "name": "den",
-      "id": "4f13dddf-d7fd-44fa-a36c-2c7fa458a8dc",
+      "id": "11111111-2222-4333-8444-555555555555",
       "agent": "shell",
       "status": "running",
       "workspaces": [
-        "/Users/polochon/Development/Pillow/den",
-        "/Users/polochon/.claude_sbx",
-        "/Users/polochon/Development/Digitaleo/go.dgdev:ro"
+        "/Users/dev/Development/Exemple/projet",
+        "/Users/dev/.agent_sbx",
+        "/Users/dev/Development/Autre/dependance:ro"
       ]
     }
   ]
@@ -49,7 +61,7 @@ func TestLsDecodeLaSortieReelle(t *testing.T) {
 	}
 	// Workdir sert de -w à l'attache : le suffixe :ro doit être retiré, et
 	// c'est le PREMIER workspace (le repo, pas le profil agent).
-	if got := b.Workdir(); got != "/Users/polochon/Development/Pillow/den" {
+	if got := b.Workdir(); got != "/Users/dev/Development/Exemple/projet" {
 		t.Errorf("Workdir = %q", got)
 	}
 }
