@@ -421,6 +421,74 @@ func TestDelaiEffectifNeRendJamaisZero(t *testing.T) {
 	}
 }
 
+// L'accès SSH de TOUTE sandbox repose sur un mécanisme que rien, dans ce
+// fichier, ne rend visible : ni Run ni Attach ne renseignent cmd.Env, donc le
+// process sbx hérite de l'environnement de den — et avec lui de SSH_AUTH_SOCK,
+// le socket de l'agent SSH de l'hôte. C'est le seul support de
+// `ssh.mode: agent-forward`, qui est le DÉFAUT de la configuration
+// (internal/config/config.go), et qui n'ajoute ni argument à l'argv de
+// `sbx create` ni entrée au mixin.
+//
+// Rien dans le code n'exprimait cette dépendance : renseigner `cmd.Env = …`,
+// pour n'importe quelle bonne raison — neutraliser une variable, restreindre
+// l'environnement — couperait l'accès SSH de toutes les sandboxes sans casser
+// un seul autre test. Ces deux tests-ci sont ce qui l'interdit ; le précédent
+// existe déjà dans le projet (internal/worktree pose bien un cmd.Env pour
+// neutraliser la configuration git).
+//
+// CE QUI EST PROUVÉ ICI, et rien de plus : le process lancé par den reçoit
+// l'environnement de den. Que sbx propage ensuite ce socket DANS la microVM
+// n'est pas vérifiable sans sbx, et reste une hypothèse consignée au spec.
+//
+// La valeur est POSÉE par le test (t.Setenv) et non présupposée : asserter que
+// SSH_AUTH_SOCK est non vide sans l'avoir posé rendrait le test vert sur un
+// poste où un agent tourne, et rouge partout ailleurs. t.Setenv interdit
+// t.Parallel dans le test qui l'appelle.
+func TestExecRunTransmetLEnvironnementDeDen(t *testing.T) {
+	const socket = "/tmp/den-test-agent-ssh-run.sock"
+	t.Setenv("SSH_AUTH_SOCK", socket)
+
+	e := &Exec{Bin: "sh"}
+	out, err := e.Run(context.Background(), "-c", `printf %s "$SSH_AUTH_SOCK"`)
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if vu := string(out); vu != socket {
+		t.Errorf("SSH_AUTH_SOCK vu par le process = %q, attendu %q — le process lancé par Run "+
+			"doit hériter de l'environnement de den (cmd.Env laissé nil) ; sans cet héritage, "+
+			"`ssh.mode: agent-forward`, qui est le défaut, ne donne plus aucun accès SSH aux sandboxes",
+			vu, socket)
+	}
+}
+
+// Même propriété sur Attach. Elle compte autant : `den sh` et l'attache finale
+// de `den <nest>` passent par là, et un environnement amputé n'y serait pas
+// plus visible que sur Run.
+//
+// Le témoin passe par un FICHIER et non par stdout, parce qu'Attach branche
+// délibérément cmd.Stdout sur celui du processus courant — il n'y a rien à
+// capturer sans détourner os.Stdout de toute la suite. Le fichier vit dans
+// t.TempDir() : rien n'est écrit hors des bornes du test.
+func TestExecAttachTransmetLEnvironnementDeDen(t *testing.T) {
+	const socket = "/tmp/den-test-agent-ssh-attach.sock"
+	t.Setenv("SSH_AUTH_SOCK", socket)
+	temoin := filepath.Join(t.TempDir(), "socket-vu")
+
+	e := &Exec{Bin: "sh"}
+	// `sh -c SCRIPT ARG0` : le premier argument après le script devient $0.
+	if err := e.Attach(context.Background(), "-c", `printf %s "$SSH_AUTH_SOCK" > "$0"`, temoin); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	contenu, err := os.ReadFile(temoin)
+	if err != nil {
+		t.Fatalf("lecture du témoin %s : %v", temoin, err)
+	}
+	if vu := string(contenu); vu != socket {
+		t.Errorf("SSH_AUTH_SOCK vu par le process = %q, attendu %q — le process lancé par Attach "+
+			"doit hériter de l'environnement de den (cmd.Env laissé nil)", vu, socket)
+	}
+}
+
 // Attach est la SEULE méthode où l'annulation du contexte ne doit RIEN faire :
 // un Ctrl-C tapé dans le shell de la sandbox est délivré par le driver tty au
 // groupe de processus, pas relayé via le contexte de den ; si le contexte se

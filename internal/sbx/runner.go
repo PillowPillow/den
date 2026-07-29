@@ -27,6 +27,23 @@ type Runner interface {
 }
 
 // Exec est l'implémentation réelle, adossée au binaire sbx du PATH.
+//
+// ENVIRONNEMENT : cmd.Env est laissé nil dans Run comme dans Attach, et c'est
+// une décision, pas un oubli. nil ⇒ le process hérite de l'environnement de
+// den, et c'est le SEUL support de `ssh.mode: agent-forward` — le défaut de la
+// configuration (internal/config/config.go), qui n'ajoute ni argument à l'argv
+// de `sbx create` ni entrée au mixin, et repose entièrement sur le fait que
+// SSH_AUTH_SOCK atteigne le process sbx.
+//
+// Renseigner cmd.Env ici, pour n'importe quelle raison, couperait donc l'accès
+// SSH de TOUTES les sandboxes. Les deux tests
+// TestExec{Run,Attach}TransmetLEnvironnementDeDen sont ce qui l'interdit —
+// mesuré avant de les écrire, un `cmd.Env = []string{"PATH=…"}` posé sur Run
+// laissait la suite ENTIÈRE verte. Le précédent existe dans le projet :
+// internal/worktree pose bien un cmd.Env, pour neutraliser la configuration git.
+//
+// Ce qui est prouvé s'arrête au process : que sbx propage ensuite ce socket
+// DANS la microVM n'est pas vérifiable sans sbx, et reste une hypothèse du spec.
 type Exec struct {
 	Bin string
 	// DelaiDeDrainage borne le temps laissé aux tubes pour finir de se vider,
