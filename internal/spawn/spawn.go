@@ -190,9 +190,35 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return fmt.Errorf("création du profil de l'agent %s (%s) : %w", r.AgentName, r.AgentConfigDir, err)
 	}
 	workspaces = append(workspaces, r.AgentConfigDir)
-	// ssh.dir a été contrôlé à l'étape 2, avant tout effet de bord : il ne
-	// reste ici que sa place dans la liste, qui est significative (le premier
-	// workspace devient le -w de l'attache).
+	// Les TROIS modes SSH sont traités ici, y compris les deux qui n'ajoutent
+	// rien — l'`if` sans `else` d'avant ne permettait pas de distinguer « rien à
+	// faire, c'est voulu » de « cas oublié », et c'est cette ambiguïté qui a
+	// produit le diagnostic « toute sandbox spawnée par défaut sort sans accès
+	// SSH ». Ce diagnostic était faux, mais il était indécidable ici.
+	//
+	// Ce qui suit est mesuré, pas supposé :
+	//
+	//   - « mount » : ssh.dir devient un workspace. Contrôlé à l'étape 2, avant
+	//     tout effet de bord ; il ne reste ici que sa place dans la liste, qui
+	//     est significative (le premier workspace devient le -w de l'attache).
+	//
+	//   - « agent-forward » (le DÉFAUT, config.LoadGlobalSansValider) : rien à
+	//     ajouter, ni ici ni ailleurs. Il repose entièrement sur le fait que le
+	//     process `sbx create` hérite de l'environnement de den, SSH_AUTH_SOCK
+	//     compris — cmd.Env est laissé nil dans internal/sbx/runner.go, et cet
+	//     héritage est tenu par TestExec{Run,Attach}TransmetLEnvironnementDeDen.
+	//     Le socket n'a sa place NI dans l'argv (aucun flag sbx attesté ne le
+	//     prend) NI dans le mixin (une valeur de socket hôte écrite dans un kit
+	//     serait périmée dès la session suivante). `den doctor` avertit quand la
+	//     variable est absente, seul cas où ce mode ne donne rien.
+	//     Ce qui reste NON vérifié : que sbx propage ce socket jusque dans la
+	//     microVM. C'est une hypothèse du spec (A10), pas un acquis.
+	//
+	//   - « none » : rien à ajouter, par définition.
+	//
+	// Que les deux derniers produisent bien la MÊME liste, et mount exactement
+	// un workspace de plus, est tenu par
+	// TestSpawnNAjouteAucunWorkspaceHorsDuModeMount.
 	if r.SSHMode == "mount" {
 		workspaces = append(workspaces, r.SSHDir)
 	}

@@ -790,6 +790,80 @@ func TestSpawnNExigePasDeSSHDirHorsDuModeMount(t *testing.T) {
 	}
 }
 
+// D3 — `none` et `agent-forward` n'ajoutent AUCUN workspace, et c'est voulu,
+// pas oublié. La distinction n'est pas théorique : un `if mode == "mount"` sans
+// `else` ne permet à personne de trancher entre « rien à faire » et « cas
+// oublié », et c'est exactement cette ambiguïté qui a produit le diagnostic
+// « toute sandbox par défaut sort sans accès SSH ». Ce diagnostic était FAUX —
+// agent-forward passe par l'héritage de SSH_AUTH_SOCK par le process sbx, ce
+// que prouve internal/sbx TestExecRunTransmetLEnvironnementDeDen — mais il
+// était indécidable à la lecture de ce fichier-ci.
+//
+// Ce que ce test verrouille, et que le commentaire de spawn.go affirme : les
+// trois modes montent les mêmes workspaces, à ssh.dir près, qui n'appartient
+// qu'à mount.
+func TestSpawnNAjouteAucunWorkspaceHorsDuModeMount(t *testing.T) {
+	// ssh.dir est DÉCLARÉ et EXISTE dans les trois configurations. Sans cela,
+	// « agent-forward ne monte pas ssh.dir » se confondrait avec « il n'y avait
+	// rien à monter », et la mutation qui hisserait l'append hors du `mount`
+	// resterait invisible.
+	sshDir := filepath.Join(t.TempDir(), "ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// La liste est NORMALISÉE avant comparaison : denTestSSH refait un den home
+	// et un repo à chaque appel, donc les chemins bruts diffèrent d'un mode à
+	// l'autre et ne se comparent pas d'égal à égal. Ce qui est comparé est la
+	// FORME de la liste — quels rôles, dans quel ordre — c'est-à-dire
+	// exactement la propriété dont on veut la preuve. Un chemin inattendu
+	// apparaît tel quel plutôt que d'être avalé.
+	formeDe := func(mode string) []string {
+		t.Helper()
+		denHome, repo := denTestSSH(t, "  mode: "+mode+"\n  dir: "+sshDir+"\n")
+		f, d := depsTest()
+		if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+			t.Fatalf("mode %q : erreur inattendue : %v", mode, err)
+		}
+		roles := map[string]string{
+			repo: "<repo>",
+			filepath.Join(denHome, "agents", "claude"): "<profil-agent>",
+			sshDir: "<ssh.dir>",
+		}
+		var forme []string
+		for _, w := range workspacesDe(appelCommencantPar(f, "create")) {
+			role, connu := roles[w]
+			if !connu {
+				role = "<inconnu:" + w + ">"
+			}
+			forme = append(forme, role)
+		}
+		return forme
+	}
+
+	none := formeDe("none")
+	agentForward := formeDe("agent-forward")
+	mount := formeDe("mount")
+
+	if !slices.Equal(agentForward, none) {
+		t.Errorf("agent-forward monte %v, none monte %v : attendu exactement la MÊME liste — "+
+			"agent-forward n'ajoute aucun workspace, il repose sur l'héritage de SSH_AUTH_SOCK "+
+			"par le process sbx", agentForward, none)
+	}
+	// La comparaison ci-dessus serait satisfaite par deux listes vides. Les
+	// deux assertions suivantes disent CE QUE monte chaque mode.
+	if attendu := []string{"<repo>", "<profil-agent>"}; !slices.Equal(agentForward, attendu) {
+		t.Errorf("agent-forward monte %v, attendu %v", agentForward, attendu)
+	}
+	if attendu := []string{"<repo>", "<profil-agent>", "<ssh.dir>"}; !slices.Equal(mount, attendu) {
+		t.Errorf("mount monte %v, attendu %v", mount, attendu)
+	}
+	if len(mount) != len(agentForward)+1 {
+		t.Errorf("mount monte %d workspace(s) et agent-forward %d : attendu exactement un de plus, "+
+			"et ce un-là est ssh.dir", len(mount), len(agentForward))
+	}
+}
+
 // F3 — les kits partent en `--kit` dans l'argv de `sbx create`, exactement
 // comme ssh.dir y part en workspace. C'est le même invariant n°3 du plan (ne
 // jamais passer à sbx un chemin que den n'a pas garanti), et l'asymétrie était
