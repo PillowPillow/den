@@ -167,8 +167,13 @@ func TestLesFlagsAtteignentSpawnOptions(t *testing.T) {
 		args    []string
 		attendu string
 	}{
-		{"-w", []string{"api", "-w", "feature/123"}, `worktree "feature/123"`},
-		{"--worktree", []string{"api", "--worktree", "feature/123"}, `worktree "feature/123"`},
+		// « +wip » et non « feature/123 » : depuis F4, un « / » est APLATI et
+		// donc accepté, il ne produirait plus d'erreur du tout. Reste ce
+		// qu'aplatir ne répare pas — un premier caractère non alphanumérique.
+		// Le « + » plutôt que le « - » : pflag prendrait « -wip » pour un flag
+		// avant que den ne voie quoi que ce soit.
+		{"-w", []string{"api", "-w", "+wip"}, `worktree "+wip"`},
+		{"--worktree", []string{"api", "--worktree", "+wip"}, `worktree "+wip"`},
 		{"--agent", []string{"api", "--agent", "inconnu"}, `agent "inconnu"`},
 		{"--without", []string{"api", "--without", "inconnu"}, `--without : repo "inconnu"`},
 		{"--only", []string{"api", "--only", "inconnu"}, `--only : repo "inconnu"`},

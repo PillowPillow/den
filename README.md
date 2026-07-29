@@ -41,11 +41,17 @@ Options de `den <nest>` :
 
 | Option | Effet |
 |---|---|
-| `-w`, `--worktree <nom>` | propage un worktree de ce nom sur **tous** les repos du nest, et suffixe le nom de sandbox (`api.feat12`) |
+| `-w`, `--worktree <branche>` | propage un worktree de ce nom sur **tous** les repos du nest, et suffixe le nom de sandbox (`api.feat12`) |
 | `--detach` | prépare la sandbox sans y attacher de shell |
 | `--only <repo,…>` | ne garder que ces repos optionnels (les repos requis restent montés) |
 | `--without <repo,…>` | exclure ces repos optionnels |
 | `--agent <nom>` | surcharge `defaults.agent` |
+
+`-w` reçoit un nom de **branche**, et un nom de branche contient souvent un `/`.
+La branche garde le nom tapé — c'est celui du `git log` et de la PR — tandis que le nom de sandbox
+et le dossier de worktree en prennent une forme aplatie : `den api -w feature/123` travaille sur la
+branche `feature/123` dans une sandbox `api.feature-123`. C'est sous ce nom-là qu'elle apparaît dans
+`den ls`, et c'est lui qu'attendent `den sh` et `den rm`.
 
 Options de `den rm` : `--keep-worktrees` (conserver les worktrees), `--force` (les supprimer même
 s'ils portent des modifications non commitées ; sans lui, den refuse **avant** de toucher à la VM).

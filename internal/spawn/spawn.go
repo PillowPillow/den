@@ -97,11 +97,35 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return err
 	}
 
-	// Le nom se calcule AVANT tout effet de bord : un worktree non
-	// sandboxable (« feature/123 ») doit être refusé sans avoir rien créé.
-	nomSandbox, err := sbx.NomSandbox(o.Nest, o.Worktree)
+	// Le nom se calcule AVANT tout effet de bord : un worktree que l'on ne sait
+	// pas nommer doit être refusé sans avoir rien créé.
+	//
+	// `-w` reçoit un nom de BRANCHE, et « feature/123 » en est un tout à fait
+	// ordinaire — mais ni un composant de nom de sandbox (le charset de `sbx
+	// create --name`), ni un composant de chemin plat. den aplatit donc ce qui
+	// devient un NOM, et seulement ça : la branche garde le nom tapé.
+	//
+	// L'aplatissement vit ici, en amont de sbx.NomSandbox, et ne l'assouplit
+	// pas : tout ce qui consomme ensuite ce nom — argv de `sbx create`, policy
+	// scopée, corbeille, `den rm` — continue de recevoir un composant strict.
+	nomWorktree := worktree.Nom{}
+	if o.Worktree != "" {
+		aplati, err := config.AplatitComposantSandbox("worktree", o.Worktree)
+		if err != nil {
+			return err
+		}
+		nomWorktree = worktree.Nom{Dossier: aplati, Branche: o.Worktree}
+	}
+	nomSandbox, err := sbx.NomSandbox(o.Nest, nomWorktree.Dossier)
 	if err != nil {
 		return err
+	}
+	// Annoncé, et tôt : sans ça, l'utilisateur cherche « feature/123 » dans
+	// `den ls` et ne l'y trouve jamais — la sandbox y porte le nom aplati.
+	if nomWorktree.Dossier != nomWorktree.Branche {
+		fmt.Fprintf(d.Sortie,
+			"worktree %q : la branche garde son nom, la sandbox devient %s\n",
+			nomWorktree.Branche, nomSandbox)
 	}
 
 	// 2. Les repos doivent tous exister AVANT le moindre create (spec §11).
@@ -182,7 +206,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	for _, repo := range r.Repos {
 		chemin := repo.Path
 		if o.Worktree != "" {
-			chemin, err = worktree.Assure(ctx, d.Git, r.WorktreeLayout, r.WorktreeRoot, o.Worktree, repo.Path)
+			chemin, err = worktree.Assure(ctx, d.Git, r.WorktreeLayout, r.WorktreeRoot, nomWorktree, repo.Path)
 			if err != nil {
 				return err
 			}

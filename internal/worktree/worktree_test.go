@@ -101,7 +101,7 @@ func TestAssureCreeLeWorktreeEtLaBranche(t *testing.T) {
 	repo := depotTest(t, "api")
 	root := t.TempDir()
 
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+	chemin, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repo)
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
@@ -116,16 +116,65 @@ func TestAssureCreeLeWorktreeEtLaBranche(t *testing.T) {
 	}
 }
 
+// Le dossier et la branche sont DEUX noms distincts : « feature/123 » est un
+// nom de branche parfaitement ordinaire, mais ni un nom de dossier plat ni un
+// composant de nom de sandbox. den aplatit le premier et garde le second.
+func TestAssureSepareLeNomDeDossierDeLaBranche(t *testing.T) {
+	repo := depotTest(t, "api")
+	root := t.TempDir()
+
+	chemin, err := Assure(context.Background(), NewGit(), "central", root,
+		Nom{Dossier: "feature-123", Branche: "feature/123"}, repo)
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	// Le dossier est PLAT : « feature/123 » y creuserait un sous-dossier, que
+	// Chemin — et donc `den rm` — ne saurait pas retrouver depuis le nom de
+	// sandbox.
+	if chemin != filepath.Join(root, "feature-123", "api") {
+		t.Errorf("chemin = %q, attendu %q", chemin, filepath.Join(root, "feature-123", "api"))
+	}
+	if got := brancheDe(t, chemin); got != "feature/123" {
+		t.Errorf("branche = %q, attendu feature/123 — c'est la branche de l'utilisateur", got)
+	}
+}
+
+// L'aplatissement n'est pas injectif : « feat/essai » et « feat-essai » visent
+// le même dossier. Rien ne les distingue au niveau du nom de sandbox, et c'est
+// le contrôle de branche qui doit rattraper — sans quoi den attacherait la
+// seconde demande au worktree de la première, sur la mauvaise branche.
+func TestAssureRefuseDeuxBranchesQuiSAplatissentPareil(t *testing.T) {
+	repo := depotTest(t, "api")
+	root := t.TempDir()
+
+	chemin, err := Assure(context.Background(), NewGit(), "central", root,
+		Nom{Dossier: "feat-essai", Branche: "feat/essai"}, repo)
+	if err != nil {
+		t.Fatalf("préparation : %v", err)
+	}
+
+	_, err = Assure(context.Background(), NewGit(), "central", root,
+		Nom{Dossier: "feat-essai", Branche: "feat-essai"}, repo)
+	if err == nil {
+		t.Fatal("deux branches sur le même dossier doivent produire une erreur")
+	}
+	for _, attendu := range []string{chemin, "feat/essai", "feat-essai"} {
+		if !strings.Contains(err.Error(), attendu) {
+			t.Errorf("le message doit contenir %q pour être actionnable ; obtenu : %v", attendu, err)
+		}
+	}
+}
+
 // Idempotence : re-spawner le même nest avec le même -w ne doit rien casser.
 func TestAssureEstIdempotent(t *testing.T) {
 	repo := depotTest(t, "api")
 	root := t.TempDir()
 
-	premier, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+	premier, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repo)
 	if err != nil {
 		t.Fatalf("premier appel : %v", err)
 	}
-	second, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+	second, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repo)
 	if err != nil {
 		t.Fatalf("second appel : %v", err)
 	}
@@ -140,13 +189,13 @@ func TestAssureRefuseUnWorktreeSurUneAutreBranche(t *testing.T) {
 	repo := depotTest(t, "api")
 	root := t.TempDir()
 
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+	chemin, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repo)
 	if err != nil {
 		t.Fatalf("préparation : %v", err)
 	}
 	basculeSur(t, chemin, "autre")
 
-	_, err = Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+	_, err = Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repo)
 	if err == nil {
 		t.Fatal("un worktree sur une autre branche doit produire une erreur")
 	}
@@ -164,7 +213,7 @@ func TestAssureReutiliseUneBrancheExistante(t *testing.T) {
 	root := t.TempDir()
 	git(t, repo, "branch", "feat12")
 
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+	chemin, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repo)
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
@@ -175,7 +224,7 @@ func TestAssureReutiliseUneBrancheExistante(t *testing.T) {
 
 func TestAssureRepoInexistant(t *testing.T) {
 	root := t.TempDir()
-	_, err := Assure(context.Background(), NewGit(), "central", root, "feat12", "/n/existe/pas")
+	_, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), "/n/existe/pas")
 	if err == nil {
 		t.Fatal("un repo inexistant doit produire une erreur")
 	}
@@ -206,7 +255,7 @@ func TestAssureDistingueUnRepoInaccessible(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
 
-	_, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+	_, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), nomWt("feat12"), repo)
 	if err == nil {
 		t.Fatal("un repo inaccessible doit produire une erreur")
 	}
@@ -232,7 +281,7 @@ func prepareWorktree(t *testing.T) (repo, chemin string, c Cible) {
 		Worktree:   "feat12",
 		CheminRepo: repo,
 	}
-	chemin, err := Assure(context.Background(), NewGit(), c.Layout, c.Root, c.Worktree, c.CheminRepo)
+	chemin, err := Assure(context.Background(), NewGit(), c.Layout, c.Root, nomWt(c.Worktree), c.CheminRepo)
 	if err != nil {
 		t.Fatalf("préparation : %v", err)
 	}
@@ -345,7 +394,7 @@ func TestAssurePartDeLaBrancheParDefaut(t *testing.T) {
 	defaut := git(t, repo, "rev-parse", "main")
 	horsSujet := git(t, repo, "rev-parse", "vieille")
 
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+	chemin, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repo)
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
@@ -362,7 +411,7 @@ func TestAssurePartDeLaBrancheParDefaut(t *testing.T) {
 // origin/main et `git push` échouerait en proposant de pousser sur main.
 func TestAssureNeFaitPasSuivreLaBrancheParDefaut(t *testing.T) {
 	repo := depotTestAvecOrigine(t, "api")
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), nomWt("feat12"), repo)
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
@@ -377,7 +426,7 @@ func TestAssureRepliQuandLeRepoNaPasDOrigine(t *testing.T) {
 	if _, err := gitTolerant(t, repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		t.Fatal("préparation : ce dépôt ne devrait pas avoir d'origin/HEAD")
 	}
-	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), "feat12", repo)
+	chemin, err := Assure(context.Background(), NewGit(), "central", t.TempDir(), nomWt("feat12"), repo)
 	if err != nil {
 		t.Fatalf("un dépôt sans origin doit passer par le repli : %v", err)
 	}
@@ -447,7 +496,7 @@ func TestRetireEffaceUnEnregistrementOrphelin(t *testing.T) {
 		t.Errorf("l'enregistrement orphelin doit être effacé, obtenu :\n%s", liste)
 	}
 	// La preuve qui compte : re-spawner le même nest redevient possible.
-	if _, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo); err != nil {
+	if _, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repo); err != nil {
 		t.Errorf("le re-spawn doit repartir après nettoyage : %v", err)
 	}
 }
@@ -461,7 +510,7 @@ func TestAssureSignaleUnEnregistrementOrphelin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repo)
+	_, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repo)
 	if err == nil {
 		t.Fatal("un enregistrement orphelin doit produire une erreur actionnable")
 	}
@@ -487,11 +536,11 @@ func TestAssureRefuseUnWorktreeAppartenantAUnAutreRepo(t *testing.T) {
 	creeDepot(t, repoB)
 	root := t.TempDir()
 
-	cheminA, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repoA)
+	cheminA, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repoA)
 	if err != nil {
 		t.Fatalf("préparation : %v", err)
 	}
-	_, err = Assure(context.Background(), NewGit(), "central", root, "feat12", repoB)
+	_, err = Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repoB)
 	if err == nil {
 		t.Fatalf("le worktree de %s ne doit pas être servi à %s", repoA, repoB)
 	}
@@ -527,7 +576,7 @@ func TestAssureRefuseUnDossierQuiNestPasUnWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Assure(context.Background(), NewGit(), "per-repo", t.TempDir(), "feat12", repo)
+	_, err := Assure(context.Background(), NewGit(), "per-repo", t.TempDir(), nomWt("feat12"), repo)
 	if err == nil {
 		t.Fatal("un dossier vide n'est pas un worktree : Assure doit refuser")
 	}
@@ -562,7 +611,7 @@ func TestGitNeutraliseLesVariablesGitDeLEnvironnement(t *testing.T) {
 func TestAssurePerRepoNeSalitPasLeDepot(t *testing.T) {
 	repo := depotTest(t, "api")
 
-	if _, err := Assure(context.Background(), NewGit(), "per-repo", t.TempDir(), "feat12", repo); err != nil {
+	if _, err := Assure(context.Background(), NewGit(), "per-repo", t.TempDir(), nomWt("feat12"), repo); err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
 	if etat := git(t, repo, "status", "--porcelain"); etat != "" {
@@ -570,7 +619,7 @@ func TestAssurePerRepoNeSalitPasLeDepot(t *testing.T) {
 	}
 
 	// Idempotence : un second worktree ne doit pas ré-écrire la ligne.
-	if _, err := Assure(context.Background(), NewGit(), "per-repo", t.TempDir(), "feat13", repo); err != nil {
+	if _, err := Assure(context.Background(), NewGit(), "per-repo", t.TempDir(), nomWt("feat13"), repo); err != nil {
 		t.Fatalf("second worktree : %v", err)
 	}
 	exclude := filepath.Join(repo, ".git", "info", "exclude")
@@ -593,7 +642,7 @@ func TestRetireRefuseUnWorktreeDunAutreRepo(t *testing.T) {
 	creeDepot(t, repoB)
 
 	root := t.TempDir()
-	chemin, err := Assure(context.Background(), NewGit(), "central", root, "feat12", repoA)
+	chemin, err := Assure(context.Background(), NewGit(), "central", root, nomWt("feat12"), repoA)
 	if err != nil {
 		t.Fatalf("préparation : %v", err)
 	}
@@ -1239,7 +1288,7 @@ func TestGardesDeCul2DeSacTiennentSousUnLienSymbolique(t *testing.T) {
 			DenHome: t.TempDir(), Layout: "central", Root: lien,
 			Nest: "api.feat12", Worktree: "feat12", CheminRepo: repo,
 		}
-		chemin, err := Assure(context.Background(), NewGit(), c.Layout, c.Root, c.Worktree, c.CheminRepo)
+		chemin, err := Assure(context.Background(), NewGit(), c.Layout, c.Root, nomWt(c.Worktree), c.CheminRepo)
 		if err != nil {
 			t.Fatalf("préparation : %v", err)
 		}
@@ -1267,7 +1316,7 @@ func TestGardesDeCul2DeSacTiennentSousUnLienSymbolique(t *testing.T) {
 		if err := os.RemoveAll(chemin); err != nil {
 			t.Fatal(err)
 		}
-		_, err := Assure(context.Background(), NewGit(), "central", filepath.Dir(filepath.Dir(chemin)), "feat12", repo)
+		_, err := Assure(context.Background(), NewGit(), "central", filepath.Dir(filepath.Dir(chemin)), nomWt("feat12"), repo)
 		if err == nil {
 			t.Fatal("un enregistrement survivant doit produire une erreur")
 		}
@@ -1321,11 +1370,11 @@ func TestAssureSuitUnWorktreeRootParLienSymbolique(t *testing.T) {
 		t.Skipf("liens symboliques indisponibles : %v", err)
 	}
 
-	premier, err := Assure(context.Background(), NewGit(), "central", lien, "feat12", repo)
+	premier, err := Assure(context.Background(), NewGit(), "central", lien, nomWt("feat12"), repo)
 	if err != nil {
 		t.Fatalf("premier appel : %v", err)
 	}
-	second, err := Assure(context.Background(), NewGit(), "central", lien, "feat12", repo)
+	second, err := Assure(context.Background(), NewGit(), "central", lien, nomWt("feat12"), repo)
 	if err != nil {
 		t.Fatalf("l'idempotence doit tenir à travers le lien : %v", err)
 	}
@@ -1404,7 +1453,7 @@ func TestRetireMetLeWorktreeALaCorbeille(t *testing.T) {
 	if liste := git(t, repo, "worktree", "list"); strings.Contains(liste, chemin) {
 		t.Errorf("l'enregistrement doit être élagué, obtenu :\n%s", liste)
 	}
-	if _, err := Assure(context.Background(), NewGit(), cible.Layout, cible.Root, cible.Worktree, cible.CheminRepo); err != nil {
+	if _, err := Assure(context.Background(), NewGit(), cible.Layout, cible.Root, nomWt(cible.Worktree), cible.CheminRepo); err != nil {
 		t.Errorf("le re-spawn doit repartir après la mise à la corbeille : %v", err)
 	}
 	// La branche survit : les commits de l'utilisateur ne sont pas en jeu.
@@ -2122,7 +2171,7 @@ func TestRetireNePretendPasAvoirNettoyeSansAvoirVerifie(t *testing.T) {
 	}
 
 	// Même discipline côté Assure, qui lit le même inventaire pour décider.
-	if _, err := Assure(context.Background(), g, cible.Layout, cible.Root, cible.Worktree, cible.CheminRepo); err == nil {
+	if _, err := Assure(context.Background(), g, cible.Layout, cible.Root, nomWt(cible.Worktree), cible.CheminRepo); err == nil {
 		t.Error("Assure ne doit pas non plus repartir sans avoir pu lire l'inventaire")
 	}
 }
@@ -2231,7 +2280,7 @@ func TestRetireAccepteUnLienIntactDansUnDepotSha256(t *testing.T) {
 		DenHome: t.TempDir(), Layout: "central", Root: t.TempDir(),
 		Nest: "api.feat12", Worktree: "feat12", CheminRepo: repo,
 	}
-	chemin, err := Assure(context.Background(), NewGit(), cible.Layout, cible.Root, cible.Worktree, cible.CheminRepo)
+	chemin, err := Assure(context.Background(), NewGit(), cible.Layout, cible.Root, nomWt(cible.Worktree), cible.CheminRepo)
 	if err != nil {
 		t.Fatalf("préparation : %v", err)
 	}
@@ -2284,7 +2333,7 @@ func TestRetireRefuseUnSousModuleMarque(t *testing.T) {
 		DenHome: t.TempDir(), Layout: "central", Root: t.TempDir(),
 		Nest: "api.feat12", Worktree: "feat12", CheminRepo: repo,
 	}
-	chemin, err := Assure(context.Background(), NewGit(), cible.Layout, cible.Root, cible.Worktree, cible.CheminRepo)
+	chemin, err := Assure(context.Background(), NewGit(), cible.Layout, cible.Root, nomWt(cible.Worktree), cible.CheminRepo)
 	if err != nil {
 		t.Fatalf("préparation : %v", err)
 	}
@@ -2421,7 +2470,7 @@ func TestAssureRefuseUnHeadNonResolvableEnDisantVrai(t *testing.T) {
 			repo := c.prepare(t)
 			racine := t.TempDir()
 
-			_, err := Assure(context.Background(), NewGit(), "central", racine, "feat1", repo)
+			_, err := Assure(context.Background(), NewGit(), "central", racine, nomWt("feat1"), repo)
 			if err == nil {
 				t.Fatal("un HEAD non résolvable ne peut pas porter de worktree : refus attendu")
 			}
@@ -2458,7 +2507,7 @@ func TestAssureCreeToujoursLeWorktreeDUnDepotAvecCommit(t *testing.T) {
 	repo := depotTest(t, "avec-commit")
 	racine := t.TempDir()
 
-	chemin, err := Assure(context.Background(), NewGit(), "central", racine, "feat1", repo)
+	chemin, err := Assure(context.Background(), NewGit(), "central", racine, nomWt("feat1"), repo)
 	if err != nil {
 		t.Fatalf("un dépôt pourvu d'un commit doit accepter un worktree : %v", err)
 	}
@@ -2516,3 +2565,10 @@ func TestDossierGitCommunRefuseUnNonDepot(t *testing.T) {
 		t.Errorf("erreur = %q, attendu le chemin du dossier fautif", err.Error())
 	}
 }
+
+// nomWt est le cas où les deux noms coïncident : un worktree dont le nom est
+// DÉJÀ un composant de nom de sandbox valide. Helper de test et non
+// constructeur exporté, à dessein — en production le nom de dossier vient
+// toujours de config.AplatitComposantSandbox, et offrir un raccourci qui pose
+// « branche = dossier » inviterait précisément à aplatir la branche.
+func nomWt(s string) Nom { return Nom{Dossier: s, Branche: s} }

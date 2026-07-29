@@ -374,7 +374,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
 	chemin, err := worktree.Assure(context.Background(), worktree.NewGit(),
-		"central", filepath.Join(denHome, "worktrees"), "feat12", repo)
+		"central", filepath.Join(denHome, "worktrees"), worktree.Nom{Dossier: "feat12", Branche: "feat12"}, repo)
 	if err != nil {
 		t.Fatalf("préparation du worktree : %v", err)
 	}
@@ -443,7 +443,7 @@ worktree_layout: per-repo
 	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
 	chemin, err := worktree.Assure(context.Background(), worktree.NewGit(),
-		"per-repo", "", "feat12", repo)
+		"per-repo", "", worktree.Nom{Dossier: "feat12", Branche: "feat12"}, repo)
 	if err != nil {
 		t.Fatalf("préparation du worktree : %v", err)
 	}
@@ -488,7 +488,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
 	chemin, err := worktree.Assure(context.Background(), worktree.NewGit(),
-		"central", filepath.Join(denHome, "worktrees"), "feat12", repo)
+		"central", filepath.Join(denHome, "worktrees"), worktree.Nom{Dossier: "feat12", Branche: "feat12"}, repo)
 	if err != nil {
 		t.Fatalf("préparation du worktree : %v", err)
 	}
@@ -555,7 +555,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
 	if _, err := worktree.Assure(context.Background(), worktree.NewGit(),
-		"central", filepath.Join(denHome, "worktrees"), "feat12", repo); err != nil {
+		"central", filepath.Join(denHome, "worktrees"), worktree.Nom{Dossier: "feat12", Branche: "feat12"}, repo); err != nil {
 		t.Fatalf("préparation du worktree : %v", err)
 	}
 

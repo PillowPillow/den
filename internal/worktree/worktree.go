@@ -160,19 +160,38 @@ func Chemin(layout, root, wt, cheminRepo string) string {
 	return filepath.Join(root, wt, filepath.Base(cheminRepo))
 }
 
+// Nom porte les DEUX noms d'un worktree, qui ne coïncident pas toujours.
+//
+// Dossier est le composant aplati (config.AplatitComposantSandbox) : il nomme
+// le dossier du worktree ET le suffixe du nom de sandbox. Il DOIT rester un
+// composant de chemin plat — den n'a pas d'autre état que le nom de sandbox, et
+// `den rm` retrouve le dossier à partir de ce seul nom, par Chemin. Un
+// « feature/123 » en dossier creuserait un sous-dossier introuvable par ce
+// chemin-là.
+//
+// Branche est le nom réel de la branche git, tel que l'utilisateur l'a tapé.
+// C'est le nom qu'il verra dans son `git log`, dans sa forge et dans sa PR :
+// l'aplatir serait renommer son travail.
+type Nom struct {
+	Dossier string
+	Branche string
+}
+
 // Assure garantit l'existence du worktree wt pour ce repo et renvoie son
 // chemin. Idempotent : si le worktree existe déjà SUR LA BONNE BRANCHE et
 // APPARTIENT BIEN À CE REPO, il est laissé tel quel.
 //
 // Un worktree existant sur une AUTRE branche est une erreur, jamais un checkout
 // silencieux : basculer la branche d'un worktree où l'utilisateur travaille
-// déplacerait son travail sans qu'il l'ait demandé.
-func Assure(ctx context.Context, g Git, layout, root, wt, cheminRepo string) (string, error) {
+// déplacerait son travail sans qu'il l'ait demandé. Ce contrôle porte AUSSI la
+// collision d'aplatissement : « feat/essai » et « feat-essai » visent le même
+// dossier, et c'est la comparaison de branches qui les distingue.
+func Assure(ctx context.Context, g Git, layout, root string, wt Nom, cheminRepo string) (string, error) {
 	if err := verifieRepo(cheminRepo); err != nil {
 		return "", err
 	}
 
-	chemin := Chemin(layout, root, wt, cheminRepo)
+	chemin := Chemin(layout, root, wt.Dossier, cheminRepo)
 
 	// En per-repo, le worktree naît À L'INTÉRIEUR du dépôt : sans exclusion, il
 	// laisse un « ?? .den/ » à demeure dans le git status de l'utilisateur.
@@ -191,10 +210,10 @@ func Assure(ctx context.Context, g Git, layout, root, wt, cheminRepo string) (st
 			return "", fmt.Errorf(
 				"%s existe déjà mais n'est pas un worktree git exploitable : %w", chemin, err)
 		}
-		if actuelle != wt {
+		if actuelle != wt.Branche {
 			return "", fmt.Errorf(
 				"le worktree %s est sur la branche %q, pas %q — choisis un autre nom de worktree "+
-					"ou bascule ce dossier sur %q à la main", chemin, actuelle, wt, wt)
+					"ou bascule ce dossier sur %q à la main", chemin, actuelle, wt.Branche, wt.Branche)
 		}
 		return chemin, nil // déjà en place : idempotent
 	}
@@ -215,8 +234,8 @@ func Assure(ctx context.Context, g Git, layout, root, wt, cheminRepo string) (st
 
 	// `git worktree add <chemin> <branche>` si la branche existe déjà,
 	// `-b <branche>` sinon : git refuse de recréer une branche existante.
-	args := []string{"worktree", "add", chemin, wt}
-	if !brancheExiste(ctx, g, cheminRepo, wt) {
+	args := []string{"worktree", "add", chemin, wt.Branche}
+	if !brancheExiste(ctx, g, cheminRepo, wt.Branche) {
 		// Un HEAD qui ne se résout pas ne donne aucun point de départ à la
 		// nouvelle branche. Le contrôle vit ICI et pas plus haut parce que c'est
 		// la seule branche qu'un tel dépôt peut atteindre — la branche demandée
@@ -245,12 +264,12 @@ func Assure(ctx context.Context, g Git, layout, root, wt, cheminRepo string) (st
 				"création du worktree %q : HEAD de %s ne pointe sur aucun commit (dépôt vierge, "+
 					"ou branche orpheline non encore commitée) — git n'a aucun point de départ "+
 					"à donner à la nouvelle branche ; commite d'abord sur ce dépôt, puis relance",
-				wt, cheminRepo)
+				wt.Branche, cheminRepo)
 		}
 		// --no-track : le point de départ est une ref de suivi, et sans lui git
 		// ferait suivre origin/<défaut> à la branche de travail — `git push`
 		// échouerait ensuite en proposant de pousser sur la branche par défaut.
-		args = []string{"worktree", "add", "--no-track", "-b", wt, chemin}
+		args = []string{"worktree", "add", "--no-track", "-b", wt.Branche, chemin}
 		// Spec §13.4-3 : la branche part de la branche par défaut du repo. Repli
 		// sur le HEAD courant si le dépôt n'a pas d'origin/HEAD — un dépôt
 		// purement local est parfaitement légitime, et c'est le seul point de
@@ -260,7 +279,7 @@ func Assure(ctx context.Context, g Git, layout, root, wt, cheminRepo string) (st
 		}
 	}
 	if _, err := g.Run(ctx, cheminRepo, args...); err != nil {
-		return "", fmt.Errorf("création du worktree %q de %s : %w", wt, cheminRepo, err)
+		return "", fmt.Errorf("création du worktree %q de %s : %w", wt.Branche, cheminRepo, err)
 	}
 	return chemin, nil
 }
@@ -270,11 +289,15 @@ func Assure(ctx context.Context, g Git, layout, root, wt, cheminRepo string) (st
 // repo ? » reposait sinon entièrement sur l'appelant, et den n'a aucune raison
 // de retirer un dossier qu'il n'aurait pas lui-même placé.
 type Cible struct {
-	DenHome    string // racine de den ; la corbeille vit sous <DenHome>/trash
-	Layout     string // « central » ou « per-repo » (spec §13.5)
-	Root       string // worktree_root
-	Nest       string // identité lisible du nest (« api », « api.feat12 ») : nomme l'entrée de corbeille
-	Worktree   string // nom du worktree, qui est aussi celui de la branche
+	DenHome string // racine de den ; la corbeille vit sous <DenHome>/trash
+	Layout  string // « central » ou « per-repo » (spec §13.5)
+	Root    string // worktree_root
+	Nest    string // identité lisible du nest (« api », « api.feat12 ») : nomme l'entrée de corbeille
+	// Worktree est le nom de DOSSIER du worktree (Nom.Dossier), et non celui de
+	// sa branche : `den rm` ne dispose que du nom de sandbox, d'où il ne peut
+	// tirer que le composant aplati. La branche n'est pas nécessaire ici — den
+	// ne la supprime jamais, elle survit dans le dépôt.
+	Worktree   string
 	CheminRepo string
 	Force      bool
 }

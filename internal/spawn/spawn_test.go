@@ -1151,15 +1151,85 @@ func TestSpawnAccepteUneStackSansKit(t *testing.T) {
 	}
 }
 
-// Un nom de worktree issu d'un nom de branche doit être refusé AVANT tout
-// effet de bord : ni worktree créé, ni sandbox.
-func TestSpawnRefuseUnWorktreeNonSandboxable(t *testing.T) {
+// F4 du smoke réel du 2026-07-29 : `-w feature/123` était refusé, alors que
+// c'est un nom de branche parfaitement ordinaire — et le premier que tape qui
+// travaille sur une forge.
+//
+// Ce qui est aplati, c'est ce qui devient un NOM : la sandbox et le dossier de
+// worktree. La branche, elle, garde le nom que l'utilisateur a tapé : c'est
+// celui de son `git log`, de sa forge et de sa PR.
+//
+// Les assertions suivent l'aller-retour que `den rm` empruntera : nom de
+// sandbox → sbx.DecomposeNom → worktree.Chemin → le dossier qu'Assure a
+// réellement créé. Un aplatissement qui ne serait pas appliqué aux TROIS
+// romprait cette chaîne, et `den rm` nettoierait à côté.
+func TestSpawnAplatitLeNomDeSandboxEtGardeLaBranche(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := depsTest()
+	var sortie bytes.Buffer
+	d.Sortie = &sortie
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Worktree: "feature/123"}, d); err != nil {
+		t.Fatalf("« feature/123 » est un nom de branche légitime : %v", err)
+	}
+
+	if !f.AAppele("create", "--name", "api.feature-123") {
+		t.Errorf("le nom de sandbox doit être aplati ; appels : %v", f.Appels)
+	}
+	// Le settle-loop et l'attache doivent viser LE MÊME nom : un aplatissement
+	// posé au seul endroit du `create` laisserait la policy scopée sur un nom
+	// que sbx ne connaît pas.
+	if !f.AAppele("policy", "check", "network", "--sandbox", "api.feature-123") {
+		t.Errorf("le settle-loop doit être scopé sur le nom aplati ; appels : %v", f.Appels)
+	}
+
+	chemin := filepath.Join(denHome, "worktrees", "feature-123", "api")
+	if _, err := os.Stat(chemin); err != nil {
+		t.Errorf("le dossier de worktree doit être aplati lui aussi (%s) : %v", chemin, err)
+	}
+	if !f.AAttache("exec", "-it", "-w", chemin, "api.feature-123", "bash", "-l") {
+		t.Errorf("l'attache doit ouvrir dans le worktree aplati ; attaches : %v", f.Attaches)
+	}
+
+	// L'aller-retour, en toutes lettres : c'est LUI que `den rm` emprunte pour
+	// retrouver le dossier à nettoyer, et il ne dispose de rien d'autre que du
+	// nom de sandbox. Un aplatissement appliqué au nom mais pas au dossier
+	// laisserait ces deux chemins diverger, et `den rm` nettoierait à côté.
+	_, wt := sbx.DecomposeNom("api.feature-123")
+	if got := worktree.Chemin("central", filepath.Join(denHome, "worktrees"), wt, repo); got != chemin {
+		t.Errorf("`den rm` chercherait le worktree en %q, il est en %q", got, chemin)
+	}
+
+	// Et la branche, elle, n'est PAS aplatie.
+	if got := brancheDe(t, chemin); got != "feature/123" {
+		t.Errorf("branche = %q, attendu feature/123 — c'est la branche de l'utilisateur", got)
+	}
+
+	// L'aplatissement est annoncé : sans ça, l'utilisateur cherche « feature/123 »
+	// dans `den ls` et ne l'y trouve jamais.
+	for _, attendu := range []string{"feature/123", "api.feature-123"} {
+		if !strings.Contains(sortie.String(), attendu) {
+			t.Errorf("la sortie doit annoncer le renommage (%q attendu) ;\n%s", attendu, sortie.String())
+		}
+	}
+}
+
+// La contrepartie : ce qu'aplatir ne peut PAS réparer reste refusé, et refusé
+// avant tout effet de bord. « -wip » ne pèche par aucun caractère interdit — le
+// « - » est licite ailleurs dans un nom — mais par sa position : un nom qui
+// commence par un tiret est indiscernable d'un flag. Le préfixer d'office
+// reviendrait à choisir un nom à la place de l'utilisateur.
+func TestSpawnRefuseUnWorktreeQuAplatirNeRepareraitPas(t *testing.T) {
 	denHome, _ := denTest(t)
 	f, d := depsTest()
 
-	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feature/123"}, d)
+	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "-wip"}, d)
 	if err == nil {
-		t.Fatal("un worktree contenant / doit être refusé")
+		t.Fatal("un worktree commençant par « - » doit être refusé")
+	}
+	if !strings.Contains(err.Error(), "-wip") {
+		t.Errorf("le message doit rendre le nom TAPÉ, pas sa forme aplatie ; obtenu : %v", err)
 	}
 	if len(f.Appels) != 0 {
 		t.Errorf("aucun appel sbx ne doit avoir eu lieu ; appels : %v", f.Appels)
@@ -1419,4 +1489,18 @@ func workspacesDe(argv []string) []string {
 		return nil
 	}
 	return argv[i+1:]
+}
+
+// brancheDe rend la branche checkoutée d'un worktree. Passe par git et non par
+// la lecture de `.git/HEAD` : le `.git` d'un worktree LIÉ est un fichier de
+// renvoi, pas un dossier.
+func brancheDe(t *testing.T, chemin string) string {
+	t.Helper()
+	cmd := exec.Command("git", "branch", "--show-current")
+	cmd.Dir = chemin
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --show-current dans %s : %v\n%s", chemin, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }

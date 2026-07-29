@@ -86,24 +86,31 @@ func runHostile(t *testing.T, home string, args ...string) (*sbx.Fake, string, e
 // un worktree créé pour une sandbox qui ne verra jamais le jour, que
 // l'utilisateur devra retirer à la main.
 //
-// `sbx.NomSandbox` est appelé AVANT la boucle de création des worktrees dans
-// spawn.Spawn, et c'est cet ORDRE que ce test verrouille — pas le message. Le
-// « / » de « feature/123 » est refusé parce qu'un nom de sandbox n'en contient
-// pas ; inverser les deux étapes laisserait le refus intact et le worktree
-// créé, sans qu'aucun test du paquet spawn ne s'en aperçoive.
+// Le nommage est calculé AVANT la boucle de création des worktrees dans
+// spawn.Spawn, et c'est cet ORDRE que ce test verrouille — pas le message :
+// inverser les deux étapes laisserait le refus intact et le worktree créé, sans
+// qu'aucun test du paquet spawn ne s'en aperçoive.
+//
+// La valeur refusée est « +wip » depuis F4, et non plus « feature/123 » : un
+// « / » est désormais APLATI (la branche garde son nom, la sandbox prend
+// « feature-123 ») et ne produit donc plus aucune erreur. Ce que l'aplatissement
+// ne répare pas, c'est un premier caractère non alphanumérique — un tel nom est
+// indiscernable d'un flag, et den ne va pas en choisir un autre à la place de
+// l'utilisateur. Le « + » plutôt que le « - » : pflag prendrait « -wip » pour un
+// flag avant que den ne voie quoi que ce soit.
 func TestWorktreeNonSandboxableEstRefuseSansRienCreer(t *testing.T) {
 	home, _ := denHomeHostile(t)
 
-	f, _, err := runHostile(t, home, "api", "-w", "feature/123")
+	f, _, err := runHostile(t, home, "api", "-w", "+wip")
 	if err == nil {
-		t.Fatal("un worktree nommé « feature/123 » doit être refusé")
+		t.Fatal("un worktree nommé « +wip » doit être refusé")
 	}
 	// Le caractère fautif, pas seulement « nom invalide » : c'est lui que
-	// l'utilisateur doit retirer.
-	if !strings.Contains(err.Error(), `"/"`) {
+	// l'utilisateur doit corriger.
+	if !strings.Contains(err.Error(), `"+"`) {
 		t.Errorf("le message doit nommer le caractère refusé ; obtenu : %v", err)
 	}
-	if !strings.Contains(err.Error(), "feature/123") {
+	if !strings.Contains(err.Error(), "+wip") {
 		t.Errorf("le message doit citer la valeur reçue ; obtenu : %v", err)
 	}
 	if len(f.Appels) != 0 {

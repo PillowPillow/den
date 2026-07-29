@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,76 @@ func TestValiderComposantSandboxMessageActionnable(t *testing.T) {
 	for _, attendu := range []string{"worktree", "feature/123", "/"} {
 		if !strings.Contains(err.Error(), attendu) {
 			t.Errorf("le message doit contenir %q ; obtenu : %v", attendu, err)
+		}
+	}
+}
+
+func TestAplatitComposantSandbox(t *testing.T) {
+	cas := []struct{ nom, attendu string }{
+		{"feature/123", "feature-123"}, // le cas réel : un nom de branche
+		{"feat/essai", "feat-essai"},
+		{"mon_wt", "mon-wt"},
+		{"feat.12", "feat-12"}, // le point est le séparateur <nest>.<worktree>
+		{"café", "caf-"},
+		{"feat//x", "feat--x"}, // pas de fusion des séries : un caractère, un tiret
+		{"feat12", "feat12"},   // déjà valide : rendu tel quel
+		{"v1+beta", "v1+beta"},
+		{"A-B", "A-B"},
+	}
+	for _, c := range cas {
+		got, err := AplatitComposantSandbox("worktree", c.nom)
+		if err != nil {
+			t.Errorf("AplatitComposantSandbox(%q) : erreur inattendue %v", c.nom, err)
+			continue
+		}
+		if got != c.attendu {
+			t.Errorf("AplatitComposantSandbox(%q) = %q, attendu %q", c.nom, got, c.attendu)
+		}
+	}
+}
+
+// L'invariant qui justifie l'existence de cette fonction : ce qu'elle rend est
+// toujours acceptable par ValiderComposantSandbox. C'est ce qui autorise le
+// reste de den — sbx.NomSandbox, l'argv de `sbx create`, la policy — à rester
+// STRICT : l'aplatissement vit en amont d'eux, il ne les assouplit pas.
+func TestAplatitComposantSandboxRendToujoursUnComposantValide(t *testing.T) {
+	for _, nom := range []string{
+		"feature/123", "mon_wt", "feat.12", "café", "feat//x", "a b", "wt!", "é1",
+		"api", "x", strings.Repeat("a/b", 20),
+	} {
+		got, err := AplatitComposantSandbox("worktree", nom)
+		if err != nil {
+			continue // refusé : rien à croiser
+		}
+		if err := ValiderComposantSandbox("worktree", got); err != nil {
+			t.Errorf("AplatitComposantSandbox(%q) = %q, que ValiderComposantSandbox refuse : %v",
+				nom, got, err)
+		}
+	}
+}
+
+// Corollaire du précédent, énoncé à part parce que c'est LUI qui protège
+// worktree.Chemin : un composant qui garderait un séparateur de chemin ferait
+// naître le worktree dans un sous-dossier — voire hors de worktree_root.
+func TestAplatitComposantSandboxNeRendJamaisDeSeparateurDeChemin(t *testing.T) {
+	for _, nom := range []string{"feature/123", "../evade", "a/b/c", `a\b`} {
+		got, err := AplatitComposantSandbox("worktree", nom)
+		if err != nil {
+			continue
+		}
+		if strings.ContainsRune(got, '/') || strings.ContainsRune(got, filepath.Separator) {
+			t.Errorf("AplatitComposantSandbox(%q) = %q : contient un séparateur de chemin", nom, got)
+		}
+	}
+}
+
+// Aplatir n'est pas inventer : un nom dont le premier caractère n'est pas
+// alphanumérique est REFUSÉ, jamais préfixé d'office. L'utilisateur retrouve
+// dans le message le nom qu'il a tapé, pas celui que den aurait choisi.
+func TestAplatitComposantSandboxRefuseCeQuIlNePeutPasAplatir(t *testing.T) {
+	for _, nom := range []string{"", "-wip", "/x", "_x", ".hidden"} {
+		if got, err := AplatitComposantSandbox("worktree", nom); err == nil {
+			t.Errorf("AplatitComposantSandbox(%q) = %q, attendu un refus", nom, got)
 		}
 	}
 }
