@@ -637,6 +637,25 @@ func identifie(ctx context.Context, g Git, chemin string) (racine, commun string
 	return strings.TrimSpace(lignes[0]), strings.TrimSpace(lignes[1]), nil
 }
 
+// DossierGitCommun rend le dossier git commun d'un dépôt — son `.git`, celui
+// qui porte l'admin dir, les objets et les refs.
+//
+// C'est ce que `den <nest> -w` monte dans la microVM À CÔTÉ du worktree : le
+// `.git` d'un worktree lié n'est qu'un fichier « gitdir: <repo>/.git/worktrees/
+// <nom> », et sans ce dossier-là monté, toute commande git de la VM répond
+// « fatal: not a git repository » (mesuré, smoke du 2026-07-29).
+//
+// La question passe par git et non par un `filepath.Join(repo, ".git")` parce
+// que le repo d'un nest peut lui-même être un worktree lié : le join rendrait
+// alors le fichier de renvoi, qui ne porte ni objets ni refs.
+func DossierGitCommun(ctx context.Context, g Git, cheminRepo string) (string, error) {
+	commun, err := communDe(ctx, g, cheminRepo)
+	if err != nil {
+		return "", fmt.Errorf("identification du dossier git de %s : %w", cheminRepo, err)
+	}
+	return commun, nil
+}
+
 func communDe(ctx context.Context, g Git, dir string) (string, error) {
 	out, err := g.Run(ctx, dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {

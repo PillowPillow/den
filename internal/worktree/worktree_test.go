@@ -2467,3 +2467,52 @@ func TestAssureCreeToujoursLeWorktreeDUnDepotAvecCommit(t *testing.T) {
 	}
 }
 
+// DossierGitCommun est ce que `den <nest> -w` monte à côté du worktree : le
+// `.git` du dépôt, sans son arbre de travail. Le cas nominal est celui d'un
+// dépôt ordinaire.
+func TestDossierGitCommunRendLeGitDuDepot(t *testing.T) {
+	repo := depotTest(t, "api")
+
+	commun, err := DossierGitCommun(context.Background(), NewGit(), repo)
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if attendu := filepath.Join(repo, ".git"); !memeChemin(commun, attendu) {
+		t.Errorf("commun = %q, attendu %q", commun, attendu)
+	}
+}
+
+// Le cas qui interdit un `filepath.Join(repo, ".git")` : quand le repo du nest
+// est LUI-MÊME un worktree lié, son `.git` est un FICHIER pointant vers
+// `<principal>/.git/worktrees/<nom>`. Le monter ne donnerait ni les objets ni
+// les refs — exactement la panne que F1 corrige, simplement déplacée d'un cran.
+// Seul git sait remonter au dossier commun, d'où l'appel à rev-parse.
+func TestDossierGitCommunRemonteDepuisUnWorktreeLie(t *testing.T) {
+	principal := depotTest(t, "api")
+	lie := filepath.Join(t.TempDir(), "api-feat")
+	git(t, principal, "worktree", "add", "-b", "feat", lie)
+
+	commun, err := DossierGitCommun(context.Background(), NewGit(), lie)
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if attendu := filepath.Join(principal, ".git"); !memeChemin(commun, attendu) {
+		t.Errorf("commun = %q, attendu %q — le dossier git commun du worktree lié "+
+			"est celui du dépôt principal, pas son propre fichier .git", commun, attendu)
+	}
+}
+
+// Un dossier qui n'est pas un dépôt doit sortir en erreur nommant le chemin :
+// den compose avec ce résultat un argument de `sbx create`, où un chemin vide
+// ou faux deviendrait un mount silencieux.
+func TestDossierGitCommunRefuseUnNonDepot(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := DossierGitCommun(context.Background(), NewGit(), dir)
+	if err == nil {
+		t.Fatal("un dossier non versionné doit sortir en erreur, obtenu nil")
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Errorf("erreur = %q, attendu le chemin du dossier fautif", err.Error())
+	}
+}
