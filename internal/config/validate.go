@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode"
@@ -177,9 +178,28 @@ func (g *Global) ValideWorktree() []error {
 	// la chaîne vide, donc un `worktree_root: "   "` survit et deviendrait un
 	// chemin relatif — un dossier littéralement nommé « ␣␣␣ » créé dans le
 	// répertoire courant de l'utilisateur.
-	if strings.TrimSpace(g.WorktreeRoot) == "" {
+	//
+	// Le « sinon » n'est pas cosmétique : sur une racine vide, le contrôle
+	// d'absoluité juste en dessous rendrait une SECONDE erreur sur le même
+	// champ (« "" n'est pas absolu »), et l'utilisateur lirait deux lignes pour
+	// une seule faute.
+	switch {
+	case strings.TrimSpace(g.WorktreeRoot) == "":
 		errs = append(errs, fmt.Errorf(
 			"worktree_root : requis — c'est la racine sous laquelle den crée et retrouve les worktrees"))
+	case !filepath.IsAbs(g.WorktreeRoot):
+		// LoadGlobalSansValider ne rend absolu que le DÉFAUT ; une valeur écrite
+		// à la main traverse intacte, ExpandPath ne touchant qu'au « ~ ». Sans ce
+		// contrôle, mesuré sur le binaire assemblé (tâche 17c), un
+		// `worktree_root: wt-relatif` se résolvait contre le répertoire du REPO :
+		// `den <nest> -w feat1` créait pour de bon un worktree et une branche
+		// dans le dépôt de l'utilisateur, puis échouait sur la garde d'argv de
+		// sbx — laissant l'utilisateur nettoyer à la main ce que den venait de
+		// poser. Symétriquement, `den rm` aurait nettoyé à côté, silencieusement.
+		errs = append(errs, fmt.Errorf(
+			"worktree_root : %q n'est pas un chemin absolu — den le passe tel quel à "+
+				"`git worktree add`, où il se résoudrait contre le dépôt et créerait les "+
+				"worktrees DEDANS ; écris un chemin absolu, ou « ~/… »", g.WorktreeRoot))
 	}
 	return errs
 }

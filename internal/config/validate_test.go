@@ -326,3 +326,57 @@ func TestValidateDeterminismeTriAgents(t *testing.T) {
 		t.Errorf("ordre des erreurs non trié : alpha à %d, zeta à %d (messages : %v)", alphaIdx, zetaIdx, msgs)
 	}
 }
+
+// worktree_root RELATIF : la 15ᵉ configuration hostile, trouvée en exerçant le
+// binaire assemblé (tâche 17c).
+//
+// LoadGlobalSansValider ne rend absolu que le DÉFAUT (filepath.Join(denHome,
+// "worktrees")) ; une valeur écrite par l'utilisateur traverse intacte, et
+// ExpandPath ne touche qu'au « ~ ». Un `worktree_root: wt` survivait donc
+// jusqu'à `git worktree add`, où il se résolvait contre le répertoire du REPO.
+//
+// Mesuré sur le binaire, avec `worktree_root: wt-relatif` :
+//
+//	den doctor            → « config cohérente », rc=0
+//	den api -w feat1      → worktree RÉELLEMENT créé dans
+//	                        <repo>/wt-relatif/feat1/monrepo, branche feat1 créée,
+//	                        PUIS échec sur « workspace n°1 n'est pas absolu »
+//
+// Deux fautes en une : den pollue le dépôt de l'utilisateur, qui doit nettoyer à
+// la main un worktree et une branche ; et le refus arrive APRÈS l'effet de bord,
+// contre la doctrine de Spawn (« tout ce qui peut être refusé sur la seule foi
+// de la configuration l'est AVANT le premier effet de bord »).
+//
+// Le contrôle vit dans ValideWorktree, et pas ailleurs, pour la même raison que
+// le layout : c'est la source unique consultée par Validate() — donc par
+// LoadGlobal et `den doctor` — ET par `den rm` (internal/cli/rm.go), qui compose
+// avec ces deux champs le chemin qu'il va NETTOYER. Une racine relative y
+// enverrait `den rm` supprimer à côté, silencieusement.
+func TestValideWorktreeRefuseUneRacineRelative(t *testing.T) {
+	g := globalValide()
+	g.WorktreeRoot = "wt-relatif"
+
+	errs := g.ValideWorktree()
+	if len(errs) == 0 {
+		t.Fatal("worktree_root relatif accepté : den créerait le worktree sous le répertoire " +
+			"courant de git, c'est-à-dire dans le dépôt de l'utilisateur")
+	}
+	msg := errs[0].Error()
+	// Le champ à corriger ET la valeur reçue : sans les deux, l'utilisateur sait
+	// qu'il y a un problème mais pas lequel des deux champs de worktree le porte.
+	if !strings.Contains(msg, "worktree_root") || !strings.Contains(msg, "wt-relatif") {
+		t.Errorf("le message doit nommer worktree_root et la valeur reçue ; obtenu : %s", msg)
+	}
+}
+
+// Le pendant du test précédent : une racine ABSOLUE reste acceptée. Sans lui, un
+// contrôle qui refuserait tout — donc aussi le défaut calculé par
+// LoadGlobalSansValider — passerait le test ci-dessus sans que rien ne le
+// remarque, et den ne pourrait plus créer aucun worktree.
+func TestValideWorktreeAccepteUneRacineAbsolue(t *testing.T) {
+	g := globalValide()
+	g.WorktreeRoot = "/var/tmp/worktrees de den"
+	if errs := g.ValideWorktree(); len(errs) != 0 {
+		t.Errorf("racine absolue refusée : %v", errs)
+	}
+}
