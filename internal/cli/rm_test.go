@@ -419,6 +419,16 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	if !strings.Contains(sortie, "api.feat12-api") {
 		t.Errorf("l'entrée de corbeille doit porter l'identité complète api.feat12, pas juste api ; obtenu :\n%s", sortie)
 	}
+	// F3 : et rien ne reste. Le dossier `<worktree_root>/feat12` n'existait que
+	// pour porter ce worktree ; le laisser derrière transforme worktree_root en
+	// liste de dossiers vides à mesure que l'utilisateur spawne et détruit.
+	if _, err := os.Stat(filepath.Dir(chemin)); !os.IsNotExist(err) {
+		t.Errorf("%s devait disparaître avec son dernier worktree (err = %v)", filepath.Dir(chemin), err)
+	}
+	// La racine, elle, reste : c'est un réglage de l'utilisateur.
+	if _, err := os.Stat(filepath.Join(denHome, "worktrees")); err != nil {
+		t.Errorf("worktree_root ne doit pas être touché : %v", err)
+	}
 }
 
 // worktree_layout: per-repo est une configuration supportée (spec §13.5). Un

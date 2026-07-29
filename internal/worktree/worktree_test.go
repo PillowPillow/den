@@ -291,6 +291,121 @@ func prepareWorktree(t *testing.T) (repo, chemin string, c Cible) {
 // avecForce rend une copie de la Cible dont Force vaut ce qu'on demande.
 func avecForce(c Cible, force bool) Cible { c.Force = force; return c }
 
+// F3 du smoke réel du 2026-07-29 : en layout central, le worktree vit dans un
+// dossier À LUI (`<root>/<wt>/<repo>`). Retirer le worktree laissait ce dossier
+// intermédiaire vide derrière lui, et `den ls` d'un utilisateur qui spawne et
+// détruit à la journée finissait par regarder une liste de dossiers vides.
+func TestRetireEfaceLeDossierIntermediaireDevenuVide(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	parent := filepath.Dir(chemin)
+
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
+		t.Fatalf("suppression : %v", err)
+	}
+	if _, err := os.Stat(parent); !os.IsNotExist(err) {
+		t.Errorf("le dossier %s devait disparaître avec son dernier worktree (err = %v)", parent, err)
+	}
+	// Et la racine des worktrees, elle, RESTE : c'est un réglage de
+	// l'utilisateur, pas un dossier que den aurait posé.
+	if _, err := os.Stat(cible.Root); err != nil {
+		t.Errorf("worktree_root ne doit pas être touché : %v", err)
+	}
+}
+
+// La contrepartie qui rend la règle sûre : le dossier intermédiaire est PARTAGÉ
+// par tous les repos d'un même nest (spec §13.5). Le retirer au premier repo
+// effacerait un dossier encore habité — os.Remove refuse de le faire, et c'est
+// exactement sur ce refus que la règle s'appuie.
+func TestRetireGardeLeDossierIntermediaireEncoreHabite(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	parent := filepath.Dir(chemin)
+
+	repoB := filepath.Join(t.TempDir(), "web")
+	creeDepot(t, repoB)
+	cibleB := cible
+	cibleB.CheminRepo = repoB
+	cheminB, err := Assure(context.Background(), NewGit(), cible.Layout, cible.Root,
+		nomWt(cible.Worktree), repoB)
+	if err != nil {
+		t.Fatalf("préparation du second repo : %v", err)
+	}
+
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
+		t.Fatalf("suppression du premier : %v", err)
+	}
+	if _, err := os.Stat(cheminB); err != nil {
+		t.Fatalf("le worktree du second repo doit être intact : %v", err)
+	}
+	if _, err := os.Stat(parent); err != nil {
+		t.Errorf("%s porte encore un worktree : il doit rester : %v", parent, err)
+	}
+
+	if _, err := Retire(context.Background(), NewGit(), cibleB); err != nil {
+		t.Fatalf("suppression du second : %v", err)
+	}
+	if _, err := os.Stat(parent); !os.IsNotExist(err) {
+		t.Errorf("le dernier worktree parti, %s devait disparaître (err = %v)", parent, err)
+	}
+}
+
+// Même refus, pour un contenu que den n'a pas posé : ce qui n'est pas à den
+// n'est pas à den de supprimer. Et surtout : aucune erreur pour autant, le
+// retrait du worktree a bel et bien réussi.
+func TestRetireGardeUnDossierIntermediaireQuiPorteAutreChose(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	parent := filepath.Dir(chemin)
+	intrus := filepath.Join(parent, "notes.txt")
+	if err := os.WriteFile(intrus, []byte("à moi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
+		t.Fatalf("un dossier intermédiaire non vide ne doit pas faire échouer le retrait : %v", err)
+	}
+	if _, err := os.Stat(intrus); err != nil {
+		t.Errorf("den ne doit pas toucher à ce qu'il n'a pas posé : %v", err)
+	}
+}
+
+// Le dossier a disparu à la main : Retire élague l'enregistrement et rend « »
+// sans erreur. C'est LE cas où le dossier intermédiaire vide traîne le plus
+// sûrement — il faut donc le nettoyer là aussi, et pas seulement après une mise
+// à la corbeille réussie.
+func TestRetireEfaceLeDossierIntermediaireApresUneDisparitionALaMain(t *testing.T) {
+	_, chemin, cible := prepareWorktree(t)
+	parent := filepath.Dir(chemin)
+	if err := os.RemoveAll(chemin); err != nil {
+		t.Fatal(err)
+	}
+
+	dest, err := Retire(context.Background(), NewGit(), cible)
+	if err != nil {
+		t.Fatalf("suppression : %v", err)
+	}
+	if dest != "" {
+		t.Errorf("rien n'a été mis à la corbeille, dest = %q", dest)
+	}
+	if _, err := os.Stat(parent); !os.IsNotExist(err) {
+		t.Errorf("le dossier %s devait disparaître lui aussi (err = %v)", parent, err)
+	}
+}
+
+// Le garde-fou : Retire est exportée, et une Cible sans worktree fait pointer
+// Chemin sur `<root>/<repo>`, dont le parent est worktree_root LUI-MÊME. Sans
+// ce refus, un tel appel effacerait la racine des worktrees de l'utilisateur
+// dès lors qu'elle est vide.
+func TestRetireNeTouchePasALaRacineSansNomDeWorktree(t *testing.T) {
+	_, _, cible := prepareWorktree(t)
+	cible.Worktree = ""
+
+	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
+		t.Fatalf("suppression : %v", err)
+	}
+	if _, err := os.Stat(cible.Root); err != nil {
+		t.Errorf("worktree_root ne doit jamais être supprimé : %v", err)
+	}
+}
+
 // Spec §14 : refuser si dirty sans --force. Perdre du travail non commité
 // serait le pire effet de bord possible pour un `den rm`.
 func TestRetireRefuseUnWorktreeSale(t *testing.T) {

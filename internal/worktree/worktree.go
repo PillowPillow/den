@@ -361,6 +361,7 @@ func Retire(ctx context.Context, g Git, c Cible) (string, error) {
 					"il est probablement verrouillé : lance `git worktree unlock %s` dans %s, puis relance",
 				cheminWorktree, cheminRepo, cheminWorktree, cheminRepo)
 		}
+		efaceDossierPorteur(c, cheminWorktree)
 		return "", nil
 	}
 
@@ -418,8 +419,37 @@ func Retire(ctx context.Context, g Git, c Cible) (string, error) {
 				"élagué dans %s : %w", cheminWorktree, dest, cheminRepo, err)
 	}
 
+	efaceDossierPorteur(c, cheminWorktree)
 	purgeCorbeille(filepath.Dir(dest), time.Now())
 	return dest, nil
+}
+
+// efaceDossierPorteur retire le dossier qui PORTAIT le worktree, s'il est
+// devenu vide :
+//
+//	central  : <root>/<wt>     — partagé par tous les repos du nest
+//	per-repo : <repo>/.den
+//
+// os.Remove et non un RemoveAll : le refus ENOTEMPTY est le mécanisme, pas un
+// accident à contourner. Il garde le dossier tant qu'un autre repo du même nest
+// y a encore son worktree — les Retire d'un `den rm` défilent repo par repo, et
+// seul le dernier trouve le dossier vide — et il garde aussi ce que den n'a pas
+// posé : un fichier de l'utilisateur, ou la corbeille de repli `<repo>/.den/
+// .trash` quand le rename inter-systèmes de fichiers a dû s'y replier.
+//
+// L'erreur est ignorée, à dessein : le worktree, lui, EST retiré. Faire échouer
+// `den rm` sur un dossier vide qui résiste ferait passer un détail cosmétique
+// pour un échec de suppression.
+//
+// Le refus sur Worktree vide n'est pas de la superstition : Retire est
+// exportée, et Chemin("central", root, "", repo) rend `<root>/<repo>`, dont le
+// dossier porteur est worktree_root LUI-MÊME. Un appel sans nom de worktree
+// effacerait donc la racine de l'utilisateur si elle se trouvait vide.
+func efaceDossierPorteur(c Cible, cheminWorktree string) {
+	if c.Worktree == "" {
+		return
+	}
+	_ = os.Remove(filepath.Dir(cheminWorktree))
 }
 
 // corbeillePrincipale est l'emplacement nominal de la corbeille.
