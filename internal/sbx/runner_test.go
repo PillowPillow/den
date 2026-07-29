@@ -28,6 +28,73 @@ func TestExecRunBinaireIntrouvable(t *testing.T) {
 	}
 }
 
+// L'échec de PREMIER CONTACT — sbx pas encore installé — est le plus probable
+// de tous, et c'est le seul que l'utilisateur puisse réparer lui-même. Le
+// message qu'il produit doit donc être en français, dire quoi faire, et ne pas
+// laisser l'utilisateur seul devant « exec: "sbx": executable file not found in
+// $PATH » (message d'os/exec, en anglais, sans remède).
+//
+// `den doctor` est nommé parce qu'il diagnostique EXACTEMENT ce cas
+// (internal/doctor/doctor.go, étape 1 : « binaire sbx introuvable dans le
+// PATH ») — et parce qu'avant ce test, `den doctor` n'apparaissait dans AUCUN
+// message utilisateur du projet, seulement dans des commentaires.
+//
+// L'absence de l'anglais est assertée SÉPARÉMENT de la présence du français :
+// un message qui ajouterait la traduction sans retirer la ligne d'os/exec
+// resterait vert sur la seule assertion de présence.
+func TestExecRunBinaireIntrouvableRendUnMessageActionnableEnFrancais(t *testing.T) {
+	const bin = "den-binaire-qui-nexiste-pas-x7q"
+	e := &Exec{Bin: bin}
+
+	_, err := e.Run(context.Background(), "ls", "--json")
+	if err == nil {
+		t.Fatal("un binaire absent doit produire une erreur")
+	}
+	message := err.Error()
+
+	for _, attendu := range []string{bin, "introuvable dans le PATH", "den doctor"} {
+		if !strings.Contains(message, attendu) {
+			t.Errorf("le message doit contenir %q ; obtenu : %s", attendu, message)
+		}
+	}
+	for _, anglais := range []string{"executable file not found", "exec: "} {
+		if strings.Contains(message, anglais) {
+			t.Errorf("reste d'anglais %q dans le message : %s", anglais, message)
+		}
+	}
+	// La chaîne d'erreurs ne doit pas être sacrifiée au message : c'est elle qui
+	// permet à un appelant de reconnaître ce cas sans comparer des chaînes.
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Errorf("exec.ErrNotFound doit rester repérable dans la chaîne ; err = %v", err)
+	}
+}
+
+// Même exigence sur Attach : c'est par lui que passent `den sh` et l'attache
+// finale de `den <nest>`. Le message n'a aucune raison d'être en anglais d'un
+// côté et en français de l'autre.
+func TestExecAttachBinaireIntrouvableRendUnMessageActionnableEnFrancais(t *testing.T) {
+	const bin = "den-binaire-qui-nexiste-pas-x7q"
+	e := &Exec{Bin: bin}
+
+	err := e.Attach(context.Background(), "exec", "-it", "api", "bash", "-l")
+	if err == nil {
+		t.Fatal("un binaire absent doit produire une erreur")
+	}
+	message := err.Error()
+
+	for _, attendu := range []string{bin, "introuvable dans le PATH", "den doctor"} {
+		if !strings.Contains(message, attendu) {
+			t.Errorf("le message doit contenir %q ; obtenu : %s", attendu, message)
+		}
+	}
+	if strings.Contains(message, "executable file not found") {
+		t.Errorf("reste d'anglais dans le message : %s", message)
+	}
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Errorf("exec.ErrNotFound doit rester repérable dans la chaîne ; err = %v", err)
+	}
+}
+
 // Le code de sortie doit rester accessible via errors.As, et stderr doit
 // survivre dans le message : les deux sont perdus si l'erreur n'est pas
 // enveloppée avec %w.

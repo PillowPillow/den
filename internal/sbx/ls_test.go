@@ -3,6 +3,7 @@ package sbx
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -183,6 +184,60 @@ func TestLsPropageLErreurDuRunner(t *testing.T) {
 
 	if _, err := Ls(context.Background(), f); !errors.Is(err, sentinelle) {
 		t.Errorf("err = %v, attendu la sentinelle enveloppée", err)
+	}
+}
+
+// Ls ne doit pas RÉPÉTER la sous-commande que l'erreur du runner nomme déjà.
+//
+// Mesuré sur le binaire, sbx absent du PATH :
+//
+//	den: sbx ls : sbx ls --json : exec: "sbx": executable file not found in $PATH
+//
+// « sbx ls » deux fois sur la première ligne qu'un nouvel utilisateur voit :
+// une fois par l'enveloppe de Ls, une fois par ErreurExec.Error, qui rend
+// TOUJOURS le binaire et son argv complet. C'est l'enveloppe qui est de trop —
+// elle n'ajoute rien que l'argv ne dise mieux (« ls --json » plutôt que « ls »).
+//
+// L'*ErreurExec est fabriqué ici plutôt que produit par un vrai Exec : c'est le
+// type que la production fait remonter, et le fabriquer permet d'exercer la
+// composition Ls+ErreurExec sans dépendre d'un binaire quelconque.
+func TestLsNeRepetePasLaSousCommande(t *testing.T) {
+	f := &Fake{Defaut: Reponse{Err: &ErreurExec{
+		Bin:  "sbx",
+		Args: []string{"ls", "--json"},
+		Err:  errors.New("exit status 1"),
+	}}}
+
+	_, err := Ls(context.Background(), f)
+	if err == nil {
+		t.Fatal("une erreur du runner doit remonter")
+	}
+	message := err.Error()
+	if n := strings.Count(message, "sbx ls"); n != 1 {
+		t.Errorf("« sbx ls » apparaît %d fois, attendu 1 fois ; message : %s", n, message)
+	}
+}
+
+// Et le cas de premier contact, vu depuis Ls — le chemin qu'empruntent les
+// QUATRE commandes qui touchent sbx (`den ls`, `den <nest>`, `den sh`,
+// `den rm`) : toutes appellent Ls avant quoi que ce soit d'autre.
+func TestLsBinaireAbsentRendUnMessageActionnable(t *testing.T) {
+	f := &Fake{Defaut: Reponse{Err: &ErreurExec{
+		Bin:  "sbx",
+		Args: []string{"ls", "--json"},
+		Err:  exec.ErrNotFound,
+	}}}
+
+	_, err := Ls(context.Background(), f)
+	if err == nil {
+		t.Fatal("un binaire absent doit produire une erreur")
+	}
+	message := err.Error()
+	if !contientTout(message, "sbx", "introuvable dans le PATH", "den doctor") {
+		t.Errorf("message peu actionnable : %s", message)
+	}
+	if strings.Contains(message, "executable file not found") {
+		t.Errorf("reste d'anglais dans le message : %s", message)
 	}
 }
 

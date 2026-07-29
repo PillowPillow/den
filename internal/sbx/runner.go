@@ -102,7 +102,35 @@ type ErreurExec struct {
 	Annulation error
 }
 
+// messageBinaireIntrouvable rend, en français et avec un remède, le seul échec
+// d'exécution que l'utilisateur puisse réparer lui-même : le binaire n'est pas
+// installé.
+//
+// C'est l'échec de PREMIER CONTACT — sbx pas encore posé sur la machine — et il
+// frappe les quatre commandes qui touchent sbx (`den ls`, `den <nest>`,
+// `den sh`, `den rm`), toutes passant par Ls avant quoi que ce soit d'autre.
+// Sans ce traitement, la première ligne qu'un nouvel utilisateur voit est celle
+// d'os/exec : « exec: "sbx": executable file not found in $PATH » — en anglais,
+// et sans dire quoi faire.
+//
+// `den doctor` est nommé parce qu'il diagnostique EXACTEMENT ce cas
+// (doctor.go, étape 1, via exec.LookPath) et qu'il dira du même coup si le
+// reste de l'installation tient. L'argv n'est PAS rendu : quand le binaire
+// manque, aucun argument n'aurait changé quoi que ce soit, et le citer noierait
+// le seul fait qui compte.
+func messageBinaireIntrouvable(bin string) string {
+	return fmt.Sprintf(
+		"« %s » est introuvable dans le PATH — installe-le, puis vérifie ton installation avec `den doctor`",
+		bin)
+}
+
 func (e *ErreurExec) Error() string {
+	// AVANT le motif d'annulation : un contexte annulé sur un binaire absent
+	// reste, pour l'utilisateur, un binaire absent — et c'est l'annulation qui
+	// serait la conséquence, jamais la cause.
+	if errors.Is(e.Err, exec.ErrNotFound) {
+		return messageBinaireIntrouvable(e.Bin)
+	}
 	detail := e.Stderr
 	if detail == "" && e.Err != nil {
 		detail = e.Err.Error()
@@ -276,7 +304,18 @@ func (e *Exec) Attach(ctx context.Context, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s %s : %w", e.Bin, strings.Join(args, " "), err)
+		// *ErreurExec et non un fmt.Errorf : le message rendu est le MÊME
+		// (Stderr vide ⇒ ErreurExec.Error retombe sur e.Err, donc
+		// « sbx exec -it … : exit status 1 », mot pour mot ce que produisait le
+		// fmt.Errorf d'avant), mais le traitement du binaire absent est partagé
+		// avec Run plutôt que dupliqué — et la chaîne d'erreurs gagne l'Unwrap
+		// d'ErreurExec.
+		//
+		// Annulation reste NIL, délibérément : Attach est la seule méthode où
+		// l'annulation du contexte ne doit rien faire (voir cmd.Cancel
+		// ci-dessus), et la relever ici afficherait « interrompu » sur un shell
+		// que den a justement laissé finir.
+		return &ErreurExec{Bin: e.Bin, Args: slices.Clone(args), Err: err}
 	}
 	return nil
 }

@@ -109,7 +109,16 @@ func (s Sandbox) VerifieEnMarche() error {
 func Ls(ctx context.Context, r Runner) ([]Sandbox, error) {
 	sortie, err := r.Run(ctx, "ls", "--json")
 	if err != nil {
-		return nil, fmt.Errorf("sbx ls : %w", err)
+		// TEL QUEL, sans enveloppe : ErreurExec rend déjà le binaire et son argv
+		// COMPLET (« sbx ls --json : … »), et un « sbx ls : » ajouté devant
+		// écrivait la sous-commande deux fois sur la première ligne que voit un
+		// utilisateur dont sbx n'est pas installé. Ce que l'enveloppe ajoutait
+		// est strictement moins précis que ce qu'elle répétait. Tenu par
+		// TestLsNeRepetePasLaSousCommande.
+		//
+		// Les échecs de DÉCODAGE ci-dessous gardent leur préfixe : eux ne sont
+		// situés par personne d'autre.
+		return nil, err
 	}
 
 	// Décodage en deux temps, exprès : un objet JSON valide mais SANS la clé
