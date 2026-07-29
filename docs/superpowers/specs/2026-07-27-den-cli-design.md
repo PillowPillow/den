@@ -330,6 +330,33 @@ signale un agent périmé.
   connu. Simple, headless-ready. Expose **exactement** cette clé, rien d'autre.
 - **`none`** : réservé au futur flux autonome.
 
+**Ce que den fait, exactement, pour chacun des trois modes** (vérifié en tâche 18) :
+
+| mode | flags de `sbx create` | mixin | workspaces (positionnels de l'argv) |
+|---|---|---|---|
+| `agent-forward` (défaut) | inchangés | inchangée | inchangés |
+| `mount` | inchangés | inchangée | **+ `ssh.dir`**, en dernier |
+| `none` | inchangés | inchangée | inchangés |
+
+`agent-forward` n'ajoute donc **rien** : il repose entièrement sur le fait que le process
+`sbx create` **hérite de l'environnement de den**, `SSH_AUTH_SOCK` compris — `internal/sbx` ne
+renseigne jamais `cmd.Env`, et cet héritage est tenu par un test qui rougit si quelqu'un le
+renseigne. C'est délibéré des deux côtés où l'on serait tenté de faire autrement :
+
+- **pas dans l'argv** : aucun flag `sbx` attesté ne transmet un socket d'agent (les seuls flags de
+  `sbx create` relevés le 2026-07-28 sont `--clone --cpus --kit --memory --name --profile --quiet
+  --template`) ;
+- **pas dans le mixin** : une valeur de socket hôte écrite dans un kit serait périmée dès la
+  session suivante, et trompeuse — le kit décrit la VM, pas la session qui l'a lancée.
+
+Le seul cas où ce mode ne donne rien est un hôte **sans agent SSH en marche**. `den doctor` le
+signale alors en **avertissement** (`[warn] ssh.mode`), pas en échec : travailler en local sans
+dépôt distant est légitime, et den n'a aucun moyen de savoir si l'utilisateur a besoin de SSH.
+
+Reste **non vérifiable sans `sbx` installé** : que `sbx` propage effectivement ce socket **dans**
+la microVM. C'est l'hypothèse **A10** du §14.1, falsifiable au premier smoke réel par un
+`git push` depuis la VM.
+
 ---
 
 ## 11. État, labels & gestion d'erreurs
@@ -467,10 +494,10 @@ internal/
 
 ---
 
-## 14.1 Hypothèses non vérifiées contre un `sbx` réel (inventaire A1→A9)
+## 14.1 Hypothèses non vérifiées contre un `sbx` réel (inventaire A1→A10)
 
-**Versé le 2026-07-28** (tâche 17b), depuis l'inventaire dressé en tâche 11. Toutes ces
-affirmations sont **vertes contre le double de test (`sbx.Fake`) et invérifiables contre le réel** :
+**Versé le 2026-07-28** (tâche 17b), depuis l'inventaire dressé en tâche 11 ; **A10 versée le
+2026-07-29** (tâche 18). Toutes ces affirmations sont **vertes contre le double de test (`sbx.Fake`) et invérifiables contre le réel** :
 `sbx` n'est pas installé sur la machine de développement, et aucune ne peut être tranchée sans lui.
 Elles ne sont **pas** des bugs connus — ce sont les endroits où la suite ne prouve rien.
 
@@ -489,6 +516,7 @@ casse plus den ; il reste utile de la vérifier, mais ce n'est plus bloquant.
 | A7 | La réponse ne dépend que de `(sandbox, hôte)`, jamais transitoire | Un `sbx` qui flanche une fois (VM pas encore prête) ferait échouer tout le settle | **Oui**, même correctif qu'A1 |
 | A8 | La sandbox existe et tourne quand `policy check` est appelé | Idem A1 | **Oui** pour la garde de nom de sandbox |
 | A9 | `sbx` ne rend **jamais** `allowed:false` en échouant pour une raison **étrangère à la policy** | Une sandbox inexistante diagnostiquée `not found` **tout en** rendant `allowed:false` : den brûlerait ses 60 s en accusant l'allowlist | **Oui** — la dernière erreur runner observée est jointe au message de timeout, la vraie cause reste visible |
+| A10 | `sbx` **propage `SSH_AUTH_SOCK` de son propre environnement jusque dans la microVM** — c'est tout ce sur quoi repose `ssh.mode: agent-forward`, qui est le **défaut** | Un `git push` sur un remote SSH depuis la VM échoue en `Permission denied (publickey)` alors que `den doctor` affiche `[ok] ssh.mode agent-forward, SSH_AUTH_SOCK=…` sur l'hôte | **Partiellement.** Ce que den contrôle est prouvé : le process `sbx` hérite bien de l'environnement de den (`cmd.Env` laissé nil, tenu par `TestExec{Run,Attach}TransmetLEnvironnementDeDen`), et `den doctor` **avertit** quand la variable manque côté hôte. Ce que den ne peut pas contrôler — le saut hôte → microVM — n'a **aucun** substitut : si l'hypothèse est fausse, le repli est `ssh.mode: mount`, qui lui est testé |
 
 ### Hypothèses assumées de den lui-même
 
