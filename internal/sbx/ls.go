@@ -91,18 +91,32 @@ func Trouve(boxes []Sandbox, nom string) *Sandbox {
 // trop tôt. Le message rend le statut lu, ce qui rend le cas diagnosticable et
 // rapportable ; le premier smoke test réel dira s'il faut élargir.
 //
-// La remédiation ne nomme que des sous-commandes ATTESTÉES (`sbx ls`,
-// `sbx rm --force`). `sbx start` n'apparaît dans aucun relevé et personne ne
-// peut le falsifier ici : suggérer à l'utilisateur une commande peut-être
-// inexistante serait pire qu'un commentaire faux.
+// La remédiation ne nomme que des commandes ATTESTÉES, et l'attestation a deux
+// sources qui ne se valent pas :
+//
+//   - les sous-commandes `sbx` viennent du relevé du 2026-07-28, versé au spec
+//     §14.0 (`sbx ls`, `sbx rm --force`). `sbx start` n'y apparaît pas et
+//     personne ne peut le falsifier ici, sbx n'étant pas installable sur cette
+//     machine : suggérer une commande peut-être inexistante serait pire qu'un
+//     commentaire faux ;
+//   - `den rm` est une commande de DEN, attestée par la source du dépôt
+//     (internal/cli/rm.go). L'argument ci-dessus ne s'y applique pas.
+//
+// Et c'est `den rm` qui passe EN PREMIER, parce qu'il fait strictement plus :
+// il détruit la VM comme `sbx rm --force`, mais nettoie en plus les worktrees
+// que den a créés pour cette sandbox. Envoyer l'utilisateur directement sur sbx
+// lui laisse des worktrees orphelins sous worktree_root, sans rien lui dire.
+// `sbx rm --force` reste nommé comme repli : il marche même quand ~/.den est
+// cassé, ce dont `den rm` a besoin pour situer les worktrees.
 func (s Sandbox) VerifieEnMarche() error {
 	if s.Statut == StatutEnMarche {
 		return nil
 	}
 	return fmt.Errorf(
 		"sandbox %q : statut lu %q, attendu %q — den n'attache pas dans une VM arrêtée ; "+
-			"inspecte-la avec `sbx ls`, ou détruis-la puis relance : `sbx rm --force %s`",
-		s.Nom, s.Statut, StatutEnMarche, s.Nom)
+			"inspecte-la avec `sbx ls`, ou détruis-la puis relance : `den rm %s` "+
+			"(qui nettoie aussi les worktrees ; repli `sbx rm --force %s`, qui ne détruit que la VM)",
+		s.Nom, s.Statut, StatutEnMarche, s.Nom, s.Nom)
 }
 
 // Ls liste les sandboxes vivantes, triées par nom.

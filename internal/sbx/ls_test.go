@@ -314,12 +314,18 @@ func TestVerifieEnMarche(t *testing.T) {
 // statuts. On extrait donc TOUT ce que le message présente comme une commande —
 // les segments entre backticks — et on exige que chacun soit attesté.
 func TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees(t *testing.T) {
-	// Relevé le 2026-07-28. Plan 2 : create, ls, exec, ports, policy check,
-	// rm --force. sbx-devbox ajoute stop, template save, secret, inspect,
-	// login. `sbx start` n'y figure pas, et sbx n'est pas installable ici :
-	// personne ne peut le falsifier. Étendre cette liste demande un relevé,
-	// pas une intuition.
-	attestees := []string{"sbx ls", "sbx rm --force api"}
+	// DEUX sources d'attestation, et elles ne se valent pas :
+	//
+	//   - les sous-commandes `sbx` viennent du relevé du 2026-07-28, versé au
+	//     spec §14.0 : create, ls, exec, ports, policy check, rm --force
+	//     (sbx-devbox ajoute stop, template save, secret, inspect, login).
+	//     `sbx start` n'y figure pas, et sbx n'est pas installable ici :
+	//     personne ne peut le falsifier. Étendre cette liste demande un RELEVÉ,
+	//     pas une intuition ;
+	//   - `den rm` est une commande de DEN, attestée par la source du dépôt
+	//     (internal/cli/rm.go, newRmCmd). L'argument « on ne sait pas si elle
+	//     existe » ne s'y applique pas : on la lit.
+	attestees := []string{"sbx ls", "sbx rm --force api", "den rm api"}
 
 	err := Sandbox{Nom: "api", Statut: "exited"}.VerifieEnMarche()
 	if err == nil {
@@ -351,6 +357,19 @@ func TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees(t *testing.T) {
 	// l'utilisateur à deviner.
 	if !slices.Contains(commandes, "sbx rm --force api") {
 		t.Errorf("le message doit donner la remédiation exacte ; obtenu : %v", err)
+	}
+
+	// La remédiation de DEN passe d'abord : `den rm api` fait ce que fait
+	// `sbx rm --force api` ET nettoie les worktrees que den a créés pour cette
+	// sandbox (internal/cli/rm.go, nettoieWorktrees). Envoyer l'utilisateur
+	// directement sur sbx lui laisse des worktrees orphelins sous
+	// worktree_root, sans rien lui dire.
+	if !slices.Contains(commandes, "den rm api") {
+		t.Errorf("le message doit proposer `den rm api`, qui nettoie aussi les worktrees ; obtenu : %v", err)
+	}
+	if strings.Index(message, "den rm api") > strings.Index(message, "sbx rm --force api") {
+		t.Errorf("`den rm api` doit précéder `sbx rm --force api` : c'est la remédiation complète, "+
+			"l'autre est le repli ; obtenu : %v", err)
 	}
 }
 
