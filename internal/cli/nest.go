@@ -53,6 +53,7 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 			if err := w.Flush(); err != nil {
 				return err
 			}
+			avertitDesNestsMasques(cmd, nests)
 
 			if len(casses) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout())
@@ -63,6 +64,44 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 			}
 			return nil
 		},
+	}
+}
+
+// avertitDesNestsMasques signale les nests qui portent le nom d'une
+// sous-commande. Ceux-là sont déclarés, listés et résolus par `den nest show`,
+// mais `den <nom>` lancera TOUJOURS la sous-commande : cobra la trouve avant que
+// l'argument n'atteigne le RunE de la racine. Ils ne sont donc jamais
+// spawnables, et sans cet avertissement rien ne le dit — den nommerait un objet
+// qu'il refuse ensuite d'adresser, le défaut trouvé en T3 avec `-api`.
+//
+// C'est la contrepartie de la suggestion de `den doctr` : celle-ci aide quand le
+// nest N'EXISTE PAS et que le nom ressemble à une commande ; celle-là quand le
+// nest existe et que le nom EST une commande. Le choix « la racine est la
+// commande de spawn » (spec §11) crée les deux, il faut les tenir tous les deux.
+//
+// Sur stderr, pour que `den nest ls | …` reste tuyautable. Rien du tout quand il
+// n'y a pas de collision : un avertissement permanent ne se lit plus.
+//
+// La comparaison porte sur les noms ET les alias de root.Commands(), c'est-à-dire
+// exactement ce que cobra consulte pour router un argument — et jamais sur une
+// liste en dur, qui divergerait au prochain AddCommand. La correspondance est
+// EXACTE : un nest « l » n'est pas masqué par `ls` (vérifié, cobra ne fait pas
+// de correspondance par préfixe pour router).
+func avertitDesNestsMasques(cmd *cobra.Command, nests []*nest.Nest) {
+	commandes := map[string]bool{}
+	for _, sous := range cmd.Root().Commands() {
+		commandes[sous.Name()] = true
+		for _, alias := range sous.Aliases {
+			commandes[alias] = true
+		}
+	}
+	for _, n := range nests {
+		if commandes[n.Name] {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"avertissement : le nest %q est masqué par la sous-commande `den %s` — "+
+					"`den %s` lancera la commande, jamais ce nest. Renomme-le pour pouvoir le spawner.\n",
+				n.Name, n.Name, n.Name)
+		}
 	}
 }
 

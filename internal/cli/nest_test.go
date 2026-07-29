@@ -170,3 +170,67 @@ func TestNestShowRespecteLesFlagsDeSelection(t *testing.T) {
 		t.Errorf("le repo requis a disparu : %q", out)
 	}
 }
+
+// M-1 — un nest qui porte le nom d'une sous-commande est listé par `den nest ls`
+// et résolu par `den nest show`, mais `den <nom>` lancera TOUJOURS la
+// sous-commande : il n'est jamais spawnable. C'est le défaut trouvé en T3 avec
+// `-api` — den nomme un objet qu'il refuse ensuite d'adresser — et la
+// contrepartie exacte de la suggestion de D1, qui ne le tient que dans l'autre
+// sens.
+//
+// L'avertissement part sur STDERR : la liste doit rester tuyautable sans qu'un
+// avertissement s'y glisse, et c'est exactement ce qu'executeCmd (qui fusionne
+// les deux flux) ne peut pas distinguer.
+func TestNestLsAvertitDesNestsMasquesParUneSousCommande(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "nests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, nom := range []string{"api", "ls", "version"} {
+		if err := os.WriteFile(filepath.Join(dir, "nests", nom+".yaml"),
+			[]byte("stack: devx\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stdout, stderr, err := executeCmdFluxSepares(t, NewRootCmd(), "nest", "ls", "--den-home", dir)
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	// La liste elle-même ne change pas : les nests masqués EXISTENT.
+	for _, nom := range []string{"api", "ls", "version"} {
+		if !strings.Contains(stdout, nom) {
+			t.Errorf("le nest %q doit rester listé ; stdout = %q", nom, stdout)
+		}
+	}
+	for _, masque := range []string{"ls", "version"} {
+		if !strings.Contains(stderr, masque) {
+			t.Errorf("le nest masqué %q doit être signalé ; stderr = %q", masque, stderr)
+		}
+	}
+	// Et surtout PAS de faux positif : « api » n'est masqué par rien.
+	if strings.Contains(stderr, "api") {
+		t.Errorf("« api » n'est masqué par aucune sous-commande ; stderr = %q", stderr)
+	}
+	// L'avertissement ne doit pas polluer la sortie tuyautable.
+	if strings.Contains(stdout, "masqué") || strings.Contains(stdout, "avertissement") {
+		t.Errorf("l'avertissement doit partir sur stderr, pas sur stdout ; stdout = %q", stdout)
+	}
+}
+
+// Sans nest masqué, stderr doit rester VIDE : un avertissement permanent est un
+// avertissement qu'on n'écoute plus.
+func TestNestLsNAvertitDeRienSansCollision(t *testing.T) {
+	dir := denHomeAvecNest(t, "api")
+
+	stdout, stderr, err := executeCmdFluxSepares(t, NewRootCmd(), "nest", "ls", "--den-home", dir)
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if !strings.Contains(stdout, "api") {
+		t.Errorf("stdout = %q, attendu le nest listé", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, attendu vide : aucun nest n'est masqué", stderr)
+	}
+}
