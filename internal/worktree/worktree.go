@@ -217,6 +217,30 @@ func Assure(ctx context.Context, g Git, layout, root, wt, cheminRepo string) (st
 	// `-b <branche>` sinon : git refuse de recréer une branche existante.
 	args := []string{"worktree", "add", chemin, wt}
 	if !brancheExiste(ctx, g, cheminRepo, wt) {
+		// Un dépôt sans le moindre commit n'a pas de point de départ à donner à
+		// la nouvelle branche. Le contrôle vit ICI et pas plus haut parce que
+		// c'est la seule branche qu'un tel dépôt peut atteindre — sans commit,
+		// aucune branche n'existe, donc brancheExiste est forcément faux — et
+		// que le placer en tête ferait payer un `rev-parse` au chemin
+		// idempotent, où le worktree est déjà en place.
+		//
+		// Sans lui, git rend un message exact de son point de vue et
+		// inactionnable du nôtre, mesuré :
+		//
+		//	No possible source branch, inferring '--orphan'
+		//	fatal: options '--orphan' and '--track' cannot be used together
+		//
+		// L'utilisateur n'a écrit ni --orphan ni --track : le premier vient de
+		// l'inférence de git, le second de ce que git range --no-track dans la
+		// famille --track. Rien là-dedans ne dit que le dépôt est vierge, qui
+		// est pourtant la seule chose à corriger.
+		if !aAuMoinsUnCommit(ctx, g, cheminRepo) {
+			return "", fmt.Errorf(
+				"création du worktree %q : le dépôt %s n'a aucun commit — den ne peut pas "+
+					"y créer de branche, git n'ayant aucun point de départ à lui donner ; "+
+					"fais-y un premier commit, puis relance",
+				wt, cheminRepo)
+		}
 		// --no-track : le point de départ est une ref de suivi, et sans lui git
 		// ferait suivre origin/<défaut> à la branche de travail — `git push`
 		// échouerait ensuite en proposant de pousser sur la branche par défaut.
@@ -769,6 +793,17 @@ func brancheExiste(ctx context.Context, g Git, cheminRepo, branche string) bool 
 
 // brancheParDefaut rend la ref de suivi de la branche par défaut du dépôt
 // (« origin/main »), et false si le dépôt n'a pas d'origin/HEAD.
+// aAuMoinsUnCommit dit si le dépôt a un HEAD résolvable, c'est-à-dire au moins
+// un commit. Un `git init` vierge n'en a pas : HEAD y pointe sur une branche
+// qui n'existe pas encore.
+//
+// --quiet pour que l'échec attendu ne pollue pas stderr, --verify pour que git
+// sorte non-zéro au lieu de rendre la chaîne telle quelle.
+func aAuMoinsUnCommit(ctx context.Context, g Git, cheminRepo string) bool {
+	_, err := g.Run(ctx, cheminRepo, "rev-parse", "--verify", "--quiet", "HEAD")
+	return err == nil
+}
+
 func brancheParDefaut(ctx context.Context, g Git, cheminRepo string) (string, bool) {
 	out, err := g.Run(ctx, cheminRepo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	if err != nil {

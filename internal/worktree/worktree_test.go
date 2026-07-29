@@ -2348,3 +2348,67 @@ func basculeSur(t *testing.T, dir, branche string) {
 	t.Helper()
 	git(t, dir, "checkout", "-b", branche)
 }
+
+// Un dépôt SANS AUCUN COMMIT doit produire un diagnostic de den, pas le
+// message contradictoire de git. Trouvé en exerçant le binaire assemblé
+// (tâche 17c) — le brief le listait parmi les cas à inventer.
+//
+// Sortie RÉELLE avant correctif, sur `den api -w feat1` visant un `git init`
+// vierge :
+//
+//	den: création du worktree "feat1" de /…/monrepo : git worktree add
+//	     --no-track -b feat1 /…/worktrees/feat1/monrepo (dans /…/monrepo) :
+//	     No possible source branch, inferring '--orphan'
+//	     fatal: options '--orphan' and '--track' cannot be used together
+//
+// L'utilisateur n'a écrit ni --orphan ni --track : les deux viennent de git
+// (qui range --no-track dans la famille --track) et de son inférence. Le
+// message est exact du point de vue de git et inactionnable du point de vue de
+// den — il ne dit à aucun moment que le dépôt n'a pas de commit, qui est la
+// seule chose à corriger.
+func TestAssureRefuseUnDepotSansCommitEnLeDisant(t *testing.T) {
+	// Dépôt initialisé mais VIERGE : pas de creeDepot, qui commite.
+	repo := filepath.Join(t.TempDir(), "vierge")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init", "-q", "-b", "main")
+
+	racine := t.TempDir()
+	_, err := Assure(context.Background(), NewGit(), "central", racine, "feat1", repo)
+	if err == nil {
+		t.Fatal("un dépôt sans commit ne peut pas porter de worktree : refus attendu")
+	}
+	msg := err.Error()
+	// LA cause, nommée : c'est la seule chose que l'utilisateur peut corriger.
+	if !strings.Contains(msg, "commit") {
+		t.Errorf("le message doit dire que le dépôt n'a aucun commit ; obtenu : %s", msg)
+	}
+	// Le dépôt concerné : un nest peut en monter plusieurs.
+	if !strings.Contains(msg, repo) {
+		t.Errorf("le message doit nommer le dépôt fautif ; obtenu : %s", msg)
+	}
+	// Et surtout PAS le charabia de git, qui envoie sur une fausse piste.
+	for _, interdit := range []string{"--orphan", "--track"} {
+		if strings.Contains(msg, interdit) {
+			t.Errorf("le message ne doit pas exposer %q : l'utilisateur ne l'a pas écrit, "+
+				"et ce n'est pas ce qu'il doit corriger ; obtenu : %s", interdit, msg)
+		}
+	}
+}
+
+// Le pendant, et il compte : un dépôt QUI A un commit doit continuer de
+// produire un worktree. Sans lui, une garde trop large — refuser tout dépôt —
+// passerait le test précédent en cassant l'usage normal.
+func TestAssureCreeToujoursLeWorktreeDUnDepotAvecCommit(t *testing.T) {
+	repo := depotTest(t, "avec-commit")
+	racine := t.TempDir()
+
+	chemin, err := Assure(context.Background(), NewGit(), "central", racine, "feat1", repo)
+	if err != nil {
+		t.Fatalf("un dépôt pourvu d'un commit doit accepter un worktree : %v", err)
+	}
+	if _, err := os.Stat(chemin); err != nil {
+		t.Errorf("le worktree annoncé en %s n'existe pas : %v", chemin, err)
+	}
+}
