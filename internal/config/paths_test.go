@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -111,5 +112,58 @@ func TestExpandPath(t *testing.T) {
 				t.Errorf("ExpandPath(%q) = %q, attendu %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+// $HOME absent de l'environnement : den doit dire CE QU'IL cherchait et
+// COMMENT s'en passer. Trouvé en exerçant le binaire assemblé (tâche 17c).
+//
+// Sortie RÉELLE avant correctif, `env -u HOME den nest ls` :
+//
+//	den: $HOME is not defined
+//
+// Le message vient tel quel d'os.UserHomeDir : en anglais dans une CLI
+// francophone, et surtout SANS CONTEXTE — il ne dit ni que den cherchait le
+// dossier de configuration, ni que --den-home et DEN_HOME existent et
+// résolvent le problème sur-le-champ. Le cas se produit pour de bon sous
+// systemd, dans un conteneur, ou dans un cron.
+func TestHomeSansHOMEDitCeQuIlCherchaitEtCommentSEnPasser(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("DEN_HOME", "")
+
+	_, err := Home("")
+	if err == nil {
+		t.Skip("os.UserHomeDir résout un home malgré HOME vide : cas non exerçable ici")
+	}
+	msg := err.Error()
+	for _, attendu := range []string{"~/.den", "DEN_HOME", "--den-home"} {
+		if !strings.Contains(msg, attendu) {
+			t.Errorf("le message doit mentionner %q — c'est la sortie de secours ; obtenu : %s",
+				attendu, msg)
+		}
+	}
+	// La cause d'origine reste inspectable : le message la reformule, il ne la
+	// remplace pas.
+	if !strings.Contains(msg, "HOME") {
+		t.Errorf("la cause d'origine doit survivre dans le message ; obtenu : %s", msg)
+	}
+}
+
+// Même exigence pour ExpandPath, l'autre porte d'entrée du home : elle expanse
+// les « ~ » des config_dir, ssh.dir et repos. Sans contexte, l'utilisateur lit
+// « $HOME is not defined » sans savoir quel champ de sa configuration porte le
+// tilde fautif.
+func TestExpandPathSansHOMENommeLeCheminFautif(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	_, err := ExpandPath("~/.den/agents/claude")
+	if err == nil {
+		t.Skip("os.UserHomeDir résout un home malgré HOME vide : cas non exerçable ici")
+	}
+	if !strings.Contains(err.Error(), "~/.den/agents/claude") {
+		t.Errorf("le message doit citer le chemin à expanser ; obtenu : %v", err)
+	}
+	if !strings.Contains(err.Error(), "HOME") {
+		t.Errorf("la cause d'origine doit survivre ; obtenu : %v", err)
 	}
 }

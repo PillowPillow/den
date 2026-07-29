@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,14 @@ func Home(flagValue string) (string, error) {
 	if brut == "" {
 		h, err := os.UserHomeDir()
 		if err != nil {
-			return "", err
+			// Le message d'os.UserHomeDir (« $HOME is not defined ») est exact
+			// mais muet : il ne dit ni ce que den cherchait, ni que deux
+			// sorties de secours existent. Le cas se produit pour de bon sous
+			// systemd, dans un conteneur ou dans un cron — là, précisément, où
+			// personne n'est devant l'écran pour deviner.
+			return "", fmt.Errorf(
+				"impossible de situer le dossier de configuration de den (~/.den) : %w — "+
+					"passe --den-home <dossier>, ou définis DEN_HOME", err)
 		}
 		brut = filepath.Join(h, ".den")
 	}
@@ -36,7 +44,11 @@ func ExpandPath(p string) (string, error) {
 	}
 	h, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		// Le chemin fautif est nommé : cette fonction expanse les « ~ » des
+		// config_dir, ssh.dir et repos, et l'erreur nue ne disait pas lequel de
+		// ces champs portait le tilde. Les appelants ajoutent par-dessus l'objet
+		// concerné (« agent claude : … »).
+		return "", fmt.Errorf("expansion de %q : %w — définis HOME, ou écris un chemin absolu", p, err)
 	}
 	if p == "~" {
 		return h, nil
