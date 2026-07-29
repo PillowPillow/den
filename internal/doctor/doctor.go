@@ -4,11 +4,9 @@ package doctor
 
 import (
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -317,14 +315,26 @@ func Run(denHome string, d Deps) []Check {
 		}
 	}
 
-	// 5. profils agents : le dossier peut ne pas exister encore (créé au premier spawn),
-	// on ne signale que ce qui est structurellement faux, pas l'absence.
-	// Tri des noms : toute liste destinée à l'affichage est déterministe (map Go non ordonnée).
-	for _, nom := range slices.Sorted(maps.Keys(g.Agents)) {
-		if g.Agents[nom].Update == "" {
-			ajoute("agent "+nom, false, "aucune commande update déclarée (spec §9.1)")
-		}
-	}
+	// 5. profils agents — ÉTAPE SUPPRIMÉE, et pourquoi elle ne revient pas.
+	//
+	// Elle rejugeait `update`, déjà jugé par Validate() à l'étape 3, mais sur
+	// `== ""` là où Validate() juge sur TrimSpace (corrigé en T2-min-5,
+	// précisément parce que deux juges d'un même champ doivent juger pareil).
+	// Deux conséquences mesurées sur le binaire, à un espace près dans le YAML :
+	//
+	//	update: ""     → 2 [FAIL] pour 1 faute, « 2 diagnostic(s) en échec »
+	//	update: "   "  → 1 [FAIL],              « 1 diagnostic(s) en échec »
+	//
+	// Elle n'attrapait rien que Validate() laisse passer — `x == ""` implique
+	// `strings.TrimSpace(x) == ""`, et l'étape 3 est jouée INCONDITIONNELLEMENT
+	// avant celle-ci (aucun `return` entre les deux). Son message était en outre
+	// le moins actionnable des deux : « agent claude », là où Validate() nomme la
+	// clé à corriger (`agents.claude.update`).
+	//
+	// Ce qui la remplace n'est pas rien : Validate() la couvre entièrement, et
+	// TestDoctorNeCompteQuUnEchecParUpdateFautif verrouille le compte — l'étape
+	// elle-même n'était couverte par AUCUN test (mesuré : `== "" && false`
+	// laissait `go test ./... -count=1` entièrement vert).
 
 	// 6. nests : stack référencée existante, repos présents sur disque
 	nests, casses, err := nest.ListNests(denHome)

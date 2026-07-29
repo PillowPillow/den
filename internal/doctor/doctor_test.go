@@ -689,6 +689,53 @@ func TestRunAgentSansCommandeUpdate(t *testing.T) {
 	}
 }
 
+// UNE faute, UN diagnostic — et le même compte quel que soit l'espace invisible
+// écrit dans le champ.
+//
+// Deux juges portaient sur `update` : Validate() (étape 3, sur TrimSpace) et
+// une boucle propre à doctor (étape 5, sur `== ""`). Mesuré sur le binaire
+// AVANT correctif, den home identique à l'espace près :
+//
+//	update: ""     → 2 [FAIL], « 2 diagnostic(s) en échec »
+//	update: "   "  → 1 [FAIL], « 1 diagnostic(s) en échec »
+//
+// La seconde ligne ne nommait de surcroît que « agent claude », là où
+// Validate() nomme la CLÉ à corriger. C'était le dernier survivant de la classe
+// « deux juges d'un même champ », que la branche a fermée trois fois ailleurs —
+// et l'étape 5 n'était couverte par aucun test (mesuré : `== "" && false`
+// laissait `go test ./... -count=1` entièrement vert).
+//
+// Le test porte sur le NOMBRE et sur la CLÉ, pas sur l'existence : c'est le
+// nombre qui bougeait, et l'existence était déjà tenue par le test ci-dessus.
+func TestDoctorNeCompteQuUnEchecParUpdateFautif(t *testing.T) {
+	for _, update := range []string{"", "   ", "\t"} {
+		t.Run(strconv.Quote(update), func(t *testing.T) {
+			dir := t.TempDir()
+			contenu := "agents:\n  claude:\n    config_dir: /tmp/c\n    update: " +
+				strconv.Quote(update) + "\ndefaults:\n  agent: claude\n  stack: devx\n"
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(contenu), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			var fautifs []Check
+			for _, c := range Run(dir, depsOK()) {
+				if c.Bloquant() && strings.Contains(c.Detail, "update") {
+					fautifs = append(fautifs, c)
+				}
+			}
+			if len(fautifs) != 1 {
+				t.Fatalf("%d diagnostics en échec sur `update` pour UNE faute, attendu 1 ; obtenu : %+v",
+					len(fautifs), fautifs)
+			}
+			// La clé exacte, pas seulement l'agent : « agent claude » n'indique
+			// pas quelle ligne du YAML corriger.
+			if !strings.Contains(fautifs[0].Detail, "agents.claude.update") {
+				t.Errorf("le diagnostic doit nommer la clé à corriger ; obtenu : %+v", fautifs[0])
+			}
+		})
+	}
+}
+
 // Une stack cassée ne doit produire qu'UN SEUL diagnostic — le sien — et
 // surtout aucun diagnostic FAUX sur les objets sains. 16ᵉ configuration
 // hostile (tâche 17c).
