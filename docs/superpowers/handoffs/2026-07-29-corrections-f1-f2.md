@@ -184,11 +184,11 @@ résout désormais les deux côtés, comme `memeChemin` le fait déjà partout a
 
 ## Restant
 
-Inchangé depuis le smoke : **F4** (`-w feat/x` refusé — garder le nom de branche réel et n'aplatir
-que le nom de sandbox), **F3** (dossier de worktree vide après `den rm`, cosmétique), **F5** (à
-savoir, pas un bug). Puis Plan 3 (`den ports`, `-i`) et Plan 4 (`den build`).
+**F4** (`-w feat/x` refusé) et **F3** (dossier de worktree vide après `den rm`) ont été corrigés
+depuis : voir `2026-07-29-corrections-f4-f3.md`. Reste **F5** (à savoir, pas un bug), puis Plan 3
+(`den ports`, `-i`) et Plan 4 (`den build`).
 
 ## État
 
-`gofmt` propre, `go vet` propre, `go test ./...` → **661 passés, 0 échec**. Rien n'est commité, et le
-travail est sur `main` — à déplacer sur une branche avant de figer quoi que ce soit.
+`gofmt` propre, `go vet` propre, `go test ./...` → **661 passés, 0 échec**. Commité sur `main`
+(`eef14e7`, `bcf6e7f`, `18ce3dc`, `403d00e`, `6dad2ca`), sur décision de l'utilisateur.
