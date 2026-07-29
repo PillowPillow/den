@@ -128,3 +128,50 @@ func TestDecodeYAMLStrictAccepteUnDocumentUniqueMemeAvecMarqueur(t *testing.T) {
 		})
 	}
 }
+
+// Les formes qui ne perdent RIEN mais restent refusées.
+//
+// Mesuré, second `Decode` réussi mais document ré-encodé VIDE dans les trois
+// cas : un « --- » final sans contenu derrière, la forme front-matter
+// « ---\n…\n--- », et un « --- » suivi de commentaires seuls. Rien n'y est
+// ignoré, contrairement à ce qu'affirmait la première version du message.
+//
+// Le refus est CONSERVÉ — il est fail-closed, « ... » est le vrai marqueur de
+// fin de document, et l'ambiguïté ne vaut pas d'être tolérée — mais le message
+// ne doit pas affirmer une perte qui n'a pas lieu. L'habitude front-matter est
+// assez répandue pour que le cas se présente, et un utilisateur bloqué sur un
+// fichier sans faute réelle AVEC une explication fausse est exactement ce que
+// l'écart C de la tâche 17c existait pour supprimer.
+func TestDecodeYAMLStrictRefuseSansAffirmerUnePerteQuiNAPasLieu(t *testing.T) {
+	cas := []struct {
+		nom  string
+		brut string
+	}{
+		{"marqueur --- final sans contenu", "egress:\n  - a\n---\n"},
+		{"front-matter (--- … ---)", "---\negress:\n  - a\n---\n"},
+		{"--- suivi de commentaires seuls", "egress:\n  - a\n---\n# rien que des commentaires\n"},
+	}
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			var dest cible
+			err := DecodeYAMLStrict("/den/nests/api.yaml", []byte(c.brut), &dest)
+			// Fail-closed, assumé et verrouillé : ces formes RESTENT refusées.
+			if err == nil {
+				t.Fatal("forme multi-documents acceptée : le refus est délibérément fail-closed")
+			}
+			msg := err.Error()
+			// L'AFFIRMATION FAUSSE, interdite : ici, rien n'est ignoré.
+			if strings.Contains(msg, "ignorés en silence") {
+				t.Errorf("le message affirme une perte qui n'a PAS lieu — le document suivant est "+
+					"vide (mesuré) ; obtenu : %s", msg)
+			}
+			if !strings.Contains(msg, "/den/nests/api.yaml") {
+				t.Errorf("le message doit nommer le fichier fautif ; obtenu : %s", msg)
+			}
+			// Et il doit dire QUOI faire, le fichier n'ayant aucune faute de syntaxe.
+			if !strings.Contains(msg, "document") {
+				t.Errorf("le message doit parler de documents ; obtenu : %s", msg)
+			}
+		})
+	}
+}

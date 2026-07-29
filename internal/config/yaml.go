@@ -47,12 +47,22 @@ func DecodeYAMLStrict(chemin string, brut []byte, dest any) error {
 	// SAVOIR s'il reste un document, pas de le décoder — un second document au
 	// schéma incompatible doit être signalé comme document en trop, pas comme
 	// erreur de type.
+	//
+	// LE MESSAGE N'AFFIRME AUCUNE PERTE, et c'est délibéré. Trois formes
+	// déclenchent ce refus SANS que rien ne soit ignoré (mesuré, second document
+	// ré-encodé vide) : un « --- » final sans contenu derrière, la forme
+	// front-matter « ---\n…\n--- », et un « --- » suivi de commentaires seuls.
+	// Le refus reste fail-closed sur les trois — « ... » est le vrai marqueur de
+	// fin de document, et l'ambiguïté ne vaut pas d'être tolérée — mais annoncer
+	// à l'utilisateur une perte qu'il ne subit pas le lancerait à la recherche
+	// d'une configuration disparue qui n'a jamais existé.
 	var suivant yaml.Node
 	if err := dec.Decode(&suivant); err == nil {
 		return fmt.Errorf(
 			"%s : le fichier contient plusieurs documents YAML (séparés par « --- ») — "+
-				"den n'en lit qu'un, et les suivants seraient ignorés en silence ; "+
-				"n'en garde qu'un seul", chemin)
+				"den n'en lit qu'un seul et refuse plutôt que de deviner lequel fait foi ; "+
+				"garde un document unique, sans « --- » de séparation "+
+				"(le marqueur de fin « ... » reste accepté)", chemin)
 	}
 	return nil
 }
