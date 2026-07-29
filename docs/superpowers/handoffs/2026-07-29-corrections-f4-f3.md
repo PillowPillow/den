@@ -48,6 +48,15 @@ protège `worktree.Chemin` d'un worktree creusé en sous-dossier, voire hors de 
   indiscernable d'un flag, et den ne choisit pas un nom à la place de l'utilisateur. Le message rend
   le nom TAPÉ, pas sa forme aplatie.
 
+### Ce que den ne prétend PAS valider
+
+den accepte tout nom qu'il sait **nommer** ; git reste seul juge de ce qui est une **ref** légale.
+`-w 'a..b'` traverse le nommage (dossier `a--b`, sandbox `api.a--b`) et c'est `git worktree add` qui
+refuse — mesuré : `fatal: 'a..b' is not a valid branch name`, enveloppé par le message français
+d'`Assure`, et **avant toute création de sandbox** (les worktrees sont l'étape 3, le `create`
+l'étape 6). Redupliquer `git check-ref-format` dans den serait une seconde source de vérité vouée à
+diverger de la première.
+
 ### La collision, et ce qui la rattrape
 
 L'aplatissement n'est pas injectif : « feat/essai » et « feat-essai » visent le même dossier et le
@@ -81,6 +90,11 @@ den ls: duo.feat-essai   duo   feat-essai   running   5
 
 Les mounts de F1 sont toujours là (les deux `.git`), donc F4 ne les défait pas.
 
+Vérifié aussi, parce que c'est l'autre endroit où un `/` ferait des dégâts : le **mixin généré**
+n'embarque que la forme aplatie — dossier `cache/mixins/duo.feat-essai`, `name: den-duo-feat-essai`.
+Aucun `feat/essai` n'y apparaît. C'est structurel (le mixin est construit à partir du nom de
+sandbox, jamais de `o.Worktree`), mais ça n'avait jamais été exercé avec deux noms qui diffèrent.
+
 ## F3 — le dossier qui portait le worktree part avec lui
 
 En layout central, le worktree vit dans un dossier à lui (`<root>/<wt>/<repo>`). `den rm` le vidait
@@ -102,7 +116,10 @@ sûrement. Jamais sur le refus « worktree sale », qui doit tout laisser intact
 
 **Le garde-fou** : `Retire` est exportée, et `Chemin("central", root, "", repo)` a pour dossier
 porteur `worktree_root` LUI-MÊME. Un appel sans nom de worktree effacerait donc la racine de
-l'utilisateur si elle se trouvait vide. Refusé explicitement, et testé.
+l'utilisateur si elle se trouvait vide. Refusé explicitement, et testé — au sens fort : le test a
+d'abord été écrit sur le décor commun, où la racine porte encore un worktree ; il passait alors
+**sans** le garde-fou, parce qu'`os.Remove` échouait sur ENOTEMPTY pour une tout autre raison. Il a
+été refait sur une racine VIDE, et vérifié rouge garde-fou retiré.
 
 ### Mesuré sur le banc
 

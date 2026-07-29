@@ -394,9 +394,18 @@ func TestRetireEfaceLeDossierIntermediaireApresUneDisparitionALaMain(t *testing.
 // Chemin sur `<root>/<repo>`, dont le parent est worktree_root LUI-MÊME. Sans
 // ce refus, un tel appel effacerait la racine des worktrees de l'utilisateur
 // dès lors qu'elle est vide.
+// La racine est VIDE ici, et c'est tout le test : avec un worktree encore
+// dedans, os.Remove échouerait de toute façon sur ENOTEMPTY et le garde-fou ne
+// serait plus exercé du tout — le test resterait vert sans lui.
 func TestRetireNeTouchePasALaRacineSansNomDeWorktree(t *testing.T) {
-	_, _, cible := prepareWorktree(t)
-	cible.Worktree = ""
+	cible := Cible{
+		DenHome:    t.TempDir(),
+		Layout:     "central",
+		Root:       t.TempDir(),
+		Nest:       "api",
+		Worktree:   "",
+		CheminRepo: depotTest(t, "api"),
+	}
 
 	if _, err := Retire(context.Background(), NewGit(), cible); err != nil {
 		t.Fatalf("suppression : %v", err)

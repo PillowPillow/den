@@ -53,6 +53,10 @@ et le dossier de worktree en prennent une forme aplatie : `den api -w feature/12
 branche `feature/123` dans une sandbox `api.feature-123`. C'est sous ce nom-là qu'elle apparaît dans
 `den ls`, et c'est lui qu'attendent `den sh` et `den rm`.
 
+den accepte donc tout nom qu'il sait **nommer** ; git reste seul juge de ce qui est une **ref**
+légale. `-w 'a..b'` passe le nommage (sandbox `api.a--b`) et c'est `git worktree add` qui refuse,
+avant toute création de sandbox.
+
 Options de `den rm` : `--keep-worktrees` (conserver les worktrees), `--force` (les supprimer même
 s'ils portent des modifications non commitées ; sans lui, den refuse **avant** de toucher à la VM).
 
