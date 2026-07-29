@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	"github.com/PillowPillow/den/internal/nest"
+	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
+	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -128,9 +130,24 @@ func depsSpawnFactices() (*sbx.Fake, spawn.Deps) {
 		},
 		Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": true}`)},
 	}
-	d := spawn.DepsSysteme()
-	d.Sbx = f
-	return f, d
+	// Construite CHAMP PAR CHAMP, et non par un `spawn.DepsSysteme()` dont on
+	// écraserait Sbx ensuite : ce constructeur-là n'existe plus (voir
+	// internal/spawn/spawn.go), parce qu'il fabriquait un second
+	// `sbx.NewExec("")` — le câblage que root_deps_test.go interdit — et que sa
+	// godoc affirmait un rôle de production qu'il n'a jamais eu.
+	//
+	// Le Git est le VRAI (worktree.NewGit), comme avant : c'est sûr pour les
+	// tests qui consomment ce helper parce qu'aucun ne passe `-w`, seul chemin
+	// du spawn qui consulte Git. Celui qui veut prouver l'injection de Git en
+	// fournit un factice explicitement (root_deps_test.go).
+	//
+	// Sortie reste nulle : configureSpawn l'écrase à chaque exécution avec
+	// cmd.OutOrStdout(), et Spawn retombe sur io.Discard si elle manque.
+	return f, spawn.Deps{
+		Sbx:    f,
+		Git:    worktree.NewGit(),
+		Policy: policy.OptionsDefaut(),
+	}
 }
 
 // Chaque flag de `den <nest>` doit atteindre spawn.Options.

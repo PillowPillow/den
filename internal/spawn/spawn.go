@@ -29,22 +29,23 @@ type Deps struct {
 	Sortie io.Writer
 }
 
-// DepsSysteme branche la séquence sur le monde réel : le binaire `sbx` du PATH,
-// git, et la patience par défaut du settle-loop.
+// Il n'y a PAS de DepsSysteme ici, et c'est délibéré. Une version antérieure en
+// portait une (`sbx.NewExec("") + worktree.NewGit() + OptionsDefaut + os.Stdout`)
+// dont la godoc affirmait qu'elle existait « pour que le câblage cobra puisse
+// recevoir ses accès en paramètre ». C'était faux : `internal/cli/root.go`
+// assemble spawn.Deps champ par champ, depuis les accès de `cli.Deps`, et ne
+// l'appelait jamais — mesuré, `go build ./cmd/den` réussit après l'avoir
+// renommée. Son seul consommateur était un helper de test.
 //
-// Elle existe pour que le câblage cobra puisse recevoir ses accès en paramètre
-// plutôt que de les construire en dur — même raison que doctor.DepsSysteme :
-// sans cette injection, le branchement des flags de `den <nest>` sur Options
-// n'est vérifiable nulle part, et un test qui atteindrait `sbx create`
-// tenterait d'exécuter le vrai binaire.
-func DepsSysteme() Deps {
-	return Deps{
-		Sbx:    sbx.NewExec(""),
-		Git:    worktree.NewGit(),
-		Policy: policy.OptionsDefaut(),
-		Sortie: os.Stdout,
-	}
-}
+// Elle était de plus le DERNIER endroit de l'arbre à construire un second
+// `sbx.NewExec("")` — exactement le câblage que `root_deps_test.go` existe pour
+// interdire (`cli.Deps` ne porte qu'un seul Sbx, partagé entre `den ls` et le
+// spawn ; la godoc de ce fichier nomme `spawn.DepsSysteme()` comme LA forme du
+// refactor à empêcher). Garder un constructeur tout prêt pour ce câblage-là,
+// avec une godoc qui l'encourage, était une arme chargée.
+//
+// La porte d'injection, elle, reste entière : Deps est publique et tous ses
+// champs le sont. C'est l'appelant qui dit ce qu'il branche.
 
 // Options porte les flags de `den <nest>`.
 type Options struct {

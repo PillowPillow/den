@@ -27,6 +27,14 @@ package cli
 // verrouille que cette structure à Sbx unique est bien celle assemblée par
 // NewRootCmdAvec, pas contournée par un futur câblage qui réintroduirait un
 // second sbx.Runner du côté spawn (sbx.NewExec("") en dur, par exemple).
+//
+// NOTE : `spawn.DepsSysteme()`, citée ci-dessus comme LA forme du refactor à
+// empêcher, N'EXISTE PLUS — elle était morte en production (mesuré :
+// `go build ./cmd/den` réussissait sans elle) et n'était plus qu'un
+// constructeur tout prêt pour ce câblage-là, avec une godoc qui l'encourageait.
+// Le paragraphe est gardé au passé parce qu'il documente ce que ces tests
+// verrouillent ; c'est maintenant `sbx.NewExec("")` écrit à la main qui est la
+// forme à surveiller.
 
 import (
 	"context"
