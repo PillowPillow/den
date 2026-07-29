@@ -98,7 +98,7 @@ parallèle** (approche A). Un cache reconstructible n'est ajouté que si un beso
 agents:                                  # registre générique — Claude aujourd'hui, Codex demain
   claude:
     config_dir: ~/.den/agents/claude
-    env: { CLAUDE_CONFIG_DIR: "{config_dir}" }   # {config_dir} résolu au chemin in-VM (== hôte)
+    env: { CLAUDE_CONFIG_DIR: "{config_dir}" }   # {config_dir} résolu au chemin HÔTE — cf. A11 §14.1
     bin_dirs: ["$HOME/.local/bin", "$HOME/.claude/local"]  # cf. §9 (PATH du dispatcher)
     update: "claude update"                     # commande de fraîcheur, jouée au boot
   codex:
@@ -441,8 +441,83 @@ internal/
 
 ## 14. Questions ouvertes / risques
 
-- **Surface `sbx` figée le 2026-07-28** (v0.35.0) : `policy check network [--sandbox S] [--json]
-  TARGET` confirmé (`--sandbox` existe, l'évaluation scopée est donc possible) ; `--label`
+### 14.0 Surface `sbx` ATTESTÉE (relevé du 2026-07-28, v0.35.0)
+
+Sondée sur la machine de l'utilisateur. **C'est le seul relevé de référence du dépôt** : ce qui
+n'y figure pas n'est pas attesté, et ne doit être ni suggéré à l'utilisateur dans un message, ni
+tenu pour acquis dans le code. Étendre cette liste demande un **relevé**, pas une intuition.
+(Recopié ici depuis le plan 2, qui n'est pas un fichier suivi — la trace, elle, doit l'être.)
+
+```
+sbx create [flags] AGENT PATH [PATH...]
+  flags : --clone --cpus int --kit strings (répétable) -m/--memory --name --profile -q -t/--template
+  AGENT ∈ {claude, codex, copilot, cursor, docker-agent, droid, gemini, kiro, opencode, shell}
+  PATH accepte le suffixe `:ro`
+  --name : « letters, numbers, hyphens, periods, plus signs and minus signs only »
+  ⚠️ AUCUN --label. La décision verrouillée n°10 (état par labels) est FALSIFIÉE → identité par le nom.
+
+sbx ls [--json] [-q]
+  {"sandboxes":[{"name","id","agent","status","workspaces":["/p","/p:ro"]}]}
+  ⚠️ aucun champ de date/création → la colonne « âge » du §5 est INFAISABLE.
+
+sbx exec [flags] SANDBOX COMMAND [ARG...]
+  flags utiles : -i/--interactive -t/--tty -d/--detach -w/--workdir -u/--user
+
+sbx ports SANDBOX [--publish spec] [--unpublish spec] [--json]
+  spec : [[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]
+
+sbx policy check network [--sandbox SANDBOX] [--json] [--verbose] TARGET
+  « Bare hosts and IP literals are evaluated with port 443. »
+  → une entrée egress nue est cohérente entre le mixin et le check, sans normalisation.
+
+sbx rm --force NAME
+```
+
+`sbx-devbox` ajoute `stop`, `template save`, `secret`, `inspect`, `login`. **`sbx start`
+n'apparaît dans aucun relevé** — c'est la raison pour laquelle la remédiation de
+`internal/sbx/ls.go` ne le propose pas (tenue par
+`TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees`).
+
+**Schéma de kit réel** (relevé sur `sbx-devbox/lib/*/spec.yaml`, pas sur la documentation) :
+
+```yaml
+schemaVersion: 2
+kind: mixin
+name: <identifiant>
+version: 1.0.0
+description: >-
+  ...
+caps:
+  network:
+    allow: ["api.anthropic.com:443", "github.com:22"]
+environment:
+  variables:
+    CLAUDE_CONFIG_DIR: /chemin/hote
+commands:
+  startup:
+    - command: ["bash", "-c", "..."]
+```
+
+Les clés sont `caps.network.allow` et `environment.variables` — **pas** `network.allow` ni `env`,
+que ce spec écrivait avant la tâche 1.
+
+**Deux pièges du dispatcher de kits** (`/etc/durable-startup.d/run.sh`, vérifiés empiriquement ;
+journal dans `/var/log/sbx-kit-startup.log`) :
+
+1. Chaque commande passe par `su -s /bin/sh -c … agent`, un `su` **non-login** : le PATH n'inclut
+   pas `~/.local/bin`, et tout binaire user-local sort en `127`. D'où l'`export PATH` explicite
+   généré dans le mixin (§9.1, `agent.CommandeFraicheur`).
+2. Le dispatcher fait `exit $rc` au **premier** échec : une commande non-zéro **prive tous les kits
+   suivants** de leurs startup commands. Ce qui est fail-closed se layere donc **en dernier** —
+   c'est **toute** la justification de `sbx.Create.KitMixin` comme champ séparé des `KitsStack`, et
+   de l'invariant « le mixin est le dernier `--kit` », verrouillé par 3 tests. Ce que ce relevé
+   n'atteste PAS : que `sbx` applique les `--kit` dans l'ordre de la ligne de commande (voir
+   « Hypothèses assumées », §14.1).
+
+### Questions ouvertes et risques restants
+
+- **Surface `sbx` figée le 2026-07-28** (v0.35.0), ci-dessus : `policy check network [--sandbox S]
+  [--json] TARGET` confirmé (`--sandbox` existe, l'évaluation scopée est donc possible) ; `--label`
   **n'existe pas** → identité par le nom. À revalider si sbx passe en v0.37+.
 - **Nettoyage des worktrees au `rm`** : par défaut `den` retire les worktrees qu'il a créés ;
   `--keep-worktrees` pour conserver.
@@ -494,19 +569,21 @@ internal/
 
 ---
 
-## 14.1 Hypothèses non vérifiées contre un `sbx` réel (inventaire A1→A10)
+## 14.1 Hypothèses non vérifiées contre un `sbx` réel (inventaire A1→A11)
 
 **Versé le 2026-07-28** (tâche 17b), depuis l'inventaire dressé en tâche 11 ; **A10 versée le
-2026-07-29** (tâche 18). Ces affirmations sont **invérifiables contre un `sbx` réel** : il n'est pas
-installé sur la machine de développement, et aucune ne peut être tranchée sans lui. Elles ne sont
-**pas** des bugs connus — ce sont les endroits où la suite ne prouve rien.
+2026-07-29** (tâche 18), **A11 le 2026-07-29** (revue finale). Ces affirmations sont
+**invérifiables contre un `sbx` réel** : il n'est pas installé sur la machine de développement, et
+aucune ne peut être tranchée sans lui. Elles ne sont **pas** des bugs connus — ce sont les endroits
+où la suite ne prouve rien.
 
-**A1→A9 et A10 ne sont pas de la même espèce.** A1→A9 portent sur le **contrat CLI** de `sbx` —
-argv, forme de la sortie, codes de retour — que le double de test (`sbx.Fake`) exerce réellement :
-elles sont **vertes contre le double**. A10 porte sur un comportement d'**exécution de la microVM**
-qu'aucun double ne touche, et pour lequel « vert contre `sbx.Fake` » ne veut rien dire. Sa moitié
-hôte (l'héritage de l'environnement par le process `sbx`) est, elle, tenue par des tests ; c'est le
-saut hôte → invité qui n'est tenu par rien.
+**A1→A9 d'une part, A10 et A11 de l'autre, ne sont pas de la même espèce.** A1→A9 portent sur le
+**contrat CLI** de `sbx` — argv, forme de la sortie, codes de retour — que le double de test
+(`sbx.Fake`) exerce réellement : elles sont **vertes contre le double**. A10 et A11 portent sur des
+comportements d'**exécution de la microVM** qu'aucun double ne touche, et pour lesquels « vert
+contre `sbx.Fake` » ne veut rien dire. La moitié hôte d'A10 (l'héritage de l'environnement par le
+process `sbx`) est, elle, tenue par des tests ; c'est le saut hôte → invité qui n'est tenu par rien.
+A11 n'a même pas cette moitié-là : elle est entièrement in-VM.
 
 **Ce que la tâche 11 a fait de la plupart d'entre elles :** neutraliser leur conséquence plutôt
 qu'attendre le smoke. Quand la colonne « den y survit » dit oui, la fausseté de l'hypothèse ne
@@ -524,6 +601,7 @@ casse plus den ; il reste utile de la vérifier, mais ce n'est plus bloquant.
 | A8 | La sandbox existe et tourne quand `policy check` est appelé | Idem A1 | **Oui** pour la garde de nom de sandbox |
 | A9 | `sbx` ne rend **jamais** `allowed:false` en échouant pour une raison **étrangère à la policy** | Une sandbox inexistante diagnostiquée `not found` **tout en** rendant `allowed:false` : den brûlerait ses 60 s en accusant l'allowlist | **Oui** — la dernière erreur runner observée est jointe au message de timeout, la vraie cause reste visible |
 | A10 | `sbx` **propage `SSH_AUTH_SOCK` de son propre environnement jusque dans la microVM** — c'est tout ce sur quoi repose `ssh.mode: agent-forward`, qui est le **défaut** | Un `git push` sur un remote SSH depuis la VM échoue en `Permission denied (publickey)` alors que `den doctor` affiche `[ok] ssh.mode agent-forward, SSH_AUTH_SOCK=…` sur l'hôte | **Partiellement.** Ce que den contrôle est prouvé : le process `sbx` hérite bien de l'environnement de den (`cmd.Env` laissé nil, tenu par `TestExec{Run,Attach}TransmetLEnvironnementDeDen`), et `den doctor` **avertit** quand la variable manque côté hôte. Ce que den ne peut pas contrôler — le saut hôte → microVM — n'a **aucun** substitut : si l'hypothèse est fausse, le repli est `ssh.mode: mount`, qui lui est testé |
+| A11 | `sbx` **monte chaque workspace au MÊME chemin absolu dans la VM que sur l'hôte** : le chemin hôte d'un workspace est aussi son chemin in-VM. C'est ce qui rend légitimes (1) la substitution de `{config_dir}` par un chemin **hôte** dans `CLAUDE_CONFIG_DIR` (`internal/nest/resolve.go`, `jetonConfigDir`) et (2) le `-w <chemin hôte>` de **toutes** les attaches (`sbx exec -it -w …`, `den <nest>` comme `den sh`) | **Deux symptômes sans lien apparent, et aucun message d'erreur.** (1) L'agent redemande `/login` **à chaque spawn** : `CLAUDE_CONFIG_DIR` pointe un chemin qui n'existe pas dans la VM, l'agent y crée un profil neuf — c'est précisément ce que `config_dir` existe pour éviter, et rien ne le signale. (2) `sbx exec -w <chemin hôte>` échoue, ou dépose le shell ailleurs que dans le code. Le smoke tranche en une ligne : `sbx exec <sandbox> pwd` après un `den <nest>`, comparé au premier workspace de `sbx ls --json` | **NON.** Aucun repli, aucune neutralisation : den n'a **aucun** moyen d'apprendre le chemin in-VM sans `sbx`. Même espèce qu'A10 — comportement d'**exécution de la microVM**, pour lequel « vert contre `sbx.Fake` » ne veut rien dire. Si elle est fausse, il faudra une source de vérité pour le chemin in-VM (sonde `sbx exec … pwd`, ou un champ de `sbx ls --json`) |
 
 ### Hypothèses assumées de den lui-même
 

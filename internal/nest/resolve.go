@@ -18,8 +18,21 @@ type Options struct {
 }
 
 // jetonConfigDir est le marqueur substitué dans les valeurs d'env de l'agent.
-// Il vise un chemin HÔTE : sbx monte chaque workspace au MÊME chemin absolu
-// dans la VM, donc le chemin hôte du profil est aussi son chemin in-VM.
+//
+// Ce qu'il vaut est un FAIT : le chemin HÔTE du profil de l'agent, celui que
+// den crée et que `sbx create` reçoit en workspace.
+//
+// Ce qui en fait une valeur utile DANS la VM est une HYPOTHÈSE, non vérifiée —
+// A11 du spec §14.1 : que sbx monte chaque workspace au même chemin absolu dans
+// la VM que sur l'hôte. Convention du projet : tout ce qui concerne le
+// comportement réel de sbx est une hypothèse à documenter, jamais une
+// affirmation. Elle ne peut pas être tranchée ici (sbx n'est pas installé sur
+// cette machine), et le double de test ne la touche pas.
+//
+// Si elle est fausse, CLAUDE_CONFIG_DIR pointe dans le vide côté VM et l'agent
+// repart de zéro à chaque spawn, sans un mot — voir A11 pour ce qui la
+// falsifierait au premier smoke, et pour l'autre chose qui en dépend (le
+// `-w <chemin hôte>` de toutes les attaches).
 const jetonConfigDir = "{config_dir}"
 
 // Resolved est un nest entièrement résolu : plus rien à recalculer en aval.
