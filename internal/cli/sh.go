@@ -17,7 +17,7 @@ func newShCmd(runner sbx.Runner) *cobra.Command {
 	return &cobra.Command{
 		Use:   "sh <name>",
 		Short: "Ouvre un shell dans une sandbox existante",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactementUnArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			nom := args[0]
 			boxes, err := sbx.Ls(cmd.Context(), runner)

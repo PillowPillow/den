@@ -77,7 +77,7 @@ func NewRootCmdAvec(deps Deps) *cobra.Command {
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Affiche la version de den",
-		Args:  cobra.NoArgs,
+		Args:  aucunArgument,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "den %s\n", Version)
 			return nil

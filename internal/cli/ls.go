@@ -17,7 +17,7 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 	return &cobra.Command{
 		Use:   "ls",
 		Short: "Liste les sandboxes vivantes",
-		Args:  cobra.NoArgs,
+		Args:  aucunArgument,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {

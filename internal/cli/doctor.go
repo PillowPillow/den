@@ -15,7 +15,7 @@ func newDoctorCmd(denHome *string, deps doctor.Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Diagnostique la configuration den et l'environnement",
-		Args:  cobra.NoArgs,
+		Args:  aucunArgument,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {

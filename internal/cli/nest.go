@@ -26,7 +26,7 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "ls",
 		Short: "Liste les nests déclarés",
-		Args:  cobra.NoArgs,
+		Args:  aucunArgument,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {
@@ -71,7 +71,7 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show <nest>",
 		Short: "Affiche un nest entièrement résolu",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactementUnArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {

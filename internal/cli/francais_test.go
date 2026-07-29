@@ -52,6 +52,26 @@ func TestLesErreursDeFlagSontEnFrancais(t *testing.T) {
 			attendu: []string{"valeur manquante", "--agent"},
 			anglais: "needs an argument",
 		},
+		{
+			// Ces deux branches de traduction n'étaient couvertes par AUCUN
+			// test : les supprimer toutes les deux laissait la suite verte.
+			nom:     "valeur invalide pour le type du flag",
+			args:    []string{"--detach=oui"},
+			attendu: []string{"valeur invalide", "oui", "--detach", "attendu : bool"},
+			anglais: "invalid argument",
+		},
+		{
+			nom:     "syntaxe de flag invalide",
+			args:    []string{"--=x"},
+			attendu: []string{"syntaxe d'option invalide", "--=x"},
+			anglais: "bad flag syntax",
+		},
+		{
+			nom:     "tirets en trop",
+			args:    []string{"---zz"},
+			attendu: []string{"syntaxe d'option invalide", "---zz"},
+			anglais: "bad flag syntax",
+		},
 	}
 	for _, c := range cas {
 		t.Run(c.nom, func(t *testing.T) {
@@ -70,6 +90,62 @@ func TestLesErreursDeFlagSontEnFrancais(t *testing.T) {
 			// l'anglais passerait pour francisé.
 			if strings.Contains(err.Error(), c.anglais) {
 				t.Errorf("message = %q, il reste de l'anglais (%q)", err.Error(), c.anglais)
+			}
+		})
+	}
+}
+
+// Le NOMBRE d'arguments est le second producteur de messages anglais, et le
+// plus fréquent des deux à l'usage : `den rm` tout court est une faute banale,
+// là où `den --=x` demande de la mauvaise volonté. Les validateurs de cobra
+// (ExactArgs, NoArgs, MaximumNArgs) rendent « accepts 1 arg(s), received 0 » et
+// « unknown command "foo" for "den ls" ».
+//
+// Les HUIT sites du paquet sont exercés, un par cas : c'est le seul moyen de
+// voir qu'un site a été oublié, un validateur français posé sur sept commandes
+// sur huit étant indiscernable d'un travail fini.
+func TestLesErreursDArgumentsSontEnFrancais(t *testing.T) {
+	cas := []struct {
+		nom     string
+		args    []string
+		attendu []string
+	}{
+		{"racine, trop d'arguments", []string{"api", "foo"}, []string{"den", "au plus un argument", "2 reçus"}},
+		{"version, argument en trop", []string{"version", "foo"}, []string{"den version", "aucun argument attendu", "foo"}},
+		{"doctor, argument en trop", []string{"doctor", "foo"}, []string{"den doctor", "aucun argument attendu", "foo"}},
+		{"ls, argument en trop", []string{"ls", "foo"}, []string{"den ls", "aucun argument attendu", "foo"}},
+		{"nest ls, argument en trop", []string{"nest", "ls", "foo"}, []string{"den nest ls", "aucun argument attendu", "foo"}},
+		{"nest show, argument manquant", []string{"nest", "show"}, []string{"den nest show", "un argument attendu", "aucun reçu"}},
+		{"nest show, deux arguments", []string{"nest", "show", "a", "b"}, []string{"den nest show", "un seul argument", "2 reçus"}},
+		{"sh, argument manquant", []string{"sh"}, []string{"den sh", "un argument attendu", "aucun reçu"}},
+		{"sh, deux arguments", []string{"sh", "a", "b"}, []string{"den sh", "un seul argument", "2 reçus"}},
+		{"rm, argument manquant", []string{"rm"}, []string{"den rm", "un argument attendu", "aucun reçu"}},
+	}
+	// Les gabarits anglais de cobra, mot pour mot.
+	anglais := []string{"accepts", "arg(s)", "received", "unknown command"}
+
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			t.Setenv("DEN_HOME", t.TempDir())
+
+			_, err := run(t, c.args...)
+			if err == nil {
+				t.Fatalf("%v doit être refusé sur le nombre d'arguments", c.args)
+			}
+			for _, attendu := range c.attendu {
+				if !strings.Contains(err.Error(), attendu) {
+					t.Errorf("message = %q, attendu contenant %q", err.Error(), attendu)
+				}
+			}
+			for _, mot := range anglais {
+				if strings.Contains(err.Error(), mot) {
+					t.Errorf("message = %q, il reste de l'anglais (%q)", err.Error(), mot)
+				}
+			}
+			// Le message doit dire QUOI TAPER : sans la ligne d'utilisation,
+			// « un argument attendu » n'apprend pas lequel.
+			if !strings.Contains(err.Error(), "utilisation :") {
+				t.Errorf("message = %q, attendu rappelant l'utilisation", err.Error())
 			}
 		})
 	}
@@ -184,6 +260,18 @@ func TestLesCommandesDeCompletionSontDecritesEnFrancais(t *testing.T) {
 	}
 	if strings.Contains(sortie, "Generate the autocompletion script for") {
 		t.Errorf("les commandes par shell sont restées en anglais ; aide = %q", sortie)
+	}
+	// --no-descriptions est posé par cobra sur les seules commandes de shell,
+	// et n'apparaît donc dans aucune autre aide.
+	zsh, err := run(t, "completion", "zsh", "--help")
+	if err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if strings.Contains(zsh, "disable completion descriptions") {
+		t.Errorf("l'usage de --no-descriptions est resté en anglais ; aide = %q", zsh)
+	}
+	if !strings.Contains(zsh, "--no-descriptions") {
+		t.Errorf("le flag --no-descriptions a disparu ; aide = %q", zsh)
 	}
 	// Les quatre shells doivent toujours être proposés : les faire disparaître
 	// ferait passer ce test sans rien franciser.

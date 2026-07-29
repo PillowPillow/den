@@ -28,7 +28,7 @@ func configureSpawn(root *cobra.Command, denHome *string, deps spawn.Deps) {
 	// Sans « [flags] » : la mention est ajoutée en français par le gabarit
 	// d'usage, et DisableFlagsInUseLine empêche cobra d'y remettre le sien.
 	root.Use = "den <nest>"
-	root.Args = cobra.MaximumNArgs(1)
+	root.Args = auPlusUnArgument
 	// Explicite, parce que cobra ne l'applique PAS sur ce chemin : le défaut de
 	// 2 est posé dans findSuggestions(), qui sert la branche « unknown command »
 	// — celle que den ne prend jamais, la racine ayant un RunE. Appelé

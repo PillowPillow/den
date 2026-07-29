@@ -14,16 +14,26 @@ import (
 // `help` et `completion` générées, et messages d'analyse de flags. Ce fichier
 // est le seul endroit où cette surface est traduite.
 //
-// CE QUI RESTE EN ANGLAIS, mesuré sur le binaire et non déduit du code :
+// CE QUI RESTE EN ANGLAIS, relevé sur le binaire commande par commande :
 //   - le corps de `den completion <shell> --help` (les instructions
-//     d'installation, plusieurs paragraphes par shell) ; seule leur ligne de
-//     description, celle qui s'affiche dans la liste, est traduite ;
-//   - « Unknown help topic », écrit par le Run de la commande `help` générée ;
+//     d'installation, plusieurs paragraphes par shell) ; la ligne de
+//     description et le flag --no-descriptions, eux, sont traduits ;
 //   - le script de complétion lui-même (`den completion bash`), dont les
-//     commentaires sont en anglais.
+//     commentaires sont en anglais ;
+//   - la CAUSE d'une valeur de flag invalide, qui vient de l'analyseur de la
+//     valeur et non de pflag : « strconv.ParseBool: parsing "oui": invalid
+//     syntax », ou l'erreur d'encoding/csv pour une liste. Conservée exprès —
+//     voir traduitErreurDeFlag.
 //
-// Les traduire supposerait de réimplémenter ces commandes, donc d'en reprendre
-// la maintenance : le compromis est assumé ici, il n'est pas un oubli.
+// Les deux premières supposeraient de réimplémenter ces commandes, donc d'en
+// reprendre la maintenance : le compromis est assumé, il n'est pas un oubli.
+//
+// Cette liste a d'abord été écrite en LISANT le code, et elle était fausse des
+// deux côtés : elle annonçait « Unknown help topic », qui est INATTEIGNABLE (la
+// racine portant un Args, root.Find ne rend jamais d'erreur et `den help zzz`
+// affiche l'aide, rc=0), et elle passait sous silence les huit messages des
+// validateurs d'arguments — dont `den rm` tout court, la faute la plus banale
+// de toutes. D'où les validateurs francophones ci-dessous.
 
 // gabaritUsage est la traduction du defaultUsageTemplate de cobra. La LOGIQUE
 // du gabarit est reprise à l'identique — mêmes conditions, mêmes champs, même
@@ -110,6 +120,11 @@ func franciseCobra(root *cobra.Command) {
 		// en dur laisserait le nouveau en anglais sans que rien ne le dise.
 		case cmd.Parent() != nil && cmd.Parent().Name() == "completion":
 			cmd.Short = "Génère le script de complétion pour " + cmd.Name()
+			// Posé par cobra sur les shells qui savent afficher des
+			// descriptions ; absent des autres, d'où le test de nullité.
+			if f := cmd.Flags().Lookup("no-descriptions"); f != nil {
+				f.Usage = "ne pas inclure les descriptions dans la complétion"
+			}
 		}
 	}
 }
@@ -121,6 +136,70 @@ func arbre(cmd *cobra.Command) []*cobra.Command {
 		tout = append(tout, arbre(enfant)...)
 	}
 	return tout
+}
+
+// Validateurs d'arguments francophones, en remplacement de cobra.ExactArgs,
+// cobra.NoArgs et cobra.MaximumNArgs qui rendent « accepts 1 arg(s), received
+// 0 » et « unknown command "foo" for "den ls" ».
+//
+// Ils ne sont pas traduits comme les erreurs de flag (à partir du type de
+// l'erreur) mais REMPLACÉS : cobra fabrique ces messages dans le validateur
+// lui-même, sans type d'erreur ni point d'accroche.
+//
+// Le message rappelle toujours l'utilisation, parce que « un argument attendu »
+// ne dit pas LEQUEL — c'est la moitié utile du diagnostic.
+var (
+	aucunArgument    = argsFrancais(0, 0)
+	exactementUnArg  = argsFrancais(1, 1)
+	auPlusUnArgument = argsFrancais(0, 1)
+)
+
+// argsFrancais rend un validateur qui accepte entre min et max arguments.
+//
+// La tournure dépend du SENS de la violation, pas seulement des bornes : « un
+// seul argument attendu » quand il y en a trop, « un argument attendu » quand il
+// en manque. Une phrase fabriquée mécaniquement à coups de « %d »
+// (« 1 argument(s) attendu(s) ») serait la même faute que celle qu'on corrige,
+// juste dans l'autre langue. Les combinaisons que den n'utilise pas retombent
+// sur une formulation générique explicite, jamais sur un texte bancal.
+func argsFrancais(min, max int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		n := len(args)
+		if n >= min && n <= max {
+			return nil
+		}
+		var attendu, detail string
+		if n < min {
+			attendu = fmt.Sprintf("au moins %d arguments attendus", min)
+			if min == 1 {
+				attendu = "un argument attendu"
+			}
+			detail = "aucun reçu"
+			if n > 0 {
+				detail = fmt.Sprintf("%d reçus", n)
+			}
+		} else {
+			switch {
+			case max == 0:
+				attendu = "aucun argument attendu"
+			case max == 1 && min == 0:
+				attendu = "au plus un argument attendu"
+			case max == 1:
+				attendu = "un seul argument attendu"
+			default:
+				attendu = fmt.Sprintf("au plus %d arguments attendus", max)
+			}
+			// Le premier argument en trop est nommé : c'est lui qui montre ce
+			// que den n'a pas compris — souvent un flag mal placé, ou un nom de
+			// sous-commande qui n'existe pas.
+			detail = fmt.Sprintf("%d reçus, à partir de « %s »", n, args[max])
+			if n == 1 {
+				detail = fmt.Sprintf("« %s » reçu", args[0])
+			}
+		}
+		return fmt.Errorf("%s : %s, %s — utilisation : %s",
+			cmd.CommandPath(), attendu, detail, cmd.UseLine())
+	}
 }
 
 // traduitErreurDeFlag rend en français les erreurs d'analyse de pflag.
@@ -159,8 +238,16 @@ func traduitErreurDeFlag(_ *cobra.Command, err error) error {
 
 	var valeurInvalide *pflag.InvalidValueError
 	if errors.As(err, &valeurInvalide) {
-		return fmt.Errorf("valeur invalide « %s » pour l'option --%s : %w",
-			valeurInvalide.GetValue(), valeurInvalide.GetFlag().Name, valeurInvalide.Unwrap())
+		// Le TYPE attendu est ce qui rend le message actionnable : la cause
+		// vient de l'analyseur de la valeur (strconv, encoding/csv…) et non de
+		// pflag, elle est en anglais et parfois vide de sens
+		// (« strconv.ParseBool: parsing "oui": invalid syntax » n'apprend rien
+		// de plus que la valeur, déjà citée). Elle est tout de même conservée :
+		// pour une liste, elle est le SEUL diagnostic (« extraneous or missing "
+		// in quoted-field » désigne la colonne fautive).
+		f := valeurInvalide.GetFlag()
+		return fmt.Errorf("valeur invalide « %s » pour l'option --%s (attendu : %s) : %w",
+			valeurInvalide.GetValue(), f.Name, f.Value.Type(), valeurInvalide.Unwrap())
 	}
 
 	var syntaxe *pflag.InvalidSyntaxError

@@ -46,7 +46,7 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 	cmd := &cobra.Command{
 		Use:   "rm <name>",
 		Short: "Détruit une sandbox (le profil agent persiste)",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactementUnArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			nom := args[0]
 			home, err := config.Home(*denHome)
