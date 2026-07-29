@@ -158,15 +158,28 @@ func Run(denHome string, d Deps) []Check {
 	// 4. stacks
 	stacks, err := config.LoadStacks(denHome)
 	if err != nil {
+		// Échec STRUCTUREL seulement (dossier stacks/ illisible) : une stack qui
+		// ne se décode pas n'atteint plus jamais cette branche, elle part dans
+		// Cassees juste en dessous.
 		ajoute("stacks", false, "%v", err)
-		stacks = map[string]*config.Stack{}
+		stacks = config.Stacks{Saines: map[string]*config.Stack{}}
 	} else {
-		ajoute("stacks", true, "%d déclarée(s)", len(stacks))
+		ajoute("stacks", true, "%d déclarée(s)", len(stacks.Saines))
+	}
+	// Chaque stack cassée est nommée SÉPARÉMENT, comme les nests cassés plus
+	// bas. Avant la séparation Saines/Cassees, une seule stack fautive faisait
+	// échouer LoadStacks en bloc : doctor retombait sur une map vide et rendait
+	// ensuite « defaults.stack introuvable » puis « nest X : stack introuvable »
+	// pour des stacks parfaitement saines — des diagnostics FAUX qui envoyaient
+	// réparer le mauvais fichier.
+	for _, c := range stacks.Cassees {
+		ajoute("stack "+c.Nom, false, "illisible : %v", c.Err)
 	}
 	if g.Defaults.Stack != "" {
-		if _, ok := stacks[g.Defaults.Stack]; !ok {
-			ajoute("defaults.stack", false,
-				"stack %q introuvable dans %s/stacks", g.Defaults.Stack, denHome)
+		// Get et non un test d'appartenance : lui seul distingue « illisible » de
+		// « pas déclarée », et c'est la source unique de ce verdict.
+		if _, err := stacks.Get(g.Defaults.Stack); err != nil {
+			ajoute("defaults.stack", false, "%v (dans %s/stacks)", err, denHome)
 		} else {
 			ajoute("defaults.stack", true, "%s", g.Defaults.Stack)
 		}
@@ -177,13 +190,15 @@ func Run(denHome string, d Deps) []Check {
 	// boot de la microVM, où le dispatcher fait `exit $rc` : l'utilisateur voit
 	// une VM qui meurt, pas un message de den. Tri des noms de stacks : la liste
 	// est destinée à l'affichage, une map Go n'est pas ordonnée.
-	for _, nomStack := range slices.Sorted(maps.Keys(stacks)) {
+	// Noms ne rend que les stacks SAINES : une stack cassée n'a pas de kits à
+	// contrôler, et a déjà été signalée nommément juste au-dessus.
+	for _, nomStack := range stacks.Noms() {
 		// KitsDeclares est la source UNIQUE de « quels kits, dans quel ordre » :
 		// elle rend `kits:` puis `kit:`, entrées vides filtrées. Recomposer la
 		// liste ici — ce que faisait la version précédente — laissait doctor et
 		// le chemin de spawn diverger sur les entrées vides, chacun restant vert
 		// de son côté.
-		for _, k := range stacks[nomStack].KitsDeclares() {
+		for _, k := range stacks.Saines[nomStack].KitsDeclares() {
 			if _, err := d.Stat(k); err != nil {
 				ajoute("stack "+nomStack, false, "kit introuvable : %s", k)
 			}
@@ -230,8 +245,12 @@ func Run(denHome string, d Deps) []Check {
 		if nomStack == "" {
 			nomStack = g.Defaults.Stack
 		}
-		if _, ok := stacks[nomStack]; !ok {
-			ajoute("nest "+n.Name, false, "stack %q introuvable", nomStack)
+		// Get : le nest doit apprendre si SA stack est illisible ou absente, deux
+		// réparations différentes. Un test d'appartenance dirait « introuvable »
+		// des deux, et c'est ce qui rendait doctor faux quand une autre stack
+		// cassait le chargement entier.
+		if _, err := stacks.Get(nomStack); err != nil {
+			ajoute("nest "+n.Name, false, "%v", err)
 		}
 		for _, r := range n.Repos {
 			if _, err := d.Stat(r.Path); err != nil {

@@ -173,7 +173,7 @@ func resoluExemple(t *testing.T) *nest.Resolved {
 		WorktreeLayout: "central",
 		Egress:         []string{"github.com"},
 	}
-	stacks := map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}
+	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
 	n := &nest.Nest{Name: "api", Stack: "devx", Egress: []string{"10.22.11.54:27017"}}
 
 	r, err := nest.Resolve("/home/moi/.den", g, stacks, n, nest.Options{})

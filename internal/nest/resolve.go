@@ -94,7 +94,14 @@ func ResolveAgent(g *config.Global, n *Nest, flagAgent string) (string, config.A
 }
 
 // Resolve applique la cascade complète global ← stack ← nest ← flags.
-func Resolve(denHome string, g *config.Global, stacks map[string]*config.Stack, n *Nest, o Options) (*Resolved, error) {
+//
+// stacks est un config.Stacks et non une map : le verdict « cette stack est-elle
+// utilisable » distingue « illisible » de « pas déclarée », et cette distinction
+// appartient à config.Stacks.Get, sa source unique. Une map seule ne pourrait
+// dire que « introuvable » — y compris d'une stack bel et bien présente dont le
+// stack.yaml porte une faute de frappe, envoyant l'utilisateur créer un fichier
+// qu'il a déjà.
+func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o Options) (*Resolved, error) {
 	if !filepath.IsAbs(denHome) {
 		return nil, fmt.Errorf(
 			"den home %q : chemin non absolu (les chemins dérivés partent tels quels vers "+
@@ -105,12 +112,11 @@ func Resolve(denHome string, g *config.Global, stacks map[string]*config.Stack, 
 	if nomStack == "" {
 		nomStack = g.Defaults.Stack
 	}
-	s, ok := stacks[nomStack]
-	if !ok {
-		dispos := slices.Sorted(maps.Keys(stacks))
-		return nil, fmt.Errorf(
-			"nest %q : stack %q introuvable dans %s/stacks (stacks déclarées : %v)",
-			n.Name, nomStack, denHome, dispos)
+	s, err := stacks.Get(nomStack)
+	if err != nil {
+		// Le dossier des stacks reste nommé : c'est là que l'utilisateur doit
+		// aller, et Get — qui ne connaît pas le den home — ne peut pas le dire.
+		return nil, fmt.Errorf("nest %q : %w (dans %s)", n.Name, err, filepath.Join(denHome, "stacks"))
 	}
 
 	nomAgent, agent, configDir, err := ResolveAgent(g, n, o.Agent)

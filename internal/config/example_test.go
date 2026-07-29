@@ -30,8 +30,14 @@ func TestExempleDenHomeEstValide(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chargement des stacks de l'exemple : %v", err)
 	}
-	if _, ok := stacks[g.Defaults.Stack]; !ok {
-		t.Errorf("defaults.stack = %q absent des stacks de l'exemple", g.Defaults.Stack)
+	// L'exemple livré doit être irréprochable : aucune stack cassée, et la stack
+	// par défaut résolue par la source unique du verdict.
+	if len(stacks.Cassees) != 0 {
+		t.Fatalf("l'exemple livré doit être irréprochable, %d stack(s) cassée(s) : %+v",
+			len(stacks.Cassees), stacks.Cassees)
+	}
+	if _, err := stacks.Get(g.Defaults.Stack); err != nil {
+		t.Errorf("defaults.stack = %q absent des stacks de l'exemple : %v", g.Defaults.Stack, err)
 	}
 
 	nests, casses, err := nest.ListNests(home)

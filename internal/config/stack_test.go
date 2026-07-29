@@ -87,9 +87,9 @@ func TestLoadStacksIndexeParLeNomDeDossier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
-	s, ok := stacks["devx"]
+	s, ok := stacks.Saines["devx"]
 	if !ok {
-		t.Fatalf("stacks = %v, attendu une entrée sous le nom de dossier %q", stacks, "devx")
+		t.Fatalf("stacks = %v, attendu une entrée sous le nom de dossier %q", stacks.Saines, "devx")
 	}
 	if s.Name != "devx" {
 		t.Errorf("Name = %q, attendu %q", s.Name, "devx")
@@ -184,11 +184,11 @@ func TestLoadStacksToutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
-	if len(stacks) != 2 {
-		t.Fatalf("attendu 2 stacks, obtenu %d : %v", len(stacks), stacks)
+	if len(stacks.Saines) != 2 {
+		t.Fatalf("attendu 2 stacks, obtenu %d : %v", len(stacks.Saines), stacks.Saines)
 	}
-	if stacks["dgdevx"].Parent != "devx" {
-		t.Errorf("parent de dgdevx = %q", stacks["dgdevx"].Parent)
+	if stacks.Saines["dgdevx"].Parent != "devx" {
+		t.Errorf("parent de dgdevx = %q", stacks.Saines["dgdevx"].Parent)
 	}
 }
 
@@ -198,8 +198,8 @@ func TestLoadStacksDossierAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
 	}
-	if len(stacks) != 0 {
-		t.Errorf("attendu 0 stack, obtenu %d", len(stacks))
+	if len(stacks.Saines) != 0 {
+		t.Errorf("attendu 0 stack, obtenu %d", len(stacks.Saines))
 	}
 }
 
@@ -324,5 +324,78 @@ func TestLoadStackSansKits(t *testing.T) {
 	}
 	if len(s.Kits) != 0 {
 		t.Errorf("Kits = %v, attendu vide", s.Kits)
+	}
+}
+
+// Une stack cassée ne masque PAS les stacks saines — 16ᵉ configuration hostile,
+// trouvée en exerçant le binaire assemblé (tâche 17c).
+//
+// Avant, LoadStack échouait et LoadStacks propageait l'erreur en bloc : une
+// faute de frappe dans une stack que PERSONNE n'utilise faisait échouer
+// `den <nest>` et `den nest show` sur un nest référençant une stack saine.
+// C'est la doctrine que ListNests applique aux nests depuis T16 ; elle
+// n'avait jamais été appliquée aux stacks.
+func TestLoadStacksUneStackCasseeNeMasquePasLesSaines(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	ecrisStack(t, denHome, "autre", "image: autre:v1\nimag: faute-de-frappe\n")
+
+	stacks, err := LoadStacks(denHome)
+	if err != nil {
+		t.Fatalf("une stack cassée ne doit pas faire échouer le chargement : %v", err)
+	}
+	if stacks.Saines["devx"] == nil {
+		t.Fatalf("la stack saine devx a disparu ; saines = %v", stacks.Noms())
+	}
+	if len(stacks.Cassees) != 1 || stacks.Cassees[0].Nom != "autre" {
+		t.Fatalf("attendu exactement la stack « autre » en cassée ; obtenu %+v", stacks.Cassees)
+	}
+	// La cause reste attachée : sans elle, doctor ne pourrait dire QUE réparer.
+	if !strings.Contains(stacks.Cassees[0].Err.Error(), "imag") {
+		t.Errorf("l'erreur de la stack cassée doit nommer la clé fautive ; obtenu : %v",
+			stacks.Cassees[0].Err)
+	}
+	// Et une stack cassée n'est PAS déclarée saine : sans quoi le spawn la
+	// prendrait pour bonne et partirait avec une Stack à zéro (image vide).
+	if _, ok := stacks.Saines["autre"]; ok {
+		t.Error("une stack cassée ne doit pas figurer parmi les saines")
+	}
+}
+
+// Get doit dire LAQUELLE des deux situations se présente : « illisible » et
+// « introuvable » ne se réparent pas pareil. Répondre « introuvable » d'une
+// stack qui existe enverrait l'utilisateur créer un fichier qu'il a déjà.
+func TestStacksGetDistingueIllisibleDeAbsente(t *testing.T) {
+	denHome := t.TempDir()
+	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	ecrisStack(t, denHome, "autre", "image: autre:v1\nimag: faute\n")
+	stacks, err := LoadStacks(denHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stacks.Get("devx"); err != nil {
+		t.Errorf("une stack saine doit se résoudre : %v", err)
+	}
+
+	_, errCassee := stacks.Get("autre")
+	if errCassee == nil {
+		t.Fatal("une stack cassée ne doit pas se résoudre")
+	}
+	if !strings.Contains(errCassee.Error(), "illisible") {
+		t.Errorf("stack cassée : le message doit dire « illisible », pas « introuvable » ; obtenu : %v", errCassee)
+	}
+
+	_, errAbsente := stacks.Get("jamais-declaree")
+	if errAbsente == nil {
+		t.Fatal("une stack absente ne doit pas se résoudre")
+	}
+	if !strings.Contains(errAbsente.Error(), "introuvable") {
+		t.Errorf("stack absente : le message doit dire « introuvable » ; obtenu : %v", errAbsente)
+	}
+	// Les stacks proposées sont les SAINES : proposer une stack cassée comme
+	// solution de repli enverrait droit dans le mur.
+	if strings.Contains(errAbsente.Error(), "autre") {
+		t.Errorf("la liste des stacks déclarées ne doit proposer que des stacks saines ; obtenu : %v", errAbsente)
 	}
 }

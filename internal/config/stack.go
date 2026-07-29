@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // Stack est une recette d'image buildable (spec §4.2).
@@ -93,20 +95,80 @@ func LoadStack(denHome, name string) (*Stack, error) {
 	return &s, nil
 }
 
+// StackCassee est une stack présente sur disque mais non chargeable.
+type StackCassee struct {
+	Nom string
+	Err error
+}
+
+// Stacks porte le résultat du chargement de <denHome>/stacks : les stacks
+// chargeables, et À PART celles qui ne le sont pas.
+//
+// Une stack cassée ne masque PAS les autres — même doctrine que ListNests
+// (internal/nest/nest.go), et pour la même raison, mesurée sur le binaire
+// assemblé en tâche 17c. Avant cette séparation, une faute de frappe dans une
+// stack que PERSONNE n'utilise faisait échouer LoadStacks en bloc, et :
+//
+//	den api          → échec, alors que son nest référence une stack saine
+//	den nest show api→ échec, idem
+//	den doctor       → « stack "devx" introuvable » et « nest api : stack "devx"
+//	                   introuvable », deux diagnostics FAUX désignant une stack
+//	                   parfaitement valide
+//
+// Le pire n'était donc pas le blocage mais le mensonge : doctor envoyait
+// l'utilisateur réparer devx, qui n'avait rien. Rendre les deux listes séparées
+// fait que le seul objet nommé est celui qui est vraiment cassé.
+type Stacks struct {
+	Saines  map[string]*Stack
+	Cassees []StackCassee
+}
+
+// Get rend la stack nommée, ou une erreur qui DISTINGUE les deux façons de ne
+// pas l'avoir : elle est déclarée mais illisible, ou elle n'existe pas du tout.
+//
+// SOURCE UNIQUE de ce verdict. « introuvable » sur une stack qui existe mais ne
+// se charge pas enverrait l'utilisateur créer un fichier qu'il a déjà, au lieu
+// de corriger celui qu'il a — et c'est précisément le message que rendait la
+// version précédente dès lors qu'une stack cassée n'était plus dans la map.
+func (s Stacks) Get(nom string) (*Stack, error) {
+	if st, ok := s.Saines[nom]; ok {
+		return st, nil
+	}
+	for _, c := range s.Cassees {
+		if c.Nom == nom {
+			return nil, fmt.Errorf("stack %q : illisible : %w", nom, c.Err)
+		}
+	}
+	return nil, fmt.Errorf("stack %q introuvable (stacks déclarées : %v)", nom, s.Noms())
+}
+
+// Noms rend les noms des stacks SAINES, triés. Destiné à l'affichage : une map
+// Go n'est pas ordonnée, et un message d'erreur doit être reproductible.
+func (s Stacks) Noms() []string {
+	return slices.Sorted(maps.Keys(s.Saines))
+}
+
 // LoadStacks charge toutes les stacks déclarées. Un dossier sans stack.yaml est
-// ignoré (brouillon), un dossier stacks/ absent donne une map vide : un den
+// ignoré (brouillon), un dossier stacks/ absent donne un résultat vide : un den
 // fraîchement créé n'est pas une erreur.
-func LoadStacks(denHome string) (map[string]*Stack, error) {
+//
+// L'erreur renvoyée est réservée aux échecs STRUCTURELS (dossier stacks/
+// illisible) : là, il n'y a rien à charger du tout. Une stack qui ne se décode
+// pas part dans Cassees, elle n'interrompt rien — voir la godoc de Stacks.
+func LoadStacks(denHome string) (Stacks, error) {
 	racine := filepath.Join(denHome, "stacks")
 	entrees, err := os.ReadDir(racine)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return map[string]*Stack{}, nil
+			return Stacks{Saines: map[string]*Stack{}}, nil
 		}
-		return nil, fmt.Errorf("lecture de %s : %w", racine, err)
+		return Stacks{}, fmt.Errorf("lecture de %s : %w", racine, err)
 	}
 
-	stacks := make(map[string]*Stack)
+	out := Stacks{Saines: make(map[string]*Stack)}
+	// os.ReadDir trie déjà par nom : Cassees est donc déterministe sans tri
+	// supplémentaire, et `den doctor` rend ses diagnostics dans le même ordre
+	// d'une exécution à l'autre.
 	for _, e := range entrees {
 		if !e.IsDir() {
 			continue
@@ -116,9 +178,10 @@ func LoadStacks(denHome string) (map[string]*Stack, error) {
 		}
 		s, err := LoadStack(denHome, e.Name())
 		if err != nil {
-			return nil, err
+			out.Cassees = append(out.Cassees, StackCassee{Nom: e.Name(), Err: err})
+			continue
 		}
-		stacks[e.Name()] = s // le dossier est l'identité, ici comme dans LoadStack
+		out.Saines[e.Name()] = s // le dossier est l'identité, ici comme dans LoadStack
 	}
-	return stacks, nil
+	return out, nil
 }

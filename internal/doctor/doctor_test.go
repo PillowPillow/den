@@ -539,3 +539,82 @@ func TestRunAgentSansCommandeUpdate(t *testing.T) {
 		t.Error("un agent sans commande update doit être signalé (spec §9.1)")
 	}
 }
+
+// Une stack cassée ne doit produire qu'UN SEUL diagnostic — le sien — et
+// surtout aucun diagnostic FAUX sur les objets sains. 16ᵉ configuration
+// hostile (tâche 17c).
+//
+// Sortie RÉELLE du binaire avant correctif, avec devx saine et `autre` portant
+// une clé inconnue :
+//
+//	[FAIL] stacks         …/stacks/autre/stack.yaml : YAML invalide : clé inconnue "imag"
+//	[FAIL] defaults.stack stack "devx" introuvable dans …/stacks
+//	[FAIL] nest api       stack "devx" introuvable
+//
+// Les deux dernières lignes sont FAUSSES : devx existe et est parfaitement
+// valide. LoadStacks ayant échoué en bloc, doctor retombait sur une map vide et
+// déclarait introuvable tout ce qu'elle ne contenait plus — envoyant réparer le
+// mauvais fichier. C'est le mensonge, plus que le blocage, que ce test verrouille.
+func TestUneStackCasseeNeProduitAucunDiagnosticFaux(t *testing.T) {
+	dir := denHomeValide(t)
+	// devx reste saine ; on ajoute une seconde stack, que personne n'utilise.
+	if err := os.MkdirAll(filepath.Join(dir, "stacks", "autre"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stacks", "autre", "stack.yaml"),
+		[]byte("image: autre:v1\nimag: faute-de-frappe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := Run(dir, depsOK())
+
+	// 1. La stack cassée est nommée, elle.
+	c, ok := trouveNomExact(checks, "stack autre")
+	if !ok || c.OK {
+		t.Fatalf("la stack cassée doit produire un diagnostic en échec qui la nomme ; checks = %+v", checks)
+	}
+	if !strings.Contains(c.Detail, "imag") {
+		t.Errorf("le diagnostic doit nommer la clé fautive ; obtenu : %s", c.Detail)
+	}
+
+	// 2. AUCUN diagnostic ne doit prétendre que devx est introuvable.
+	for _, ch := range checks {
+		if strings.Contains(ch.Detail, "devx") && strings.Contains(ch.Detail, "introuvable") {
+			t.Errorf("diagnostic FAUX : devx est saine, or %q dit : %s", ch.Nom, ch.Detail)
+		}
+	}
+
+	// 3. defaults.stack (= devx) reste vert.
+	if d, ok := trouveNomExact(checks, "defaults.stack"); !ok || !d.OK {
+		t.Errorf("defaults.stack pointe sur devx, qui est saine : attendu vert ; obtenu %+v", d)
+	}
+
+	// 4. Le nest api, qui utilise devx, ne doit produire aucun échec de stack.
+	if n, ok := trouveNomExact(checks, "nest api"); ok && !n.OK {
+		t.Errorf("le nest api utilise devx, saine : aucun échec attendu ; obtenu : %s", n.Detail)
+	}
+}
+
+// Le pendant : quand c'est SA PROPRE stack qui est cassée, le nest doit
+// l'apprendre — et lire « illisible », pas « introuvable ». Sans ce test, un
+// correctif qui se contenterait d'ignorer les stacks cassées passerait le test
+// précédent tout en rendant le vrai problème invisible.
+func TestUnNestDontLaStackEstCasseeLApprend(t *testing.T) {
+	dir := denHomeValide(t)
+	// devx, la stack du nest api, devient illisible.
+	if err := os.WriteFile(filepath.Join(dir, "stacks", "devx", "stack.yaml"),
+		[]byte("image: devx:v1\nimag: faute-de-frappe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := Run(dir, depsOK())
+
+	n, ok := trouveNomExact(checks, "nest api")
+	if !ok || n.OK {
+		t.Fatalf("le nest dont la stack est cassée doit produire un échec ; checks = %+v", checks)
+	}
+	if !strings.Contains(n.Detail, "illisible") {
+		t.Errorf("le nest doit lire « illisible » et non « introuvable » : sa stack existe, "+
+			"elle ne se charge pas ; obtenu : %s", n.Detail)
+	}
+}

@@ -26,11 +26,11 @@ func globalTest() *config.Global {
 	}
 }
 
-func stacksTest() map[string]*config.Stack {
-	return map[string]*config.Stack{
+func stacksTest() config.Stacks {
+	return config.Stacks{Saines: map[string]*config.Stack{
 		"devx":   {Name: "devx", Image: "devx:v1", Kit: "/den/stacks/devx/kit"},
 		"dgdevx": {Name: "dgdevx", Image: "dgdevx:v1", Parent: "devx", Kit: "/den/stacks/dgdevx/kit", Egress: []string{"gitlab.digitaleo.com"}},
-	}
+	}}
 }
 
 func nestTest() *Nest {
@@ -198,7 +198,7 @@ func TestResolveFusionneEtSubstitueLEnv(t *testing.T) {
 		WorktreeLayout: "central",
 		WorktreeRoot:   "/home/moi/.den/worktrees",
 	}
-	stacks := map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1", Dir: "/d/stacks/devx"}}
+	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1", Dir: "/d/stacks/devx"}}}
 	n := &Nest{Name: "api", Stack: "devx", Env: map[string]string{"SOME_VAR": "value"}}
 
 	r, err := Resolve("/home/moi/.den", g, stacks, n, Options{})
@@ -233,7 +233,7 @@ func TestResolveEnvDuNestGagneSurCelleDeLAgent(t *testing.T) {
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
 	}
-	stacks := map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}
+	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
 	n := &Nest{Name: "api", Stack: "devx", Env: map[string]string{"PARTAGEE": "nest"}}
 
 	r, err := Resolve("/d", g, stacks, n, Options{})
@@ -264,7 +264,7 @@ func TestResolveSubstitueLOverrideDeConfigDirDuNest(t *testing.T) {
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
 	}
-	stacks := map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}
+	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
 	n := &Nest{Name: "api", Stack: "devx", Agents: map[string]string{"claude": "/profil/isole"}}
 
 	r, err := Resolve("/d", g, stacks, n, Options{})
@@ -292,7 +292,7 @@ func TestResolveSubstitueConfigDirDansLEnvDuNest(t *testing.T) {
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
 	}
-	stacks := map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}
+	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
 	n := &Nest{Name: "api", Stack: "devx", Env: map[string]string{"QUELQUE_CHOSE": "{config_dir}"}}
 
 	r, err := Resolve("/d", g, stacks, n, Options{})
@@ -311,7 +311,7 @@ func TestResolveRefuseDenHomeRelatif(t *testing.T) {
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
 	}
-	stacks := map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}
+	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
 	_, err := Resolve("relatif/den", g, stacks, &Nest{Name: "api", Stack: "devx"}, Options{})
 	if err == nil {
 		t.Fatal("attendu une erreur pour un denHome relatif")
@@ -328,7 +328,7 @@ func TestResolveEnvJamaisNil(t *testing.T) {
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
 	}
-	stacks := map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}
+	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
 	r, err := Resolve("/d", g, stacks, &Nest{Name: "api", Stack: "devx"}, Options{})
 	if err != nil {
 		t.Fatalf("erreur inattendue : %v", err)
