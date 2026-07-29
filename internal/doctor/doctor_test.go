@@ -618,3 +618,59 @@ func TestUnNestDontLaStackEstCasseeLApprend(t *testing.T) {
 			"elle ne se charge pas ; obtenu : %s", n.Detail)
 	}
 }
+
+// La ligne « stacks » doit compter comme la ligne « nests », sa voisine
+// immédiate à l'écran : déclarées ET illisibles.
+//
+// Avant, elle rendait « [ok  ] stacks 1 déclarée(s) » là où DEUX dossiers de
+// stacks existaient, dont un cassé — avec un [ok] par-dessus le marché. Le
+// [FAIL] stack <nom> rattrapait l'information, mais deux lignes voisines qui
+// comptent différemment se lisent comme une contradiction, et c'est le total
+// qu'on parcourt en diagonale.
+func TestLaLigneStacksCompteCommeLaLigneNests(t *testing.T) {
+	dir := denHomeValide(t) // devx saine, un nest api
+	if err := os.MkdirAll(filepath.Join(dir, "stacks", "autre"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stacks", "autre", "stack.yaml"),
+		[]byte("image: autre:v1\nimag: faute-de-frappe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := Run(dir, depsOK())
+
+	c, ok := trouveNomExact(checks, "stacks")
+	if !ok {
+		t.Fatalf("aucune ligne « stacks » ; checks = %+v", checks)
+	}
+	// Le compte des illisibles, comme la ligne des nests le fait.
+	if !strings.Contains(c.Detail, "illisible") {
+		t.Errorf("la ligne stacks doit compter les illisibles, comme la ligne nests ; obtenu : %q",
+			c.Detail)
+	}
+	// 1 saine (devx), 1 illisible (autre).
+	if !strings.Contains(c.Detail, "1 déclarée(s)") || !strings.Contains(c.Detail, "1 illisible(s)") {
+		t.Errorf("attendu « 1 déclarée(s), 1 illisible(s) » ; obtenu : %q", c.Detail)
+	}
+	// Et le verdict suit le compte : une stack illisible n'est pas un [ok].
+	if c.OK {
+		t.Errorf("la ligne stacks est [ok] alors qu'une stack est illisible ; obtenu : %+v", c)
+	}
+}
+
+// Le pendant : sans aucune stack cassée, la ligne reste verte et annonce zéro
+// illisible. Sans lui, un verdict câblé à false passerait le test précédent.
+func TestLaLigneStacksResteVerteSansStackCassee(t *testing.T) {
+	checks := Run(denHomeValide(t), depsOK())
+
+	c, ok := trouveNomExact(checks, "stacks")
+	if !ok {
+		t.Fatalf("aucune ligne « stacks » ; checks = %+v", checks)
+	}
+	if !c.OK {
+		t.Errorf("aucune stack n'est cassée : la ligne stacks doit être verte ; obtenu : %+v", c)
+	}
+	if !strings.Contains(c.Detail, "0 illisible(s)") {
+		t.Errorf("attendu « 0 illisible(s) » ; obtenu : %q", c.Detail)
+	}
+}

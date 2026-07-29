@@ -164,7 +164,12 @@ func Run(denHome string, d Deps) []Check {
 		ajoute("stacks", false, "%v", err)
 		stacks = config.Stacks{Saines: map[string]*config.Stack{}}
 	} else {
-		ajoute("stacks", true, "%d déclarée(s)", len(stacks.Saines))
+		// Même format et même verdict que la ligne « nests », sa voisine
+		// immédiate à l'écran : deux totaux côte à côte qui ne comptent pas
+		// pareil se lisent comme une contradiction, et c'est le total qu'on
+		// parcourt en diagonale.
+		ajoute("stacks", len(stacks.Cassees) == 0, "%d déclarée(s), %d illisible(s)",
+			len(stacks.Saines), len(stacks.Cassees))
 	}
 	// Chaque stack cassée est nommée SÉPARÉMENT, comme les nests cassés plus
 	// bas. Avant la séparation Saines/Cassees, une seule stack fautive faisait
@@ -179,7 +184,9 @@ func Run(denHome string, d Deps) []Check {
 		// Get et non un test d'appartenance : lui seul distingue « illisible » de
 		// « pas déclarée », et c'est la source unique de ce verdict.
 		if _, err := stacks.Get(g.Defaults.Stack); err != nil {
-			ajoute("defaults.stack", false, "%v (dans %s/stacks)", err, denHome)
+			// Sans suffixe : Get situe déjà ce qu'il faut situer, et le coller
+			// derrière une erreur YAML multi-ligne la rendait trompeuse.
+			ajoute("defaults.stack", false, "%v", err)
 		} else {
 			ajoute("defaults.stack", true, "%s", g.Defaults.Stack)
 		}
