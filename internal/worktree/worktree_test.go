@@ -501,8 +501,16 @@ func TestAssureRefuseUnWorktreeAppartenantAUnAutreRepo(t *testing.T) {
 		}
 	}
 	// Le worktree de A reste celui de A.
-	if got := git(t, cheminA, "rev-parse", "--path-format=absolute", "--git-common-dir"); !strings.HasPrefix(got, repoA) {
-		t.Errorf("le worktree de A a changé de dépôt : %s", got)
+	//
+	// Les deux côtés sont RÉSOLUS avant comparaison : git rend le chemin passé
+	// par EvalSymlinks, là où le test manipule celui que t.TempDir a donné. Sur
+	// macOS les deux diffèrent toujours ($TMPDIR vit sous /var, lien vers
+	// /private/var), et ce test échouait donc sur cette seule différence de
+	// forme — sur un dépôt parfaitement intact. C'est la raison d'être de
+	// memeChemin, que le reste du paquet utilise déjà pour cette comparaison-là.
+	got := git(t, cheminA, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if !strings.HasPrefix(resout(got), resout(repoA)+string(filepath.Separator)) {
+		t.Errorf("le worktree de A a changé de dépôt : %s (attendu sous %s)", got, repoA)
 	}
 }
 
@@ -2458,3 +2466,4 @@ func TestAssureCreeToujoursLeWorktreeDUnDepotAvecCommit(t *testing.T) {
 		t.Errorf("le worktree annoncé en %s n'existe pas : %v", chemin, err)
 	}
 }
+
