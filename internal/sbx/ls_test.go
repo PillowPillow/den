@@ -276,22 +276,36 @@ func TestTrouve(t *testing.T) {
 	}
 }
 
-// VerifieEnMarche est la garde partagée par `den <nest>` et `den sh` : les deux
-// chemins finissent par un `sbx exec`, et les deux sont faux dans une VM
-// arrêtée.
+// VerifieAttachable est la garde partagée par `den <nest>` et `den sh` : les
+// deux chemins finissent par un `sbx exec`.
 //
-// LISTE BLANCHE, et c'est le cœur du test : les valeurs de `status` que sbx peut
-// émettre ne sont pas connues ici (sbx n'est pas installable sur cette machine).
-// Une liste noire {"exited","stopped"} laisserait passer tout statut qu'une
-// version ultérieure introduirait — d'où les cas « paused », « Running » et « ».
-func TestVerifieEnMarche(t *testing.T) {
-	if err := (Sandbox{Nom: "api", Statut: "running"}).VerifieEnMarche(); err != nil {
-		t.Errorf("une sandbox « running » doit passer ; obtenu : %v", err)
+// « stopped » PASSE, et c'est mesuré, pas déduit (smoke du 2026-07-29, sbx
+// v0.35.0) : `sbx exec` redémarre une sandbox arrêtée de façon transparente
+// (« Sandbox duo.essai started successfully »), l'état de la couche conteneur
+// survit au stop, et le dispatcher REJOUE toutes les startup commands des kits à
+// la reprise — mixin de den compris (compteur de « dispatcher run » du
+// /var/log/sbx-kit-startup.log passé de 2 à 3, chaîne complète des kits dans
+// l'ordre de l'argv). Une VM reprise est donc fonctionnellement complète.
+//
+// C'était la réserve qui justifiait le refus : elle est levée. Refuser coûtait
+// plus cher que la panne — sbx arrête les sandboxes inactives tout seul, donc le
+// cas est la NORME au retour sur une VM `--detach`, et le remède affiché
+// (`den rm`) détruisait un état qui aurait survécu.
+//
+// LISTE BLANCHE quand même, et c'est le reste du test : les autres valeurs que
+// sbx peut émettre ne sont pas relevées. Une liste noire laisserait passer tout
+// statut qu'une version ultérieure introduirait, y compris un statut d'erreur —
+// d'où les cas « exited », « paused », « Running » et « ».
+func TestVerifieAttachable(t *testing.T) {
+	for _, statut := range []string{StatutEnMarche, StatutArretee} {
+		if err := (Sandbox{Nom: "api", Statut: statut}).VerifieAttachable(); err != nil {
+			t.Errorf("une sandbox %q doit passer ; obtenu : %v", statut, err)
+		}
 	}
 
-	for _, statut := range []string{"exited", "stopped", "paused", "Running", ""} {
+	for _, statut := range []string{"exited", "paused", "Running", ""} {
 		t.Run("statut="+statut, func(t *testing.T) {
-			err := Sandbox{Nom: "api", Statut: statut}.VerifieEnMarche()
+			err := Sandbox{Nom: "api", Statut: statut}.VerifieAttachable()
 			if err == nil {
 				t.Fatalf("un statut %q ne doit pas être traité comme en marche", statut)
 			}
@@ -306,10 +320,31 @@ func TestVerifieEnMarche(t *testing.T) {
 			// restait vert alors que les quatre autres rougissaient). La forme
 			// quotée est celle que le message rend — `%q` — et elle discrimine
 			// aussi le statut vide.
-			if !contientTout(err.Error(), "api", strconv.Quote(statut), strconv.Quote(StatutEnMarche)) {
-				t.Errorf("le message doit rendre la sandbox, le statut lu et le statut attendu ; obtenu : %v", err)
+			if !contientTout(err.Error(), "api", strconv.Quote(statut),
+				strconv.Quote(StatutEnMarche), strconv.Quote(StatutArretee)) {
+				t.Errorf("le message doit rendre la sandbox, le statut lu et les DEUX statuts "+
+					"attachables ; obtenu : %v", err)
 			}
 		})
+	}
+}
+
+// EstArretee distingue les deux statuts attachables, parce que l'un des deux
+// mérite d'être dit : la reprise prend plusieurs secondes, et un `den <nest>`
+// muet pendant ce temps-là ressemble à un gel.
+//
+// C'est aussi ce qui empêche de retomber dans le refus : la question « faut-il
+// prévenir ? » est séparée de la question « faut-il refuser ? », et un appelant
+// ne peut pas répondre à la seconde en croyant répondre à la première.
+func TestEstArretee(t *testing.T) {
+	if !(Sandbox{Statut: StatutArretee}).EstArretee() {
+		t.Error("une sandbox « stopped » est arrêtée")
+	}
+	for _, statut := range []string{StatutEnMarche, "exited", ""} {
+		if (Sandbox{Statut: statut}).EstArretee() {
+			t.Errorf("un statut %q n'est pas « arrêtée » : la reprise ne concerne que %q",
+				statut, StatutArretee)
+		}
 	}
 }
 
@@ -325,7 +360,7 @@ func TestVerifieEnMarche(t *testing.T) {
 // patron que VerifieEnMarche argumente contre, dix lignes plus haut, pour les
 // statuts. On extrait donc TOUT ce que le message présente comme une commande —
 // les segments entre backticks — et on exige que chacun soit attesté.
-func TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees(t *testing.T) {
+func TestVerifieAttachableNeSuggereQueDesCommandesAttestees(t *testing.T) {
 	// DEUX sources d'attestation, et elles ne se valent pas :
 	//
 	//   - les sous-commandes `sbx` viennent du relevé du 2026-07-28, versé au
@@ -339,7 +374,7 @@ func TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees(t *testing.T) {
 	//     existe » ne s'y applique pas : on la lit.
 	attestees := []string{"sbx ls", "sbx rm --force api", "den rm api"}
 
-	err := Sandbox{Nom: "api", Statut: "exited"}.VerifieEnMarche()
+	err := Sandbox{Nom: "api", Statut: "exited"}.VerifieAttachable()
 	if err == nil {
 		t.Fatal("un statut « exited » doit produire une erreur")
 	}

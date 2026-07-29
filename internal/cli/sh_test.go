@@ -100,16 +100,30 @@ func TestShNomInconnu(t *testing.T) {
 	}
 }
 
+// F2, sur l'AUTRE chemin : `den sh` doit reprendre une sandbox arrêtée, comme
+// `den <nest>`. Prouvé ICI et pas seulement dans internal/spawn — rien, au
+// niveau de sbx.VerifieAttachable, ne garantit que newShCmd l'appelle, et une
+// politique élargie d'un seul côté rouvrirait le défaut de l'autre.
+func TestShReprendUneSandboxArretee(t *testing.T) {
+	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
+		"ls --json": {Sortie: []byte(
+			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+	}}
+
+	if _, err := executeCmdAvecSbx(t, f, "sh", "api"); err != nil {
+		t.Fatalf("une sandbox arrêtée doit être reprise : %v", err)
+	}
+	if !f.AAttache("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+		t.Errorf("la reprise doit attacher dans le workdir de la VM ; attaches : %v", f.Attaches)
+	}
+}
+
 // La même garde que sur `den <nest>`, sur l'AUTRE chemin : les deux finissent
-// par un `sbx exec`, et les deux sont faux dans une VM arrêtée. Un `den sh` qui
-// ouvre un shell dans une sandbox `exited` n'est pas moins faux qu'un
-// `den <nest>` qui le fait — et c'est bien le même défaut, pas un cousin.
-//
-// Prouvé ICI et pas seulement dans internal/spawn : rien, au niveau de
-// sbx.VerifieEnMarche, ne garantit que newShCmd l'appelle. C'est exactement le
-// genre de propriété vraie d'un côté et oubliée de l'autre.
+// par un `sbx exec`, et les deux sont faux dans une VM dont den ne sait rien. Un
+// `den sh` qui ouvre un shell dans une sandbox `exited` n'est pas moins faux
+// qu'un `den <nest>` qui le fait — et c'est bien le même défaut, pas un cousin.
 func TestShRefuseUneSandboxQuiNeTournePas(t *testing.T) {
-	for _, statut := range []string{"exited", "stopped", "paused", "Running", ""} {
+	for _, statut := range []string{"exited", "paused", "Running", ""} {
 		t.Run("statut="+statut, func(t *testing.T) {
 			f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
 				"ls --json": {Sortie: []byte(

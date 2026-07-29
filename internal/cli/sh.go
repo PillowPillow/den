@@ -27,9 +27,14 @@ func newShCmd(runner sbx.Runner) *cobra.Command {
 			if b := sbx.Trouve(boxes, nom); b != nil {
 				// Même garde que `den <nest>`, par le même helper : les deux
 				// chemins finissent par un `sbx exec`, et un shell ouvert dans
-				// une VM arrêtée est aussi faux ici que là-bas.
-				if err := b.VerifieEnMarche(); err != nil {
+				// une VM dont den ne sait rien est aussi faux ici que là-bas.
+				// Une VM ARRÊTÉE passe : `sbx exec` la redémarre.
+				if err := b.VerifieAttachable(); err != nil {
 					return err
+				}
+				if b.EstArretee() {
+					fmt.Fprintf(cmd.OutOrStdout(),
+						"sandbox %s arrêtée : elle redémarre à l'attache (son état est conservé)\n", b.Nom)
 				}
 				// Le workdir vient du premier workspace REMONTÉ PAR LA VM,
 				// jamais d'un chemin recalculé depuis la config : sans lui,

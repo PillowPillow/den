@@ -53,11 +53,17 @@ func (s Sandbox) Workdir() string {
 	return strings.TrimSuffix(s.Workspaces[0], ":ro")
 }
 
-// StatutEnMarche est la valeur de `status` pour laquelle une sandbox accepte un
-// `sbx exec`. Relevée le 2026-07-28 sur le schéma de sbx v0.35.0 ; les AUTRES
-// valeurs que sbx peut émettre ne sont pas connues, sbx n'étant pas installable
-// sur cette machine.
+// StatutEnMarche est la valeur de `status` d'une sandbox qui tourne.
+// Relevée le 2026-07-28 sur le schéma de sbx v0.35.0.
 const StatutEnMarche = "running"
+
+// StatutArretee est la valeur de `status` d'une sandbox arrêtée — l'état où sbx
+// range TOUT SEUL les sandboxes inactives, au bout de quelques minutes (constaté
+// au smoke du 2026-07-29).
+//
+// Elle accepte un `sbx exec`, qui la redémarre au passage. C'est donc un état de
+// repos, pas une panne.
+const StatutArretee = "stopped"
 
 // Trouve rend la sandbox de ce nom parmi boxes, ou nil.
 //
@@ -78,18 +84,44 @@ func Trouve(boxes []Sandbox, nom string) *Sandbox {
 	return nil
 }
 
-// VerifieEnMarche refuse une sandbox dans laquelle den ne doit pas ouvrir de
-// shell. C'est la garde partagée par `den <nest>` (spawn-or-attach) et
-// `den sh` : les deux finissent par un `sbx exec`, et les deux sont faux dans
-// une VM arrêtée.
+// EstArretee dit si la sandbox est au repos — attachable, mais au prix d'un
+// redémarrage que l'appelant a intérêt à annoncer : il prend plusieurs secondes,
+// et un `den <nest>` muet pendant ce temps-là ressemble à un gel.
 //
-// LISTE BLANCHE : tout ce qui n'est pas exactement StatutEnMarche est refusé.
-// Une liste noire {"exited","stopped"} laisserait passer n'importe quel statut
-// qu'une version ultérieure de sbx introduirait — y compris un statut d'erreur —
-// et den n'a aucun moyen de connaître cette liste ici. Le prix ASSUMÉ : un
-// éventuel statut transitoire de démarrage ferait échouer un `den <nest>` lancé
-// trop tôt. Le message rend le statut lu, ce qui rend le cas diagnosticable et
-// rapportable ; le premier smoke test réel dira s'il faut élargir.
+// Séparée de VerifieAttachable À DESSEIN : « faut-il prévenir ? » et « faut-il
+// refuser ? » sont deux questions, et les confondre est exactement ce qui a
+// produit le refus que le smoke du 2026-07-29 a invalidé.
+func (s Sandbox) EstArretee() bool { return s.Statut == StatutArretee }
+
+// VerifieAttachable refuse une sandbox dans laquelle den ne doit pas ouvrir de
+// shell. C'est la garde partagée par `den <nest>` (spawn-or-attach) et
+// `den sh` : les deux finissent par un `sbx exec`.
+//
+// DEUX statuts passent, et le second est le correctif du smoke du 2026-07-29 :
+//
+//   - « running » : rien à dire ;
+//   - « stopped » : `sbx exec` redémarre la sandbox de façon transparente
+//     (« Sandbox <nom> started successfully »). Refuser était plus strict que
+//     sbx lui-même, et le remède qu'on affichait — `den rm` — DÉTRUISAIT un état
+//     qui aurait survécu : mesuré, un fichier écrit dans la couche conteneur est
+//     toujours là après stop/exec. Avec l'arrêt automatique des sandboxes
+//     inactives, ce cas est la NORME au retour sur une VM `--detach`, pas
+//     l'exception.
+//
+// La réserve qui justifiait le refus est levée, et elle l'est par mesure : les
+// startup commands des kits SE REJOUENT à la reprise. Compteur de
+// « dispatcher run » dans /var/log/sbx-kit-startup.log passé de 2 à 3 après un
+// stop puis un exec, avec la chaîne complète des kits dans l'ordre de l'argv et
+// le mixin de den en dernier. Une VM reprise n'est donc pas fonctionnellement
+// incomplète — la config git globale et la commande de fraîcheur de l'agent y
+// repassent.
+//
+// LISTE BLANCHE quand même : tout ce qui n'est ni l'un ni l'autre est refusé.
+// Une liste noire laisserait passer n'importe quel statut qu'une version
+// ultérieure de sbx introduirait — y compris un statut d'erreur — et den n'a
+// aucun moyen de connaître cette liste ici. Le prix ASSUMÉ : un éventuel statut
+// transitoire de démarrage ferait échouer un `den <nest>` lancé trop tôt. Le
+// message rend le statut lu, ce qui rend le cas diagnosticable et rapportable.
 //
 // La remédiation ne nomme que des commandes ATTESTÉES, et l'attestation a deux
 // sources qui ne se valent pas :
@@ -108,15 +140,15 @@ func Trouve(boxes []Sandbox, nom string) *Sandbox {
 // lui laisse des worktrees orphelins sous worktree_root, sans rien lui dire.
 // `sbx rm --force` reste nommé comme repli : il marche même quand ~/.den est
 // cassé, ce dont `den rm` a besoin pour situer les worktrees.
-func (s Sandbox) VerifieEnMarche() error {
-	if s.Statut == StatutEnMarche {
+func (s Sandbox) VerifieAttachable() error {
+	if s.Statut == StatutEnMarche || s.Statut == StatutArretee {
 		return nil
 	}
 	return fmt.Errorf(
-		"sandbox %q : statut lu %q, attendu %q — den n'attache pas dans une VM arrêtée ; "+
-			"inspecte-la avec `sbx ls`, ou détruis-la puis relance : `den rm %s` "+
+		"sandbox %q : statut lu %q, attendu %q ou %q — den n'attache pas dans une VM dont il ne "+
+			"sait rien ; inspecte-la avec `sbx ls`, ou détruis-la puis relance : `den rm %s` "+
 			"(qui nettoie aussi les worktrees ; repli `sbx rm --force %s`, qui ne détruit que la VM)",
-		s.Nom, s.Statut, StatutEnMarche, s.Nom, s.Nom)
+		s.Nom, s.Statut, StatutEnMarche, StatutArretee, s.Nom, s.Nom)
 }
 
 // Ls liste les sandboxes vivantes, triées par nom.
