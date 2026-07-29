@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -72,18 +73,64 @@ func TestExecRunContexteAnnuleAvantDemarrage(t *testing.T) {
 // Les deux motifs sont exercés, parce qu'ils NE se comportent pas pareil pour
 // l'utilisateur (Ctrl-C contre timeout du settle-loop) et que rien ne garantit
 // qu'os/exec les traite identiquement.
+//
+// # Pourquoi ce test se synchronise sur un témoin plutôt que sur l'horloge
+//
+// Sa précondition — le process TOURNE ENCORE quand le contexte est interrompu —
+// était supposée, jamais observée : la version précédente interrompait après
+// 20 ms fixes. Deux défauts distincts en sont sortis, tous deux dans la sonde et
+// aucun dans Run :
+//
+//  1. Les DEUX interrupteurs couraient. Le cas « délai dépassé » portait une
+//     échéance à 20 ms, et une goroutine commune appelait en plus cancel() après
+//     20 ms ; celui qui gagnait fixait ctx.Err(). Quand la goroutine passait la
+//     première, le motif observé était Canceled et les quatre assertions
+//     tombaient d'un coup. Mesuré : 2 échecs sur 12 sous charge CPU, et un échec
+//     sur une suite complète `go test ./...`.
+//  2. L'interruption devançait le fork/exec. Latence mesurée entre Start et le
+//     premier octet exécuté par le script, sur 300 tirages : p50 = 0,7 ms,
+//     max = 1,0 ms à vide ; p50 = 8,5 ms, p99 = 22,2 ms, MAX = 26,2 ms sous
+//     saturation CPU 12×. Une échéance à 20 ms tombe donc RÉGULIÈREMENT avant le
+//     démarrage : Cmd.Start rend alors ctx.Err() sans rien lancer, il n'y a
+//     aucun *exec.ExitError à retrouver, et le test échouait sur la seule
+//     assertion qui exige un process réellement tué.
+//
+// D'où le témoin : le script crée un fichier avant de dormir, et son existence
+// est ASSERTÉE après coup. Le cas « annulation » devient exact — la goroutine
+// attend le témoin puis annule, sans aucune hypothèse d'horloge. Le cas « délai
+// dépassé » ne peut pas l'être, une échéance courant dès sa création : sa marge
+// est portée à 500 ms, soit 19× le pire démarrage mesuré sous saturation, et le
+// témoin y sert de garde — s'il manquait, l'échec nommerait la marge à revoir au
+// lieu d'accuser une propriété de Run qui n'a pas été exercée.
 func TestExecRunMotifDAnnulationSurvitALaMortDuProcess(t *testing.T) {
+	// margeEcheance : voir la godoc ci-dessus. 500 ms = 19× le MAX mesuré
+	// (26,2 ms) sous saturation CPU 12×.
+	const margeEcheance = 500 * time.Millisecond
+
 	cas := []struct {
-		nom            string
-		contexte       func() (context.Context, context.CancelFunc)
+		nom string
+		// contexte rend un contexte dont l'interruption EN VOL est déjà armée,
+		// et dont c'est le SEUL interrupteur. temoin est le fichier que le
+		// script crée en démarrant.
+		contexte       func(t *testing.T, temoin string) context.Context
 		motif          error
 		motifAbsent    error
 		messageAttendu string
 	}{
 		{
 			nom: "annulation",
-			contexte: func() (context.Context, context.CancelFunc) {
-				return context.WithCancel(context.Background())
+			contexte: func(t *testing.T, temoin string) context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				t.Cleanup(cancel)
+				// Aucune échéance sur ce contexte : ctx.Err() ne peut valoir
+				// que context.Canceled. Et l'annulation n'est déclenchée
+				// qu'une fois le démarrage CONSTATÉ : ce cas-ci ne fait aucune
+				// hypothèse de durée.
+				go func() {
+					attendTemoin(temoin)
+					cancel()
+				}()
+				return ctx
 			},
 			motif:          context.Canceled,
 			motifAbsent:    context.DeadlineExceeded,
@@ -91,8 +138,13 @@ func TestExecRunMotifDAnnulationSurvitALaMortDuProcess(t *testing.T) {
 		},
 		{
 			nom: "délai dépassé",
-			contexte: func() (context.Context, context.CancelFunc) {
-				return context.WithTimeout(context.Background(), 20*time.Millisecond)
+			contexte: func(t *testing.T, _ string) context.Context {
+				ctx, cancel := context.WithTimeout(context.Background(), margeEcheance)
+				// cancel n'est appelé qu'APRÈS le corps du test : pendant le
+				// Run, l'échéance est le seul interrupteur, et ctx.Err() ne peut
+				// valoir que context.DeadlineExceeded.
+				t.Cleanup(cancel)
+				return ctx
 			},
 			motif:          context.DeadlineExceeded,
 			motifAbsent:    context.Canceled,
@@ -101,17 +153,26 @@ func TestExecRunMotifDAnnulationSurvitALaMortDuProcess(t *testing.T) {
 	}
 	for _, c := range cas {
 		t.Run(c.nom, func(t *testing.T) {
-			ctx, cancel := c.contexte()
-			defer cancel()
-			go func() {
-				time.Sleep(20 * time.Millisecond)
-				cancel()
-			}()
+			temoin := filepath.Join(t.TempDir(), "demarre")
+			ctx := c.contexte(t, temoin)
 
 			e := &Exec{Bin: "sh", DelaiDeDrainage: 50 * time.Millisecond}
-			_, err := e.Run(ctx, "-c", "exec sleep 5")
+			// `exec sleep 5` et non `sleep 5` : sans exec, dash forke et le
+			// petit-fils garde le tube (cf.
+			// TestExecRunBorneLAttenteQuandUnPetitFilsGardeLeTube).
+			_, err := e.Run(ctx, "-c", "touch "+temoin+"; exec sleep 5")
 			if err == nil {
 				t.Fatal("erreur attendue, obtenu nil")
+			}
+			// LA PRÉCONDITION, vérifiée et non supposée : tout ce test porte sur
+			// une interruption survenue PENDANT l'exécution. Si le process n'a
+			// jamais démarré, Cmd.Start a rendu ctx.Err() sans rien lancer — un
+			// cas déjà couvert par TestExecRunContexteAnnuleAvantDemarrage, et
+			// qui ne prouve rien de celui-ci.
+			if _, errTemoin := os.Stat(temoin); errTemoin != nil {
+				t.Fatalf("le process n'a jamais démarré (témoin %s absent) : l'interruption a "+
+					"devancé le fork/exec, ce test ne mesure alors rien de ce qu'il prétend — "+
+					"augmente la marge d'échéance (%v)", temoin, margeEcheance)
 			}
 			if !errors.Is(err, c.motif) {
 				t.Errorf("errors.Is(err, %v) = false ; err = %v", c.motif, err)
@@ -137,6 +198,27 @@ func TestExecRunMotifDAnnulationSurvitALaMortDuProcess(t *testing.T) {
 	}
 }
 
+// attendTemoin bloque jusqu'à l'apparition du fichier que le script crée en
+// démarrant, et rend la main au plus tard au bout de limiteTemoin.
+//
+// Appelée depuis une goroutine : elle ne peut donc pas faire échouer le test
+// elle-même (t.Fatalf hors de la goroutine de test est interdit). Elle abandonne
+// silencieusement à l'expiration, et c'est le Stat du corps du test qui
+// diagnostique — un seul endroit qui juge, celui qui a le droit de le faire.
+func attendTemoin(temoin string) {
+	// 100× le pire démarrage mesuré sous saturation CPU 12× (26,2 ms) : cette
+	// borne n'existe que pour ne pas laisser fuir une goroutine si le script
+	// échoue à démarrer, jamais pour arbitrer une course.
+	const limiteTemoin = 3 * time.Second
+	echeance := time.Now().Add(limiteTemoin)
+	for time.Now().Before(echeance) {
+		if _, err := os.Stat(temoin); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // Tuer le process ne suffit PAS à débloquer Run : dash forke pour `sleep 5`, et
 // le petit-fils garde le tube stdout ouvert — Wait bloque sur la copie tant
 // qu'il vit. Mesuré : 5,007 s pour une annulation à 20 ms, contre 21 ms avec
@@ -151,18 +233,53 @@ func TestExecRunMotifDAnnulationSurvitALaMortDuProcess(t *testing.T) {
 //
 // Le test ne mesure pas une durée absolue (ce serait flaky sous charge) mais la
 // SÉPARATION : rendre la main nettement avant la fin naturelle du petit-fils.
+//
+// L'annulation attend le témoin, pour la même raison que
+// TestExecRunMotifDAnnulationSurvitALaMortDuProcess (voir sa godoc) — mais ici
+// le risque n'était pas un échec, c'était un SUCCÈS À VIDE : annulée avant que
+// dash n'ait forké (jusqu'à 26,2 ms de latence de démarrage mesurée sous
+// saturation, pour un délai fixé à 20 ms), Run rendait la main aussitôt, sans
+// petit-fils, sans tube tenu et sans que la borne ne serve — et l'assertion
+// « moins de 2 s » passait quand même. Un test qui passe à vide est
+// indiscernable d'un test qui passe.
+//
+// LA FORME DU SCRIPT EST LE TEST. `sleep 5 & touch …; wait` place le fork AVANT
+// le témoin : quand le témoin apparaît, le petit-fils existe déjà et a hérité du
+// tube. La forme naïve — `touch …; sleep 5` — fait l'inverse et RUINE le test,
+// mesuré : le témoin y précède le fork, l'annulation tue dash avant qu'il ait
+// forké, aucun petit-fils ne tient le tube, et Run rend la main en 13 ms même
+// avec WaitDelay désarmé. Le tableau, contexte annulé sur témoin :
+//
+//	"touch T; sleep 5"        WaitDelay=0     →   13 ms   (aucun petit-fils)
+//	"sleep 5 & touch T; wait" WaitDelay=0     → 5001 ms   (le tube est tenu)
+//	"sleep 5 & touch T; wait" WaitDelay=50ms  →   59 ms   (la borne s'applique)
+//	"sleep 5 & touch T; wait" WaitDelay=2s    → 2006 ms   (à sa valeur)
+//
+// C'est la deuxième ligne qui donne sa valeur à la troisième : sans elle, la
+// borne n'est pas ce qui fait rendre la main.
 func TestExecRunBorneLAttenteQuandUnPetitFilsGardeLeTube(t *testing.T) {
+	temoin := filepath.Join(t.TempDir(), "demarre")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		time.Sleep(20 * time.Millisecond)
+		attendTemoin(temoin)
 		cancel()
 	}()
 
 	e := &Exec{Bin: "sh", DelaiDeDrainage: 50 * time.Millisecond}
 	debut := time.Now()
-	if _, err := e.Run(ctx, "-c", "sleep 5"); err == nil {
+	// Pas d'`exec` ici, contrairement à l'autre test, et c'est tout le sujet :
+	// le `&` forke un petit-fils, et c'est lui qui garde le tube. L'ordre
+	// fork-puis-témoin est ce qui rend la précondition observable (godoc).
+	if _, err := e.Run(ctx, "-c", "sleep 5 & touch "+temoin+"; wait"); err == nil {
 		t.Fatal("erreur attendue, obtenu nil")
+	}
+	// La précondition, vérifiée : sans témoin, le petit-fils n'a pas été forké,
+	// aucun tube n'est tenu, et l'assertion de durée ci-dessous serait vraie
+	// pour la mauvaise raison.
+	if _, err := os.Stat(temoin); err != nil {
+		t.Fatalf("le témoin %s est absent : le petit-fils n'a jamais été forké, aucun tube "+
+			"n'était tenu, et la borne d'attente n'a donc pas été exercée", temoin)
 	}
 	if ecoule := time.Since(debut); ecoule > 2*time.Second {
 		t.Errorf("Run a mis %v à rendre la main : la borne d'attente ne s'applique pas "+
