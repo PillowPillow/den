@@ -32,6 +32,28 @@ func DecodeYAMLStrict(chemin string, brut []byte, dest any) error {
 		}
 		return fmt.Errorf("%s : YAML invalide : %w", chemin, franciseClesInconnues(err))
 	}
+	// Decode ne lit QU'UN document. Tout ce qui suit un « --- » était donc
+	// silencieusement ignoré : même mode de défaillance que la clé inconnue
+	// ci-dessus — une configuration qui ne s'applique pas sans un mot — mais à la
+	// granularité du document. Mesuré sur un nest de deux documents :
+	// `den nest show` rendait rc=0 en n'ayant lu que le premier, le `stack:` et
+	// tout un bloc `egress:` du second n'ayant jamais existé pour den.
+	//
+	// Refuser plutôt que fusionner : den n'a aucun moyen de savoir lequel des
+	// documents fait foi, et en choisir un serait exactement le silence qu'on
+	// cherche à supprimer.
+	//
+	// Le second Decode vise un yaml.Node et non dest : il ne s'agit que de
+	// SAVOIR s'il reste un document, pas de le décoder — un second document au
+	// schéma incompatible doit être signalé comme document en trop, pas comme
+	// erreur de type.
+	var suivant yaml.Node
+	if err := dec.Decode(&suivant); err == nil {
+		return fmt.Errorf(
+			"%s : le fichier contient plusieurs documents YAML (séparés par « --- ») — "+
+				"den n'en lit qu'un, et les suivants seraient ignorés en silence ; "+
+				"n'en garde qu'un seul", chemin)
+	}
 	return nil
 }
 
