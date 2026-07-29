@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/worktree"
 )
 
 // Ces tests exercent la CLI complète sur des configurations HOSTILES — celles
@@ -165,7 +167,7 @@ func TestUnNestSansRepoMonteQuandMemeLeProfilDeLAgent(t *testing.T) {
 // échouait sur un message parlant de « workspace n°1 » — un mot qui n'apparaît
 // nulle part dans sa configuration.
 func TestWorktreeRootRelatifEstRefuseEnNommantLeChamp(t *testing.T) {
-	home, _ := denHomeHostile(t)
+	home, repo := denHomeHostile(t)
 	config, err := os.ReadFile(filepath.Join(home, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +190,49 @@ func TestWorktreeRootRelatifEstRefuseEnNommantLeChamp(t *testing.T) {
 	if len(f.Appels) != 0 {
 		t.Errorf("aucun appel sbx ne doit avoir lieu ; appels : %v", f.Appels)
 	}
+
+	// LE DÉFAUT EST L'EFFET DE BORD, et c'est donc lui qu'il faut mesurer : le
+	// message et l'absence d'appel sbx ne disent rien de ce que den a laissé
+	// dans le dépôt. Mesuré avant correctif, `git worktree list` rendait
+	// « <repo>/wt-relatif/feat1/monrepo … [feat1] » — un worktree ET une branche
+	// que l'utilisateur devait retirer à la main.
+	//
+	// Le chemin exact vient de la résolution relative de git : `worktree add`
+	// tourne AVEC LE REPO POUR CWD, donc « wt-relatif/… » atterrit dedans.
+	if _, err := os.Stat(filepath.Join(repo, "wt-relatif")); err == nil {
+		t.Errorf("den a créé %s dans le dépôt de l'utilisateur alors que la configuration "+
+			"est refusée", filepath.Join(repo, "wt-relatif"))
+	}
+	// La branche aussi : `git worktree add -b` la crée, et elle survit même si
+	// le dossier est nettoyé.
+	if branches := gitDansTest(t, repo, "branch", "--list", "feat1"); strings.TrimSpace(branches) != "" {
+		t.Errorf("den a créé la branche feat1 dans le dépôt de l'utilisateur : %q", branches)
+	}
+	// Et le dépôt ne connaît qu'un seul worktree, le principal.
+	if liste := gitDansTest(t, repo, "worktree", "list"); strings.Count(strings.TrimSpace(liste), "\n") != 0 {
+		t.Errorf("le dépôt porte plus d'un worktree :\n%s", liste)
+	}
+}
+
+// gitDansTest lance git dans un dépôt et rend sa sortie.
+//
+// Elle passe par worktree.NewGit() plutôt que par le paquet exec de la
+// bibliothèque standard, et ce n'est pas une coquetterie : la garde
+// d'hermétisme de la tâche 17c interdit ce paquet dans les tests hors d'une
+// liste blanche dont ce fichier ne fait pas partie. Le besoin — lancer un vrai
+// git — est ici le même que celui qui a valu à internal/worktree son entrée
+// dans cette liste ; emprunter son accès exporté satisfait les deux.
+//
+// L'environnement git de la machine est neutralisé package-wide par TestMain
+// (main_test.go). Ces appels sont en LECTURE seule : aucune configuration
+// n'est écrite, aucun `git config` n'est lancé.
+func gitDansTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := worktree.NewGit().Run(context.Background(), dir, args...)
+	if err != nil {
+		t.Fatalf("git %v dans %s : %v\n%s", args, dir, err, out)
+	}
+	return string(out)
 }
 
 // 16ᵉ configuration hostile : une stack cassée que PERSONNE n'utilise ne doit
