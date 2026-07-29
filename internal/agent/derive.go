@@ -7,6 +7,8 @@ import (
 	"slices"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/PillowPillow/den/internal/config"
 )
 
 // specLu est le sous-ensemble du schéma de kit que den GÉNÈRE, et donc le seul
@@ -55,7 +57,12 @@ func LisMixin(denHome, nomSandbox string) (Mixin, error) {
 	chemin := cheminMixin(denHome, nomSandbox)
 	contenu, err := os.ReadFile(chemin)
 	if err != nil {
-		return Mixin{}, fmt.Errorf("lecture du mixin %s : %w", chemin, err)
+		// config.ErreurFichier : ce message part sur le terminal à chaque
+		// attache dont le cache a été purgé (spawn.signaleDerive), enveloppé
+		// dans une phrase déjà longue. Le *fs.PathError y répétait le chemin et
+		// finissait en anglais. %w reste : spawn.signaleDerive fait
+		// errors.Is(err, os.ErrNotExist) sur cette erreur précise.
+		return Mixin{}, fmt.Errorf("lecture du mixin %s : %w", chemin, &config.ErreurFichier{Err: err})
 	}
 	var spec specLu
 	if err := yaml.Unmarshal(contenu, &spec); err != nil {

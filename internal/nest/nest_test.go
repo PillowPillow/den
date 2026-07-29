@@ -171,6 +171,21 @@ func TestLoadNestAbsentEstUnTypeReconnaissable(t *testing.T) {
 			t.Errorf("message = %q, attendu contenant %q", err.Error(), attendu)
 		}
 	}
+	// Le chemin UNE SEULE fois, et pas d'anglais. C'est l'erreur la plus banale
+	// du projet — un nom de nest mal tapé — et elle rendait, mesuré sur le
+	// binaire :
+	//
+	//	nest "inconnu" : lecture de <chemin> : open <chemin>: no such file or directory
+	//
+	// Le *fs.PathError de l'OS porte déjà le chemin absolu que LoadNest vient de
+	// nommer, et son motif est en anglais.
+	chemin := filepath.Join(denHome, "nests", "absent.yaml")
+	if n := strings.Count(err.Error(), chemin); n != 1 {
+		t.Errorf("le chemin apparaît %d fois, attendu 1 ; message : %s", n, err.Error())
+	}
+	if strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("reste d'anglais dans le message : %s", err.Error())
+	}
 }
 
 // La contrepartie : un nest PRÉSENT mais illisible n'est pas « introuvable ».

@@ -70,7 +70,10 @@ type ErreurNestIntrouvable struct {
 }
 
 func (e *ErreurNestIntrouvable) Error() string {
-	return fmt.Sprintf("nest %q : lecture de %s : %v", e.Nom, e.Chemin, e.Err)
+	// Le MOTIF seul : e.Err est un *fs.PathError, qui porte déjà le chemin que
+	// cette ligne vient de nommer — et dont le texte est en anglais. Err reste
+	// l'erreur d'origine INTACTE, c'est Unwrap qui la rend.
+	return fmt.Sprintf("nest %q : lecture de %s : %v", e.Nom, e.Chemin, &config.ErreurFichier{Err: e.Err})
 }
 
 func (e *ErreurNestIntrouvable) Unwrap() error { return e.Err }
@@ -95,10 +98,15 @@ func LoadNest(denHome, name string) (*Nest, error) {
 
 	brut, err := os.ReadFile(chemin)
 	if err != nil {
+		// ErreurFichier des DEUX côtés : le *fs.PathError de l'OS répète le
+		// chemin qu'on vient de nommer, et son motif est en anglais. Le %w reste
+		// (fs.ErrNotExist doit rester repérable), et ErreurNestIntrouvable garde
+		// dans Err l'erreur d'origine complète — c'est le MESSAGE qui change,
+		// pas ce que le code peut inspecter.
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, &ErreurNestIntrouvable{Nom: name, Chemin: chemin, Err: err}
 		}
-		return nil, fmt.Errorf("nest %q : lecture de %s : %w", name, chemin, err)
+		return nil, fmt.Errorf("nest %q : lecture de %s : %w", name, chemin, &config.ErreurFichier{Err: err})
 	}
 
 	var n Nest
@@ -149,7 +157,7 @@ func ListNests(denHome string) ([]*Nest, []NestCasse, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil, nil
 		}
-		return nil, nil, fmt.Errorf("lecture de %s : %w", racine, err)
+		return nil, nil, fmt.Errorf("lecture de %s : %w", racine, &config.ErreurFichier{Err: err})
 	}
 
 	// candidat porte à la fois le nom tronqué (l'identité, utilisée pour le

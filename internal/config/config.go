@@ -53,7 +53,10 @@ func LoadGlobalSansValider(denHome string) (*Global, error) {
 	chemin := filepath.Join(denHome, "config.yaml")
 	brut, err := os.ReadFile(chemin)
 	if err != nil {
-		return nil, fmt.Errorf("lecture de %s : %w", chemin, err)
+		// ErreurFichier, et non l'erreur nue : celle-ci est un *fs.PathError qui
+		// répète le chemin qu'on vient de nommer, et dont le motif est en
+		// anglais. %w reste indispensable — la chaîne doit survivre.
+		return nil, fmt.Errorf("lecture de %s : %w", chemin, &ErreurFichier{Err: err})
 	}
 
 	var g Global

@@ -74,7 +74,7 @@ func LoadStack(denHome, name string) (*Stack, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("stack %q : introuvable — attendu %s", name, chemin)
 		}
-		return nil, fmt.Errorf("stack %q : lecture de %s impossible : %w", name, chemin, err)
+		return nil, fmt.Errorf("stack %q : lecture de %s impossible : %w", name, chemin, &ErreurFichier{Err: err})
 	}
 
 	var s Stack
@@ -178,7 +178,7 @@ func LoadStacks(denHome string) (Stacks, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Stacks{Saines: map[string]*Stack{}, Racine: racine}, nil
 		}
-		return Stacks{}, fmt.Errorf("lecture de %s : %w", racine, err)
+		return Stacks{}, fmt.Errorf("lecture de %s : %w", racine, &ErreurFichier{Err: err})
 	}
 
 	out := Stacks{Saines: make(map[string]*Stack), Racine: racine}

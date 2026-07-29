@@ -95,6 +95,17 @@ func TestLisMixinNommeLeChemin(t *testing.T) {
 	if !strings.Contains(err.Error(), chemin) {
 		t.Errorf("le message doit nommer %s ; obtenu : %v", chemin, err)
 	}
+	// UNE seule fois, et en français. Ce message part sur le terminal à chaque
+	// attache dont le cache a été purgé (spawn.signaleDerive, « dérive non
+	// vérifiable »), enveloppé dans une phrase déjà longue : mesuré sur le
+	// binaire, il y écrivait le chemin absolu deux fois et finissait en
+	// « no such file or directory ».
+	if n := strings.Count(err.Error(), chemin); n != 1 {
+		t.Errorf("le chemin apparaît %d fois, attendu 1 ; message : %s", n, err.Error())
+	}
+	if strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("reste d'anglais dans le message : %s", err.Error())
+	}
 }
 
 func TestLisMixinRefuseUnYAMLIllisible(t *testing.T) {

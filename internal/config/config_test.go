@@ -125,8 +125,19 @@ func TestLoadGlobalFichierAbsent(t *testing.T) {
 		t.Fatal("attendu une erreur quand config.yaml est absent")
 	}
 	// Le message doit être actionnable : il nomme le chemin cherché.
-	if !strings.Contains(err.Error(), filepath.Join(denHome, "config.yaml")) {
+	chemin := filepath.Join(denHome, "config.yaml")
+	if !strings.Contains(err.Error(), chemin) {
 		t.Errorf("erreur = %q, attendu le chemin complet du fichier manquant", err.Error())
+	}
+	// Une seule fois, et en français : le *fs.PathError de l'OS porte déjà le
+	// chemin que cette enveloppe vient de nommer. C'est la première ligne que
+	// voit un utilisateur dont ~/.den n'existe pas encore, sur `den doctor`
+	// comme sur `den <nest>`.
+	if n := strings.Count(err.Error(), chemin); n != 1 {
+		t.Errorf("le chemin apparaît %d fois, attendu 1 ; message : %s", n, err.Error())
+	}
+	if strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("reste d'anglais dans le message : %s", err.Error())
 	}
 }
 
