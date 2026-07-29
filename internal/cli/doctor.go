@@ -43,6 +43,15 @@ func newDoctorCmd(denHome *string, deps doctor.Deps) *cobra.Command {
 				fmt.Fprintf(out, "[%s] %-16s %s\n", marque, c.Nom, c.Detail)
 			}
 
+			// L'ORDRE de ces deux blocs porte le contrat de sortie, et il n'est
+			// pas interchangeable : les deux se terminent par un `return`, donc
+			// celui qui passe en premier décide. Intervertis, un diagnostic en
+			// échec accompagné d'un simple avertissement rendrait nil — soit
+			// `den doctor` à 0 sur une installation cassée, sous une sortie
+			// auto-contradictoire annonçant « aucun échec » juste après une
+			// ligne [FAIL]. Mesuré, et tenu par
+			// TestDoctorEchoueMemeAvecUnAvertissement, qui est le seul test à
+			// produire les deux à la fois.
 			if echecs > 0 {
 				return fmt.Errorf("%d diagnostic(s) en échec", echecs)
 			}

@@ -101,6 +101,62 @@ func TestDoctorNEchouePasSurUnAvertissement(t *testing.T) {
 	}
 }
 
+// I1 — la COMBINAISON que rien n'exerçait : un avertissement ET un échec dans
+// le même diagnostic. Les deux tests voisins n'en produisent jamais qu'un seul
+// à la fois — TestDoctorNEchouePasSurUnAvertissement pose `Getenv → ""` sur une
+// configuration saine, TestDoctorEchoueQuandSbxManque garde le socket — et
+// aucun des deux n'atteint donc le seul endroit où la question se pose.
+//
+// Ce que ce test tient, et que RIEN ne tenait : l'ORDRE des deux blocs de
+// sortie de newDoctorCmd. Le bloc « échec » doit précéder le bloc
+// « avertissement », faute de quoi le second rend nil le premier n'ayant jamais
+// été atteint. Mesuré avant d'écrire ce test, les deux blocs intervertis :
+// la suite ENTIÈRE reste verte (rc=0), et le binaire rend 0 sur une
+// installation cassée en affichant « aucun échec » sous une ligne [FAIL].
+//
+// Un avertissement doit donc être exactement ce qu'il annonce : sans effet sur
+// le code de sortie, dans les DEUX sens — il n'en crée pas (test voisin), et il
+// n'en efface pas (celui-ci).
+func TestDoctorEchoueMemeAvecUnAvertissement(t *testing.T) {
+	home := denHomeDeTest(t)
+	deps := depsSaines()
+	// L'avertissement : aucun agent SSH, sur une configuration dont le mode SSH
+	// est le défaut (agent-forward — le fixture ne déclare pas de bloc `ssh:`).
+	deps.Getenv = func(string) string { return "" }
+	// L'échec, INDÉPENDANT du premier : sbx absent du PATH. Deux causes sans
+	// rapport, pour qu'aucune ne puisse être tenue pour un effet de l'autre.
+	deps.LookPath = func(string) (string, error) { return "", errors.New("introuvable dans le PATH") }
+
+	out, err := runDoctor(t, home, deps)
+	if err == nil {
+		t.Fatalf("un échec doit RESTER un échec en présence d'un avertissement : "+
+			"`den doctor` rendrait 0 sur une installation cassée ; sortie :\n%s", out)
+	}
+	// L'erreur ne compte QUE les échecs : un avertissement compté comme échec
+	// serait l'autre moitié du défaut.
+	if !strings.Contains(err.Error(), "1 diagnostic(s) en échec") {
+		t.Errorf("erreur = %q, attendu le décompte des seuls échecs (1) ; "+
+			"l'avertissement ne doit pas y être compté", err.Error())
+	}
+	// Les deux lignes coexistent : l'avertissement ne masque pas l'échec, et
+	// l'échec ne fait pas taire l'avertissement.
+	if !strings.Contains(out, "[FAIL]") {
+		t.Errorf("sortie = %q, attendu une ligne [FAIL]", out)
+	}
+	if !strings.Contains(out, "[warn]") {
+		t.Errorf("sortie = %q, attendu une ligne [warn] : un échec ne doit pas faire taire l'avertissement", out)
+	}
+	// L'épilogue ne doit RIEN affirmer de rassurant. « aucun échec » sous une
+	// ligne [FAIL] est auto-contradictoire, et c'est ce que la sortie affichait
+	// avec les deux blocs intervertis.
+	for _, interdit := range []string{"aucun échec", "tout est en ordre"} {
+		if strings.Contains(out, interdit) {
+			t.Errorf("sortie = %q, ne doit pas contenir %q alors qu'un diagnostic est en échec",
+				out, interdit)
+		}
+	}
+}
+
 func TestDoctorEchoueQuandSbxManque(t *testing.T) {
 	home := denHomeDeTest(t)
 	deps := depsSaines()
