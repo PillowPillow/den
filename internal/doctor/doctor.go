@@ -15,12 +15,48 @@ import (
 	"github.com/PillowPillow/den/internal/nest"
 )
 
+// Niveau dit ce qu'un diagnostic PÈSE sur le code de sortie de `den doctor`.
+//
+// Trois états et non deux. Le `OK bool` d'avant n'avait qu'un seul consommateur
+// hors tests — internal/cli/doctor.go, où `!c.OK` incrémente directement le
+// compteur qui décide du code de retour — et il ne savait donc dire que « rien
+// à signaler » ou « échec bloquant ». Le contrôle de ssh.mode introduit un
+// troisième cas, réel : une configuration parfaitement légale dont
+// l'utilisateur doit néanmoins être averti.
+//
+// Les deux façons de le rendre avec un booléen sont fausses, et c'est ce qui
+// justifie le type : `OK: false` ferait ÉCHOUER `den doctor` sur une machine
+// saine où l'on travaille en local sans dépôt distant ; `OK: true` avec un
+// Detail alarmant mentirait sur le champ même qui décide du code de sortie.
+//
+// Un champ ajouté À CÔTÉ du booléen (`Avertissement bool`) aurait laissé
+// exister des couples incohérents. Le remplacer ferme cette porte.
+type Niveau int
+
+const (
+	// NiveauOK : rien à signaler.
+	NiveauOK Niveau = iota
+	// NiveauAvertissement : à lire, mais den fonctionne et le code de sortie
+	// reste nul.
+	NiveauAvertissement
+	// NiveauEchec : den ne fonctionnera pas correctement en l'état.
+	NiveauEchec
+)
+
 // Check est le résultat d'un diagnostic unitaire.
 type Check struct {
 	Nom    string
-	OK     bool
+	Niveau Niveau
 	Detail string
 }
+
+// Bloquant dit si ce diagnostic doit faire sortir `den doctor` en non-zéro.
+// SEUL NiveauEchec l'est.
+//
+// Méthode, et non comparaison recopiée chez l'appelant : c'est la source unique
+// de cette décision. Avec `!c.OK` recalculé à chaque site, un troisième état
+// aurait pu être bloquant chez l'un et pas chez l'autre.
+func (c Check) Bloquant() bool { return c.Niveau == NiveauEchec }
 
 // Deps injecte les accès système, pour que les tests tournent sans sbx installé
 // et sans dépendre de l'arborescence réelle de la machine.
@@ -32,11 +68,16 @@ type Deps struct {
 	// rendrait un verdict différent selon le git du poste, et le plancher ne
 	// serait vérifiable sur aucune machine en particulier.
 	VersionGit func() (string, error)
+	// Getenv lit l'environnement de den. Injectée pour la même raison que les
+	// trois autres : le contrôle de SSH_AUTH_SOCK rendrait sinon un verdict
+	// différent selon que la session qui lance la suite a un agent SSH en
+	// marche — vert sur un poste de développement, rouge en CI.
+	Getenv func(string) string
 }
 
 // DepsSysteme renvoie les dépendances réelles.
 func DepsSysteme() Deps {
-	return Deps{LookPath: exec.LookPath, Stat: os.Stat, VersionGit: versionGitSysteme}
+	return Deps{LookPath: exec.LookPath, Stat: os.Stat, VersionGit: versionGitSysteme, Getenv: os.Getenv}
 }
 
 // versionGitSysteme exécute `git --version`. Seul appel de doctor à lancer un
@@ -102,8 +143,16 @@ func analyseVersionGit(sortie string) (majeur, mineur int, err error) {
 // On ne s'arrête jamais au premier problème : l'utilisateur doit tout voir d'un coup.
 func Run(denHome string, d Deps) []Check {
 	var checks []Check
+	// ajoute garde sa signature booléenne : les dix-huit diagnostics existants
+	// sont bel et bien binaires, et les réécrire en Niveau explicite n'aurait
+	// rien ajouté qu'une occasion de se tromper. Seul ce qui est vraiment un
+	// avertissement passe par avertit.
 	ajoute := func(nom string, ok bool, format string, args ...any) {
-		checks = append(checks, Check{Nom: nom, OK: ok, Detail: fmt.Sprintf(format, args...)})
+		niveau := NiveauEchec
+		if ok {
+			niveau = NiveauOK
+		}
+		checks = append(checks, Check{Nom: nom, Niveau: niveau, Detail: fmt.Sprintf(format, args...)})
 	}
 
 	// 1. sbx présent

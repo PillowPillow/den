@@ -9,15 +9,28 @@ import (
 	"testing"
 )
 
-// depsOK simule un système où sbx est installé, tous les chemins existent et
-// git est assez récent. La version est INJECTÉE : sans elle, le diagnostic de
-// version dépendrait du git du poste et changerait de verdict d'une machine à
-// l'autre.
+// socketDeTest est la valeur d'SSH_AUTH_SOCK que rend depsOK. Constante nommée
+// parce que deux tests l'attendent dans un Detail.
+const socketDeTest = "/tmp/den-test/agent-ssh.sock"
+
+// depsOK simule un système où sbx est installé, tous les chemins existent, git
+// est assez récent et un agent SSH tourne. Tout est INJECTÉ : sans cela, le
+// diagnostic de version dépendrait du git du poste et celui d'SSH_AUTH_SOCK de
+// la session qui lance la suite — vert ici, rouge en CI.
+//
+// Getenv ne répond QUE sur SSH_AUTH_SOCK : un contrôle qui lirait une autre
+// variable ne se trahirait pas si l'on rendait la même valeur pour tout.
 func depsOK() Deps {
 	return Deps{
 		LookPath:   func(string) (string, error) { return "/usr/local/bin/sbx", nil },
 		Stat:       func(string) (os.FileInfo, error) { return nil, nil },
 		VersionGit: func() (string, error) { return "git version 2.43.0\n", nil },
+		Getenv: func(nom string) string {
+			if nom == "SSH_AUTH_SOCK" {
+				return socketDeTest
+			}
+			return ""
+		},
 	}
 }
 
@@ -82,7 +95,7 @@ func trouveNomExact(checks []Check, nom string) (Check, bool) {
 
 func tousOK(checks []Check) bool {
 	for _, c := range checks {
-		if !c.OK {
+		if c.Niveau != NiveauOK {
 			return false
 		}
 	}
@@ -115,7 +128,7 @@ func TestRunSbxAbsent(t *testing.T) {
 	if !ok {
 		t.Fatal("aucun check ne concerne sbx")
 	}
-	if c.OK {
+	if !c.Bloquant() {
 		t.Error("le check sbx devrait échouer quand le binaire est absent")
 	}
 	if tousOK(checks) {
@@ -195,13 +208,13 @@ func TestRunSignaleUnNestCasseSansMasquerLesAutres(t *testing.T) {
 
 	var vuCasse, vuSainDiagnostique, vuNestsEnEchec bool
 	for _, c := range checks {
-		if c.Nom == "nest casse" && !c.OK {
+		if c.Nom == "nest casse" && c.Bloquant() {
 			vuCasse = true
 		}
-		if c.Nom == "nest sain" && !c.OK && strings.Contains(c.Detail, "/dev/sain-manquant") {
+		if c.Nom == "nest sain" && c.Bloquant() && strings.Contains(c.Detail, "/dev/sain-manquant") {
 			vuSainDiagnostique = true
 		}
-		if c.Nom == "nests" && !c.OK {
+		if c.Nom == "nests" && c.Bloquant() {
 			vuNestsEnEchec = true
 		}
 	}
@@ -295,7 +308,7 @@ func TestRunKitDeStackIntrouvable(t *testing.T) {
 			t.Errorf("aucun check ne nomme le kit manquant %s ; checks : %+v", chemin, checks)
 			continue
 		}
-		if c.OK {
+		if !c.Bloquant() {
 			t.Errorf("le check nommant %s doit être en échec ; obtenu %+v", chemin, c)
 		}
 	}
@@ -389,12 +402,19 @@ func TestRunPlancherDeVersionGit(t *testing.T) {
 			if !ok {
 				t.Fatalf("aucun check nommé \"git\" ; checks : %+v", checks)
 			}
-			if g.OK != c.accepte {
-				t.Fatalf("version %q : check git OK = %v, attendu %v (détail : %s)",
-					c.version, g.OK, c.accepte, g.Detail)
+			vert := g.Niveau == NiveauOK
+			if vert != c.accepte {
+				t.Fatalf("version %q : check git vert = %v, attendu %v (détail : %s)",
+					c.version, vert, c.accepte, g.Detail)
 			}
 			if c.accepte {
 				return
+			}
+			// Un git trop ancien BLOQUE : `den doctor` doit en sortir
+			// non-zéro. Sans cette ligne, le rétrograder en avertissement
+			// laisserait le test vert.
+			if !g.Bloquant() {
+				t.Fatalf("version %q : un git trop ancien doit être bloquant ; obtenu %+v", c.version, g)
 			}
 			// Un refus doit nommer les DEUX versions : celle qu'on a lue et
 			// celle qu'on exige. Sans les deux, l'utilisateur ne sait pas quoi
@@ -419,7 +439,7 @@ func TestRunGitInjoignable(t *testing.T) {
 	if !ok {
 		t.Fatalf("aucun check nommé \"git\" ; checks : %+v", checks)
 	}
-	if g.OK {
+	if !g.Bloquant() {
 		t.Errorf("git injoignable doit être un échec ; obtenu %+v", g)
 	}
 	// Et le diagnostic doit continuer : git manquant n'empêche pas de dire ce
@@ -461,7 +481,7 @@ ssh:
 	if !ok {
 		t.Fatalf("aucun check nommé \"ssh.dir\" ; checks : %+v", checks)
 	}
-	if c.OK {
+	if !c.Bloquant() {
 		t.Errorf("un ssh.dir introuvable doit être un échec ; obtenu %+v", c)
 	}
 	if !strings.Contains(c.Detail, "/dev/ssh-absent") {
@@ -570,7 +590,7 @@ func TestUneStackCasseeNeProduitAucunDiagnosticFaux(t *testing.T) {
 
 	// 1. La stack cassée est nommée, elle.
 	c, ok := trouveNomExact(checks, "stack autre")
-	if !ok || c.OK {
+	if !ok || !c.Bloquant() {
 		t.Fatalf("la stack cassée doit produire un diagnostic en échec qui la nomme ; checks = %+v", checks)
 	}
 	if !strings.Contains(c.Detail, "imag") {
@@ -585,12 +605,12 @@ func TestUneStackCasseeNeProduitAucunDiagnosticFaux(t *testing.T) {
 	}
 
 	// 3. defaults.stack (= devx) reste vert.
-	if d, ok := trouveNomExact(checks, "defaults.stack"); !ok || !d.OK {
+	if d, ok := trouveNomExact(checks, "defaults.stack"); !ok || d.Niveau != NiveauOK {
 		t.Errorf("defaults.stack pointe sur devx, qui est saine : attendu vert ; obtenu %+v", d)
 	}
 
 	// 4. Le nest api, qui utilise devx, ne doit produire aucun échec de stack.
-	if n, ok := trouveNomExact(checks, "nest api"); ok && !n.OK {
+	if n, ok := trouveNomExact(checks, "nest api"); ok && n.Niveau != NiveauOK {
 		t.Errorf("le nest api utilise devx, saine : aucun échec attendu ; obtenu : %s", n.Detail)
 	}
 }
@@ -610,7 +630,7 @@ func TestUnNestDontLaStackEstCasseeLApprend(t *testing.T) {
 	checks := Run(dir, depsOK())
 
 	n, ok := trouveNomExact(checks, "nest api")
-	if !ok || n.OK {
+	if !ok || !n.Bloquant() {
 		t.Fatalf("le nest dont la stack est cassée doit produire un échec ; checks = %+v", checks)
 	}
 	if !strings.Contains(n.Detail, "illisible") {
@@ -653,7 +673,7 @@ func TestLaLigneStacksCompteCommeLaLigneNests(t *testing.T) {
 		t.Errorf("attendu « 1 déclarée(s), 1 illisible(s) » ; obtenu : %q", c.Detail)
 	}
 	// Et le verdict suit le compte : une stack illisible n'est pas un [ok].
-	if c.OK {
+	if !c.Bloquant() {
 		t.Errorf("la ligne stacks est [ok] alors qu'une stack est illisible ; obtenu : %+v", c)
 	}
 }
@@ -667,7 +687,7 @@ func TestLaLigneStacksResteVerteSansStackCassee(t *testing.T) {
 	if !ok {
 		t.Fatalf("aucune ligne « stacks » ; checks = %+v", checks)
 	}
-	if !c.OK {
+	if c.Niveau != NiveauOK {
 		t.Errorf("aucune stack n'est cassée : la ligne stacks doit être verte ; obtenu : %+v", c)
 	}
 	if !strings.Contains(c.Detail, "0 illisible(s)") {

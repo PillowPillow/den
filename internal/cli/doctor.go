@@ -26,18 +26,34 @@ func newDoctorCmd(denHome *string, deps doctor.Deps) *cobra.Command {
 			fmt.Fprintf(out, "den home: %s\n\n", home)
 
 			checks := doctor.Run(home, deps)
-			echecs := 0
+			echecs, avertissements := 0, 0
 			for _, c := range checks {
 				marque := "ok  "
-				if !c.OK {
+				// Bloquant() et non une comparaison recopiée ici : c'est
+				// doctor qui décide de ce qui pèse sur le code de sortie, et
+				// il n'y a qu'un seul endroit où cette décision se prend.
+				switch {
+				case c.Bloquant():
 					marque = "FAIL"
 					echecs++
+				case c.Niveau == doctor.NiveauAvertissement:
+					marque = "warn"
+					avertissements++
 				}
 				fmt.Fprintf(out, "[%s] %-16s %s\n", marque, c.Nom, c.Detail)
 			}
 
 			if echecs > 0 {
 				return fmt.Errorf("%d diagnostic(s) en échec", echecs)
+			}
+			// Un avertissement ne change PAS le code de sortie — c'est tout son
+			// intérêt — mais « tout est en ordre » sous une ligne [warn] se
+			// lirait comme une contradiction, et l'utilisateur croirait à un
+			// affichage résiduel plutôt qu'à un message pour lui.
+			if avertissements > 0 {
+				fmt.Fprintf(out, "\naucun échec, mais %d avertissement(s) : relis les lignes [warn]\n",
+					avertissements)
+				return nil
 			}
 			fmt.Fprintln(out, "\ntout est en ordre")
 			return nil

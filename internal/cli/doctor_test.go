@@ -35,6 +35,15 @@ func depsSaines() doctor.Deps {
 		// le verdict du git du POSTE, et le contrat de sortie de la commande
 		// deviendrait vert ou rouge selon la machine qui lance la suite.
 		VersionGit: func() (string, error) { return "git version 2.43.0\n", nil },
+		// Même raison, et elle est ici plus tranchante encore : sans injection,
+		// `den doctor` avertirait ou non selon que la session qui lance la
+		// suite a un agent SSH en marche.
+		Getenv: func(nom string) string {
+			if nom == "SSH_AUTH_SOCK" {
+				return "/tmp/den-test/agent-ssh.sock"
+			}
+			return ""
+		},
 	}
 }
 
