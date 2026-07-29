@@ -279,7 +279,7 @@ func Run(denHome string, d Deps) []Check {
 		}
 	}
 
-	// 4quinquies. ssh.mode agent-forward — le DÉFAUT de la configuration
+	// 4quater. ssh.mode agent-forward — le DÉFAUT de la configuration
 	// (config.LoadGlobalSansValider le pose quand `ssh.mode` est absent).
 	//
 	// Ce mode n'ajoute AUCUN argument à l'argv de `sbx create` et AUCUNE entrée
@@ -296,10 +296,16 @@ func Run(denHome string, d Deps) []Check {
 	// Ce que ce contrôle ne dit PAS : que la sandbox aura effectivement un accès
 	// SSH quand la variable est présente. Que sbx propage le socket jusque DANS
 	// la microVM est une hypothèse consignée au spec (A10), invérifiable ici.
+	//
+	// « absent OU VIDE », et pas « absent » : den lit l'environnement par
+	// os.Getenv, qui rend "" dans les deux cas (mesuré ; os.LookupEnv les
+	// distinguerait, den ne l'appelle pas). Annoncer « absent » sur un
+	// `SSH_AUTH_SOCK=` posé vide décrirait une cause plausible plutôt que ce
+	// qui a été vu — et enverrait chercher une variable qui est là.
 	if g.SSH.Mode == "agent-forward" {
 		if socket := d.Getenv("SSH_AUTH_SOCK"); socket == "" {
 			avertit("ssh.mode",
-				"agent-forward, mais SSH_AUTH_SOCK est absent de l'environnement de den : "+
+				"agent-forward, mais SSH_AUTH_SOCK est absent ou vide dans l'environnement de den : "+
 					"il n'y a aucun agent SSH à transmettre, les sandboxes n'auront pas d'accès SSH "+
 					"et `git push` échouera depuis la VM, loin de la cause — démarre un agent "+
 					"(`eval $(ssh-agent)` puis `ssh-add`), ou passe `ssh.mode` à « mount » dans %s",

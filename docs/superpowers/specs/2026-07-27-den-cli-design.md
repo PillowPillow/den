@@ -497,9 +497,16 @@ internal/
 ## 14.1 Hypothèses non vérifiées contre un `sbx` réel (inventaire A1→A10)
 
 **Versé le 2026-07-28** (tâche 17b), depuis l'inventaire dressé en tâche 11 ; **A10 versée le
-2026-07-29** (tâche 18). Toutes ces affirmations sont **vertes contre le double de test (`sbx.Fake`) et invérifiables contre le réel** :
-`sbx` n'est pas installé sur la machine de développement, et aucune ne peut être tranchée sans lui.
-Elles ne sont **pas** des bugs connus — ce sont les endroits où la suite ne prouve rien.
+2026-07-29** (tâche 18). Ces affirmations sont **invérifiables contre un `sbx` réel** : il n'est pas
+installé sur la machine de développement, et aucune ne peut être tranchée sans lui. Elles ne sont
+**pas** des bugs connus — ce sont les endroits où la suite ne prouve rien.
+
+**A1→A9 et A10 ne sont pas de la même espèce.** A1→A9 portent sur le **contrat CLI** de `sbx` —
+argv, forme de la sortie, codes de retour — que le double de test (`sbx.Fake`) exerce réellement :
+elles sont **vertes contre le double**. A10 porte sur un comportement d'**exécution de la microVM**
+qu'aucun double ne touche, et pour lequel « vert contre `sbx.Fake` » ne veut rien dire. Sa moitié
+hôte (l'héritage de l'environnement par le process `sbx`) est, elle, tenue par des tests ; c'est le
+saut hôte → invité qui n'est tenu par rien.
 
 **Ce que la tâche 11 a fait de la plupart d'entre elles :** neutraliser leur conséquence plutôt
 qu'attendre le smoke. Quand la colonne « den y survit » dit oui, la fausseté de l'hypothèse ne

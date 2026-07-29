@@ -549,10 +549,47 @@ func TestRunAvertitQuandAgentForwardSansSocketSSH(t *testing.T) {
 	// Le message doit nommer la variable (ce qu'on cherche), le mode (pourquoi
 	// c'est lui qui la réclame) et la CONSÉQUENCE concrète — sans elle,
 	// l'utilisateur ne sait pas si la ligne le concerne.
-	for _, attendu := range []string{"SSH_AUTH_SOCK", "agent-forward", "git push"} {
+	// « absent ou vide » et non « absent » : os.Getenv rend "" dans les deux
+	// cas, et den n'appelle pas os.LookupEnv — le message doit décrire ce qui a
+	// été vu, pas une cause plausible parmi deux.
+	for _, attendu := range []string{"SSH_AUTH_SOCK", "agent-forward", "git push", "absent ou vide"} {
 		if !strings.Contains(c.Detail, attendu) {
 			t.Errorf("détail = %q, doit contenir %q", c.Detail, attendu)
 		}
+	}
+}
+
+// M2 — le CÂBLAGE réel de Getenv, que tous les tests ci-dessus contournent en
+// injectant un double. Deux propriétés, qu'aucun autre test ne touche :
+//
+//   - DepsSysteme lit bien l'environnement du PROCESSUS (sans quoi le contrôle
+//     de ssh.mode serait vert en test et faux en production) ;
+//   - une variable posée VIDE y prend exactement le même chemin qu'une variable
+//     absente. Mesuré : `SSH_AUTH_SOCK=""` donne os.Getenv → "" et
+//     os.LookupEnv → ("", true) ; absente, os.Getenv → "" et os.LookupEnv →
+//     ("", false). den n'appelle pas LookupEnv, donc il ne PEUT pas distinguer
+//     les deux — c'est ce qui rend « absent ou vide » exact et « absent » faux.
+//
+// La valeur est POSÉE par t.Setenv, jamais présupposée : ce poste a un
+// SSH_AUTH_SOCK réel, et un test qui s'appuierait dessus serait vrai par
+// accident ici et rouge en CI. t.Setenv interdit t.Parallel dans ce test.
+func TestDepsSystemeLitLEnvironnementEtTraiteVideCommeAbsent(t *testing.T) {
+	lis := DepsSysteme().Getenv
+	if lis == nil {
+		t.Fatal("DepsSysteme().Getenv est nil : le contrôle de ssh.mode paniquerait en exécution réelle")
+	}
+
+	const pose = "/tmp/den-test/socket-pose.sock"
+	t.Setenv("SSH_AUTH_SOCK", pose)
+	if vu := lis("SSH_AUTH_SOCK"); vu != pose {
+		t.Errorf("Getenv(SSH_AUTH_SOCK) = %q, attendu %q : DepsSysteme doit lire l'environnement du processus",
+			vu, pose)
+	}
+
+	t.Setenv("SSH_AUTH_SOCK", "")
+	if vu := lis("SSH_AUTH_SOCK"); vu != "" {
+		t.Errorf("Getenv(SSH_AUTH_SOCK) = %q sur une variable posée VIDE, attendu \"\" : "+
+			"une variable vide doit emprunter le même chemin qu'une variable absente", vu)
 	}
 }
 
