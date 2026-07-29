@@ -37,6 +37,31 @@ func TestDecodeYAMLStrictFranciseLesClesInconnues(t *testing.T) {
 	}
 }
 
+// L'en-tête « yaml: unmarshal errors: » de yaml.v3 est visible sur TOUT YAML
+// invalide de den — c'est la première ligne de `den nest ls` sur un nest cassé,
+// et la ligne de détail juste en dessous est bien traduite, elle. Un reste
+// d'anglais au milieu d'un message français se lit comme un bug.
+//
+// Ce qui NE change PAS : le « line N: » que yaml.v3 place devant chaque détail.
+// C'est le numéro de ligne qui rend le message actionnable, il est pinné par
+// TestDecodeYAMLStrictFranciseLesClesInconnues, et « line 3 » reste lisible
+// pour un francophone là où l'en-tête, lui, ne dit rien. Ce reliquat est
+// documenté dans internal/cli/francais.go plutôt que traduit.
+func TestDecodeYAMLStrictFraniseLEnTeteDeYamlV3(t *testing.T) {
+	brut := []byte("egress:\n  - a\negres:\n  - b\n")
+	var c cible
+	err := DecodeYAMLStrict("/den/config.yaml", brut, &c)
+	if err == nil {
+		t.Fatal("attendu une erreur sur la clé inconnue")
+	}
+	if strings.Contains(err.Error(), "yaml: unmarshal errors:") {
+		t.Errorf("l'en-tête anglais de yaml.v3 reste dans le message : %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "erreurs de décodage") {
+		t.Errorf("message = %q, attendu un en-tête français", err.Error())
+	}
+}
+
 // Plusieurs clés inconnues dans le même fichier : toutes francisées, aucune perdue.
 func TestDecodeYAMLStrictFranciseChaqueCleInconnue(t *testing.T) {
 	brut := []byte("egres:\n  - a\nworktre_root: /tmp\n")

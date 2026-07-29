@@ -23,7 +23,16 @@ import (
 //   - la CAUSE d'une valeur de flag invalide, qui vient de l'analyseur de la
 //     valeur et non de pflag : « strconv.ParseBool: parsing "oui": invalid
 //     syntax », ou l'erreur d'encoding/csv pour une liste. Conservée exprès —
-//     voir traduitErreurDeFlag.
+//     voir traduitErreurDeFlag ;
+//   - le « line N: » que yaml.v3 place devant chaque détail d'un YAML invalide
+//     (`den nest ls` sur un nest cassé, `den <nest>` sur un config.yaml
+//     fautif). Conservé exprès : c'est le numéro de ligne qui rend le message
+//     actionnable, il est pinné par un test
+//     (TestDecodeYAMLStrictFranciseLesClesInconnues), et « line 3 » se comprend
+//     sans traduction. L'EN-TÊTE de yaml.v3 (« yaml: unmarshal errors: »), lui,
+//     ne disait rien à personne : il est traduit depuis la revue finale
+//     (internal/config/yaml.go, enteteTypeError). La ligne de détail elle-même
+//     — « clé inconnue "egres" » — l'était déjà.
 //
 // Les deux premières supposeraient de réimplémenter ces commandes, donc d'en
 // reprendre la maintenance : le compromis est assumé, il n'est pas un oubli.

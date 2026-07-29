@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -72,17 +73,31 @@ func DecodeYAMLStrict(chemin string, brut []byte, dest any) error {
 // c'est lui qui rend le message utile, il doit survivre à la réécriture.
 var motifCleInconnue = regexp.MustCompile(`field (\S+) not found in type \S+`)
 
+// enteteTypeError est l'en-tête que yaml.v3 place devant la LISTE d'erreurs
+// d'un *yaml.TypeError. Littéral fixe de la bibliothèque, sans variable : il se
+// remplace sans motif.
+//
+// Il est visible sur TOUT YAML invalide de den — première ligne de `den nest ls`
+// sur un nest cassé, alors que le détail juste en dessous est bien traduit.
+//
+// Le « line N: » de chaque détail, lui, reste tel quel : c'est le numéro de
+// ligne qui rend le message actionnable, il est pinné par un test, et « line 3 »
+// se comprend là où l'en-tête ne dit rien. Ce reliquat est DOCUMENTÉ dans
+// internal/cli/francais.go, dont la liste se veut exacte.
+const enteteTypeError = "yaml: unmarshal errors:"
+
 // franciseClesInconnues réécrit « field egres not found in type config.Global »
 // en « clé inconnue "egres" » : le type Go est un détail d'implémentation, en
-// anglais, dans une CLI francophone.
+// anglais, dans une CLI francophone. Et remplace l'en-tête de yaml.v3.
 //
-// Si le motif n'est pas reconnu (YAML malformé, clé contenant un espace…),
+// Si RIEN n'est reconnu (YAML malformé sans clé inconnue ni en-tête de liste),
 // l'erreur passe INTACTE : un message imparfait vaut mieux qu'un message
 // mutilé. L'erreur d'origine reste accessible via errors.Unwrap — on réécrit ce
 // que l'utilisateur lit, pas ce que le code peut inspecter.
 func franciseClesInconnues(err error) error {
 	msg := err.Error()
 	francise := motifCleInconnue.ReplaceAllString(msg, `clé inconnue "$1"`)
+	francise = strings.Replace(francise, enteteTypeError, "erreurs de décodage :", 1)
 	if francise == msg {
 		return err
 	}
