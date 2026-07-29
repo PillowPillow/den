@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/config"
@@ -172,7 +174,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// 3. Worktrees, si demandés. Le premier workspace doit rester le premier
 	// repo : sbx.Sandbox.Workdir en dépend pour l'attache, et rien à SON niveau
 	// ne peut vérifier que cette liste a bien été composée dans cet ordre.
-	workspaces := make([]string, 0, len(r.Repos)+2)
+	workspaces := make([]string, 0, 2*len(r.Repos)+2)
+	// Les dossiers git communs sont collectés à part et ajoutés APRÈS tous les
+	// worktrees : la liste des repos reste contiguë et en tête, ce dont dépend
+	// le workdir de l'attache.
+	var dossiersGit []string
 	for _, repo := range r.Repos {
 		chemin := repo.Path
 		if o.Worktree != "" {
@@ -181,9 +187,42 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				return err
 			}
 			fmt.Fprintf(d.Sortie, "worktree %s : %s\n", repo.Name(), chemin)
+
+			// Sans ce montage, le worktree arrive dans la VM avec un git MORT :
+			// son `.git` est un fichier « gitdir: <repo>/.git/worktrees/<nom> »
+			// dont la cible appartient au dépôt principal, que rien ne montait.
+			// Mesuré sur sbx v0.35.0 : « fatal: not a git repository » sur toute
+			// commande git — ni status, ni diff, ni commit, ni push — et muet
+			// jusqu'à la première d'entre elles.
+			//
+			// Le dossier git commun, pas le dépôt entier : il porte l'admin dir,
+			// les objets et les refs, et laisse l'arbre de travail principal
+			// invisible dans la VM. Monter le dépôt entier rend git fonctionnel
+			// lui aussi, mais réexpose cet arbre EN ÉCRITURE — soit exactement
+			// l'isolation pour laquelle `-w` existe.
+			//
+			// En écriture, donc, et c'est mesuré : en `:ro`, `status` et `log`
+			// passent et `commit` meurt sur « Unable to create …/index.lock:
+			// Permission denied ». Une VM qui a l'air de marcher jusqu'au premier
+			// commit est pire que celle qui refuse tout de suite.
+			//
+			// Le lien `gitdir` se résout tel quel, sans réécriture, parce que sbx
+			// monte au MÊME chemin absolu que sur l'hôte (A11, vérifié au smoke).
+			commun, err := worktree.DossierGitCommun(ctx, d.Git, repo.Path)
+			if err != nil {
+				return err
+			}
+			// Deux entrées de `repos:` peuvent désigner le même dépôt (un clone
+			// et l'un de ses worktrees) : sbx recevrait deux fois le même
+			// positionnel.
+			if !slices.Contains(dossiersGit, commun) {
+				dossiersGit = append(dossiersGit, commun)
+			}
 		}
 		workspaces = append(workspaces, chemin)
 	}
+	// Hors `-w`, le dépôt entier est monté et son `.git` avec : rien à ajouter.
+	workspaces = append(workspaces, dossiersGit...)
 
 	// 4. Profil agent : monté RW, il doit exister — sinon sbx crée un dossier
 	// vide au mount et l'agent repart de zéro à chaque spawn.
@@ -258,11 +297,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	workdir := premier(workspaces)
 
 	if vivante != nil {
-		// Un nom pris par une VM qui ne tourne pas n'est pas un
+		// Un nom pris par une VM dont den ne sait rien n'est pas un
 		// spawn-or-attach. Même garde que `den sh` — et le même helper, pour
 		// que la propriété ne puisse pas être vraie d'un côté et oubliée de
 		// l'autre.
-		if err := vivante.VerifieEnMarche(); err != nil {
+		if err := vivante.VerifieAttachable(); err != nil {
 			return err
 		}
 
@@ -279,8 +318,24 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// YAML anodin) et sans recréer (destruction non demandée d'une VM qui
 		// porte peut-être du travail en cours).
 		signaleDerive(d.Sortie, nomSandbox, ancien, errAncien, m)
+		// Dérive d'une AUTRE nature, que signaleDerive ne peut pas voir : une
+		// sandbox créée avant le correctif F1 tourne toujours et ne monte pas les
+		// dossiers git. Son mixin, lui, n'a pas bougé — la comparaison au-dessus
+		// reste muette. Sans ce signal, l'utilisateur se rattache à une VM où git
+		// est mort et ne l'apprend qu'à sa première commande git.
+		signaleDossiersGitAbsents(d.Sortie, nomSandbox, vivante.Workspaces, dossiersGit)
 
-		fmt.Fprintf(d.Sortie, "sandbox %s déjà vivante : attache\n", nomSandbox)
+		// UNE seule ligne de statut, et elle dit lequel des deux cas on est.
+		// « redémarre à l’attache » et non « reprise » : sous --detach, den ne
+		// lance aucun exec, donc rien ne redémarre maintenant — c’est le premier
+		// `den sh` qui le fera. Le libellé est vrai des deux côtés du if final.
+		// annoncer « déjà vivante » sur une VM arrêtée puis la redémarrer en
+		// silence laisserait l'utilisateur devant plusieurs secondes de rien.
+		if vivante.EstArretee() {
+			fmt.Fprintf(d.Sortie, "sandbox %s arrêtée : elle redémarre à l'attache (son état est conservé)\n", nomSandbox)
+		} else {
+			fmt.Fprintf(d.Sortie, "sandbox %s déjà vivante : attache\n", nomSandbox)
+		}
 	} else {
 		// Le mixin n'est matérialisé QUE là : c'est le seul moment où il est
 		// posé sur une VM, et donc le seul où le fichier peut prétendre décrire
@@ -374,6 +429,46 @@ func signaleDerive(sortie io.Writer, nomSandbox string, ancien agent.Mixin, errA
 	fmt.Fprintf(sortie,
 		"  rien ne réapplique un mixin à une VM en marche : `sbx rm --force %s` puis relance pour l'appliquer.\n",
 		nomSandbox)
+}
+
+// signaleDossiersGitAbsents avertit quand une sandbox VIVANTE ne monte pas les
+// dossiers git que le worktree demandé exige.
+//
+// Le cas réel est celui d'une sandbox créée par un den antérieur au correctif
+// F1 : elle tourne, elle porte peut-être du travail, et son git est inopérant.
+// Rien ne remonte un mount à une VM en marche, donc le seul remède est la
+// destruction — d'où un AVERTISSEMENT et pas un refus : c'est à l'utilisateur de
+// décider s'il détruit, et il peut avoir de bonnes raisons d'y retourner sans
+// git.
+//
+// Le `:ro` est retiré avant comparaison : c'est une option de mount, pas une
+// partie du chemin (même traitement que Sandbox.Workdir).
+func signaleDossiersGitAbsents(sortie io.Writer, nomSandbox string, montes, attendus []string) {
+	if len(attendus) == 0 {
+		return
+	}
+	presents := make(map[string]bool, len(montes))
+	for _, w := range montes {
+		presents[strings.TrimSuffix(w, ":ro")] = true
+	}
+	var manquants []string
+	for _, g := range attendus {
+		if !presents[g] {
+			manquants = append(manquants, g)
+		}
+	}
+	if len(manquants) == 0 {
+		return
+	}
+	fmt.Fprintf(sortie,
+		"attention : la sandbox %s ne monte pas le dossier git de ses dépôts — git y est inopérant "+
+			"(« fatal: not a git repository » sur status, diff, commit et push) :\n", nomSandbox)
+	for _, g := range manquants {
+		fmt.Fprintf(sortie, "  - %s absent des workspaces de la VM\n", g)
+	}
+	fmt.Fprintf(sortie,
+		"  cette sandbox précède le correctif ; rien ne remonte un mount à une VM en marche : "+
+			"`den rm %s` puis relance.\n", nomSandbox)
 }
 
 // Attache ouvre un shell interactif dans la sandbox.

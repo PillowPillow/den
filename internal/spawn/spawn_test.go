@@ -36,21 +36,7 @@ func denTestSSH(t *testing.T, blocSSH string) (denHome, repo string) {
 	denHome = t.TempDir()
 	repo = filepath.Join(t.TempDir(), "api")
 
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range [][]string{
-		{"init", "-b", "main"},
-		{"config", "user.email", "t@exemple.test"},
-		{"config", "user.name", "T"},
-		{"commit", "--allow-empty", "-m", "initial"},
-	} {
-		cmd := exec.Command("git", c...)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v : %v\n%s", c, err, out)
-		}
-	}
+	creeDepot(t, repo)
 
 	ecrisConfig(t, denHome, blocSSH, egressUnHote)
 	// Deux kits déclarés, pas zéro : sans eux, le mixin serait le seul `--kit`
@@ -69,6 +55,27 @@ func denTestSSH(t *testing.T, blocSSH string) (denHome, repo string) {
 	}
 	ecris(t, filepath.Join(denHome, "nests", "api.yaml"), "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 	return denHome, repo
+}
+
+// creeDepot fait un dépôt git RÉEL avec un commit, seul état depuis lequel
+// `git worktree add` a un point de départ à donner à une nouvelle branche.
+func creeDepot(t *testing.T, chemin string) {
+	t.Helper()
+	if err := os.MkdirAll(chemin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "t@exemple.test"},
+		{"config", "user.name", "T"},
+		{"commit", "--allow-empty", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", c...)
+		cmd.Dir = chemin
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v : %v\n%s", c, err, out)
+		}
+	}
 }
 
 // ecrisConfig (ré)écrit le config.yaml du den home. Extrait de denTestSSH pour
@@ -379,15 +386,54 @@ func TestSpawnNInventePasDeWorkdirQuandLaVMNeMonteRien(t *testing.T) {
 // `den api` sur une VM `exited` affichait « déjà vivante : attache » puis
 // lançait un `sbx exec` dans une VM arrêtée.
 //
-// La liste blanche (« running » et rien d'autre) est délibérée et FAIL-CLOSED :
-// les autres valeurs de `status` que sbx peut émettre ne sont pas connues ici
-// (sbx n'est pas installable sur cette machine). Une liste NOIRE
-// — {"exited","stopped"} — attacherait dans tout statut qu'une version
-// ultérieure de sbx introduirait. Le prix assumé : un statut transitoire de
+// F2 du smoke réel du 2026-07-29 : une sandbox ARRÊTÉE se reprend, elle ne se
+// détruit pas.
+//
+// sbx range tout seul les sandboxes inactives au bout de quelques minutes, donc
+// c'est l'état NORMAL au retour sur une VM `--detach` — et `sbx exec` la
+// redémarre de façon transparente. Le refus d'avant envoyait sur `den rm`, qui
+// détruit un état que le stop avait préservé.
+func TestSpawnReprendUneSandboxArretee(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := depsTest()
+	var sortie bytes.Buffer
+	d.Sortie = &sortie
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("une sandbox arrêtée doit être reprise, pas refusée : %v", err)
+	}
+
+	// Reprise = attache. Le -w vient des workspaces de la VM, comme sur une VM
+	// vivante : c'est son `create` qui les porte, pas la config d'aujourd'hui.
+	if !f.AAttache("exec", "-it", "-w", "/w", "api", "bash", "-l") {
+		t.Errorf("la reprise doit attacher dans le workdir de la VM ; attaches : %v", f.Attaches)
+	}
+	// Et surtout PAS de create : le nom est pris par une VM qui porte du travail.
+	if f.AAppele("create") {
+		t.Errorf("aucun create sur un nom déjà pris ; appels : %v", f.Appels)
+	}
+	// La reprise prend plusieurs secondes : muette, elle ressemble à un gel.
+	if !strings.Contains(sortie.String(), "arrêtée") {
+		t.Errorf("la reprise doit être annoncée ; sortie :\n%s", sortie.String())
+	}
+	// Ce que le message ne doit PLUS proposer : c'était le défaut de F2, un
+	// remède qui détruit l'état que l'arrêt venait de préserver.
+	if strings.Contains(sortie.String(), "den rm") {
+		t.Errorf("une reprise ne doit pas proposer de détruire la VM ; sortie :\n%s", sortie.String())
+	}
+}
+
+// La liste blanche reste FAIL-CLOSED pour tout le RESTE : les autres valeurs de
+// `status` que sbx peut émettre ne sont pas relevées. Une liste NOIRE
+// attacherait dans tout statut qu'une version ultérieure de sbx introduirait, y
+// compris un statut d'erreur. Le prix assumé : un statut transitoire de
 // démarrage ferait échouer un `den api` lancé trop tôt, avec un message qui
 // nomme le statut lu.
 func TestSpawnRefuseUneSandboxQuiNeTournePas(t *testing.T) {
-	for _, statut := range []string{"exited", "stopped", "paused", "Running", ""} {
+	for _, statut := range []string{"exited", "paused", "Running", ""} {
 		t.Run("statut="+statut, func(t *testing.T) {
 			denHome, _ := denTest(t)
 			f, d := depsTest()
@@ -711,6 +757,157 @@ func TestSpawnAvecWorktree(t *testing.T) {
 	}
 	if !f.AAttache("exec", "-it", "-w", chemin, "api.feat12", "bash", "-l") {
 		t.Errorf("l'attache doit ouvrir dans le worktree ; attaches : %v", f.Attaches)
+	}
+}
+
+// F1 du smoke réel du 2026-07-29 : un worktree monté SEUL est un worktree où
+// git est mort.
+//
+// Le `.git` d'un worktree lié n'est pas un dossier mais un fichier
+// « gitdir: <repo>/.git/worktrees/<nom> ». Ce chemin-là appartient au dépôt
+// principal, que den ne montait pas : dans la microVM, TOUTE commande git
+// répondait « fatal: not a git repository », donc ni status, ni diff, ni commit,
+// ni push — le cas d'usage central de `-w`. Mesuré sur sbx v0.35.0, et muet
+// jusqu'à la première commande git de l'agent.
+//
+// Ce qui est monté est le DOSSIER GIT COMMUN (`<repo>/.git`) et non le dépôt
+// entier : il porte l'admin dir, les objets et les refs — tout ce dont un commit
+// a besoin — et laisse l'arbre de travail principal invisible dans la VM, ce qui
+// est précisément l'isolation pour laquelle `-w` existe. Mesuré aussi : monter
+// le dépôt entier rend git fonctionnel mais réexpose l'arbre principal EN
+// ÉCRITURE.
+//
+// Un montage par repo, pas un seul : `-w` propage le worktree sur TOUS les repos
+// du nest (spec §13.4), et chacun a son propre dossier git commun.
+func TestSpawnMonteLeDossierGitDeChaqueRepoAvecUnWorktree(t *testing.T) {
+	denHome, repoA := denTest(t)
+	repoB := filepath.Join(t.TempDir(), "web")
+	creeDepot(t, repoB)
+	ecris(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repoA+" }\n  - { path: "+repoB+" }\n")
+	f, d := depsTest()
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+
+	ws := workspacesDe(appelCommencantPar(f, "create"))
+	attendu := []string{
+		filepath.Join(denHome, "worktrees", "feat12", "api"),
+		filepath.Join(denHome, "worktrees", "feat12", "web"),
+		gitResolu(t, repoA),
+		gitResolu(t, repoB),
+		filepath.Join(denHome, "agents", "claude"),
+	}
+	if !slices.Equal(ws, attendu) {
+		t.Errorf("workspaces = %v,\nattendu       %v", ws, attendu)
+	}
+
+	// L'assertion qui donne sa RAISON à la forme résolue ci-dessus, et que ne
+	// satisferait aucun `filepath.Join(repo, ".git")` : le chemin monté doit être
+	// celui que le fichier `.git` du worktree désigne. Ces deux-là peuvent
+	// différer — sur macOS /var est un lien vers /private/var, et git écrit la
+	// forme résolue — et dans la microVM il n'y a plus de lien pour rattraper
+	// l'écart : un montage sous la forme non résolue laisserait le `gitdir:`
+	// pointer dans le vide, exactement la panne que ce test instruit.
+	for i, repo := range []string{repoA, repoB} {
+		wt := ws[i]
+		lien, err := os.ReadFile(filepath.Join(wt, ".git"))
+		if err != nil {
+			t.Fatalf("%s : le .git d'un worktree lié doit être un fichier : %v", wt, err)
+		}
+		cible := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(lien)), "gitdir:"))
+		monte := ws[2+i]
+		if !strings.HasPrefix(cible, monte+string(filepath.Separator)) {
+			t.Errorf("worktree de %s : `gitdir:` désigne %q, hors du workspace monté %q — "+
+				"dans la microVM ce chemin ne se résoudra pas", repo, cible, monte)
+		}
+	}
+}
+
+// gitResolu rend le `.git` du dépôt tel que GIT le nomme.
+func gitResolu(t *testing.T, repo string) string {
+	t.Helper()
+	reel, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(reel, ".git")
+}
+
+// F1, l'autre moitié : une sandbox créée AVANT le correctif tourne toujours, et
+// elle ne monte pas les `.git`. Rien ne remonte un mount à une VM vivante, et
+// signaleDerive est aveugle à ce cas (le mixin, lui, n'a pas bougé) : sans ce
+// signal, l'utilisateur se rattache à une VM où git est mort et ne l'apprend
+// qu'à sa première commande git — exactement la panne muette que F1 corrige.
+func TestSpawnSignaleUneVMSansLesDossiersGit(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := depsTest()
+	var sortie bytes.Buffer
+	d.Sortie = &sortie
+	wt := filepath.Join(denHome, "worktrees", "feat12", "api")
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["` +
+			wt + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+
+	// AVERTIR, pas refuser : la VM porte peut-être du travail en cours, et
+	// l'utilisateur peut avoir de bonnes raisons d'y retourner sans git.
+	if !f.AAttache("exec", "-it", "-w", wt, "api.feat12", "bash", "-l") {
+		t.Errorf("den doit quand même attacher ; attaches : %v", f.Attaches)
+	}
+	if !strings.Contains(sortie.String(), "git") {
+		t.Errorf("den doit signaler que git sera inopérant ; sortie :\n%s", sortie.String())
+	}
+	// Le remède est la destruction : rien ne remonte un mount à une VM vivante.
+	if !strings.Contains(sortie.String(), "den rm api.feat12") {
+		t.Errorf("le message doit donner le remède exact ; sortie :\n%s", sortie.String())
+	}
+}
+
+// La contrepartie, qui empêche l'avertissement de crier sur les VM correctes :
+// une sandbox qui monte bien les dossiers git ne doit rien déclencher.
+func TestSpawnNeSignaleRienQuandLesDossiersGitSontMontes(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := depsTest()
+	var sortie bytes.Buffer
+	d.Sortie = &sortie
+	wt := filepath.Join(denHome, "worktrees", "feat12", "api")
+	// Le `:ro` est une option de mount, pas une partie du chemin : il ne doit
+	// pas faire échouer la comparaison.
+	f.Reponses["ls --json"] = sbx.Reponse{
+		Sortie: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["` +
+			wt + `","` + gitResolu(t, repo) + `:ro"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if strings.Contains(sortie.String(), "den rm") {
+		t.Errorf("aucun avertissement sur une VM correcte ; sortie :\n%s", sortie.String())
+	}
+}
+
+// La contrepartie : SANS worktree, le dépôt entier est déjà monté et son `.git`
+// avec. Un montage supplémentaire serait redondant, et surtout il masquerait la
+// vraie raison du premier — un `.git` monté « pour git » alors que git marchait
+// déjà se propagerait à des cas où il n'a rien à faire.
+func TestSpawnNeMonteAucunDossierGitSansWorktree(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := depsTest()
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+
+	ws := workspacesDe(appelCommencantPar(f, "create"))
+	attendu := []string{repo, filepath.Join(denHome, "agents", "claude")}
+	if !slices.Equal(ws, attendu) {
+		t.Errorf("workspaces = %v, attendu %v", ws, attendu)
 	}
 }
 
