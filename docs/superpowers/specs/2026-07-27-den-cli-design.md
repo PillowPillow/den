@@ -504,6 +504,19 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
 - **L'ordre des `--kit`** n'est vérifié que par nos propres tests (le mixin en dernier). Que sbx
   applique bien les kits dans l'ordre de la ligne de commande n'est vérifié nulle part.
   *Falsifié par :* la lecture de `/var/log/sbx-kit-startup.log` au premier smoke.
+- **`sbx` laisserait derrière lui un descendant qui hérite des tubes** (superviseur de microVM
+  survivant à `sbx create`). C'est l'hypothèse qui **justifie** la borne de drainage de
+  `sbx.Exec.Run` (`delaiDrainageDefaut`, 2 s). Elle n'a **jamais été observée sur `sbx`** : tout ce
+  qui est mesuré l'a été sur `sh` (dash forke pour `sleep 5`, et le petit-fils tient le tube —
+  5,007 s au lieu de 21 ms). Si l'hypothèse est fausse, la borne ne se déclenche simplement jamais.
+  Elle ne coûte rien dans les deux cas depuis le correctif : un drainage écourté sur un process
+  **sorti avec succès** est rendu comme un succès, et non plus comme un échec — c'est la régression
+  qu'a coûtée la première version, mesurée de bout en bout (`sbx create` réussi + superviseur :
+  30,0 s et succès avant la borne, **échec** avec la borne seule, 2,0 s et succès avec le
+  correctif).
+  *Falsifié par :* au premier smoke réel, un `pgrep -P` sur le `sbx create` — ou, plus simplement,
+  un `den <nest>` qui ne rend la main qu'après exactement 2 s alors que `sbx` a répondu tout de
+  suite (signe que la borne a bien servi).
 - **`ssh.mode: agent-forward` n'ajoute AUCUN argument** — vérifié dans `internal/spawn/spawn.go` :
   seul le mode `mount` produit un effet (un workspace en plus, et le contrôle d'existence de
   `ssh.dir`). `agent-forward`, qui est pourtant le **défaut**, et `none` sont aujourd'hui
@@ -512,8 +525,19 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
   *Falsifié par :* un agent SSH indisponible dans la VM alors que `ssh.mode` vaut `agent-forward`.
 - **L'image de stack n'est pas contrôlée avant `sbx create`.** Le §11 prévoit « lance
   `den build <stack>` » quand l'image manque, mais `den build` est du **Plan 4** et n'existe pas.
-  Mesuré : den passe l'image verbatim à `--template` et se contente de relayer le refus de sbx —
-  `création de la sandbox api : template "devx:v1" not found`. L'écart avec le §11 est donc le
-  **conseil**, pas la détection : le message ne dit pas quoi faire. Aucun contrôle n'est ajouté ici,
-  il exigerait d'interroger sbx sur ses templates (et retomberait sous A4).
-  *Falsifié par :* un premier spawn sur une stack jamais construite.
+  den passe l'image verbatim à `--template` et se contente de relayer le refus de `sbx`. Forme
+  exacte du message, relevée sur le binaire — **avec un `sbx` FACTICE**, `sbx` n'étant pas installé :
+  le texte après le dernier « : » est celui du double, pas celui de `sbx`, et seule l'enveloppe
+  autour est de den :
+
+  ```
+  den: création de la sandbox api : sbx create --name api --template devx:v1 --kit
+  <den_home>/cache/mixins/api shell <repo> <den_home>/agents/claude : template "devx:v1" not found
+  ```
+
+  Deux écarts, donc, et pas un seul : le message ne dit pas **quoi faire** (le §11 promet le conseil
+  `den build`), et il **incruste l'argv complet** de `sbx create` avant d'en venir à la cause. Aucun
+  contrôle n'est ajouté ici : il exigerait d'interroger sbx sur ses templates, et retomberait sous
+  **A4**.
+  *Falsifié par :* un premier spawn sur une stack jamais construite, avec un `sbx` réel — qui dira
+  autre chose que « template … not found », le libellé ci-dessus étant inventé par le double.

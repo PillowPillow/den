@@ -115,6 +115,32 @@ func TestLsSortieIllisible(t *testing.T) {
 	}
 }
 
+// Une sortie TRONQUÉE — JSON valide jusqu'à la coupe — doit échouer bruyamment,
+// jamais se lire comme une liste courte.
+//
+// Ce cas n'est pas théorique : Run borne le drainage des tubes (voir
+// delaiDrainageDefaut) et rend désormais un SUCCÈS quand le process est sorti
+// proprement, même si un descendant tenait encore le tube. La sortie du fils
+// direct est complète (mesuré, cf. runner_test.go), mais c'est précisément le
+// genre de propriété qu'un changement d'os/exec ou de sbx peut retirer sans
+// prévenir — et une liste de sandboxes silencieusement amputée ferait recréer
+// par `den <nest>` une sandbox qui tourne déjà.
+func TestLsSortieTronquee(t *testing.T) {
+	complet := `{"sandboxes":[{"name":"api","status":"running"},{"name":"web","status":"running"}]}`
+	for _, coupe := range []int{len(complet) - 1, len(complet) / 2, 20} {
+		tronquee := complet[:coupe]
+		t.Run(tronquee, func(t *testing.T) {
+			f := &Fake{Reponses: map[string]Reponse{"ls --json": {Sortie: []byte(tronquee)}}}
+
+			if _, err := Ls(context.Background(), f); err == nil {
+				t.Fatalf("une sortie tronquée doit produire une erreur, pas une liste amputée ; sortie = %q", tronquee)
+			} else if !contientTout(err.Error(), "sbx ls", tronquee) {
+				t.Errorf("message peu actionnable : %v", err)
+			}
+		})
+	}
+}
+
 // Une sortie JSON valide mais au mauvais schéma (sbx renommerait "sandboxes")
 // ne doit pas se lire comme « aucune sandbox » : c'est indiscernable d'un
 // vrai zéro pour l'appelant, et den ls/sh/rm affirmeraient alors à tort

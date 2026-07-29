@@ -29,10 +29,15 @@ type Runner interface {
 // Exec est l'implémentation réelle, adossée au binaire sbx du PATH.
 type Exec struct {
 	Bin string
-	// DelaiApresAnnulation borne l'attente de Run après annulation du
-	// contexte. Zéro ⇒ delaiApresAnnulationDefaut. Réglable pour que le test
-	// de la borne dure des millisecondes plutôt que des secondes.
-	DelaiApresAnnulation time.Duration
+	// DelaiDeDrainage borne le temps laissé aux tubes pour finir de se vider,
+	// une fois le process sorti OU le contexte annulé. Zéro ⇒
+	// delaiDrainageDefaut. Réglable pour que les tests de la borne durent des
+	// millisecondes plutôt que des secondes.
+	//
+	// Nommé d'après ce qu'il borne, et non « DelaiApresAnnulation » comme dans
+	// une première version : ce nom-là affirmait que seule l'annulation armait
+	// la borne, ce qui est mesuré faux et a masqué une régression.
+	DelaiDeDrainage time.Duration
 }
 
 // NewExec construit un Runner réel. bin vide ⇒ « sbx » (résolu via le PATH).
@@ -124,27 +129,60 @@ func (e *ErreurExec) Unwrap() []error {
 	return chaine
 }
 
-// delaiApresAnnulationDefaut borne l'attente de Run APRÈS l'annulation du
-// contexte, et seulement là : sur le chemin normal, WaitDelay ne se déclenche
-// jamais et Run attend sbx aussi longtemps qu'il faut.
+// delaiDrainageDefaut borne le temps laissé aux tubes pour finir de se vider.
 //
-// Mesuré : tuer le process ne suffit pas à débloquer Run. `sh -c "sleep 5"`
-// annulé au bout de 20 ms rend « signal: killed »… au bout de 5 s pleines,
-// parce que dash a FORKÉ et que le petit-fils garde le tube stdout ouvert :
-// Wait bloque sur la copie tant qu'il vit. `sh -c "exec sleep 5"` et un binaire
-// direct, eux, rendent la main en 21 ms. sbx supervisant une microVM, le
-// petit-fils qui hérite du tube peut être un démon qui ne meurt JAMAIS — sans
-// cette borne, un Ctrl-C laisse den suspendu sans fin.
-const delaiApresAnnulationDefaut = 2 * time.Second
+// PORTÉE EXACTE, corrigée après avoir été écrite fausse : le minuteur de
+// WaitDelay démarre quand le contexte est annulé **OU dès que Wait constate la
+// sortie du process**, au premier des deux. Il ne se déclenche donc PAS
+// « seulement après une annulation ». Ce qu'il borne, c'est l'attente d'un
+// descendant qui a hérité des tubes et les tient ouverts après la sortie du
+// process — pas la durée du process lui-même.
+//
+// Mesuré, contexte jamais annulé, `&Exec{Bin: "sh"}` :
+//
+//	"sleep 4; echo fini"          → 4,01 s, nil        (un `create` lent n'est PAS borné)
+//	"echo demarree; sleep 30 &"   → borné, succès      (descendant qui survit)
+//	"echo x; sleep 30 & exit 3"   → borné, exit 3      (l'échec réel remonte tout de suite)
+//
+// La première ligne est la garantie qui compte : tant que sbx n'est pas sorti,
+// rien ne le borne. Voir Run pour le traitement d'ErrWaitDelay.
+const delaiDrainageDefaut = 2 * time.Second
 
 // delaiEffectif applique le défaut. Fonction séparée pour que « la valeur nulle
 // d'Exec est la valeur SÛRE » soit vérifiable sans faire dormir la suite : la
 // borne elle-même se prouve en exécutant un process, le choix du défaut non.
 func delaiEffectif(d time.Duration) time.Duration {
 	if d <= 0 {
-		return delaiApresAnnulationDefaut
+		return delaiDrainageDefaut
 	}
 	return d
+}
+
+// drainageEcourteSurSucces dit si l'erreur rendue par cmd.Run n'est QUE le
+// drainage écourté d'un process qui a par ailleurs réussi.
+//
+// Fonction séparée parce que deux de ses trois conditions portent sur des états
+// qu'on ne sait pas provoquer à la demande depuis un test de bout en bout —
+// os/exec ne rend ErrWaitDelay que sur un statut de succès, et une annulation
+// concomitante d'un succès est une course. Les exercer ici sur des valeurs
+// fabriquées est la seule façon de ne pas les laisser sans preuve.
+//
+// Chaque condition, et ce qu'elle protège :
+//   - le motif EST le drainage : un exit non nul, un exec.ErrNotFound ou une
+//     erreur de copie restent des échecs de sbx et doivent remonter ;
+//   - le contexte n'y est pour rien : une annulation ne doit jamais être
+//     silencieusement convertie en succès ;
+//   - le process est sorti avec un statut de SUCCÈS : c'est LUI qui atteste que
+//     sbx a fait son travail, le reste n'étant que de la plomberie de tubes.
+//
+// Les deux dernières sont redondantes avec la première tant qu'os/exec tient son
+// contrat documenté (ErrWaitDelay implique un statut de succès). Elles sont
+// gardées parce que le prix d'un contrat qui changerait est ici de transformer
+// un échec en succès — et cette redondance-là, on la paie volontiers.
+func drainageEcourteSurSucces(err, errCtx error, etat *os.ProcessState) bool {
+	return errors.Is(err, exec.ErrWaitDelay) &&
+		errCtx == nil &&
+		etat != nil && etat.Success()
 }
 
 // Run exécute sbx et renvoie stdout. En cas d'échec, stderr est INTÉGRÉ au
@@ -162,8 +200,29 @@ func (e *Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 	// que construisent les tests, `&Exec{Bin: "sh"}`) doit être la valeur SÛRE.
 	// C'est toute la raison de delaiEffectif : passé tel quel à WaitDelay, 0
 	// signifie précisément « attendre indéfiniment ».
-	cmd.WaitDelay = delaiEffectif(e.DelaiApresAnnulation)
+	cmd.WaitDelay = delaiEffectif(e.DelaiDeDrainage)
 	if err := cmd.Run(); err != nil {
+		// Un drainage écourté sur un process qui a RÉUSSI n'est pas un échec de
+		// sbx, et le rapporter comme tel a coûté une régression : `sbx create`
+		// laissant derrière lui un superviseur qui hérite du tube faisait rendre
+		// ErrWaitDelay À LA PLACE de nil — den annonçait « impossible de créer
+		// la sandbox » alors qu'elle EXISTE, puis abandonnait la séquence, avec
+		// en prime un message anglais interne à os/exec.
+		//
+		// Les trois conditions sont nécessaires : le seul motif est le drainage
+		// (un exit non nul ou un ErrNotFound reste un échec), le contexte n'y est
+		// pour rien (une annulation doit rester visible), et le process est sorti
+		// avec un statut de SUCCÈS (c'est lui qui dit que sbx a fait son travail).
+		//
+		// La sortie collectée est complète, et pour une raison précise : le
+		// copieur d'os/exec draine le tube EN CONTINU, donc tout ce que le fils
+		// direct a écrit avant de sortir est déjà pris. Vérifié sur 240 Kio, très
+		// au-delà du tampon d'un tube. Ce qu'un DESCENDANT écrirait après la
+		// fermeture est perdu — c'est le comportement voulu, ce n'est pas la
+		// sortie de sbx.
+		if drainageEcourteSurSucces(err, ctx.Err(), cmd.ProcessState) {
+			return stdout.Bytes(), nil
+		}
 		return stdout.Bytes(), &ErreurExec{
 			Bin:    e.Bin,
 			Args:   slices.Clone(args),

@@ -267,9 +267,14 @@ func horlogeIncoherente(sandbox string, o Options, tours int, avance time.Durati
 
 // interrompue : message unique de l'annulation, d'où qu'elle soit constatée. Il
 // enveloppe le motif du CONTEXTE et non l'erreur du runner, pour qu'un appelant
-// puisse faire errors.Is(err, context.Canceled) — ce que l'erreur du runner ne
-// permet pas (mesuré : un processus tué rend « signal: killed », qui n'enveloppe
-// ni Canceled ni DeadlineExceeded).
+// puisse faire errors.Is(err, context.Canceled).
+//
+// L'erreur du runner le permettrait aussi désormais — depuis la tâche 17b,
+// sbx.Exec.Run joint ctx.Err() à sa chaîne, ce qu'une version antérieure de ce
+// commentaire donnait à tort pour impossible (« un processus tué rend
+// signal: killed »). Ce n'est plus la raison du choix : le motif du contexte est
+// gardé parce qu'il ne traîne NI l'argv complet de sbx, NI le nom d'un hôte qui
+// n'y est pour rien.
 func interrompue(sandbox string, err error) error {
 	return fmt.Errorf("sandbox %s : attente de la policy interrompue : %w", sandbox, err)
 }
