@@ -217,28 +217,34 @@ func Assure(ctx context.Context, g Git, layout, root, wt, cheminRepo string) (st
 	// `-b <branche>` sinon : git refuse de recréer une branche existante.
 	args := []string{"worktree", "add", chemin, wt}
 	if !brancheExiste(ctx, g, cheminRepo, wt) {
-		// Un dépôt sans le moindre commit n'a pas de point de départ à donner à
-		// la nouvelle branche. Le contrôle vit ICI et pas plus haut parce que
-		// c'est la seule branche qu'un tel dépôt peut atteindre — sans commit,
-		// aucune branche n'existe, donc brancheExiste est forcément faux — et
-		// que le placer en tête ferait payer un `rev-parse` au chemin
+		// Un HEAD qui ne se résout pas ne donne aucun point de départ à la
+		// nouvelle branche. Le contrôle vit ICI et pas plus haut parce que c'est
+		// la seule branche qu'un tel dépôt peut atteindre — la branche demandée
+		// ne peut pas exister dans cet état, donc brancheExiste est forcément
+		// faux — et que le placer en tête ferait payer un `rev-parse` au chemin
 		// idempotent, où le worktree est déjà en place.
 		//
 		// Sans lui, git rend un message exact de son point de vue et
-		// inactionnable du nôtre, mesuré :
+		// inactionnable du nôtre, mesuré sur un dépôt vierge :
 		//
 		//	No possible source branch, inferring '--orphan'
 		//	fatal: options '--orphan' and '--track' cannot be used together
 		//
 		// L'utilisateur n'a écrit ni --orphan ni --track : le premier vient de
 		// l'inférence de git, le second de ce que git range --no-track dans la
-		// famille --track. Rien là-dedans ne dit que le dépôt est vierge, qui
-		// est pourtant la seule chose à corriger.
-		if !aAuMoinsUnCommit(ctx, g, cheminRepo) {
+		// famille --track.
+		//
+		// Le message énonce ce que la sonde MESURE — HEAD ne se résout pas — et
+		// non ce qu'on aimerait en déduire. Une version antérieure affirmait
+		// « le dépôt n'a aucun commit » : vrai sur un `git init` vierge, FAUX
+		// sur une branche orpheline, où le dépôt a des commits (mesuré :
+		// `rev-list --all --count` rend 1) et où seul HEAD est en cause. Les
+		// deux causes possibles sont donc nommées, sans trancher entre elles.
+		if !headResolvable(ctx, g, cheminRepo) {
 			return "", fmt.Errorf(
-				"création du worktree %q : le dépôt %s n'a aucun commit — den ne peut pas "+
-					"y créer de branche, git n'ayant aucun point de départ à lui donner ; "+
-					"fais-y un premier commit, puis relance",
+				"création du worktree %q : HEAD de %s ne pointe sur aucun commit (dépôt vierge, "+
+					"ou branche orpheline non encore commitée) — git n'a aucun point de départ "+
+					"à donner à la nouvelle branche ; commite d'abord sur ce dépôt, puis relance",
 				wt, cheminRepo)
 		}
 		// --no-track : le point de départ est une ref de suivi, et sans lui git
@@ -791,19 +797,29 @@ func brancheExiste(ctx context.Context, g Git, cheminRepo, branche string) bool 
 	return err == nil
 }
 
-// brancheParDefaut rend la ref de suivi de la branche par défaut du dépôt
-// (« origin/main »), et false si le dépôt n'a pas d'origin/HEAD.
-// aAuMoinsUnCommit dit si le dépôt a un HEAD résolvable, c'est-à-dire au moins
-// un commit. Un `git init` vierge n'en a pas : HEAD y pointe sur une branche
-// qui n'existe pas encore.
+// headResolvable dit si HEAD du dépôt désigne un commit existant.
+//
+// Deux configurations distinctes rendent false, et le message d'erreur qui
+// s'appuie dessus doit les couvrir TOUTES LES DEUX (mesuré) :
+//   - un `git init` vierge : HEAD pointe sur une branche jamais commitée ;
+//   - une branche ORPHELINE (`git checkout --orphan`) dans un dépôt qui a par
+//     ailleurs des commits — le dépôt n'est pas vide, c'est HEAD qui ne se
+//     résout pas.
+//
+// Nommée d'après ce qu'elle mesure — la résolution de HEAD — et non
+// « aAuMoinsUnCommit » comme dans une première version : ce nom-là affirmait
+// sur le DÉPÔT une propriété que la sonde ne teste pas, et c'est exactement
+// l'erreur qu'il a induite dans le message rendu à l'utilisateur.
 //
 // --quiet pour que l'échec attendu ne pollue pas stderr, --verify pour que git
 // sorte non-zéro au lieu de rendre la chaîne telle quelle.
-func aAuMoinsUnCommit(ctx context.Context, g Git, cheminRepo string) bool {
+func headResolvable(ctx context.Context, g Git, cheminRepo string) bool {
 	_, err := g.Run(ctx, cheminRepo, "rev-parse", "--verify", "--quiet", "HEAD")
 	return err == nil
 }
 
+// brancheParDefaut rend la ref de suivi de la branche par défaut du dépôt
+// (« origin/main »), et false si le dépôt n'a pas d'origin/HEAD.
 func brancheParDefaut(ctx context.Context, g Git, cheminRepo string) (string, bool) {
 	out, err := g.Run(ctx, cheminRepo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	if err != nil {

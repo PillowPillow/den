@@ -2366,34 +2366,80 @@ func basculeSur(t *testing.T, dir, branche string) {
 // message est exact du point de vue de git et inactionnable du point de vue de
 // den — il ne dit à aucun moment que le dépôt n'a pas de commit, qui est la
 // seule chose à corriger.
-func TestAssureRefuseUnDepotSansCommitEnLeDisant(t *testing.T) {
-	// Dépôt initialisé mais VIERGE : pas de creeDepot, qui commite.
-	repo := filepath.Join(t.TempDir(), "vierge")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
+// DEUX configurations, et c'est tout l'objet du tableau : la première version de
+// ce test ne couvrait que le `git init` vierge, et le message qu'elle a validé
+// — « le dépôt n'a aucun commit » — est FAUX sur la seconde. Mesuré sur une
+// branche orpheline : `git rev-list --all --count` rend 1, le dépôt a donc bien
+// un commit, et c'est HEAD seul qui ne se résout pas. Un diagnostic assuré qui
+// envoie l'utilisateur chercher un dépôt vide qu'il n'a pas est précisément la
+// classe de défaut que l'écart C de la tâche 17c existait pour supprimer.
+func TestAssureRefuseUnHeadNonResolvableEnDisantVrai(t *testing.T) {
+	cas := []struct {
+		nom string
+		// prepare rend le chemin d'un dépôt dont HEAD ne se résout pas.
+		prepare func(t *testing.T) string
+	}{
+		{
+			// Dépôt initialisé mais VIERGE : pas de creeDepot, qui commite.
+			nom: "depot vierge",
+			prepare: func(t *testing.T) string {
+				repo := filepath.Join(t.TempDir(), "vierge")
+				if err := os.MkdirAll(repo, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				git(t, repo, "init", "-q", "-b", "main")
+				return repo
+			},
+		},
+		{
+			// Dépôt POURVU d'un commit, mais posé sur une branche orpheline non
+			// encore commitée : HEAD désigne une ref qui n'existe pas.
+			nom: "branche orpheline dans un depot qui a des commits",
+			prepare: func(t *testing.T) string {
+				repo := depotTest(t, "orphelin")
+				git(t, repo, "checkout", "-q", "--orphan", "nouvelle")
+				// La précondition qui distingue ce cas du précédent, vérifiée et
+				// non supposée : sans elle, ce sous-cas pourrait dériver vers un
+				// dépôt réellement vide et ne plus rien prouver.
+				if n := strings.TrimSpace(git(t, repo, "rev-list", "--all", "--count")); n == "0" {
+					t.Fatalf("ce cas exige un dépôt QUI A des commits ; rev-list en compte %s", n)
+				}
+				return repo
+			},
+		},
 	}
-	git(t, repo, "init", "-q", "-b", "main")
+	for _, c := range cas {
+		t.Run(c.nom, func(t *testing.T) {
+			repo := c.prepare(t)
+			racine := t.TempDir()
 
-	racine := t.TempDir()
-	_, err := Assure(context.Background(), NewGit(), "central", racine, "feat1", repo)
-	if err == nil {
-		t.Fatal("un dépôt sans commit ne peut pas porter de worktree : refus attendu")
-	}
-	msg := err.Error()
-	// LA cause, nommée : c'est la seule chose que l'utilisateur peut corriger.
-	if !strings.Contains(msg, "commit") {
-		t.Errorf("le message doit dire que le dépôt n'a aucun commit ; obtenu : %s", msg)
-	}
-	// Le dépôt concerné : un nest peut en monter plusieurs.
-	if !strings.Contains(msg, repo) {
-		t.Errorf("le message doit nommer le dépôt fautif ; obtenu : %s", msg)
-	}
-	// Et surtout PAS le charabia de git, qui envoie sur une fausse piste.
-	for _, interdit := range []string{"--orphan", "--track"} {
-		if strings.Contains(msg, interdit) {
-			t.Errorf("le message ne doit pas exposer %q : l'utilisateur ne l'a pas écrit, "+
-				"et ce n'est pas ce qu'il doit corriger ; obtenu : %s", interdit, msg)
-		}
+			_, err := Assure(context.Background(), NewGit(), "central", racine, "feat1", repo)
+			if err == nil {
+				t.Fatal("un HEAD non résolvable ne peut pas porter de worktree : refus attendu")
+			}
+			msg := err.Error()
+			// LA cause, nommée exactement : c'est HEAD qui ne se résout pas.
+			if !strings.Contains(msg, "HEAD") {
+				t.Errorf("le message doit nommer HEAD, la seule chose vraie des deux cas ; obtenu : %s", msg)
+			}
+			// Le dépôt concerné : un nest peut en monter plusieurs.
+			if !strings.Contains(msg, repo) {
+				t.Errorf("le message doit nommer le dépôt fautif ; obtenu : %s", msg)
+			}
+			// L'AFFIRMATION FAUSSE, interdite : sur une branche orpheline, le
+			// dépôt a des commits. Le message ne doit jamais prétendre l'inverse.
+			if strings.Contains(msg, "n'a aucun commit") {
+				t.Errorf("le message affirme que le dépôt n'a aucun commit — faux sur une branche "+
+					"orpheline, et invérifiable pour l'utilisateur ; obtenu : %s", msg)
+			}
+			// Et surtout PAS le charabia de git, qui envoie sur une fausse piste.
+			for _, interdit := range []string{"--orphan", "--track"} {
+				if strings.Contains(msg, interdit) {
+					t.Errorf("le message ne doit pas exposer %q : l'utilisateur ne l'a pas écrit, "+
+						"et ce n'est pas ce qu'il doit corriger ; obtenu : %s", interdit, msg)
+				}
+			}
+		})
 	}
 }
 
