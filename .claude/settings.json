@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "greatkit": {
+      "source": {
+        "source": "url",
+        "url": "git@gitlab.digitaleo.com:groupe/greatplugin.git"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "greatkit@greatkit": true
+  }
+}
