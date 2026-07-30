@@ -10,196 +10,166 @@ import (
 )
 
 var (
-	modesSSH        = []string{"agent-forward", "mount", "none"}
-	layoutsWorktree = []string{"central", "per-repo"}
+	sshModes        = []string{"agent-forward", "mount", "none"}
+	worktreeLayouts = []string{"central", "per-repo"}
 )
 
-// valideBinDir contrôle qu'une entrée de bin_dirs est bien un CHEMIN.
+// validateBinDir checks that a bin_dirs entry is really a PATH.
 //
-// agent.CommandeFraicheur les injecte littéralement dans un `export PATH=%q`,
-// délibérément sans échappement : le `$HOME` qu'elles contiennent vise le home
-// DE LA VM et doit être expansé par le bash de la VM, pas par den (invariant 1
-// de CommandeFraicheur). Échapper pour se protéger tuerait donc la seule chose
-// que ce champ doit savoir faire.
+// agent.FreshnessCommand injects these literally into an `export PATH=%q`,
+// deliberately unescaped: the `$HOME` they may contain targets the VM's home
+// and must be expanded by the VM's bash, not by den (invariant 1 of
+// FreshnessCommand). Escaping to protect against this would kill the one
+// thing this field must be able to do.
 //
-// Le défaut n'est pas un trou de sécurité — c'est la config de l'utilisateur,
-// et `update:` est du shell arbitraire par contrat — mais un défaut de TYPAGE :
-// `bin_dirs` est documenté comme une liste de chemins. On refuse donc ce qui
-// n'en est pas un, et seulement cela.
-//
-// Chaque cas ci-dessous a été mesuré sur bash à partir de la ligne réellement
-// générée :
-//
-//	"/opt/$(id -un)"  → /opt/agent   (substitution EXÉCUTÉE au boot de la VM)
-//	"/opt/`id -un`"   → /opt/agent   (idem)
-//	"/opt/a\tb"       → /opt/a\tb    (%q rend la tabulation en \t LITTÉRAL)
-//	""                → PATH=":…"    (un élément vide vaut « répertoire courant »)
-//	"$HOME/.local/bin"→ /home/…/bin  (attendu : doit traverser INTACT)
-func valideBinDir(d string) error {
+// This isn't a security hole — it's the user's own config, and `update:` is
+// arbitrary shell by contract — but a TYPING defect: bin_dirs is documented
+// as a list of paths, so we refuse what isn't one.
+func validateBinDir(d string) error {
 	if d == "" {
-		return fmt.Errorf("entrée vide — un élément vide dans PATH y ajoute le répertoire courant")
+		return fmt.Errorf("empty entry — an empty element in PATH adds the current directory")
 	}
 	if strings.Contains(d, "$(") {
 		return fmt.Errorf(
-			"%q contient une substitution de commande $( — bin_dirs est une liste de chemins, "+
-				"et le bash de la VM l'exécuterait au démarrage", d)
+			"%q contains a command substitution $( — bin_dirs is a list of paths, "+
+				"and the VM's bash would execute it at startup", d)
 	}
 	if strings.Contains(d, "`") {
 		return fmt.Errorf(
-			"%q contient un backtick ` — bin_dirs est une liste de chemins, "+
-				"et le bash de la VM l'exécuterait au démarrage", d)
+			"%q contains a backtick ` — bin_dirs is a list of paths, "+
+				"and the VM's bash would execute it at startup", d)
 	}
-	// Le tilde n'est PAS expansé entre guillemets doubles — mesuré sur la ligne
-	// exactement générée : `export PATH="~/.local/bin:$PATH"` met dans le PATH
-	// de la VM un répertoire littéralement nommé « ~ ». C'est le `claude:
-	// exit 127` que l'invariant 1 de CommandeFraicheur existe pour empêcher.
-	// Hors guillemets bash l'expanserait, mais den ne génère pas cette forme et
-	// ne peut pas la générer sans perdre la protection des espaces.
+	// The tilde is NOT expanded inside double quotes: `export
+	// PATH="~/.local/bin:$PATH"` puts a directory literally named "~" into
+	// the VM's PATH. That's the `claude: exit 127` invariant 1 of
+	// FreshnessCommand exists to prevent. Unquoted, bash would expand it, but
+	// den doesn't generate that form and can't without losing protection for
+	// spaces.
 	//
-	// Le préfixe seul : un « ~ » au MILIEU d'un chemin n'est pas une expansion
-	// pour bash non plus, c'est un caractère ordinaire de nom de fichier.
+	// Prefix only: a "~" in the MIDDLE of a path isn't an expansion for bash
+	// either, it's an ordinary filename character.
 	if strings.HasPrefix(d, "~") {
 		return fmt.Errorf(
-			"%q commence par ~ — bash n'expanse pas le tilde entre guillemets doubles, "+
-				"et le PATH de la VM recevrait un dossier littéralement nommé « ~ » ; "+
-				"écris $HOME, qui est expansé, lui", d)
+			"%q starts with ~ — bash doesn't expand tilde inside double quotes, "+
+				"and the VM's PATH would receive a directory literally named \"~\"; "+
+				"write $HOME instead, which does get expanded", d)
 	}
-	// `$HOME` et `${HOME}` restent légitimes : ce sont eux la raison d'être du
-	// champ. Seule la substitution de COMMANDE est refusée, pas l'expansion de
-	// variable.
+	// `$HOME` and `${HOME}` remain legitimate: they're the whole reason this
+	// field exists. Only COMMAND substitution is refused, not variable expansion.
 	for _, r := range d {
 		if unicode.IsControl(r) {
 			return fmt.Errorf(
-				"%q contient un caractère de contrôle (%q) — il partirait échappé en littéral "+
-					"dans le PATH de la VM, et le chemin serait corrompu", d, r)
+				"%q contains a control character (%q) — it would be escaped as a literal "+
+					"in the VM's PATH, corrupting the path", d, r)
 		}
 	}
 	return nil
 }
 
-// Validate contrôle la cohérence interne de config.yaml et renvoie TOUTES les
-// erreurs trouvées. Cumuler plutôt que s'arrêter à la première : `den doctor`
-// doit montrer d'un coup tout ce qu'il y a à réparer.
+// Validate checks the internal consistency of config.yaml and returns ALL the
+// errors found. Accumulating rather than stopping at the first: `den doctor`
+// must show everything there is to fix at once.
 func (g *Global) Validate() []error {
 	var errs []error
 
 	if len(g.Agents) == 0 {
-		errs = append(errs, fmt.Errorf("agents : le registre est vide, déclare au moins un agent"))
+		errs = append(errs, fmt.Errorf("agents: the registry is empty, declare at least one agent"))
 	}
 
-	noms := slices.Sorted(maps.Keys(g.Agents)) // déterminisme de l'ordre des erreurs
+	names := slices.Sorted(maps.Keys(g.Agents)) // deterministic error ordering
 
-	for _, nom := range noms {
-		a := g.Agents[nom]
-		// TrimSpace, pour la même raison que `update` juste en dessous — et
-		// mesuré : un `config_dir: "   "` passait `den doctor` en rc=0 sur une
-		// config qui ne peut pas spawner, et le MkdirAll en aval créait un
-		// dossier littéralement nommé « ␣␣␣ » dans le répertoire courant de
-		// l'utilisateur. Le refus venait alors d'une garde en aval dont le
-		// message ne nommait ni config_dir ni l'agent.
+	for _, name := range names {
+		a := g.Agents[name]
 		if strings.TrimSpace(a.ConfigDir) == "" {
-			errs = append(errs, fmt.Errorf("agents.%s.config_dir : requis", nom))
+			errs = append(errs, fmt.Errorf("agents.%s.config_dir: required", name))
 		}
-		// TrimSpace et non `== ""` : agent.CommandeFraicheur juge sur TrimSpace.
-		// Tant que ce test-ci était plus laxiste, un `update: "   "` passait
-		// `den doctor` en vert et n'échouait qu'au spawn — le plus tard et le
-		// moins lisible des deux moments. Deux juges d'un même champ doivent
-		// juger pareil, et c'est le plus strict qui fait foi.
+		// TrimSpace, not `== ""`: agent.FreshnessCommand judges on TrimSpace
+		// too, and the stricter of the two judges must win.
 		if strings.TrimSpace(a.Update) == "" {
 			errs = append(errs, fmt.Errorf(
-				"agents.%s.update : requis — une sandbox ne doit jamais démarrer avec un agent périmé (spec §9.1)", nom))
+				"agents.%s.update: required — a sandbox must never start with a stale agent (spec §9.1)", name))
 		}
 		for i, d := range a.BinDirs {
-			if err := valideBinDir(d); err != nil {
-				// Clé INDEXÉE : jusqu'à plusieurs bin_dirs par agent, et
-				// « bin_dirs » seul ne dirait pas lequel corriger.
-				errs = append(errs, fmt.Errorf("agents.%s.bin_dirs[%d] : %w", nom, i, err))
+			if err := validateBinDir(d); err != nil {
+				// Indexed key: an agent may have several bin_dirs, and
+				// "bin_dirs" alone wouldn't say which one to fix.
+				errs = append(errs, fmt.Errorf("agents.%s.bin_dirs[%d]: %w", name, i, err))
 			}
 		}
 	}
 
-	// TrimSpace partout où le champ est « requis » : sinon `defaults.agent: "  "`
-	// serait jugé déclaré, puis cherché tel quel dans le registre, et l'erreur
-	// rendue parlerait d'un agent introuvable au lieu d'un champ à remplir.
+	// TrimSpace wherever a field is "required": otherwise `defaults.agent: "  "`
+	// would be judged as declared, then looked up as-is in the registry,
+	// yielding an "agent not found" error instead of a "field to fill in" one.
 	switch {
 	case strings.TrimSpace(g.Defaults.Agent) == "":
-		errs = append(errs, fmt.Errorf("defaults.agent : requis"))
+		errs = append(errs, fmt.Errorf("defaults.agent: required"))
 	default:
 		if _, ok := g.Agents[g.Defaults.Agent]; !ok {
 			errs = append(errs, fmt.Errorf(
-				"defaults.agent : %q est absent du registre (agents déclarés : %v)", g.Defaults.Agent, noms))
+				"defaults.agent: %q is missing from the registry (declared agents: %v)", g.Defaults.Agent, names))
 		}
 	}
 
 	if strings.TrimSpace(g.Defaults.Stack) == "" {
-		errs = append(errs, fmt.Errorf("defaults.stack : requis"))
+		errs = append(errs, fmt.Errorf("defaults.stack: required"))
 	}
 
-	if !slices.Contains(modesSSH, g.SSH.Mode) {
-		errs = append(errs, fmt.Errorf("ssh.mode : %q inconnu (attendu : %v)", g.SSH.Mode, modesSSH))
+	if !slices.Contains(sshModes, g.SSH.Mode) {
+		errs = append(errs, fmt.Errorf("ssh.mode: %q unknown (expected: %v)", g.SSH.Mode, sshModes))
 	}
-	// TrimSpace, et pas seulement `== ""` : un `ssh.dir: "   "` n'est aujourd'hui
-	// rattrapé que PAR HASARD, par le Stat de D5 qui échoue sur ce chemin. Ce
-	// n'est pas une garantie — c'est un effet de bord d'un contrôle qui vise
-	// autre chose, et qui ne s'exécute que sur le chemin de spawn.
 	if g.SSH.Mode == "mount" && strings.TrimSpace(g.SSH.Dir) == "" {
-		errs = append(errs, fmt.Errorf("ssh.dir : requis quand ssh.mode vaut mount"))
+		errs = append(errs, fmt.Errorf("ssh.dir: required when ssh.mode is mount"))
 	}
 
-	errs = append(errs, g.ValideWorktree()...)
+	errs = append(errs, g.ValidateWorktree()...)
 
 	return errs
 }
 
-// ValideWorktree ne contrôle que les deux champs qui décident OÙ vivent les
-// worktrees : worktree_layout et worktree_root.
+// ValidateWorktree checks only the two fields that decide WHERE worktrees
+// live: worktree_layout and worktree_root.
 //
-// Elle existe pour que `den rm` puisse valider ce qu'il UTILISE sans valider
-// ce dont il se moque. nettoieWorktrees (internal/cli/rm.go) ne lit que ces
-// deux champs-là : lui imposer une config entièrement saine faisait qu'un
-// `agents.claude.update` fautif — sans le moindre rapport — empêchait de
-// détruire une sandbox bel et bien vivante, contre la doctrine « un ~/.den
-// cassé ne bloque jamais l'accès à une VM vivante ».
+// It exists so `den rm` can validate what it USES without validating what it
+// doesn't care about — cleanWorktrees (internal/cli/rm.go) reads only these
+// two fields, and a config's doctrine is that a broken ~/.den never blocks
+// access to a live VM.
 //
-// Le contrôle du layout ne peut PAS être remplacé par le défaut de
-// LoadGlobalSansValider : celui-ci ne défaute que la chaîne VIDE (config.go),
-// donc un `centrl` reste `centrl` et ferait calculer un chemin de worktree faux
-// — den nettoierait à côté, silencieusement.
-//
-// Validate() délègue ici plutôt que de dupliquer : une seule liste blanche de
-// layouts dans le projet, impossible à faire diverger.
-func (g *Global) ValideWorktree() []error {
+// The layout check can't be replaced by LoadGlobalUnvalidated's default:
+// that one only defaults the EMPTY string, so a typo like `centrl` would
+// survive and compute a wrong worktree path — den would clean up in the
+// wrong place, silently.
+func (g *Global) ValidateWorktree() []error {
 	var errs []error
-	if !slices.Contains(layoutsWorktree, g.WorktreeLayout) {
+	if !slices.Contains(worktreeLayouts, g.WorktreeLayout) {
 		errs = append(errs, fmt.Errorf(
-			"worktree_layout : %q inconnu (attendu : %v)", g.WorktreeLayout, layoutsWorktree))
+			"worktree_layout: %q unknown (expected: %v)", g.WorktreeLayout, worktreeLayouts))
 	}
-	// TrimSpace, comme partout ailleurs : LoadGlobalSansValider ne défaute que
-	// la chaîne vide, donc un `worktree_root: "   "` survit et deviendrait un
-	// chemin relatif — un dossier littéralement nommé « ␣␣␣ » créé dans le
-	// répertoire courant de l'utilisateur.
+	// TrimSpace, as everywhere else: LoadGlobalUnvalidated only defaults the
+	// empty string, so `worktree_root: "   "` would survive and become a
+	// relative path — a directory literally named "␣␣␣" created in the
+	// user's current directory.
 	//
-	// Le « sinon » n'est pas cosmétique : sur une racine vide, le contrôle
-	// d'absoluité juste en dessous rendrait une SECONDE erreur sur le même
-	// champ (« "" n'est pas absolu »), et l'utilisateur lirait deux lignes pour
-	// une seule faute.
+	// The switch (not two independent checks): on an empty root, the
+	// absoluteness check below would raise a SECOND error on the same field,
+	// and the user would read two lines for one fault.
 	switch {
 	case strings.TrimSpace(g.WorktreeRoot) == "":
 		errs = append(errs, fmt.Errorf(
-			"worktree_root : requis — c'est la racine sous laquelle den crée et retrouve les worktrees"))
+			"worktree_root: required — it's the root under which den creates and finds worktrees"))
 	case !filepath.IsAbs(g.WorktreeRoot):
-		// LoadGlobalSansValider ne rend absolu que le DÉFAUT ; une valeur écrite
-		// à la main traverse intacte, ExpandPath ne touchant qu'au « ~ ». Sans ce
-		// contrôle, mesuré sur le binaire assemblé (tâche 17c), un
-		// `worktree_root: wt-relatif` se résolvait contre le répertoire du REPO :
-		// `den <nest> -w feat1` créait pour de bon un worktree et une branche
-		// dans le dépôt de l'utilisateur, puis échouait sur la garde d'argv de
-		// sbx — laissant l'utilisateur nettoyer à la main ce que den venait de
-		// poser. Symétriquement, `den rm` aurait nettoyé à côté, silencieusement.
+		// LoadGlobalUnvalidated only makes the DEFAULT absolute; a
+		// hand-written value passes through unchanged, ExpandPath touching
+		// only "~". Without this check, a `worktree_root: wt-relative`
+		// resolves against the REPO's directory: `den <nest> -w feat1` would
+		// really create a worktree and a branch inside the user's repo, then
+		// fail on sbx's argv guard — leaving the user to clean up by hand
+		// what den just created. Symmetrically, `den rm` would clean up in
+		// the wrong place, silently.
 		errs = append(errs, fmt.Errorf(
-			"worktree_root : %q n'est pas un chemin absolu — den le passe tel quel à "+
-				"`git worktree add`, où il se résoudrait contre le dépôt et créerait les "+
-				"worktrees DEDANS ; écris un chemin absolu, ou « ~/… »", g.WorktreeRoot))
+			"worktree_root: %q is not an absolute path — den passes it as-is to "+
+				"`git worktree add`, where it would resolve against the repo and create "+
+				"worktrees INSIDE it; write an absolute path, or \"~/...\"", g.WorktreeRoot))
 	}
 	return errs
 }

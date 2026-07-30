@@ -11,103 +11,96 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DecodeYAMLStrict décode brut dans dest en REFUSANT toute clé inconnue.
+// DecodeYAMLStrict decodes raw into dest, REJECTING any unknown key.
 //
-// Le décodage laxiste est le pire mode de défaillance possible pour den : une
-// faute de frappe (`egres:` pour `egress:`) laisse l'allowlist vide sans un mot,
-// `doctor` certifie une config « cohérente », et la sandbox n'atteint plus
-// api.anthropic.com sans cause visible. Une clé inconnue est donc une erreur.
+// Lax decoding is the worst possible failure mode for den: a typo (`egres:`
+// for `egress:`) silently leaves the allowlist empty, `doctor` certifies a
+// "consistent" config, and the sandbox stops reaching api.anthropic.com with
+// no visible cause. An unknown key is therefore an error.
 //
-// chemin ne sert qu'au message : il doit nommer le fichier fautif pour rester
-// actionnable.
-func DecodeYAMLStrict(chemin string, brut []byte, dest any) error {
-	dec := yaml.NewDecoder(bytes.NewReader(brut))
+// path is used only in the message: it must name the offending file to stay actionable.
+func DecodeYAMLStrict(path string, raw []byte, dest any) error {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
 	if err := dec.Decode(dest); err != nil {
-		// yaml.v3 signale un document vide par io.EOF. Un fichier de config vide
-		// (ou réduit à des commentaires) n'est pas corrompu : c'est une config qui
-		// ne déclare rien. On laisse dest à sa valeur zéro — les défauts et la
-		// validation diront ensuite ce qui manque, en français et par champ.
+		// yaml.v3 signals an empty document with io.EOF. An empty config file
+		// (or one reduced to comments) isn't corrupt: it's a config that
+		// declares nothing. We leave dest at its zero value — defaults and
+		// validation will say what's missing, field by field.
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
-		return fmt.Errorf("%s : YAML invalide : %w", chemin, franciseClesInconnues(err))
+		return fmt.Errorf("%s: invalid YAML: %w", path, rewriteUnknownKeys(err))
 	}
-	// Decode ne lit QU'UN document. Tout ce qui suit un « --- » était donc
-	// silencieusement ignoré : même mode de défaillance que la clé inconnue
-	// ci-dessus — une configuration qui ne s'applique pas sans un mot — mais à la
-	// granularité du document. Mesuré sur un nest de deux documents :
-	// `den nest show` rendait rc=0 en n'ayant lu que le premier, le `stack:` et
-	// tout un bloc `egress:` du second n'ayant jamais existé pour den.
+	// Decode reads only ONE document. Anything following a "---" was
+	// therefore silently ignored — same failure mode as the unknown key
+	// above (a configuration that doesn't apply without a word), but at
+	// document granularity.
 	//
-	// Refuser plutôt que fusionner : den n'a aucun moyen de savoir lequel des
-	// documents fait foi, et en choisir un serait exactement le silence qu'on
-	// cherche à supprimer.
+	// Refuse rather than merge: den has no way to know which document is
+	// authoritative, and picking one would be exactly the silence we're
+	// trying to remove.
 	//
-	// Le second Decode vise un yaml.Node et non dest : il ne s'agit que de
-	// SAVOIR s'il reste un document, pas de le décoder — un second document au
-	// schéma incompatible doit être signalé comme document en trop, pas comme
-	// erreur de type.
+	// The second Decode targets a yaml.Node, not dest: it only needs to KNOW
+	// whether a document remains, not decode it — a second document with an
+	// incompatible schema must be reported as an extra document, not a type error.
 	//
-	// LE MESSAGE N'AFFIRME AUCUNE PERTE, et c'est délibéré. Trois formes
-	// déclenchent ce refus SANS que rien ne soit ignoré (mesuré, second document
-	// ré-encodé vide) : un « --- » final sans contenu derrière, la forme
-	// front-matter « ---\n…\n--- », et un « --- » suivi de commentaires seuls.
-	// Le refus reste fail-closed sur les trois — « ... » est le vrai marqueur de
-	// fin de document, et l'ambiguïté ne vaut pas d'être tolérée — mais annoncer
-	// à l'utilisateur une perte qu'il ne subit pas le lancerait à la recherche
-	// d'une configuration disparue qui n'a jamais existé.
-	var suivant yaml.Node
-	if err := dec.Decode(&suivant); err == nil {
+	// THE MESSAGE DOES NOT CLAIM ANY DATA LOSS, deliberately: three forms
+	// trigger this refusal WITHOUT anything being dropped (verified by
+	// re-encoding the second document as empty in each case): a trailing
+	// "---" with nothing behind it, front-matter form "---\n...\n---", and a
+	// "---" followed only by comments. The refusal stays fail-closed on all
+	// three — "..." is the real end-of-document marker, and the ambiguity
+	// isn't worth tolerating — but claiming a loss the user doesn't actually
+	// suffer would send them hunting for a configuration that never existed.
+	var next yaml.Node
+	if err := dec.Decode(&next); err == nil {
 		return fmt.Errorf(
-			"%s : le fichier contient plusieurs documents YAML (séparés par « --- ») — "+
-				"den n'en lit qu'un seul et refuse plutôt que de deviner lequel fait foi ; "+
-				"garde un document unique, sans « --- » de séparation "+
-				"(le marqueur de fin « ... » reste accepté)", chemin)
+			"%s: the file contains multiple YAML documents (separated by \"---\") — "+
+				"den reads only one and refuses rather than guess which is authoritative; "+
+				"keep a single document, without a \"---\" separator "+
+				"(the end marker \"...\" is still accepted)", path)
 	}
 	return nil
 }
 
-// motifCleInconnue capture le diagnostic anglais de yaml.v3 pour une clé
-// inconnue. Le « line N: » que yaml.v3 place devant n'en fait pas partie :
-// c'est lui qui rend le message utile, il doit survivre à la réécriture.
-var motifCleInconnue = regexp.MustCompile(`field (\S+) not found in type \S+`)
+// unknownKeyPattern captures yaml.v3's diagnostic for an unknown key. The
+// "line N:" prefix yaml.v3 places in front is not part of it and must survive
+// the rewrite — it's what makes the message actionable.
+var unknownKeyPattern = regexp.MustCompile(`field (\S+) not found in type \S+`)
 
-// enteteTypeError est l'en-tête que yaml.v3 place devant la LISTE d'erreurs
-// d'un *yaml.TypeError. Littéral fixe de la bibliothèque, sans variable : il se
-// remplace sans motif.
+// typeErrorHeader is the header yaml.v3 places before the error LIST of a
+// *yaml.TypeError. A fixed literal from the library, with no variable part.
 //
-// Il est visible sur TOUT YAML invalide de den — première ligne de `den nest ls`
-// sur un nest cassé, alors que le détail juste en dessous est bien traduit.
+// It's visible on every invalid YAML in den — the first line of `den nest ls`
+// on a broken nest, while the detail line right below is already rewritten.
 //
-// Le « line N: » de chaque détail, lui, reste tel quel : c'est le numéro de
-// ligne qui rend le message actionnable, il est pinné par un test, et « line 3 »
-// se comprend là où l'en-tête ne dit rien. Ce reliquat est DOCUMENTÉ dans
-// internal/cli/francais.go, dont la liste se veut exacte.
-const enteteTypeError = "yaml: unmarshal errors:"
+// Each detail's "line N:" prefix, though, stays as-is: it's the line number
+// that makes the message actionable, and it's pinned by a test.
+const typeErrorHeader = "yaml: unmarshal errors:"
 
-// franciseClesInconnues réécrit « field egres not found in type config.Global »
-// en « clé inconnue "egres" » : le type Go est un détail d'implémentation, en
-// anglais, dans une CLI francophone. Et remplace l'en-tête de yaml.v3.
+// rewriteUnknownKeys rewrites "field egres not found in type config.Global"
+// into `unknown key "egres"`: the Go type is an implementation detail with no
+// business in front of the user. Also replaces yaml.v3's header.
 //
-// Si RIEN n'est reconnu (YAML malformé sans clé inconnue ni en-tête de liste),
-// l'erreur passe INTACTE : un message imparfait vaut mieux qu'un message
-// mutilé. L'erreur d'origine reste accessible via errors.Unwrap — on réécrit ce
-// que l'utilisateur lit, pas ce que le code peut inspecter.
-func franciseClesInconnues(err error) error {
+// If NOTHING is recognized (malformed YAML with neither an unknown key nor
+// the list header), the error passes through UNCHANGED: an imperfect message
+// beats a mangled one. The original error stays reachable via errors.Unwrap —
+// this rewrites what the user reads, not what the code can inspect.
+func rewriteUnknownKeys(err error) error {
 	msg := err.Error()
-	francise := motifCleInconnue.ReplaceAllString(msg, `clé inconnue "$1"`)
-	francise = strings.Replace(francise, enteteTypeError, "erreurs de décodage :", 1)
-	if francise == msg {
+	rewritten := unknownKeyPattern.ReplaceAllString(msg, `unknown key "$1"`)
+	rewritten = strings.Replace(rewritten, typeErrorHeader, "decoding errors:", 1)
+	if rewritten == msg {
 		return err
 	}
-	return &erreurYAML{msg: francise, origine: err}
+	return &yamlError{msg: rewritten, cause: err}
 }
 
-type erreurYAML struct {
-	msg     string
-	origine error
+type yamlError struct {
+	msg   string
+	cause error
 }
 
-func (e *erreurYAML) Error() string { return e.msg }
-func (e *erreurYAML) Unwrap() error { return e.origine }
+func (e *yamlError) Error() string { return e.msg }
+func (e *yamlError) Unwrap() error { return e.cause }

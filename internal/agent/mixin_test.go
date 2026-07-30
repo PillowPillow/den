@@ -13,33 +13,33 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func mixinExemple(t *testing.T) Mixin {
+func exampleMixin(t *testing.T) Mixin {
 	t.Helper()
-	fraicheur, err := CommandeFraicheur("claude", agentClaude())
+	freshness, err := FreshnessCommand("claude", agentClaude())
 	if err != nil {
-		t.Fatalf("CommandeFraicheur : %v", err)
+		t.Fatalf("FreshnessCommand: %v", err)
 	}
 	return Mixin{
-		NomSandbox: "api.feat12",
+		SandboxName: "api.feat12",
 		Env: map[string]string{
-			"CLAUDE_CONFIG_DIR": "/home/moi/.den/agents/claude",
+			"CLAUDE_CONFIG_DIR": "/home/me/.den/agents/claude",
 			"SOME_VAR":          "value",
 		},
 		Egress:    []string{"api.anthropic.com", "github.com"},
-		Fraicheur: fraicheur,
+		Freshness: freshness,
 	}
 }
 
-func TestRendMixinPorteLesTroisCharges(t *testing.T) {
-	out, err := RendMixin(mixinExemple(t))
+func TestRenderMixinCarriesAllThreePayloads(t *testing.T) {
+	out, err := RenderMixin(exampleMixin(t))
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	rendu := string(out)
+	rendered := string(out)
 
-	// Le schéma RÉEL de sbx : caps.network.allow et environment.variables.
-	// Le spec d'origine écrivait network.allow et env — c'était faux.
-	for _, attendu := range []string{
+	// The REAL sbx schema: caps.network.allow and environment.variables. The
+	// original spec wrote network.allow and env — that was wrong.
+	for _, want := range []string{
 		"schemaVersion: 2",
 		"kind: mixin",
 		"caps:",
@@ -48,123 +48,123 @@ func TestRendMixinPorteLesTroisCharges(t *testing.T) {
 		"- api.anthropic.com",
 		"environment:",
 		"variables:",
-		"CLAUDE_CONFIG_DIR: /home/moi/.den/agents/claude",
+		"CLAUDE_CONFIG_DIR: /home/me/.den/agents/claude",
 		"SOME_VAR: value",
 		"commands:",
 		"startup:",
 	} {
-		if !strings.Contains(rendu, attendu) {
-			t.Errorf("le mixin doit contenir %q ; obtenu :\n%s", attendu, rendu)
+		if !strings.Contains(rendered, want) {
+			t.Errorf("mixin must contain %q; got:\n%s", want, rendered)
 		}
 	}
 }
 
-// La fraîcheur est fail-closed et le dispatcher sbx sort au premier échec :
-// elle doit être la DERNIÈRE startup command du DERNIER kit.
-func TestRendMixinMetLaFraicheurEnDerniereStartup(t *testing.T) {
-	m := mixinExemple(t)
-	out, err := RendMixin(m)
+// Freshness is fail-closed and the sbx dispatcher exits on the first failure:
+// it must be the LAST startup command of the LAST kit.
+func TestRenderMixinPutsFreshnessLastInStartup(t *testing.T) {
+	m := exampleMixin(t)
+	out, err := RenderMixin(m)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	rendu := string(out)
+	rendered := string(out)
 
-	iStartup := strings.Index(rendu, "startup:")
-	iUpdate := strings.Index(rendu, "claude update")
+	iStartup := strings.Index(rendered, "startup:")
+	iUpdate := strings.Index(rendered, "claude update")
 	if iStartup < 0 || iUpdate < 0 || iUpdate < iStartup {
-		t.Fatalf("la commande de fraîcheur doit apparaître sous commands.startup ; obtenu :\n%s", rendu)
+		t.Fatalf("the freshness command must appear under commands.startup; got:\n%s", rendered)
 	}
-	// Et le $HOME des bin_dirs traverse intact jusque dans le YAML.
-	if !strings.Contains(rendu, "$HOME/.local/bin") {
-		t.Errorf("le $HOME des bin_dirs doit survivre au rendu YAML ; obtenu :\n%s", rendu)
+	// And the bin_dirs' $HOME must survive intact into the YAML.
+	if !strings.Contains(rendered, "$HOME/.local/bin") {
+		t.Errorf("the bin_dirs' $HOME must survive YAML rendering; got:\n%s", rendered)
 	}
 }
 
-// Déterminisme : deux rendus successifs doivent être identiques, sinon le
-// golden file est un piège à faux positifs et le mixin change à chaque spawn.
-func TestRendMixinEstDeterministe(t *testing.T) {
-	m := mixinExemple(t)
+// Determinism: two successive renders must be identical, or the golden file
+// is a false-positive trap and the mixin changes on every spawn.
+func TestRenderMixinIsDeterministic(t *testing.T) {
+	m := exampleMixin(t)
 	for i := 0; i < 20; i++ {
-		a, err := RendMixin(m)
+		a, err := RenderMixin(m)
 		if err != nil {
-			t.Fatalf("erreur inattendue : %v", err)
+			t.Fatalf("unexpected error: %v", err)
 		}
-		b, err := RendMixin(m)
+		b, err := RenderMixin(m)
 		if err != nil {
-			t.Fatalf("erreur inattendue : %v", err)
+			t.Fatalf("unexpected error: %v", err)
 		}
 		if string(a) != string(b) {
-			t.Fatalf("rendu non déterministe à l'itération %d :\n%s\n---\n%s", i, a, b)
+			t.Fatalf("non-deterministic render at iteration %d:\n%s\n---\n%s", i, a, b)
 		}
 	}
 }
 
-// Le nom d'un kit ne peut pas porter le séparateur de nom de sandbox.
-func TestRendMixinNommeLeKitSansPoint(t *testing.T) {
-	out, err := RendMixin(mixinExemple(t))
+// A kit name cannot carry the sandbox name separator.
+func TestRenderMixinNamesTheKitWithoutADot(t *testing.T) {
+	out, err := RenderMixin(exampleMixin(t))
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(string(out), "name: den-api-feat12") {
-		t.Errorf("le nom du kit doit être den-api-feat12 ; obtenu :\n%s", out)
+		t.Errorf("kit name must be den-api-feat12; got:\n%s", out)
 	}
 }
 
-// Un nest sans egress ni env ne doit pas produire de sections vides : une
-// `allow: []` vide vaut « rien d'autorisé » et non « pas de contrainte ».
-func TestRendMixinOmetLesSectionsVides(t *testing.T) {
-	fraicheur, err := CommandeFraicheur("claude", agentClaude())
+// A nest with neither egress nor env must not produce empty sections: an
+// empty `allow: []` means "nothing allowed", not "no constraint".
+func TestRenderMixinOmitsEmptySections(t *testing.T) {
+	freshness, err := FreshnessCommand("claude", agentClaude())
 	if err != nil {
-		t.Fatalf("CommandeFraicheur : %v", err)
+		t.Fatalf("FreshnessCommand: %v", err)
 	}
-	out, err := RendMixin(Mixin{NomSandbox: "api", Fraicheur: fraicheur})
+	out, err := RenderMixin(Mixin{SandboxName: "api", Freshness: freshness})
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	rendu := string(out)
-	if strings.Contains(rendu, "caps:") {
-		t.Errorf("aucun egress ⇒ pas de section caps ; obtenu :\n%s", rendu)
+	rendered := string(out)
+	if strings.Contains(rendered, "caps:") {
+		t.Errorf("no egress ⇒ no caps section; got:\n%s", rendered)
 	}
-	if strings.Contains(rendu, "environment:") {
-		t.Errorf("aucune variable ⇒ pas de section environment ; obtenu :\n%s", rendu)
+	if strings.Contains(rendered, "environment:") {
+		t.Errorf("no variables ⇒ no environment section; got:\n%s", rendered)
 	}
-	// La fraîcheur, elle, n'est PAS optionnelle : l'omission des sections vides
-	// ne doit jamais déborder sur commands.
-	if !strings.Contains(rendu, "commands:") {
-		t.Errorf("commands ne s'omet jamais, même sans egress ni env ; obtenu :\n%s", rendu)
-	}
-}
-
-// Une Fraicheur vide ne doit pas s'omettre comme une section vide : le mixin
-// rendu serait valide et démarrerait une sandbox SANS contrôle de fraîcheur,
-// exactement ce que CommandeFraicheur refuse (spec §9.1). Fail-closed.
-func TestRendMixinRefuseUneFraicheurVide(t *testing.T) {
-	m := mixinExemple(t)
-	m.Fraicheur = nil
-	if _, err := RendMixin(m); err == nil {
-		t.Fatal("une Fraicheur vide doit être refusée, pas omise silencieusement")
+	// Freshness, on the other hand, is NOT optional: omitting empty sections
+	// must never spill over onto commands.
+	if !strings.Contains(rendered, "commands:") {
+		t.Errorf("commands is never omitted, even without egress or env; got:\n%s", rendered)
 	}
 }
 
-// Corollaire : tout mixin rendu avec succès porte sa commande de fraîcheur.
-func TestRendMixinPorteToujoursLaFraicheur(t *testing.T) {
+// An empty Freshness must not be omitted like an empty section: the rendered
+// mixin would be valid and would start a sandbox with NO freshness check,
+// exactly what FreshnessCommand refuses (spec §9.1). Fail-closed.
+func TestRenderMixinRefusesEmptyFreshness(t *testing.T) {
+	m := exampleMixin(t)
+	m.Freshness = nil
+	if _, err := RenderMixin(m); err == nil {
+		t.Fatal("an empty Freshness must be refused, not silently omitted")
+	}
+}
+
+// Corollary: any successfully rendered mixin carries its freshness command.
+func TestRenderMixinAlwaysCarriesFreshness(t *testing.T) {
 	for _, m := range []Mixin{
-		mixinExemple(t),
-		{NomSandbox: "api", Fraicheur: mixinExemple(t).Fraicheur},
+		exampleMixin(t),
+		{SandboxName: "api", Freshness: exampleMixin(t).Freshness},
 	} {
-		out, err := RendMixin(m)
+		out, err := RenderMixin(m)
 		if err != nil {
-			t.Fatalf("erreur inattendue : %v", err)
+			t.Fatalf("unexpected error: %v", err)
 		}
-		for _, attendu := range []string{"commands:", "startup:", "claude update"} {
-			if !strings.Contains(string(out), attendu) {
-				t.Errorf("un mixin rendu doit toujours contenir %q ; obtenu :\n%s", attendu, out)
+		for _, want := range []string{"commands:", "startup:", "claude update"} {
+			if !strings.Contains(string(out), want) {
+				t.Errorf("a rendered mixin must always contain %q; got:\n%s", want, out)
 			}
 		}
 	}
 }
 
-func resoluExemple(t *testing.T) *nest.Resolved {
+func exampleResolved(t *testing.T) *nest.Resolved {
 	t.Helper()
 	g := &config.Global{
 		Agents:         map[string]config.Agent{"claude": agentClaude()},
@@ -173,179 +173,179 @@ func resoluExemple(t *testing.T) *nest.Resolved {
 		WorktreeLayout: "central",
 		Egress:         []string{"github.com"},
 	}
-	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
+	stacks := config.Stacks{Healthy: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
 	n := &nest.Nest{Name: "api", Stack: "devx", Egress: []string{"10.22.11.54:27017"}}
 
-	r, err := nest.Resolve("/home/moi/.den", g, stacks, n, nest.Options{})
+	r, err := nest.Resolve("/home/me/.den", g, stacks, n, nest.Options{})
 	if err != nil {
-		t.Fatalf("Resolve : %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	return r
 }
 
-func TestMixinDepuisAssembleLeNestResolu(t *testing.T) {
-	m, err := MixinDepuis(resoluExemple(t), "api")
+func TestMixinFromAssemblesTheResolvedNest(t *testing.T) {
+	m, err := MixinFrom(exampleResolved(t), "api")
 	if err != nil {
-		t.Fatalf("MixinDepuis : %v", err)
+		t.Fatalf("MixinFrom: %v", err)
 	}
-	if m.NomSandbox != "api" {
-		t.Errorf("NomSandbox = %q", m.NomSandbox)
+	if m.SandboxName != "api" {
+		t.Errorf("SandboxName = %q", m.SandboxName)
 	}
-	// L'egress vient de la cascade, déjà unionné et trié par nest.Resolve.
+	// Egress comes from the cascade, already unioned and sorted by nest.Resolve.
 	if len(m.Egress) != 2 || m.Egress[0] != "10.22.11.54:27017" || m.Egress[1] != "github.com" {
-		t.Errorf("Egress = %v, attendu la cascade unionnée et triée", m.Egress)
+		t.Errorf("Egress = %v, expected the unioned and sorted cascade", m.Egress)
 	}
-	if m.Env["CLAUDE_CONFIG_DIR"] != "/home/moi/.den/agents/claude" {
-		t.Errorf("Env = %v, {config_dir} doit être substitué", m.Env)
+	if m.Env["CLAUDE_CONFIG_DIR"] != "/home/me/.den/agents/claude" {
+		t.Errorf("Env = %v, {config_dir} must be substituted", m.Env)
 	}
-	if len(m.Fraicheur) != 3 {
-		t.Errorf("Fraicheur = %v, attendu un argv [bash -c script]", m.Fraicheur)
+	if len(m.Freshness) != 3 {
+		t.Errorf("Freshness = %v, expected an argv [bash -c script]", m.Freshness)
 	}
 }
 
-// Env et Egress sont exportés sur une struct exportée : les aliaser ferait
-// d'une écriture sur le mixin une mutation silencieuse du nest résolu, que
-// l'appelant continue d'utiliser après le spawn.
-func TestMixinDepuisNAliasePasLeResolu(t *testing.T) {
-	r := resoluExemple(t)
-	m, err := MixinDepuis(r, "api")
+// Env and Egress are exported on an exported struct: aliasing them would turn
+// a write on the mixin into a silent mutation of the resolved nest, which the
+// caller keeps using after the spawn.
+func TestMixinFromDoesNotAliasTheResolved(t *testing.T) {
+	r := exampleResolved(t)
+	m, err := MixinFrom(r, "api")
 	if err != nil {
-		t.Fatalf("MixinDepuis : %v", err)
+		t.Fatalf("MixinFrom: %v", err)
 	}
 
-	m.Env["INJECTE"] = "x"
-	m.Egress[0] = "remplace.exemple.test"
+	m.Env["INJECTED"] = "x"
+	m.Egress[0] = "replaced.example.test"
 
-	if _, present := r.Env["INJECTE"]; present {
-		t.Errorf("écrire dans Mixin.Env a muté le nest résolu : %v", r.Env)
+	if _, present := r.Env["INJECTED"]; present {
+		t.Errorf("writing into Mixin.Env mutated the resolved nest: %v", r.Env)
 	}
-	if r.Egress[0] == "remplace.exemple.test" {
-		t.Errorf("écrire dans Mixin.Egress a muté le nest résolu : %v", r.Egress)
+	if r.Egress[0] == "replaced.example.test" {
+		t.Errorf("writing into Mixin.Egress mutated the resolved nest: %v", r.Egress)
 	}
 }
 
-func TestEcrisMixinEcritSousCache(t *testing.T) {
+func TestWriteMixinWritesUnderCache(t *testing.T) {
 	denHome := t.TempDir()
-	dir, err := EcrisMixin(denHome, "api.feat12", mixinExemple(t))
+	dir, err := WriteMixin(denHome, "api.feat12", exampleMixin(t))
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	attendu := filepath.Join(denHome, "cache", "mixins", "api.feat12")
-	if dir != attendu {
-		t.Errorf("dir = %q, attendu %q", dir, attendu)
+	want := filepath.Join(denHome, "cache", "mixins", "api.feat12")
+	if dir != want {
+		t.Errorf("dir = %q, want %q", dir, want)
 	}
-	// C'est le DOSSIER qu'on passe à `--kit`, et sbx y cherche spec.yaml.
+	// This is the DIRECTORY passed to `--kit`, and sbx looks for spec.yaml there.
 	if _, err := os.Stat(filepath.Join(dir, "spec.yaml")); err != nil {
-		t.Errorf("spec.yaml doit exister dans %s : %v", dir, err)
+		t.Errorf("spec.yaml must exist in %s: %v", dir, err)
 	}
 }
 
-// spec.yaml porte environment.variables, c'est-à-dire de l'env utilisateur
-// libre — exactement là où atterrissent une clé d'API ou une URI à credentials.
-// Rien ne justifie qu'il soit lisible par tout le monde.
-func TestEcrisMixinRestreintLesDroits(t *testing.T) {
+// spec.yaml carries environment.variables, i.e. free-form user env — exactly
+// where an API key or a credentialed URI ends up. Nothing justifies making it
+// readable by everyone.
+func TestWriteMixinRestrictsPermissions(t *testing.T) {
 	denHome := t.TempDir()
-	dir, err := EcrisMixin(denHome, "api", mixinExemple(t))
+	dir, err := WriteMixin(denHome, "api", exampleMixin(t))
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	infoDossier, err := os.Stat(dir)
+	dirInfo, err := os.Stat(dir)
 	if err != nil {
-		t.Fatalf("stat du dossier : %v", err)
+		t.Fatalf("stat dir: %v", err)
 	}
-	if got := infoDossier.Mode().Perm(); got != 0o700 {
-		t.Errorf("droits du dossier = %o, attendu 700", got)
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Errorf("dir permissions = %o, want 700", got)
 	}
 
-	infoFichier, err := os.Stat(filepath.Join(dir, "spec.yaml"))
+	fileInfo, err := os.Stat(filepath.Join(dir, "spec.yaml"))
 	if err != nil {
-		t.Fatalf("stat de spec.yaml : %v", err)
+		t.Fatalf("stat spec.yaml: %v", err)
 	}
-	if got := infoFichier.Mode().Perm(); got != 0o600 {
-		t.Errorf("droits de spec.yaml = %o, attendu 600 — ce fichier porte l'env résolu", got)
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Errorf("spec.yaml permissions = %o, want 600 — this file carries the resolved env", got)
 	}
 }
 
-// EcrisMixin transforme un nom en chemin hôte : c'est ICI que la garde
-// appartient. filepath.Join NETTOIE un « .. » en une vraie traversée au lieu de
-// la rejeter, et sbx.DecomposeNom est totale et ne valide rien.
-func TestEcrisMixinRefuseUnNomHorsCharset(t *testing.T) {
+// WriteMixin turns a name into a host path: this is WHERE the guard belongs.
+// filepath.Join CLEANS a ".." into a real traversal instead of rejecting it,
+// and sbx.SplitName is total and validates nothing.
+func TestWriteMixinRefusesANameOutsideTheCharset(t *testing.T) {
 	denHome := t.TempDir()
-	for _, nom := range []string{
-		"", ".", "..", "../evade", "api/../../evade", "a/b", "-api", "api.feat.trop",
+	for _, name := range []string{
+		"", ".", "..", "../escape", "api/../../escape", "a/b", "-api", "api.feat.too.many",
 	} {
-		if _, err := EcrisMixin(denHome, nom, mixinExemple(t)); err == nil {
-			t.Errorf("le nom de sandbox %q doit être refusé", nom)
+		if _, err := WriteMixin(denHome, name, exampleMixin(t)); err == nil {
+			t.Errorf("sandbox name %q must be refused", name)
 		}
-		// LisMixin compose le MÊME chemin hôte, par le même cheminMixin : sa
-		// garde doit refuser la même table. Sans ça, elle n'est exercée par
-		// aucun test (mesuré : retirée, les 9 paquets restent `ok`) et un
-		// refactor la supprimerait sans que rien ne rougisse. Défense en
-		// profondeur : Spawn refuse déjà ces noms en amont.
+		// ReadMixin composes the SAME host path, via the same mixinPath: its
+		// guard must refuse the same table. Without this, it's exercised by no
+		// test (measured: removed, the other 9 packages stay `ok`) and a
+		// refactor could drop it without anything turning red. Defense in
+		// depth: Spawn already refuses these names upstream.
 		//
-		// L'assertion porte sur la CAUSE, pas sur la seule présence d'une
-		// erreur : sans garde, LisMixin rendrait de toute façon une erreur —
-		// celle du fichier absent — et un simple `err == nil` resterait vert
-		// pour une raison étrangère à ce qu'il prétend tester.
-		_, err := LisMixin(denHome, nom)
+		// The assertion checks the CAUSE, not just the presence of an error:
+		// without the guard, ReadMixin would still return an error anyway —
+		// the missing-file one — and a bare `err == nil` check would stay
+		// green for a reason unrelated to what it claims to test.
+		_, err := ReadMixin(denHome, name)
 		if err == nil {
-			t.Errorf("LisMixin doit refuser le nom de sandbox %q", nom)
+			t.Errorf("ReadMixin must refuse sandbox name %q", name)
 		} else if errors.Is(err, os.ErrNotExist) {
-			t.Errorf("LisMixin(%q) a buté sur le fichier absent, pas sur la garde de charset : %v", nom, err)
+			t.Errorf("ReadMixin(%q) hit the missing-file case, not the charset guard: %v", name, err)
 		}
 	}
 
-	// Contre-épreuve : aucune écriture n'a eu lieu, nulle part sous denHome.
-	var ecrits []string
+	// Counter-proof: no write happened anywhere under denHome.
+	var written []string
 	if err := filepath.WalkDir(denHome, func(p string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {
-			ecrits = append(ecrits, p)
+			written = append(written, p)
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("parcours : %v", err)
+		t.Fatalf("walk: %v", err)
 	}
-	if len(ecrits) != 0 {
-		t.Errorf("un nom refusé ne doit rien écrire ; obtenu %v", ecrits)
+	if len(written) != 0 {
+		t.Errorf("a refused name must write nothing; got %v", written)
 	}
 }
 
-// Un spawn répété doit réécrire, pas empiler : le mixin est reconstructible et
-// reflète la config COURANTE, jamais celle du spawn précédent.
-func TestEcrisMixinEstIdempotent(t *testing.T) {
+// A repeated spawn must overwrite, not stack: the mixin is reconstructible
+// and always reflects the CURRENT config, never the previous spawn's.
+func TestWriteMixinIsIdempotent(t *testing.T) {
 	denHome := t.TempDir()
-	m := mixinExemple(t)
+	m := exampleMixin(t)
 
-	if _, err := EcrisMixin(denHome, "api", m); err != nil {
-		t.Fatalf("premier écrit : %v", err)
+	if _, err := WriteMixin(denHome, "api", m); err != nil {
+		t.Fatalf("first write: %v", err)
 	}
-	m.Egress = []string{"nouveau.exemple.test"}
-	dir, err := EcrisMixin(denHome, "api", m)
+	m.Egress = []string{"new.example.test"}
+	dir, err := WriteMixin(denHome, "api", m)
 	if err != nil {
-		t.Fatalf("second écrit : %v", err)
+		t.Fatalf("second write: %v", err)
 	}
 
-	contenu, err := os.ReadFile(filepath.Join(dir, "spec.yaml"))
+	content, err := os.ReadFile(filepath.Join(dir, "spec.yaml"))
 	if err != nil {
-		t.Fatalf("lecture : %v", err)
+		t.Fatalf("read: %v", err)
 	}
-	if !strings.Contains(string(contenu), "nouveau.exemple.test") {
-		t.Errorf("le second écrit doit remplacer le premier ; obtenu :\n%s", contenu)
+	if !strings.Contains(string(content), "new.example.test") {
+		t.Errorf("the second write must replace the first; got:\n%s", content)
 	}
-	if strings.Contains(string(contenu), "api.anthropic.com") {
-		t.Errorf("le contenu du premier écrit ne doit pas survivre ; obtenu :\n%s", contenu)
+	if strings.Contains(string(content), "api.anthropic.com") {
+		t.Errorf("the first write's content must not survive; got:\n%s", content)
 	}
 }
 
-func TestRendMixinEstDuYAMLRelisible(t *testing.T) {
-	m := mixinExemple(t)
-	out, err := RendMixin(m)
+func TestRenderMixinIsRereadableYAML(t *testing.T) {
+	m := exampleMixin(t)
+	out, err := RenderMixin(m)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	var relu struct {
+	var read struct {
 		SchemaVersion int    `yaml:"schemaVersion"`
 		Kind          string `yaml:"kind"`
 		Caps          struct {
@@ -359,40 +359,40 @@ func TestRendMixinEstDuYAMLRelisible(t *testing.T) {
 			} `yaml:"startup"`
 		} `yaml:"commands"`
 	}
-	if err := yaml.Unmarshal(out, &relu); err != nil {
-		t.Fatalf("le mixin rendu doit être du YAML relisible : %v\n%s", err, out)
+	if err := yaml.Unmarshal(out, &read); err != nil {
+		t.Fatalf("the rendered mixin must be rereadable YAML: %v\n%s", err, out)
 	}
-	if relu.SchemaVersion != 2 || relu.Kind != "mixin" {
-		t.Errorf("en-tête relu = %d/%q", relu.SchemaVersion, relu.Kind)
+	if read.SchemaVersion != 2 || read.Kind != "mixin" {
+		t.Errorf("read header = %d/%q", read.SchemaVersion, read.Kind)
 	}
-	if len(relu.Caps.Network.Allow) != 2 {
-		t.Errorf("allow relu = %v", relu.Caps.Network.Allow)
+	if len(read.Caps.Network.Allow) != 2 {
+		t.Errorf("read allow = %v", read.Caps.Network.Allow)
 	}
-	if len(relu.Commands.Startup) != 1 || len(relu.Commands.Startup[0].Command) != 3 {
-		t.Fatalf("startup relu = %v", relu.Commands.Startup)
+	if len(read.Commands.Startup) != 1 || len(read.Commands.Startup[0].Command) != 3 {
+		t.Fatalf("read startup = %v", read.Commands.Startup)
 	}
-	// Le script doit traverser l'aller-retour YAML OCTET POUR OCTET : c'est lui
-	// qui s'exécute en VM. Une sous-chaîne ne dirait rien d'un espacement perdu
-	// ou d'un chomping qui mange la dernière ligne (« exit 1 »).
-	for i, attendu := range m.Fraicheur {
-		if relu.Commands.Startup[0].Command[i] != attendu {
-			t.Errorf("argv[%d] relu ≠ rendu\n--- relu ---\n%s\n--- attendu ---\n%s",
-				i, relu.Commands.Startup[0].Command[i], attendu)
+	// The script must round-trip through YAML BYTE FOR BYTE: it's what runs in
+	// the VM. A substring check would say nothing about lost whitespace or a
+	// chomping that eats the last line ("exit 1").
+	for i, want := range m.Freshness {
+		if read.Commands.Startup[0].Command[i] != want {
+			t.Errorf("argv[%d] read ≠ rendered\n--- read ---\n%s\n--- want ---\n%s",
+				i, read.Commands.Startup[0].Command[i], want)
 		}
 	}
 }
 
-func TestRendMixinGolden(t *testing.T) {
-	out, err := RendMixin(mixinExemple(t))
+func TestRenderMixinGolden(t *testing.T) {
+	out, err := RenderMixin(exampleMixin(t))
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	chemin := filepath.Join("testdata", "mixin-complet.golden")
-	attendu, err := os.ReadFile(chemin)
+	path := filepath.Join("testdata", "mixin-complete.golden")
+	want, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("lecture du golden : %v", err)
+		t.Fatalf("reading golden: %v", err)
 	}
-	if string(out) != string(attendu) {
-		t.Errorf("rendu != %s\n--- obtenu ---\n%s\n--- attendu ---\n%s", chemin, out, attendu)
+	if string(out) != string(want) {
+		t.Errorf("rendered != %s\n--- got ---\n%s\n--- want ---\n%s", path, out, want)
 	}
 }

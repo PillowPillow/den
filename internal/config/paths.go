@@ -1,4 +1,4 @@
-// Package config charge et valide le contenu de ~/.den (config.yaml, stacks/).
+// Package config loads and validates the content of ~/.den (config.yaml, stacks/).
 package config
 
 import (
@@ -8,47 +8,52 @@ import (
 	"strings"
 )
 
-// Home résout le dossier de config den. Priorité : flag > $DEN_HOME > ~/.den.
-// C'est ce point d'indirection qui rend tout le socle testable sur des dossiers temporaires.
+// Home resolves the den config directory. Priority: flag > $DEN_HOME > ~/.den.
 //
-// Le résultat est TOUJOURS absolu : worktree_root en dérive, et ce chemin part
-// ensuite vers `git worktree` et `sbx create`, où le cwd n'est plus garanti.
+// The result is ALWAYS absolute: worktree_root derives from it, and this path
+// later goes to `git worktree` and `sbx create`, where cwd is no longer guaranteed.
 func Home(flagValue string) (string, error) {
-	brut := flagValue
-	if brut == "" {
-		brut = os.Getenv("DEN_HOME")
+	raw := flagValue
+	if raw == "" {
+		raw = os.Getenv("DEN_HOME")
 	}
-	if brut == "" {
+	if raw == "" {
 		h, err := os.UserHomeDir()
 		if err != nil {
-			// Le message d'os.UserHomeDir (« $HOME is not defined ») est exact
-			// mais muet : il ne dit ni ce que den cherchait, ni que deux
-			// sorties de secours existent. Le cas se produit pour de bon sous
-			// systemd, dans un conteneur ou dans un cron — là, précisément, où
-			// personne n'est devant l'écran pour deviner.
+			// os.UserHomeDir's message ("$HOME is not defined") is accurate but
+			// silent: it says neither what den was looking for nor that two
+			// fallbacks exist. This happens for real under systemd, in a
+			// container, or in a cron job.
 			return "", fmt.Errorf(
-				"impossible de situer le dossier de configuration de den (~/.den) : %w — "+
-					"passe --den-home <dossier>, ou définis DEN_HOME", err)
+				"could not locate den's configuration directory (~/.den): %w — "+
+					"pass --den-home <dir>, or set DEN_HOME", err)
 		}
-		brut = filepath.Join(h, ".den")
+		raw = filepath.Join(h, ".den")
 	}
-	return filepath.Abs(brut)
+	return filepath.Abs(raw)
 }
 
-// ExpandPath expanse un « ~ » en tête de chemin. Volontairement minimaliste :
-// ni $VAR ni ~user. Les $HOME présents dans bin_dirs visent le home DE LA VM et
-// doivent traverser den intacts (cf. spec §9.1).
+// GlobalPath is the SOLE definition of where the global config lives:
+// <denHome>/config.yaml. Every reader and every message that names the file
+// to fix must go through this, or a divergence between them would be
+// invisible (same doctrine as agent/mixin.go's mixinDir/mixinPath).
+func GlobalPath(denHome string) string {
+	return filepath.Join(denHome, "config.yaml")
+}
+
+// ExpandPath expands a leading "~" in a path. Deliberately minimal: neither
+// $VAR nor ~user. The $HOME values found in bin_dirs target the VM's home and
+// must cross den untouched (see spec §9.1).
 func ExpandPath(p string) (string, error) {
 	if p != "~" && !strings.HasPrefix(p, "~/") {
 		return p, nil
 	}
 	h, err := os.UserHomeDir()
 	if err != nil {
-		// Le chemin fautif est nommé : cette fonction expanse les « ~ » des
-		// config_dir, ssh.dir et repos, et l'erreur nue ne disait pas lequel de
-		// ces champs portait le tilde. Les appelants ajoutent par-dessus l'objet
-		// concerné (« agent claude : … »).
-		return "", fmt.Errorf("expansion de %q : %w — définis HOME, ou écris un chemin absolu", p, err)
+		// The offending path is named: this function expands the "~" in
+		// config_dir, ssh.dir and repos, and the raw error wouldn't say which
+		// field carried the tilde.
+		return "", fmt.Errorf("expanding %q: %w — set HOME, or write an absolute path", p, err)
 	}
 	if p == "~" {
 		return h, nil

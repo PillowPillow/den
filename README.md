@@ -1,7 +1,7 @@
 # den
 
-CLI générique pour piloter des sandboxes `sbx` : une commande pour démarrer une microVM
-multi-projet, sans retaper mixin, kits et policy à la main.
+Generic CLI for driving `sbx` sandboxes: one command to start a multi-project
+microVM, without retyping mixin, kits and policy by hand.
 
 ## Installation
 
@@ -9,7 +9,7 @@ multi-projet, sans retaper mixin, kits et policy à la main.
 go build -o den ./cmd/den
 ```
 
-## Amorçage
+## Bootstrapping
 
 ```bash
 cp -R examples/den-home ~/.den
@@ -17,55 +17,55 @@ $EDITOR ~/.den/config.yaml
 ./den doctor
 ```
 
-Au premier `den doctor`, deux diagnostics sont attendus tant que rien n'a été adapté : l'absence de
-`sbx` s'il n'est pas installé, et le repo d'exemple `~/dev/mon-projet` introuvable. Les deux
-disparaissent une fois `~/.den/config.yaml` et `~/.den/nests/exemple.yaml` ajustés.
+On the first `den doctor`, two diagnostics are expected until you adapt the config: `sbx` missing
+if it is not installed, and the example repo `~/dev/my-project` not found. Both go away once
+`~/.den/config.yaml` and `~/.den/nests/example.yaml` are adjusted.
 
-`~/.den/` est la source unique de vérité. La variable `DEN_HOME` (ou le flag `--den-home`) permet
-d'en utiliser un autre — c'est ce qui rend `den` testable et scriptable.
+`~/.den/` is the single source of truth. The `DEN_HOME` variable (or the `--den-home` flag) lets
+you use a different one — that is what makes `den` testable and scriptable.
 
-## Commandes disponibles
+## Available commands
 
-| Commande | Rôle |
+| Command | Role |
 |---|---|
-| `den <nest>` | spawn-or-attach : crée la microVM du nest si elle n'existe pas, s'y attache sinon |
-| `den ls` | liste les sandboxes vivantes, avec leur nest et leur worktree |
-| `den sh <name>` | ouvre un shell dans une sandbox existante |
-| `den rm <name>` | détruit une sandbox et nettoie les worktrees que den a créés (le profil agent persiste) |
-| `den nest ls` | liste les nests déclarés |
-| `den nest show <n>` | affiche un nest entièrement résolu (stack, agent, egress, repos) |
-| `den doctor` | diagnostique la configuration et l'environnement |
-| `den version` | version du binaire |
+| `den <nest>` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise |
+| `den ls` | lists live sandboxes, with their nest and worktree |
+| `den sh <name>` | opens a shell in an existing sandbox |
+| `den rm <name>` | destroys a sandbox and cleans up the worktrees den created (the agent profile persists) |
+| `den nest ls` | lists the declared nests |
+| `den nest show <n>` | shows a fully resolved nest (stack, agent, egress, repos) |
+| `den doctor` | diagnoses the configuration and the environment |
+| `den version` | binary version |
 
-Options de `den <nest>` :
+Options of `den <nest>`:
 
-| Option | Effet |
+| Option | Effect |
 |---|---|
-| `-w`, `--worktree <branche>` | propage un worktree de ce nom sur **tous** les repos du nest, et suffixe le nom de sandbox (`api.feat12`) |
-| `--detach` | prépare la sandbox sans y attacher de shell |
-| `--only <repo,…>` | ne garder que ces repos optionnels (les repos requis restent montés) |
-| `--without <repo,…>` | exclure ces repos optionnels |
-| `--agent <nom>` | surcharge `defaults.agent` |
+| `-w`, `--worktree <branch>` | propagates a worktree of that name across **all** the nest's repos, and suffixes the sandbox name (`api.feat12`) |
+| `--detach` | prepares the sandbox without attaching a shell |
+| `--only <repo,...>` | keep only these optional repos (required repos stay mounted) |
+| `--without <repo,...>` | exclude these optional repos |
+| `--agent <name>` | overrides `defaults.agent` |
 
-`-w` reçoit un nom de **branche**, et un nom de branche contient souvent un `/`.
-La branche garde le nom tapé — c'est celui du `git log` et de la PR — tandis que le nom de sandbox
-et le dossier de worktree en prennent une forme aplatie : `den api -w feature/123` travaille sur la
-branche `feature/123` dans une sandbox `api.feature-123`. C'est sous ce nom-là qu'elle apparaît dans
-`den ls`, et c'est lui qu'attendent `den sh` et `den rm`.
+`-w` takes a **branch** name, and a branch name often contains a `/`.
+The branch keeps the name as typed — that is the name in `git log` and in the PR — while the
+sandbox name and the worktree directory take a flattened form: `den api -w feature/123` works on
+branch `feature/123` in a sandbox `api.feature-123`. That is the name it appears under in
+`den ls`, and the one `den sh` and `den rm` expect.
 
-den accepte donc tout nom qu'il sait **nommer** ; git reste seul juge de ce qui est une **ref**
-légale. `-w 'a..b'` passe le nommage (sandbox `api.a--b`) et c'est `git worktree add` qui refuse,
-avant toute création de sandbox.
+So den accepts any name it can **name**; git remains the sole judge of what is a legal **ref**.
+`-w 'a..b'` passes naming (sandbox `api.a--b`) and it is `git worktree add` that refuses,
+before any sandbox is created.
 
-Options de `den rm` : `--keep-worktrees` (conserver les worktrees), `--force` (les supprimer même
-s'ils portent des modifications non commitées ; sans lui, den refuse **avant** de toucher à la VM).
+Options of `den rm`: `--keep-worktrees` (keep the worktrees), `--force` (delete them even if they
+carry uncommitted changes; without it, den refuses **before** touching the VM).
 
-Une sandbox arrêtée — ce que `sbx` fait tout seul au bout de quelques minutes d'inactivité —
-n'est pas une panne : `den <nest>` et `den sh` la reprennent, avec son état.
+A stopped sandbox — which `sbx` does on its own after a few minutes of inactivity — is not a
+failure: `den <nest>` and `den sh` pick it back up, with its state.
 
-Ce qui n'est pas encore livré : `den ports` (les `ports:` d'un nest sont chargés et affichés, mais
-rien ne les publie) et `den build` (le DAG des images). Voir `docs/superpowers/plans/`.
+Not shipped yet: `den ports` (a nest's `ports:` are loaded and displayed, but nothing publishes
+them) and `den build` (the image DAG). See `docs/superpowers/plans/`.
 
-## Conception
+## Design
 
 `docs/superpowers/specs/2026-07-27-den-cli-design.md`.

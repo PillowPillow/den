@@ -6,117 +6,113 @@ import (
 	"testing"
 )
 
-func TestFakeEnregistreLesAppels(t *testing.T) {
+func TestFakeRecordsCalls(t *testing.T) {
 	f := &Fake{}
 	if _, err := f.Run(context.Background(), "ls", "--json"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := f.Run(context.Background(), "rm", "--force", "api"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(f.Appels) != 2 {
-		t.Fatalf("Appels = %v, attendu 2 appels", f.Appels)
+	if len(f.Calls) != 2 {
+		t.Fatalf("Calls = %v, want 2 calls", f.Calls)
 	}
-	if !f.AAppele("rm", "--force") {
-		t.Errorf("AAppele(rm --force) doit être vrai ; appels : %v", f.Appels)
+	if !f.HasCalled("rm", "--force") {
+		t.Errorf("HasCalled(rm --force) must be true; calls: %v", f.Calls)
 	}
-	if !f.AAppele("ls") {
-		t.Errorf("AAppele(ls) doit être vrai ; appels : %v", f.Appels)
+	if !f.HasCalled("ls") {
+		t.Errorf("HasCalled(ls) must be true; calls: %v", f.Calls)
 	}
-	if f.AAppele("create") {
-		t.Errorf("AAppele(create) doit être faux ; appels : %v", f.Appels)
-	}
-	if got := f.DernierAppel(); len(got) != 3 || got[0] != "rm" {
-		t.Errorf("DernierAppel = %v", got)
+	if f.HasCalled("create") {
+		t.Errorf("HasCalled(create) must be false; calls: %v", f.Calls)
 	}
 }
 
-func TestFakeReponseScriptee(t *testing.T) {
-	attendue := []byte(`{"sandboxes":[]}`)
-	f := &Fake{Reponses: map[string]Reponse{
-		"ls --json": {Sortie: attendue},
+func TestFakeScriptedResponse(t *testing.T) {
+	want := []byte(`{"sandboxes":[]}`)
+	f := &Fake{Responses: map[string]Response{
+		"ls --json": {Output: want},
 	}}
 
 	got, err := f.Run(context.Background(), "ls", "--json")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if string(got) != string(attendue) {
-		t.Errorf("sortie = %q, attendu %q", got, attendue)
-	}
-}
-
-func TestFakeReponseParDefaut(t *testing.T) {
-	sentinelle := errors.New("boom")
-	f := &Fake{Defaut: Reponse{Err: sentinelle}}
-
-	if _, err := f.Run(context.Background(), "n-importe", "quoi"); !errors.Is(err, sentinelle) {
-		t.Errorf("err = %v, attendu la sentinelle par défaut", err)
+	if string(got) != string(want) {
+		t.Errorf("output = %q, want %q", got, want)
 	}
 }
 
-// Attach est enregistré comme un appel : les tests de `den <nest>` doivent
-// pouvoir asserter QUE l'attache a eu lieu, et avec quels arguments.
-func TestFakeAttachEstEnregistre(t *testing.T) {
+func TestFakeDefaultResponse(t *testing.T) {
+	sentinel := errors.New("boom")
+	f := &Fake{Default: Response{Err: sentinel}}
+
+	if _, err := f.Run(context.Background(), "whatever", "you", "want"); !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want the default sentinel", err)
+	}
+}
+
+// Attach is recorded as a call: tests for `den <nest>` must be able to assert
+// THAT the attach happened, and with which arguments.
+func TestFakeAttachIsRecorded(t *testing.T) {
 	f := &Fake{}
 	if err := f.Attach(context.Background(), "exec", "-it", "api", "bash", "-l"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.AAppele("exec", "-it", "api") {
-		t.Errorf("l'attache doit être enregistrée ; appels : %v", f.Appels)
-	}
-}
-
-func TestFakeAttachPeutEchouer(t *testing.T) {
-	sentinelle := errors.New("tty indisponible")
-	f := &Fake{ErreurAttach: sentinelle}
-	if err := f.Attach(context.Background(), "exec", "-it", "api"); !errors.Is(err, sentinelle) {
-		t.Errorf("err = %v, attendu la sentinelle", err)
+	if !f.HasCalled("exec", "-it", "api") {
+		t.Errorf("the attach must be recorded; calls: %v", f.Calls)
 	}
 }
 
-// Run doit renvoyer une copie de la sortie scriptée : un appelant qui
-// modifierait la slice reçue ne doit pas corrompre les appels suivants du
-// même Fake.
-func TestFakeRunRenvoieUneCopieDeLaSortie(t *testing.T) {
-	f := &Fake{Defaut: Reponse{Sortie: []byte("original")}}
+func TestFakeAttachCanFail(t *testing.T) {
+	sentinel := errors.New("tty unavailable")
+	f := &Fake{AttachErr: sentinel}
+	if err := f.Attach(context.Background(), "exec", "-it", "api"); !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want the sentinel", err)
+	}
+}
 
-	premier, err := f.Run(context.Background(), "ls", "--json")
+// Run must return a copy of the scripted output: a caller that mutates the
+// received slice must not corrupt later calls on the same Fake.
+func TestFakeRunReturnsACopyOfTheOutput(t *testing.T) {
+	f := &Fake{Default: Response{Output: []byte("original")}}
+
+	first, err := f.Run(context.Background(), "ls", "--json")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	premier[0] = 'X'
+	first[0] = 'X'
 
 	second, err := f.Run(context.Background(), "ls", "--json")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if string(second) != "original" {
-		t.Errorf("sortie = %q, attendu %q (la mutation du premier appel ne doit pas fuiter)", second, "original")
+		t.Errorf("output = %q, want %q (mutating the first call must not leak)", second, "original")
 	}
 }
 
-// Run et Attach sont irréconciliables (cf. runner.go) : un Run dont l'argv
-// commence par "exec" ne doit jamais se faire passer pour une attache, et une
-// attache doit rester détectable indépendamment des Run. Deux traces
-// distinctes, pas une clé qu'il faudrait deviner dans Appels.
-func TestFakeDistingueRunEtAttach(t *testing.T) {
+// Run and Attach are irreconcilable (see runner.go): a Run whose argv starts
+// with "exec" must never pass for an attach, and an attach must stay
+// detectable independently of Runs. Two distinct traces, not a key you'd have
+// to guess inside Calls.
+func TestFakeDistinguishesRunFromAttach(t *testing.T) {
 	f := &Fake{}
 	if _, err := f.Run(context.Background(), "exec", "-it", "api", "bash", "-l"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if f.AAttache("exec") {
-		t.Errorf("un Run ne doit jamais compter comme une attache ; attaches : %v", f.Attaches)
+	if f.HasAttached("exec") {
+		t.Errorf("a Run must never count as an attach; attaches: %v", f.Attaches)
 	}
 
 	if err := f.Attach(context.Background(), "exec", "-it", "api"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.AAttache("exec", "-it", "api") {
-		t.Errorf("l'attache doit être enregistrée dans Attaches ; attaches : %v", f.Attaches)
+	if !f.HasAttached("exec", "-it", "api") {
+		t.Errorf("the attach must be recorded in Attaches; attaches: %v", f.Attaches)
 	}
-	if !f.AAppele("exec", "-it", "api") {
-		t.Errorf("Attach doit continuer d'alimenter Appels aussi")
+	if !f.HasCalled("exec", "-it", "api") {
+		t.Errorf("Attach must keep feeding Calls too")
 	}
 }

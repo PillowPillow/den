@@ -5,197 +5,194 @@ import (
 	"testing"
 )
 
-// cible est un schéma minimal, indépendant des vrais types de den : ce test
-// porte sur le décodeur, pas sur la configuration.
-type cible struct {
+// target is a minimal schema, independent of den's real types: this test
+// exercises the decoder, not the configuration.
+type target struct {
 	Egress []string `yaml:"egress"`
 }
 
-func TestDecodeYAMLStrictFranciseLesClesInconnues(t *testing.T) {
-	brut := []byte("egress:\n  - a\negres:\n  - b\n") // faute en ligne 3
-	var c cible
-	err := DecodeYAMLStrict("/den/config.yaml", brut, &c)
+func TestDecodeYAMLStrictRewritesUnknownKeys(t *testing.T) {
+	raw := []byte("egress:\n  - a\negres:\n  - b\n") // typo on line 3
+	var c target
+	err := DecodeYAMLStrict("/den/config.yaml", raw, &c)
 	if err == nil {
-		t.Fatal("attendu une erreur sur la clé inconnue")
+		t.Fatal("expected an error on the unknown key")
 	}
 	msg := err.Error()
 
-	if !strings.Contains(msg, `clé inconnue "egres"`) {
-		t.Errorf("message = %q, attendu une mention francisée de la clé fautive", msg)
+	if !strings.Contains(msg, `unknown key "egres"`) {
+		t.Errorf("message = %q, expected a rewritten mention of the offending key", msg)
 	}
-	// Le numéro de ligne est ce qui rend le message utile : il doit survivre.
+	// The line number is what makes the message useful: it must survive.
 	if !strings.Contains(msg, "line 3") {
-		t.Errorf("message = %q, attendu la ligne de la clé fautive", msg)
+		t.Errorf("message = %q, expected the offending key's line", msg)
 	}
-	// Le type Go interne n'a rien à faire sous les yeux de l'utilisateur.
-	if strings.Contains(msg, "not found in type") || strings.Contains(msg, "config.cible") {
-		t.Errorf("message = %q, le type Go interne ne doit plus apparaître", msg)
+	// The internal Go type has no business in front of the user.
+	if strings.Contains(msg, "not found in type") || strings.Contains(msg, "config.target") {
+		t.Errorf("message = %q, the internal Go type must no longer appear", msg)
 	}
-	// Le format d'origine est conservé.
-	if !strings.Contains(msg, "/den/config.yaml : YAML invalide :") {
-		t.Errorf("message = %q, attendu le format `%%s : YAML invalide : %%w`", msg)
+	// The original format is preserved.
+	if !strings.Contains(msg, "/den/config.yaml: invalid YAML:") {
+		t.Errorf("message = %q, expected the format `%%s: invalid YAML: %%w`", msg)
 	}
 }
 
-// L'en-tête « yaml: unmarshal errors: » de yaml.v3 est visible sur TOUT YAML
-// invalide de den — c'est la première ligne de `den nest ls` sur un nest cassé,
-// et la ligne de détail juste en dessous est bien traduite, elle. Un reste
-// d'anglais au milieu d'un message français se lit comme un bug.
+// yaml.v3's "yaml: unmarshal errors:" header is visible on every invalid YAML
+// in den — it's the first line of `den nest ls` on a broken nest, while the
+// detail line right below is already rewritten.
 //
-// Ce qui NE change PAS : le « line N: » que yaml.v3 place devant chaque détail.
-// C'est le numéro de ligne qui rend le message actionnable, il est pinné par
-// TestDecodeYAMLStrictFranciseLesClesInconnues, et « line 3 » reste lisible
-// pour un francophone là où l'en-tête, lui, ne dit rien. Ce reliquat est
-// documenté dans internal/cli/francais.go plutôt que traduit.
-func TestDecodeYAMLStrictFraniseLEnTeteDeYamlV3(t *testing.T) {
-	brut := []byte("egress:\n  - a\negres:\n  - b\n")
-	var c cible
-	err := DecodeYAMLStrict("/den/config.yaml", brut, &c)
+// What does NOT change: the "line N:" prefix yaml.v3 places before each
+// detail. It's the line number that makes the message actionable, and it's
+// pinned by TestDecodeYAMLStrictRewritesUnknownKeys.
+func TestDecodeYAMLStrictRewritesTheYamlV3Header(t *testing.T) {
+	raw := []byte("egress:\n  - a\negres:\n  - b\n")
+	var c target
+	err := DecodeYAMLStrict("/den/config.yaml", raw, &c)
 	if err == nil {
-		t.Fatal("attendu une erreur sur la clé inconnue")
+		t.Fatal("expected an error on the unknown key")
 	}
 	if strings.Contains(err.Error(), "yaml: unmarshal errors:") {
-		t.Errorf("l'en-tête anglais de yaml.v3 reste dans le message : %q", err.Error())
+		t.Errorf("yaml.v3's raw header remains in the message: %q", err.Error())
 	}
-	if !strings.Contains(err.Error(), "erreurs de décodage") {
-		t.Errorf("message = %q, attendu un en-tête français", err.Error())
+	if !strings.Contains(err.Error(), "decoding errors") {
+		t.Errorf("message = %q, expected a rewritten header", err.Error())
 	}
 }
 
-// Plusieurs clés inconnues dans le même fichier : toutes francisées, aucune perdue.
-func TestDecodeYAMLStrictFranciseChaqueCleInconnue(t *testing.T) {
-	brut := []byte("egres:\n  - a\nworktre_root: /tmp\n")
-	var c cible
-	err := DecodeYAMLStrict("/den/config.yaml", brut, &c)
+// Several unknown keys in the same file: all rewritten, none lost.
+func TestDecodeYAMLStrictRewritesEveryUnknownKey(t *testing.T) {
+	raw := []byte("egres:\n  - a\nworktre_root: /tmp\n")
+	var c target
+	err := DecodeYAMLStrict("/den/config.yaml", raw, &c)
 	if err == nil {
-		t.Fatal("attendu une erreur")
+		t.Fatal("expected an error")
 	}
-	for _, attendu := range []string{`clé inconnue "egres"`, `clé inconnue "worktre_root"`} {
-		if !strings.Contains(err.Error(), attendu) {
-			t.Errorf("message = %q, attendu %q", err.Error(), attendu)
+	for _, want := range []string{`unknown key "egres"`, `unknown key "worktre_root"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message = %q, expected %q", err.Error(), want)
 		}
 	}
 }
 
-// Une erreur YAML qui ne suit pas le motif « field X not found in type T » doit
-// traverser INTACTE : un message imparfait vaut mieux qu'un message mutilé.
-func TestDecodeYAMLStrictLaissePasserUnMessageNonReconnu(t *testing.T) {
-	brut := []byte("egress: [ceci n'est pas une liste fermée")
-	var c cible
-	err := DecodeYAMLStrict("/den/config.yaml", brut, &c)
+// A YAML error that doesn't follow the "field X not found in type T" pattern
+// must pass through UNCHANGED: an imperfect message beats a mangled one.
+func TestDecodeYAMLStrictLeavesAnUnrecognizedMessageAlone(t *testing.T) {
+	raw := []byte("egress: [this is not a closed list")
+	var c target
+	err := DecodeYAMLStrict("/den/config.yaml", raw, &c)
 	if err == nil {
-		t.Fatal("attendu une erreur sur YAML malformé")
+		t.Fatal("expected an error on malformed YAML")
 	}
-	if !strings.Contains(err.Error(), "/den/config.yaml : YAML invalide :") {
-		t.Errorf("message = %q, attendu le format d'origine", err.Error())
+	if !strings.Contains(err.Error(), "/den/config.yaml: invalid YAML:") {
+		t.Errorf("message = %q, expected the original format", err.Error())
 	}
-	// Rien n'a été réécrit : le diagnostic de yaml.v3 est le seul disponible.
-	if strings.Contains(err.Error(), "clé inconnue") {
-		t.Errorf("message = %q : ce n'est pas une erreur de clé inconnue", err.Error())
+	// Nothing was rewritten: yaml.v3's diagnostic is the only one available.
+	if strings.Contains(err.Error(), "unknown key") {
+		t.Errorf("message = %q: this isn't an unknown-key error", err.Error())
 	}
-	if len(err.Error()) <= len("/den/config.yaml : YAML invalide : ") {
-		t.Errorf("message = %q : le diagnostic d'origine a été perdu", err.Error())
+	if len(err.Error()) <= len("/den/config.yaml: invalid YAML: ") {
+		t.Errorf("message = %q: the original diagnostic was lost", err.Error())
 	}
 }
 
-// Un fichier MULTI-DOCUMENTS ne doit pas se laisser lire à moitié.
+// A MULTI-DOCUMENT file must not be read halfway.
 //
-// yaml.Decoder.Decode ne lit QU'UN document ; tout ce qui suit un « --- » était
-// silencieusement ignoré. C'est exactement le mode de défaillance que
-// DecodeYAMLStrict existe pour empêcher — une allowlist qui ne s'applique pas
-// sans un mot — simplement à la granularité du document au lieu de la clé.
+// yaml.Decoder.Decode reads only ONE document; anything following a "---" was
+// silently ignored. That's exactly the failure mode DecodeYAMLStrict exists
+// to prevent — an allowlist that doesn't apply without a word — just at
+// document granularity instead of key granularity.
 //
-// Mesuré sur le binaire assemblé (tâche 17c), sur un nest de deux documents :
-// `den nest show api` rendait rc=0 et n'affichait que le premier, le `stack:` et
-// tout un bloc `egress:` du second n'ayant jamais existé pour den.
-func TestDecodeYAMLStrictRefuseUnFichierMultiDocuments(t *testing.T) {
-	brut := []byte("egress:\n  - premier\n---\negress:\n  - second\n")
-	var c cible
-	err := DecodeYAMLStrict("/den/nests/api.yaml", brut, &c)
+// Measured on the assembled binary, on a nest with two documents:
+// `den nest show api` returned rc=0 and only displayed the first, the
+// `stack:` and an entire `egress:` block from the second having never
+// existed for den.
+func TestDecodeYAMLStrictRejectsAMultiDocumentFile(t *testing.T) {
+	raw := []byte("egress:\n  - first\n---\negress:\n  - second\n")
+	var c target
+	err := DecodeYAMLStrict("/den/nests/api.yaml", raw, &c)
 	if err == nil {
-		t.Fatalf("multi-documents accepté : le second document est ignoré en silence "+
-			"(egress lu = %v)", c.Egress)
+		t.Fatalf("multi-document file accepted: the second document is silently ignored "+
+			"(egress read = %v)", c.Egress)
 	}
 	msg := err.Error()
-	// Le fichier à corriger, et le mot qui dit QUOI corriger : « YAML invalide »
-	// seul enverrait chercher une faute de syntaxe, alors que le fichier est
-	// syntaxiquement correct.
+	// The file to fix, and the word saying WHAT to fix: "invalid YAML" alone
+	// would send someone looking for a syntax error, while the file is
+	// syntactically correct.
 	if !strings.Contains(msg, "/den/nests/api.yaml") {
-		t.Errorf("message = %q, doit nommer le fichier fautif", msg)
+		t.Errorf("message = %q, must name the offending file", msg)
 	}
 	if !strings.Contains(msg, "document") {
-		t.Errorf("message = %q, doit dire que le fichier porte plusieurs documents", msg)
+		t.Errorf("message = %q, must say the file carries multiple documents", msg)
 	}
 }
 
-// Le pendant : un document unique suivi d'un marqueur de fin, ou un fichier qui
-// ne contient qu'un document, restent acceptés. Sans ce test, un contrôle qui
-// refuserait tout fichier contenant « --- » passerait le test ci-dessus — et
-// casserait les configurations qui ouvrent par un marqueur de début de document,
-// une forme parfaitement légale.
-func TestDecodeYAMLStrictAccepteUnDocumentUniqueMemeAvecMarqueur(t *testing.T) {
-	cas := []struct {
-		nom  string
-		brut string
+// The counterpart: a single document followed by an end marker, or a file
+// that only contains one document, remain accepted. Without this test, a
+// check that rejected any file containing "---" would pass the test above —
+// and break configurations that open with a start-of-document marker, a
+// perfectly legal form.
+func TestDecodeYAMLStrictAcceptsASingleDocumentEvenWithAMarker(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
 	}{
-		{"sans marqueur", "egress:\n  - a\n"},
-		{"marqueur de debut", "---\negress:\n  - a\n"},
-		{"marqueur de debut et de fin", "---\negress:\n  - a\n...\n"},
-		{"document vide", ""},
-		{"commentaires seuls", "# rien que des commentaires\n"},
+		{"no marker", "egress:\n  - a\n"},
+		{"start marker", "---\negress:\n  - a\n"},
+		{"start and end markers", "---\negress:\n  - a\n...\n"},
+		{"empty document", ""},
+		{"comments only", "# nothing but comments\n"},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			var dest cible
-			if err := DecodeYAMLStrict("/den/config.yaml", []byte(c.brut), &dest); err != nil {
-				t.Errorf("forme légale refusée : %v", err)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var dest target
+			if err := DecodeYAMLStrict("/den/config.yaml", []byte(c.raw), &dest); err != nil {
+				t.Errorf("legal form refused: %v", err)
 			}
 		})
 	}
 }
 
-// Les formes qui ne perdent RIEN mais restent refusées.
+// The forms that lose NOTHING but stay refused.
 //
-// Mesuré, second `Decode` réussi mais document ré-encodé VIDE dans les trois
-// cas : un « --- » final sans contenu derrière, la forme front-matter
-// « ---\n…\n--- », et un « --- » suivi de commentaires seuls. Rien n'y est
-// ignoré, contrairement à ce qu'affirmait la première version du message.
+// Measured: the second Decode succeeds but re-encodes as an EMPTY document in
+// all three cases: a trailing "---" with nothing behind it, the front-matter
+// form "---\n...\n---", and a "---" followed only by comments. Nothing is
+// actually dropped in any of them.
 //
-// Le refus est CONSERVÉ — il est fail-closed, « ... » est le vrai marqueur de
-// fin de document, et l'ambiguïté ne vaut pas d'être tolérée — mais le message
-// ne doit pas affirmer une perte qui n'a pas lieu. L'habitude front-matter est
-// assez répandue pour que le cas se présente, et un utilisateur bloqué sur un
-// fichier sans faute réelle AVEC une explication fausse est exactement ce que
-// l'écart C de la tâche 17c existait pour supprimer.
-func TestDecodeYAMLStrictRefuseSansAffirmerUnePerteQuiNAPasLieu(t *testing.T) {
-	cas := []struct {
-		nom  string
-		brut string
+// The refusal is KEPT — it's fail-closed, "..." is the real end-of-document
+// marker, and the ambiguity isn't worth tolerating — but the message must not
+// claim a loss that doesn't happen. The front-matter habit is common enough
+// that the case arises in practice, and a user blocked on a file with no real
+// fault, given a false explanation, is exactly what this test exists to prevent.
+func TestDecodeYAMLStrictRefusesWithoutClaimingALossThatDidNotHappen(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
 	}{
-		{"marqueur --- final sans contenu", "egress:\n  - a\n---\n"},
-		{"front-matter (--- … ---)", "---\negress:\n  - a\n---\n"},
-		{"--- suivi de commentaires seuls", "egress:\n  - a\n---\n# rien que des commentaires\n"},
+		{"trailing --- marker with no content", "egress:\n  - a\n---\n"},
+		{"front-matter (--- ... ---)", "---\negress:\n  - a\n---\n"},
+		{"--- followed only by comments", "egress:\n  - a\n---\n# nothing but comments\n"},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			var dest cible
-			err := DecodeYAMLStrict("/den/nests/api.yaml", []byte(c.brut), &dest)
-			// Fail-closed, assumé et verrouillé : ces formes RESTENT refusées.
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var dest target
+			err := DecodeYAMLStrict("/den/nests/api.yaml", []byte(c.raw), &dest)
+			// Fail-closed, assumed and locked in: these forms REMAIN refused.
 			if err == nil {
-				t.Fatal("forme multi-documents acceptée : le refus est délibérément fail-closed")
+				t.Fatal("multi-document form accepted: the refusal is deliberately fail-closed")
 			}
 			msg := err.Error()
-			// L'AFFIRMATION FAUSSE, interdite : ici, rien n'est ignoré.
-			if strings.Contains(msg, "ignorés en silence") {
-				t.Errorf("le message affirme une perte qui n'a PAS lieu — le document suivant est "+
-					"vide (mesuré) ; obtenu : %s", msg)
+			// The FALSE CLAIM, forbidden: here, nothing is actually ignored.
+			if strings.Contains(msg, "silently ignored") {
+				t.Errorf("message claims a loss that does NOT happen — the following document is "+
+					"empty (measured); got: %s", msg)
 			}
 			if !strings.Contains(msg, "/den/nests/api.yaml") {
-				t.Errorf("le message doit nommer le fichier fautif ; obtenu : %s", msg)
+				t.Errorf("message must name the offending file; got: %s", msg)
 			}
-			// Et il doit dire QUOI faire, le fichier n'ayant aucune faute de syntaxe.
+			// And it must say WHAT to do, the file having no syntax fault.
 			if !strings.Contains(msg, "document") {
-				t.Errorf("le message doit parler de documents ; obtenu : %s", msg)
+				t.Errorf("message must talk about documents; got: %s", msg)
 			}
 		})
 	}

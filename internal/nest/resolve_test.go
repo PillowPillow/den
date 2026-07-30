@@ -11,23 +11,23 @@ func globalTest() *config.Global {
 	return &config.Global{
 		Agents: map[string]config.Agent{
 			"claude": {
-				ConfigDir: "/home/moi/.den/agents/claude",
+				ConfigDir: "/home/me/.den/agents/claude",
 				Env:       map[string]string{"CLAUDE_CONFIG_DIR": "{config_dir}"},
 				BinDirs:   []string{"$HOME/.local/bin"},
 				Update:    "claude update",
 			},
-			"codex": {ConfigDir: "/home/moi/.den/agents/codex", Update: "codex --upgrade"},
+			"codex": {ConfigDir: "/home/me/.den/agents/codex", Update: "codex --upgrade"},
 		},
 		Defaults:       config.Defaults{Agent: "claude", Stack: "devx"},
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
-		WorktreeRoot:   "/home/moi/.den/worktrees",
+		WorktreeRoot:   "/home/me/.den/worktrees",
 		Egress:         []string{"api.anthropic.com", "github.com"},
 	}
 }
 
 func stacksTest() config.Stacks {
-	return config.Stacks{Saines: map[string]*config.Stack{
+	return config.Stacks{Healthy: map[string]*config.Stack{
 		"devx":   {Name: "devx", Image: "devx:v1", Kit: "/den/stacks/devx/kit"},
 		"dgdevx": {Name: "dgdevx", Image: "dgdevx:v1", Parent: "devx", Kit: "/den/stacks/dgdevx/kit", Egress: []string{"gitlab.digitaleo.com"}},
 	}}
@@ -42,90 +42,90 @@ func nestTest() *Nest {
 	}
 }
 
-func TestResolveAgentParDefaut(t *testing.T) {
-	nom, a, dir, err := ResolveAgent(globalTest(), nestTest(), "")
+func TestResolveAgentDefault(t *testing.T) {
+	name, a, dir, err := resolveAgent(globalTest(), nestTest(), "")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if nom != "claude" {
-		t.Errorf("nom = %q, attendu claude (defaults.agent)", nom)
+	if name != "claude" {
+		t.Errorf("name = %q, expected claude (defaults.agent)", name)
 	}
 	if a.Update != "claude update" {
 		t.Errorf("Update = %q", a.Update)
 	}
-	if dir != "/home/moi/.den/agents/claude" {
-		t.Errorf("configDir = %q, attendu celui du registre global", dir)
+	if dir != "/home/me/.den/agents/claude" {
+		t.Errorf("configDir = %q, expected the global registry's", dir)
 	}
 }
 
-func TestResolveAgentFlagSurcharge(t *testing.T) {
-	nom, _, dir, err := ResolveAgent(globalTest(), nestTest(), "codex")
+func TestResolveAgentFlagOverride(t *testing.T) {
+	name, _, dir, err := resolveAgent(globalTest(), nestTest(), "codex")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if nom != "codex" || dir != "/home/moi/.den/agents/codex" {
-		t.Errorf("nom = %q, dir = %q", nom, dir)
+	if name != "codex" || dir != "/home/me/.den/agents/codex" {
+		t.Errorf("name = %q, dir = %q", name, dir)
 	}
 }
 
-func TestResolveAgentOverrideParNest(t *testing.T) {
+func TestResolveAgentOverrideByNest(t *testing.T) {
 	n := nestTest()
-	n.Agents = map[string]string{"claude": "/perso/claude-fullstack"}
-	_, _, dir, err := ResolveAgent(globalTest(), n, "")
+	n.Agents = map[string]string{"claude": "/personal/claude-fullstack"}
+	_, _, dir, err := resolveAgent(globalTest(), n, "")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if dir != "/perso/claude-fullstack" {
-		t.Errorf("configDir = %q, attendu l'override du nest", dir)
+	if dir != "/personal/claude-fullstack" {
+		t.Errorf("configDir = %q, expected the nest's override", dir)
 	}
 }
 
-func TestResolveAgentOverrideNestCibleLeBonAgent(t *testing.T) {
-	// Le nest surcharge codex ; l'agent actif est claude => l'override ne s'applique pas.
+func TestResolveAgentOverrideNestTargetsTheRightAgent(t *testing.T) {
+	// The nest overrides codex; the active agent is claude => the override does not apply.
 	n := nestTest()
-	n.Agents = map[string]string{"codex": "/perso/codex"}
-	_, _, dir, err := ResolveAgent(globalTest(), n, "")
+	n.Agents = map[string]string{"codex": "/personal/codex"}
+	_, _, dir, err := resolveAgent(globalTest(), n, "")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if dir != "/home/moi/.den/agents/claude" {
-		t.Errorf("configDir = %q, l'override codex n'aurait pas dû s'appliquer à claude", dir)
+	if dir != "/home/me/.den/agents/claude" {
+		t.Errorf("configDir = %q, the codex override should not have applied to claude", dir)
 	}
 }
 
-// ResolveAgent doit accepter un nest nil : la garde `if n != nil` existe pour
-// les appelants qui résolvent un agent hors contexte de nest (le futur
-// `den doctor`/`den build`), et du code défensif non exercé n'est pas prouvé.
-func TestResolveAgentSansNest(t *testing.T) {
-	nom, a, dir, err := ResolveAgent(globalTest(), nil, "")
+// ResolveAgent must accept a nil nest: the `if n != nil` guard exists for
+// callers resolving an agent outside a nest context (the future
+// `den doctor`/`den build`), and defensive code that is never exercised is not proven.
+func TestResolveAgentWithoutNest(t *testing.T) {
+	name, a, dir, err := resolveAgent(globalTest(), nil, "")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if nom != "claude" {
-		t.Errorf("nom = %q, attendu claude (defaults.agent)", nom)
+	if name != "claude" {
+		t.Errorf("name = %q, expected claude (defaults.agent)", name)
 	}
 	if a.Update != "claude update" {
 		t.Errorf("Update = %q", a.Update)
 	}
-	if dir != "/home/moi/.den/agents/claude" {
-		t.Errorf("configDir = %q, attendu celui du registre global", dir)
+	if dir != "/home/me/.den/agents/claude" {
+		t.Errorf("configDir = %q, expected the global registry's", dir)
 	}
 }
 
-func TestResolveAgentInconnu(t *testing.T) {
-	_, _, _, err := ResolveAgent(globalTest(), nestTest(), "gemini")
+func TestResolveAgentUnknown(t *testing.T) {
+	_, _, _, err := resolveAgent(globalTest(), nestTest(), "gemini")
 	if err == nil {
-		t.Fatal("attendu une erreur pour un agent inconnu")
+		t.Fatal("expected an error for an unknown agent")
 	}
 	if !strings.Contains(err.Error(), "claude") {
-		t.Errorf("erreur = %q, attendu la liste des agents disponibles", err.Error())
+		t.Errorf("error = %q, expected the list of available agents", err.Error())
 	}
 }
 
-func TestResolveCascadeComplete(t *testing.T) {
+func TestResolveFullCascade(t *testing.T) {
 	r, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{})
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if r.Stack.Image != "dgdevx:v1" {
 		t.Errorf("Stack.Image = %q", r.Stack.Image)
@@ -133,62 +133,62 @@ func TestResolveCascadeComplete(t *testing.T) {
 	if r.AgentName != "claude" {
 		t.Errorf("AgentName = %q", r.AgentName)
 	}
-	attendu := []string{"10.22.11.54:27017", "api.anthropic.com", "github.com", "gitlab.digitaleo.com"}
-	if len(r.Egress) != len(attendu) {
-		t.Fatalf("Egress = %v, attendu %v", r.Egress, attendu)
+	expected := []string{"10.22.11.54:27017", "api.anthropic.com", "github.com", "gitlab.digitaleo.com"}
+	if len(r.Egress) != len(expected) {
+		t.Fatalf("Egress = %v, expected %v", r.Egress, expected)
 	}
-	for i := range attendu {
-		if r.Egress[i] != attendu[i] {
-			t.Fatalf("Egress = %v, attendu %v", r.Egress, attendu)
+	for i := range expected {
+		if r.Egress[i] != expected[i] {
+			t.Fatalf("Egress = %v, expected %v", r.Egress, expected)
 		}
 	}
 	if len(r.Repos) != 2 {
-		t.Errorf("Repos = %v, attendu les 2 repos", noms(r.Repos))
+		t.Errorf("Repos = %v, expected both repos", names(r.Repos))
 	}
 	if r.SSHMode != "agent-forward" || r.WorktreeLayout != "central" {
-		t.Errorf("SSH/worktree non hérités du global : %+v", r)
+		t.Errorf("SSH/worktree not inherited from global: %+v", r)
 	}
 }
 
-func TestResolveAppliqueLaSelectionDeRepos(t *testing.T) {
+func TestResolveAppliesRepoSelection(t *testing.T) {
 	r, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{Without: []string{"front"}})
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := noms(r.Repos); len(got) != 1 || got[0] != "api" {
-		t.Errorf("Repos = %v, attendu [api]", got)
+	if got := names(r.Repos); len(got) != 1 || got[0] != "api" {
+		t.Errorf("Repos = %v, expected [api]", got)
 	}
 }
 
-func TestResolveStackDuNestParDefautSiAbsente(t *testing.T) {
+func TestResolveStackDefaultsFromNestWhenAbsent(t *testing.T) {
 	n := nestTest()
-	n.Stack = "" // le nest ne tranche pas => defaults.stack
+	n.Stack = "" // the nest does not decide => defaults.stack
 	r, err := Resolve("/d", globalTest(), stacksTest(), n, Options{})
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if r.Stack.Name != "devx" {
-		t.Errorf("Stack.Name = %q, attendu le défaut devx", r.Stack.Name)
+		t.Errorf("Stack.Name = %q, expected the default devx", r.Stack.Name)
 	}
 }
 
-func TestResolveStackInconnue(t *testing.T) {
+func TestResolveUnknownStack(t *testing.T) {
 	n := nestTest()
-	n.Stack = "fantome"
+	n.Stack = "ghost"
 	_, err := Resolve("/d", globalTest(), stacksTest(), n, Options{})
 	if err == nil {
-		t.Fatal("attendu une erreur pour une stack inconnue")
+		t.Fatal("expected an error for an unknown stack")
 	}
-	if !strings.Contains(err.Error(), "fantome") {
-		t.Errorf("erreur = %q, attendu une mention de la stack manquante", err.Error())
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error = %q, expected a mention of the missing stack", err.Error())
 	}
 }
 
-func TestResolveFusionneEtSubstitueLEnv(t *testing.T) {
+func TestResolveMergesAndSubstitutesEnv(t *testing.T) {
 	g := &config.Global{
 		Agents: map[string]config.Agent{
 			"claude": {
-				ConfigDir: "/home/moi/.den/agents/claude",
+				ConfigDir: "/home/me/.den/agents/claude",
 				Env:       map[string]string{"CLAUDE_CONFIG_DIR": "{config_dir}"},
 				Update:    "claude update",
 			},
@@ -196,36 +196,36 @@ func TestResolveFusionneEtSubstitueLEnv(t *testing.T) {
 		Defaults:       config.Defaults{Agent: "claude", Stack: "devx"},
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
-		WorktreeRoot:   "/home/moi/.den/worktrees",
+		WorktreeRoot:   "/home/me/.den/worktrees",
 	}
-	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1", Dir: "/d/stacks/devx"}}}
+	stacks := config.Stacks{Healthy: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1", Dir: "/d/stacks/devx"}}}
 	n := &Nest{Name: "api", Stack: "devx", Env: map[string]string{"SOME_VAR": "value"}}
 
-	r, err := Resolve("/home/moi/.den", g, stacks, n, Options{})
+	r, err := Resolve("/home/me/.den", g, stacks, n, Options{})
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if r.DenHome != "/home/moi/.den" {
-		t.Errorf("DenHome = %q, attendu /home/moi/.den", r.DenHome)
+	if r.DenHome != "/home/me/.den" {
+		t.Errorf("DenHome = %q, expected /home/me/.den", r.DenHome)
 	}
-	// {config_dir} doit être résolu : le mixin ne sait pas le faire, et le
-	// chemin visé est un chemin HÔTE (sbx monte au même chemin dans la VM).
-	if got := r.Env["CLAUDE_CONFIG_DIR"]; got != "/home/moi/.den/agents/claude" {
-		t.Errorf("CLAUDE_CONFIG_DIR = %q, attendu le config_dir résolu", got)
+	// {config_dir} must be resolved: the mixin cannot do it, and the target
+	// path is a HOST path (sbx mounts at the same path in the VM).
+	if got := r.Env["CLAUDE_CONFIG_DIR"]; got != "/home/me/.den/agents/claude" {
+		t.Errorf("CLAUDE_CONFIG_DIR = %q, expected the resolved config_dir", got)
 	}
 	if got := r.Env["SOME_VAR"]; got != "value" {
-		t.Errorf("SOME_VAR = %q, attendu value", got)
+		t.Errorf("SOME_VAR = %q, expected value", got)
 	}
 }
 
-// Cascade : global ← stack ← nest ← flags. Le nest gagne sur l'agent.
-func TestResolveEnvDuNestGagneSurCelleDeLAgent(t *testing.T) {
+// Cascade: global ← stack ← nest ← flags. The nest wins over the agent.
+func TestResolveNestEnvWinsOverAgentEnv(t *testing.T) {
 	g := &config.Global{
 		Agents: map[string]config.Agent{
 			"claude": {
-				ConfigDir: "/profil",
-				Env:       map[string]string{"PARTAGEE": "agent", "PROPRE": "agent"},
+				ConfigDir: "/profile",
+				Env:       map[string]string{"SHARED": "agent", "OWN": "agent"},
 				Update:    "claude update",
 			},
 		},
@@ -233,29 +233,29 @@ func TestResolveEnvDuNestGagneSurCelleDeLAgent(t *testing.T) {
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
 	}
-	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
-	n := &Nest{Name: "api", Stack: "devx", Env: map[string]string{"PARTAGEE": "nest"}}
+	stacks := config.Stacks{Healthy: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
+	n := &Nest{Name: "api", Stack: "devx", Env: map[string]string{"SHARED": "nest"}}
 
 	r, err := Resolve("/d", g, stacks, n, Options{})
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if r.Env["PARTAGEE"] != "nest" {
-		t.Errorf("PARTAGEE = %q, attendu nest (le nest est plus bas dans la cascade)", r.Env["PARTAGEE"])
+	if r.Env["SHARED"] != "nest" {
+		t.Errorf("SHARED = %q, expected nest (the nest is lower in the cascade)", r.Env["SHARED"])
 	}
-	if r.Env["PROPRE"] != "agent" {
-		t.Errorf("PROPRE = %q, attendu agent", r.Env["PROPRE"])
+	if r.Env["OWN"] != "agent" {
+		t.Errorf("OWN = %q, expected agent", r.Env["OWN"])
 	}
 }
 
-// L'override de config_dir par nest doit se propager DANS l'env substitué,
-// sinon la VM pointerait sur le profil partagé alors que le nest a demandé
-// l'isolation.
-func TestResolveSubstitueLOverrideDeConfigDirDuNest(t *testing.T) {
+// The nest's config_dir override must propagate INTO the substituted env,
+// otherwise the VM would point at the shared profile even though the nest
+// asked for isolation.
+func TestResolveSubstitutesNestConfigDirOverride(t *testing.T) {
 	g := &config.Global{
 		Agents: map[string]config.Agent{
 			"claude": {
-				ConfigDir: "/profil/partage",
+				ConfigDir: "/profile/shared",
 				Env:       map[string]string{"CLAUDE_CONFIG_DIR": "{config_dir}"},
 				Update:    "claude update",
 			},
@@ -264,27 +264,27 @@ func TestResolveSubstitueLOverrideDeConfigDirDuNest(t *testing.T) {
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
 	}
-	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
-	n := &Nest{Name: "api", Stack: "devx", Agents: map[string]string{"claude": "/profil/isole"}}
+	stacks := config.Stacks{Healthy: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
+	n := &Nest{Name: "api", Stack: "devx", Agents: map[string]string{"claude": "/profile/isolated"}}
 
 	r, err := Resolve("/d", g, stacks, n, Options{})
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if r.Env["CLAUDE_CONFIG_DIR"] != "/profil/isole" {
-		t.Errorf("CLAUDE_CONFIG_DIR = %q, attendu /profil/isole", r.Env["CLAUDE_CONFIG_DIR"])
+	if r.Env["CLAUDE_CONFIG_DIR"] != "/profile/isolated" {
+		t.Errorf("CLAUDE_CONFIG_DIR = %q, expected /profile/isolated", r.Env["CLAUDE_CONFIG_DIR"])
 	}
 }
 
-// Le nest peut aussi référencer {config_dir} dans son propre env (par ex. pour
-// réaffirmer le défaut de l'agent) : le jeton doit être substitué là aussi,
-// sinon un nest qui croit réaffirmer CLAUDE_CONFIG_DIR écrase la valeur
-// substituée de l'agent par le jeton littéral.
-func TestResolveSubstitueConfigDirDansLEnvDuNest(t *testing.T) {
+// The nest may also reference {config_dir} in its own env (e.g. to reassert
+// the agent's default): the token must be substituted there too, otherwise a
+// nest that believes it is reasserting CLAUDE_CONFIG_DIR overwrites the
+// agent's substituted value with the literal token.
+func TestResolveSubstitutesConfigDirInNestEnv(t *testing.T) {
 	g := &config.Global{
 		Agents: map[string]config.Agent{
 			"claude": {
-				ConfigDir: "/profil/claude",
+				ConfigDir: "/profile/claude",
 				Update:    "claude update",
 			},
 		},
@@ -292,48 +292,48 @@ func TestResolveSubstitueConfigDirDansLEnvDuNest(t *testing.T) {
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
 	}
-	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
-	n := &Nest{Name: "api", Stack: "devx", Env: map[string]string{"QUELQUE_CHOSE": "{config_dir}"}}
+	stacks := config.Stacks{Healthy: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
+	n := &Nest{Name: "api", Stack: "devx", Env: map[string]string{"SOMETHING": "{config_dir}"}}
 
 	r, err := Resolve("/d", g, stacks, n, Options{})
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := r.Env["QUELQUE_CHOSE"]; got != "/profil/claude" {
-		t.Errorf("QUELQUE_CHOSE = %q, attendu le config_dir résolu (/profil/claude)", got)
+	if got := r.Env["SOMETHING"]; got != "/profile/claude" {
+		t.Errorf("SOMETHING = %q, expected the resolved config_dir (/profile/claude)", got)
 	}
 }
 
-func TestResolveRefuseDenHomeRelatif(t *testing.T) {
+func TestResolveRefusesRelativeDenHome(t *testing.T) {
 	g := &config.Global{
 		Agents:         map[string]config.Agent{"claude": {ConfigDir: "/p", Update: "u"}},
 		Defaults:       config.Defaults{Agent: "claude", Stack: "devx"},
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
 	}
-	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
-	_, err := Resolve("relatif/den", g, stacks, &Nest{Name: "api", Stack: "devx"}, Options{})
+	stacks := config.Stacks{Healthy: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
+	_, err := Resolve("relative/den", g, stacks, &Nest{Name: "api", Stack: "devx"}, Options{})
 	if err == nil {
-		t.Fatal("attendu une erreur pour un denHome relatif")
+		t.Fatal("expected an error for a relative denHome")
 	}
-	if !strings.Contains(err.Error(), "relatif/den") {
-		t.Errorf("erreur = %q, attendu le chemin en cause", err.Error())
+	if !strings.Contains(err.Error(), "relative/den") {
+		t.Errorf("error = %q, expected the offending path", err.Error())
 	}
 }
 
-func TestResolveEnvJamaisNil(t *testing.T) {
+func TestResolveEnvNeverNil(t *testing.T) {
 	g := &config.Global{
 		Agents:         map[string]config.Agent{"claude": {ConfigDir: "/p", Update: "u"}},
 		Defaults:       config.Defaults{Agent: "claude", Stack: "devx"},
 		SSH:            config.SSH{Mode: "agent-forward"},
 		WorktreeLayout: "central",
 	}
-	stacks := config.Stacks{Saines: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
+	stacks := config.Stacks{Healthy: map[string]*config.Stack{"devx": {Name: "devx", Image: "devx:v1"}}}
 	r, err := Resolve("/d", g, stacks, &Nest{Name: "api", Stack: "devx"}, Options{})
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if r.Env == nil {
-		t.Error("Env doit être une map vide, jamais nil : le mixin itère dessus sans garde")
+		t.Error("Env must be an empty map, never nil: the mixin iterates over it without a guard")
 	}
 }

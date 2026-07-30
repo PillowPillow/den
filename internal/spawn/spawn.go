@@ -1,7 +1,7 @@
-// Package spawn orchestre la séquence complète de `den <nest>` (spec §6).
+// Package spawn orchestrates the full `den <nest>` sequence (spec §6).
 //
-// Il vit hors de internal/cli à dessein : c'est la logique la plus dense du
-// projet, et elle doit être testable sans cobra ni tty.
+// It lives outside internal/cli on purpose: it's the densest logic in the
+// project, and it must be testable without cobra or a tty.
 package spawn
 
 import (
@@ -22,34 +22,21 @@ import (
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
-// Deps injecte les accès au monde, pour que la séquence entière soit testable
-// sans microVM.
+// Deps injects access to the world, so the whole sequence is testable
+// without a microVM.
 type Deps struct {
 	Sbx    sbx.Runner
 	Git    worktree.Git
 	Policy policy.Options
-	Sortie io.Writer
+	Out    io.Writer
 }
 
-// Il n'y a PAS de DepsSysteme ici, et c'est délibéré. Une version antérieure en
-// portait une (`sbx.NewExec("") + worktree.NewGit() + OptionsDefaut + os.Stdout`)
-// dont la godoc affirmait qu'elle existait « pour que le câblage cobra puisse
-// recevoir ses accès en paramètre ». C'était faux : `internal/cli/root.go`
-// assemble spawn.Deps champ par champ, depuis les accès de `cli.Deps`, et ne
-// l'appelait jamais — mesuré, `go build ./cmd/den` réussit après l'avoir
-// renommée. Son seul consommateur était un helper de test.
-//
-// Elle était de plus le DERNIER endroit de l'arbre à construire un second
-// `sbx.NewExec("")` — exactement le câblage que `root_deps_test.go` existe pour
-// interdire (`cli.Deps` ne porte qu'un seul Sbx, partagé entre `den ls` et le
-// spawn ; la godoc de ce fichier nomme `spawn.DepsSysteme()` comme LA forme du
-// refactor à empêcher). Garder un constructeur tout prêt pour ce câblage-là,
-// avec une godoc qui l'encourage, était une arme chargée.
-//
-// La porte d'injection, elle, reste entière : Deps est publique et tous ses
-// champs le sont. C'est l'appelant qui dit ce qu'il branche.
+// There is no SystemDeps constructor here, on purpose: it would let a call
+// site build its own second sbx.Runner, defeating the single shared Sbx
+// that cli.Deps enforces between `den ls` and spawn. Deps stays a plain
+// struct with exported fields; the caller wires it explicitly.
 
-// Options porte les flags de `den <nest>`.
+// Options carries the flags of `den <nest>`.
 type Options struct {
 	Nest     string
 	Worktree string
@@ -59,25 +46,24 @@ type Options struct {
 	Detach   bool
 }
 
-// Spawn exécute la séquence du spec §6, dans l'ordre :
-// résolution → sélection repos → worktrees → profil agent → mixin →
-// sbx create (ou attache si la sandbox vit déjà) → settle-loop → attache.
+// Spawn runs the spec §6 sequence in order: resolve → select repos →
+// worktrees → agent profile → mixin → sbx create (or attach if the
+// sandbox is already live) → settle-loop → attach.
 //
-// L'ordre n'est pas une commodité : le settle-loop PRÉCÈDE l'attache parce
-// qu'attacher avant que la policy soit posée produit exactement le « ça marche
-// à moitié » que le spec §7 interdit. Symétriquement, tout ce qui peut être
-// refusé sur la seule foi de la configuration l'est AVANT le premier effet de
-// bord — un worktree créé puis abandonné parce que le nom de sandbox était
-// invalide laisserait l'utilisateur nettoyer à la main.
+// The settle-loop runs BEFORE attach: attaching before the policy is in
+// place would be the half-working state spec §7 forbids. Likewise,
+// anything rejectable from config alone is checked before the first side
+// effect, so an invalid sandbox name never leaves an orphaned worktree
+// behind.
 func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
-	// Une Sortie oubliée ne doit pas paniquer au milieu de la séquence :
-	// l'appelant fautif a déjà, au premier Fprintf, une sandbox créée et
-	// démarrée derrière lui. Perdre le journal coûte moins cher que ça.
-	if d.Sortie == nil {
-		d.Sortie = io.Discard
+	// A nil Out must not panic mid-sequence: by the first Fprintf the
+	// caller already has a sandbox created and started behind them. Losing
+	// the log is cheaper than that.
+	if d.Out == nil {
+		d.Out = io.Discard
 	}
 
-	// 1. Résolution de la cascade.
+	// 1. Resolve the cascade.
 	g, err := config.LoadGlobal(denHome)
 	if err != nil {
 		return err
@@ -97,423 +83,377 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return err
 	}
 
-	// Le nom se calcule AVANT tout effet de bord : un worktree que l'on ne sait
-	// pas nommer doit être refusé sans avoir rien créé.
+	// The name is computed before any side effect: a worktree den cannot
+	// name is refused before anything is created.
 	//
-	// `-w` reçoit un nom de BRANCHE, et « feature/123 » en est un tout à fait
-	// ordinaire — mais ni un composant de nom de sandbox (le charset de `sbx
-	// create --name`), ni un composant de chemin plat. den aplatit donc ce qui
-	// devient un NOM, et seulement ça : la branche garde le nom tapé.
+	// -w takes a BRANCH name, and "feature/123" is an ordinary one — but
+	// neither a valid sandbox-name component nor a flat path component. den
+	// flattens only the derived NAME; the branch keeps what was typed.
 	//
-	// L'aplatissement vit ici, en amont de sbx.NomSandbox, et ne l'assouplit
-	// pas : tout ce qui consomme ensuite ce nom — argv de `sbx create`, policy
-	// scopée, corbeille, `den rm` — continue de recevoir un composant strict.
-	nomWorktree := worktree.Nom{}
+	// Flattening happens here, upstream of sbx.SandboxName, and does not
+	// loosen it: everything downstream that consumes the name — `sbx
+	// create` argv, scoped policy, trash, `den rm` — still gets a strict
+	// component.
+	worktreeName := worktree.Name{}
 	if o.Worktree != "" {
-		aplati, err := config.AplatitComposantSandbox("worktree", o.Worktree)
+		flattened, err := config.FlattenSandboxComponent("worktree", o.Worktree)
 		if err != nil {
 			return err
 		}
-		nomWorktree = worktree.Nom{Dossier: aplati, Branche: o.Worktree}
+		worktreeName = worktree.Name{Dir: flattened, Branch: o.Worktree}
 	}
-	nomSandbox, err := sbx.NomSandbox(o.Nest, nomWorktree.Dossier)
+	sandboxName, err := sbx.SandboxName(o.Nest, worktreeName.Dir)
 	if err != nil {
 		return err
 	}
-	// Annoncé, et tôt : sans ça, l'utilisateur cherche « feature/123 » dans
-	// `den ls` et ne l'y trouve jamais — la sandbox y porte le nom aplati.
-	if nomWorktree.Dossier != nomWorktree.Branche {
-		fmt.Fprintf(d.Sortie,
-			"worktree %q : la branche garde son nom, la sandbox devient %s\n",
-			nomWorktree.Branche, nomSandbox)
+	// Announced early: otherwise the user looks for "feature/123" in
+	// `den ls` and never finds it — the sandbox carries the flattened name
+	// there.
+	if worktreeName.Dir != worktreeName.Branch {
+		fmt.Fprintf(d.Out,
+			"worktree %q: branch name kept, sandbox becomes %s\n",
+			worktreeName.Branch, sandboxName)
 	}
 
-	// 2. Les repos doivent tous exister AVANT le moindre create (spec §11).
+	// 2. All repos must exist before any create (spec §11).
 	for _, repo := range r.Repos {
 		if _, err := os.Stat(repo.Path); err != nil {
 			return fmt.Errorf(
-				"nest %q : repo introuvable : %s — corrige `repos:` dans %s",
-				o.Nest, repo.Path, filepath.Join(denHome, "nests", o.Nest+".yaml"))
+				"nest %q: repo not found: %s — fix `repos:` in %s",
+				o.Nest, repo.Path, nest.FilePath(denHome, o.Nest))
 		}
 	}
-	// Même famille de contrôle : un config_dir vide deviendrait un workspace
-	// vide, et le message d'un MkdirAll("") ne désignerait rien du tout.
-	if r.AgentConfigDir == "" {
-		return fmt.Errorf(
-			"agent %q : aucun config_dir — déclare `agents.%s.config_dir` dans %s "+
-				"(ou `agents.%s` dans le nest) : c'est le profil monté RW dans la sandbox",
-			r.AgentName, r.AgentName, filepath.Join(denHome, "config.yaml"), r.AgentName)
-	}
-	// Et ssh.dir, en mode mount : il part en workspace, donc VERBATIM dans
-	// l'argv de `sbx create`. den ne passe jamais à sbx un chemin qu'il n'a pas
-	// garanti présent — un dossier inexistant deviendrait un mount vide qui
-	// masque au shell de la VM les clés que l'utilisateur croit y avoir montées.
+	// ssh.dir, in mount mode: it becomes a workspace, so it goes
+	// VERBATIM into `sbx create`'s argv. den never passes sbx a path it
+	// hasn't guaranteed exists — a missing directory would mount an empty
+	// one where the user expects their keys.
 	//
-	// Le contrôle est ici, avec ceux des repos, et non à l'endroit où le
-	// workspace est composé : à ce moment-là les worktrees existent déjà et le
-	// profil de l'agent a été créé, donc un refus laisserait l'utilisateur
-	// nettoyer à la main. Le profil, lui, est créé par den et non contrôlé —
-	// c'est la différence entre « den le peuple » et « den le reçoit ».
+	// Checked here, alongside the repos, before worktrees or the agent
+	// profile are created — a later refusal would leave the user to clean
+	// up by hand.
 	//
-	// CE QUE CE PLACEMENT COÛTE, en toutes lettres : ce contrôle — comme celui
-	// des kits juste en dessous — précède l'embranchement spawn-or-attach
-	// (étape 6). Il s'applique donc AUSSI quand la sandbox est déjà vivante :
-	// si `ssh.dir` ou un kit disparaît du disque, `den <nest>` ne peut plus se
-	// RATTACHER à une VM qui tourne, alors que rien de ce chemin-là n'est
-	// relu au moment d'attacher (la VM garde les mounts de son `create`).
-	//
-	// C'est assumé, pas ignoré : déplacer ces contrôles après `sbx.Ls` les
-	// ferait dépendre d'un appel réseau et compliquerait une garde dont tout
-	// l'intérêt est de tomber avant le moindre effet de bord. La porte de
-	// sortie existe et ne passe par aucun de ces contrôles : `den sh <nom>`
-	// n'appelle que spawn.Attache (internal/cli/sh.go:38) et ne lit ni la
-	// config ni les kits.
+	// This also applies when RE-attaching to an already-live sandbox: if
+	// ssh.dir or a kit disappears from disk, `den <nest>` can no longer
+	// attach even though none of this is re-read at attach time (the VM
+	// keeps its `create`-time mounts). `den sh <name>` is the one path
+	// that skips all of this: it only calls spawn.Attach and reads neither
+	// config nor kits.
 	if r.SSHMode == "mount" {
-		if r.SSHDir == "" {
-			return fmt.Errorf(
-				"ssh.mode vaut « mount » mais ssh.dir n'est pas déclaré dans %s",
-				filepath.Join(denHome, "config.yaml"))
-		}
 		if _, err := os.Stat(r.SSHDir); err != nil {
 			return fmt.Errorf(
-				"ssh.dir : %s introuvable — corrige `ssh.dir` dans %s : en mode « mount » ce dossier "+
-					"est monté dans la sandbox, et un chemin absent y monterait un dossier vide "+
-					"à la place de tes clés",
-				r.SSHDir, filepath.Join(denHome, "config.yaml"))
+				"ssh.dir: %s not found — fix `ssh.dir` in %s: in \"mount\" mode this directory "+
+					"is mounted in the sandbox, and a missing path would mount an empty directory "+
+					"instead of your keys",
+				r.SSHDir, config.GlobalPath(denHome))
 		}
 	}
-	// Même invariant, même endroit : les kits partent en `--kit` dans l'argv de
-	// `sbx create`. `den doctor` les contrôlait déjà, mais ce diagnostic n'est
-	// obtenu que par qui le lance : sans ce contrôle-ci, `den <nest>` rendait
-	// rc=0 et laissait sbx échouer au boot de la microVM, où l'utilisateur voit
-	// une VM qui meurt et non un message de den.
-	for _, k := range r.Stack.KitsDeclares() {
+	// Same invariant, same place: kits go into `sbx create`'s `--kit`
+	// argv. `den doctor` already checks them, but only for whoever runs
+	// it — without this, `den <nest>` would exit 0 and let sbx fail
+	// booting the microVM, leaving the user with a dead VM instead of a
+	// den message.
+	for _, k := range r.Stack.DeclaredKits() {
 		if _, err := os.Stat(k); err != nil {
 			return fmt.Errorf(
-				"stack %q : kit introuvable : %s — corrige `kit:` ou `kits:` dans %s",
+				"stack %q: kit not found: %s — fix `kit:` or `kits:` in %s",
 				r.Stack.Name, k, filepath.Join(r.Stack.Dir, "stack.yaml"))
 		}
 	}
 
-	// 3. Worktrees, si demandés. Le premier workspace doit rester le premier
-	// repo : sbx.Sandbox.Workdir en dépend pour l'attache, et rien à SON niveau
-	// ne peut vérifier que cette liste a bien été composée dans cet ordre.
+	// 3. Worktrees, if requested. The first workspace must stay the first
+	// repo: sbx.Sandbox.Workdir depends on it for attach, and nothing at
+	// its level can verify the list was built in this order.
 	workspaces := make([]string, 0, 2*len(r.Repos)+2)
-	// Les dossiers git communs sont collectés à part et ajoutés APRÈS tous les
-	// worktrees : la liste des repos reste contiguë et en tête, ce dont dépend
-	// le workdir de l'attache.
-	var dossiersGit []string
+	// Common git dirs are collected separately and appended AFTER all
+	// worktrees, so the repo list stays contiguous and first.
+	var gitDirs []string
 	for _, repo := range r.Repos {
-		chemin := repo.Path
+		repoPath := repo.Path
 		if o.Worktree != "" {
-			chemin, err = worktree.Assure(ctx, d.Git, r.WorktreeLayout, r.WorktreeRoot, nomWorktree, repo.Path)
+			repoPath, err = worktree.Ensure(ctx, d.Git, r.WorktreeLayout, r.WorktreeRoot, worktreeName, repo.Path)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(d.Sortie, "worktree %s : %s\n", repo.Name(), chemin)
+			fmt.Fprintf(d.Out, "worktree %s: %s\n", repo.Name(), repoPath)
 
-			// Sans ce montage, le worktree arrive dans la VM avec un git MORT :
-			// son `.git` est un fichier « gitdir: <repo>/.git/worktrees/<nom> »
-			// dont la cible appartient au dépôt principal, que rien ne montait.
-			// Mesuré sur sbx v0.35.0 : « fatal: not a git repository » sur toute
-			// commande git — ni status, ni diff, ni commit, ni push — et muet
-			// jusqu'à la première d'entre elles.
+			// Without this mount the worktree arrives in the VM with a
+			// DEAD git: its `.git` is a file pointing at
+			// `<repo>/.git/worktrees/<name>`, whose target belongs to the
+			// main repo, which nothing mounted — every git command fails
+			// with "fatal: not a git repository".
 			//
-			// Le dossier git commun, pas le dépôt entier : il porte l'admin dir,
-			// les objets et les refs, et laisse l'arbre de travail principal
-			// invisible dans la VM. Monter le dépôt entier rend git fonctionnel
-			// lui aussi, mais réexpose cet arbre EN ÉCRITURE — soit exactement
-			// l'isolation pour laquelle `-w` existe.
+			// The common git dir, not the whole repo: mounting the whole
+			// repo would also fix git, but it re-exposes the main
+			// worktree WRITABLE — exactly the isolation `-w` exists for.
 			//
-			// En écriture, donc, et c'est mesuré : en `:ro`, `status` et `log`
-			// passent et `commit` meurt sur « Unable to create …/index.lock:
-			// Permission denied ». Une VM qui a l'air de marcher jusqu'au premier
-			// commit est pire que celle qui refuse tout de suite.
+			// Writable, deliberately: mounted `:ro`, `status` and `log`
+			// work but `commit` dies on "Unable to create .../index.lock:
+			// Permission denied" — a VM that looks fine until the first
+			// commit is worse than one that refuses outright.
 			//
-			// Le lien `gitdir` se résout tel quel, sans réécriture, parce que sbx
-			// monte au MÊME chemin absolu que sur l'hôte (A11, vérifié au smoke).
-			commun, err := worktree.DossierGitCommun(ctx, d.Git, repo.Path)
+			// The `gitdir` symlink resolves as-is, unrewritten, because
+			// sbx mounts at the SAME absolute path as the host (A11).
+			commonDir, err := worktree.CommonGitDir(ctx, d.Git, repo.Path)
 			if err != nil {
 				return err
 			}
-			// Deux entrées de `repos:` peuvent désigner le même dépôt (un clone
-			// et l'un de ses worktrees) : sbx recevrait deux fois le même
-			// positionnel.
-			if !slices.Contains(dossiersGit, commun) {
-				dossiersGit = append(dossiersGit, commun)
+			// Two `repos:` entries can point at the same repository (a
+			// clone and one of its worktrees): sbx would receive the same
+			// positional twice.
+			if !slices.Contains(gitDirs, commonDir) {
+				gitDirs = append(gitDirs, commonDir)
 			}
 		}
-		workspaces = append(workspaces, chemin)
+		workspaces = append(workspaces, repoPath)
 	}
-	// Hors `-w`, le dépôt entier est monté et son `.git` avec : rien à ajouter.
-	workspaces = append(workspaces, dossiersGit...)
+	// Without -w, the whole repo is mounted, .git included: nothing to add.
+	workspaces = append(workspaces, gitDirs...)
 
-	// 4. Profil agent : monté RW, il doit exister — sinon sbx crée un dossier
-	// vide au mount et l'agent repart de zéro à chaque spawn.
+	// 4. Agent profile: mounted RW, it must exist — otherwise sbx mounts
+	// an empty directory and the agent starts from scratch on every
+	// spawn.
 	if err := os.MkdirAll(r.AgentConfigDir, 0o755); err != nil {
-		return fmt.Errorf("création du profil de l'agent %s (%s) : %w", r.AgentName, r.AgentConfigDir, err)
+		return fmt.Errorf("creating agent %s profile (%s): %w", r.AgentName, r.AgentConfigDir, err)
 	}
 	workspaces = append(workspaces, r.AgentConfigDir)
-	// Les TROIS modes SSH sont traités ici, y compris les deux qui n'ajoutent
-	// rien — l'`if` sans `else` d'avant ne permettait pas de distinguer « rien à
-	// faire, c'est voulu » de « cas oublié », et c'est cette ambiguïté qui a
-	// produit le diagnostic « toute sandbox spawnée par défaut sort sans accès
-	// SSH ». Ce diagnostic était faux, mais il était indécidable ici.
+	// All three SSH modes are handled here, including the two that add
+	// nothing to workspaces — an `if` with no `else` left "nothing to do,
+	// by design" indistinguishable from "case forgotten".
 	//
-	// Ce qui suit est mesuré, pas supposé :
+	//   - "mount": ssh.dir becomes a workspace. Checked in step 2; only
+	//     its position in the list matters here (the first workspace
+	//     becomes the attach's -w).
 	//
-	//   - « mount » : ssh.dir devient un workspace. Contrôlé à l'étape 2, avant
-	//     tout effet de bord ; il ne reste ici que sa place dans la liste, qui
-	//     est significative (le premier workspace devient le -w de l'attache).
+	//   - "agent-forward" (the DEFAULT): nothing to add, here or
+	//     elsewhere. It relies entirely on `sbx create` inheriting den's
+	//     environment, SSH_AUTH_SOCK included — cmd.Env is left nil in
+	//     internal/sbx/runner.go, and that inheritance is covered by
+	//     TestExecRunTransmitsDenEnvironment. The socket has no place in
+	//     the argv (no sbx flag takes it) nor in the mixin (a host socket
+	//     value written into a kit would be stale by the next session).
+	//     `den doctor` warns when the variable is absent — the one case
+	//     this mode gives nothing. Not verified: that sbx forwards the
+	//     socket into the microVM itself (spec A10).
 	//
-	//   - « agent-forward » (le DÉFAUT, config.LoadGlobalSansValider) : rien à
-	//     ajouter, ni ici ni ailleurs. Il repose entièrement sur le fait que le
-	//     process `sbx create` hérite de l'environnement de den, SSH_AUTH_SOCK
-	//     compris — cmd.Env est laissé nil dans internal/sbx/runner.go, et cet
-	//     héritage est tenu par TestExec{Run,Attach}TransmetLEnvironnementDeDen.
-	//     Le socket n'a sa place NI dans l'argv (aucun flag sbx attesté ne le
-	//     prend) NI dans le mixin (une valeur de socket hôte écrite dans un kit
-	//     serait périmée dès la session suivante). `den doctor` avertit quand la
-	//     variable est absente, seul cas où ce mode ne donne rien.
-	//     Ce qui reste NON vérifié : que sbx propage ce socket jusque dans la
-	//     microVM. C'est une hypothèse du spec (A10), pas un acquis.
+	//   - "none": nothing to add, by definition.
 	//
-	//   - « none » : rien à ajouter, par définition.
-	//
-	// Que les deux derniers produisent bien la MÊME liste, et mount exactement
-	// un workspace de plus, est tenu par
-	// TestSpawnNAjouteAucunWorkspaceHorsDuModeMount.
+	// That the last two produce the SAME list, and mount exactly one more
+	// workspace, is covered by TestSpawnAddsNoWorkspaceOutsideMountMode.
 	if r.SSHMode == "mount" {
 		workspaces = append(workspaces, r.SSHDir)
 	}
 
-	// 5. Mixin généré. r.DenHome et non denHome : Resolve garantit qu'il est
-	// absolu, et ce chemin repart tel quel vers `sbx create --kit`, où le cwd
-	// n'est plus garanti.
-	m, err := agent.MixinDepuis(r, nomSandbox)
+	// 5. Generate the mixin. r.DenHome, not denHome: Resolve guarantees
+	// it's absolute, and this path goes straight into `sbx create --kit`,
+	// where cwd is no longer guaranteed.
+	mixin, err := agent.MixinFrom(r, sandboxName)
 	if err != nil {
 		return err
 	}
-	// Le mixin sur disque est la RÉFÉRENCE du `create` : ce que la VM a
-	// réellement reçu, et la seule chose à quoi comparer la configuration
-	// d'aujourd'hui pour détecter une dérive (étape 6). Il se lit ici, et il ne
-	// se réécrit QUE sur la branche create, plus bas.
-	//
-	// Le réécrire à chaque passage — ce que faisait la version précédente —
-	// détruisait la référence : la comparaison portait alors sur le mixin et
-	// lui-même, ne détectait jamais rien, et laissait la suite parfaitement
-	// verte. Cantonner l'écriture à la branche qui la justifie rend ce défaut
-	// impossible plutôt que seulement testé.
-	ancien, errAncien := agent.LisMixin(r.DenHome, nomSandbox)
+	// The on-disk mixin is the REFERENCE for `create`: what the VM
+	// actually received, and the only thing to compare today's config
+	// against to detect drift (step 6). It's read here, and only
+	// rewritten on the create branch below — rewriting it on every pass
+	// would destroy the reference, making the comparison compare the
+	// mixin to itself and never detect anything.
+	previous, previousErr := agent.ReadMixin(r.DenHome, sandboxName)
 
-	// 6. Spawn-or-attach : un nom déjà vivant n'est pas une erreur (spec §11).
+	// 6. Spawn-or-attach: a name that's already live is not an error
+	// (spec §11).
 	//
-	// La Sandbox trouvée est GARDÉE, pas réduite à un booléen : elle seule porte
-	// le statut réel et les workspaces que la VM monte vraiment.
+	// The found Sandbox is KEPT, not reduced to a bool: only it carries
+	// the real status and the workspaces the VM actually mounts.
 	boxes, err := sbx.Ls(ctx, d.Sbx)
 	if err != nil {
 		return err
 	}
-	vivante := sbx.Trouve(boxes, nomSandbox)
+	live := sbx.Find(boxes, sandboxName)
 
-	// Le workdir de l'attache : celui de la config sur la branche create (la VM
-	// va monter exactement ces workspaces-là), celui de la VM sur l'autre.
-	workdir := premier(workspaces)
+	// The attach workdir: the config's on the create branch (the VM will
+	// mount exactly these workspaces), the VM's on the other.
+	workdir := first(workspaces)
 
-	if vivante != nil {
-		// Un nom pris par une VM dont den ne sait rien n'est pas un
-		// spawn-or-attach. Même garde que `den sh` — et le même helper, pour
-		// que la propriété ne puisse pas être vraie d'un côté et oubliée de
-		// l'autre.
-		if err := vivante.VerifieAttachable(); err != nil {
+	if live != nil {
+		// A name held by a VM den knows nothing about is not
+		// spawn-or-attach. Same guard as `den sh`, and the same helper,
+		// so the property can't be true on one side and forgotten on the
+		// other.
+		if err := live.CheckAttachable(); err != nil {
 			return err
 		}
 
-		// Le -w vient des workspaces que la VM MONTE (ceux de son `create`
-		// d'origine), pas de ceux que la cascade recalcule maintenant. Si le
-		// premier repo du nest a changé de chemin depuis, le chemin recalculé
-		// n'existe pas dans la VM. Vide si la VM ne monte rien : Attache omet
-		// alors le -w plutôt que d'inventer un chemin.
-		workdir = vivante.Workdir()
+		// -w comes from the workspaces the VM MOUNTS (its original
+		// `create`), not from what the cascade recomputes now. If the
+		// nest's first repo moved since, the recomputed path wouldn't
+		// exist in the VM. Empty if the VM mounts nothing: Attach then
+		// omits -w rather than inventing a path.
+		workdir = live.Workdir()
 
-		// Dérive de configuration. RIEN ne réapplique un mixin à une VM en
-		// marche : elle garde la policy et l'env de son create. On AVERTIT sans
-		// refuser (refuser casserait un `den <nest>` qui marchait hier pour un
-		// YAML anodin) et sans recréer (destruction non demandée d'une VM qui
-		// porte peut-être du travail en cours).
-		signaleDerive(d.Sortie, nomSandbox, ancien, errAncien, m)
-		// Dérive d'une AUTRE nature, que signaleDerive ne peut pas voir : une
-		// sandbox créée avant le correctif F1 tourne toujours et ne monte pas les
-		// dossiers git. Son mixin, lui, n'a pas bougé — la comparaison au-dessus
-		// reste muette. Sans ce signal, l'utilisateur se rattache à une VM où git
-		// est mort et ne l'apprend qu'à sa première commande git.
-		signaleDossiersGitAbsents(d.Sortie, nomSandbox, vivante.Workspaces, dossiersGit)
+		// Configuration drift. NOTHING reapplies a mixin to a running
+		// VM: it keeps its create-time policy and env. We WARN without
+		// refusing (refusing would break a `den <nest>` that worked
+		// yesterday over a harmless YAML change) and without recreating
+		// (unrequested destruction of a VM that may carry work in
+		// progress).
+		reportDrift(d.Out, sandboxName, previous, previousErr, mixin)
+		// Drift of a DIFFERENT kind, invisible to reportDrift: a sandbox
+		// created before fix F1 is still running and doesn't mount the
+		// git dirs. Its mixin hasn't changed, so the comparison above
+		// stays silent. Without this, the user reattaches to a VM where
+		// git is dead and only finds out on their first git command.
+		reportMissingGitDirs(d.Out, sandboxName, live.Workspaces, gitDirs)
 
-		// UNE seule ligne de statut, et elle dit lequel des deux cas on est.
-		// « redémarre à l’attache » et non « reprise » : sous --detach, den ne
-		// lance aucun exec, donc rien ne redémarre maintenant — c’est le premier
-		// `den sh` qui le fera. Le libellé est vrai des deux côtés du if final.
-		// annoncer « déjà vivante » sur une VM arrêtée puis la redémarrer en
-		// silence laisserait l'utilisateur devant plusieurs secondes de rien.
-		if vivante.EstArretee() {
-			fmt.Fprintf(d.Sortie, "sandbox %s arrêtée : elle redémarre à l'attache (son état est conservé)\n", nomSandbox)
+		// A SINGLE status line, naming which of the two cases this is.
+		// "restarts on attach", not "resumed": under --detach den runs no
+		// exec, so nothing restarts now — the next `den sh` does. True on
+		// either side of this branch.
+		if live.IsStopped() {
+			fmt.Fprintf(d.Out, "sandbox %s stopped: it restarts on attach (its state is preserved)\n", sandboxName)
 		} else {
-			fmt.Fprintf(d.Sortie, "sandbox %s déjà vivante : attache\n", nomSandbox)
+			fmt.Fprintf(d.Out, "sandbox %s already live: attaching\n", sandboxName)
 		}
 	} else {
-		// Le mixin n'est matérialisé QUE là : c'est le seul moment où il est
-		// posé sur une VM, et donc le seul où le fichier peut prétendre décrire
-		// ce que cette VM porte.
-		dirMixin, err := agent.EcrisMixin(r.DenHome, nomSandbox, m)
+		// The mixin is materialized ONLY here: the one moment it's
+		// placed on a VM, and so the only time the file can claim to
+		// describe what that VM carries.
+		mixinDir, err := agent.WriteMixin(r.DenHome, sandboxName, mixin)
 		if err != nil {
 			return err
 		}
-		argv, err := sbx.ArgvCreate(sbx.Create{
-			Nom:        nomSandbox,
+		argv, err := sbx.CreateArgv(sbx.Create{
+			Name:       sandboxName,
 			Image:      r.Stack.Image,
-			KitsStack:  r.Stack.KitsDeclares(),
-			KitMixin:   dirMixin,
+			StackKits:  r.Stack.DeclaredKits(),
+			MixinKit:   mixinDir,
 			Workspaces: workspaces,
 		})
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(d.Sortie, "création de la sandbox %s (image %s)…\n", nomSandbox, r.Stack.Image)
-		// Recontextualisé : Exec.Run préfixe déjà son message de l'argv COMPLET
-		// — tous les --kit et tous les workspaces sur une seule ligne — où
-		// l'étape qui a échoué se perd.
+		fmt.Fprintf(d.Out, "creating sandbox %s (image %s)...\n", sandboxName, r.Stack.Image)
+		// Recontextualized: Exec.Run already prefixes its error with the
+		// FULL argv — every --kit and workspace on one line — where the
+		// failed step gets lost.
 		if _, err := d.Sbx.Run(ctx, argv...); err != nil {
-			return fmt.Errorf("création de la sandbox %s : %w", nomSandbox, err)
+			return fmt.Errorf("creating sandbox %s: %w", sandboxName, err)
 		}
 	}
 
-	// 7. Settle-loop fail-closed AVANT toute attache — y compris sous --detach :
-	// une sandbox rendue « prête » sans policy posée est le même demi-démarrage,
-	// simplement constaté plus tard.
+	// 7. Fail-closed settle-loop before any attach — even under
+	// --detach: a sandbox marked "ready" without its policy in place is
+	// the same half-start, just noticed later.
 	if len(r.Egress) > 0 {
-		fmt.Fprintf(d.Sortie, "attente de la policy réseau (%d hôte(s))…\n", len(r.Egress))
+		fmt.Fprintf(d.Out, "waiting for network policy (%d host(s))...\n", len(r.Egress))
 	}
-	if err := policy.Settle(ctx, d.Sbx, nomSandbox, r.Egress, d.Policy); err != nil {
+	if err := policy.Settle(ctx, d.Sbx, sandboxName, r.Egress, d.Policy); err != nil {
 		return err
 	}
 
-	// 8. Attache.
+	// 8. Attach.
 	if o.Detach {
-		fmt.Fprintf(d.Sortie, "sandbox %s prête (détachée) — `den sh %s` pour y entrer\n",
-			nomSandbox, nomSandbox)
+		fmt.Fprintf(d.Out, "sandbox %s ready (detached) — run `den sh %s` to enter\n",
+			sandboxName, sandboxName)
 		return nil
 	}
-	return Attache(ctx, d.Sbx, nomSandbox, workdir)
+	return Attach(ctx, d.Sbx, sandboxName, workdir)
 }
 
-// signaleDerive rend, sur la sortie de la séquence, ce qui a changé entre le
-// mixin que la sandbox a reçu à son `create` et celui que la configuration
-// produirait maintenant.
+// reportDrift prints what changed between the mixin a sandbox received at
+// its `create` and the one the current configuration would produce.
 //
-// Appelée UNIQUEMENT sur la branche « sandbox vivante » : sur un create, c'est
-// le create qui pose le mixin, il ne peut pas avoir dérivé de lui-même — et le
-// cache/ d'une sandbox détruite survit à celle-ci (spec §3 : cache/
-// reconstructible, den ne le purge pas), donc une comparaison hissée hors de
-// cette branche crierait à la dérive sur une sandbox parfaitement à jour.
+// Called only on the "already live" branch: on a create, the create
+// itself lays down the mixin, so it can't have drifted from itself.
 //
-// Une référence ABSENTE s'annonce, au même titre qu'une référence illisible.
-// Une version antérieure se taisait dessus, au motif d'un « premier spawn » qui
-// ne passe JAMAIS ici : un premier spawn prend la branche create. Les cas
-// réellement atteignables sont un cache/ purgé, une sandbox créée à la main, ou
-// une sandbox créée par un den antérieur — tous des « den ne sait pas », jamais
-// des « rien n'a changé ». Le silence était donc fail-OPEN dans les seuls cas où
-// il se produisait : mesuré, un `rm -rf ~/.den/cache` — que le spec §3 déclare
-// sûr — désactivait DÉFINITIVEMENT la détection pour cette sandbox, la branche
-// attache ne reposant jamais la référence.
-func signaleDerive(sortie io.Writer, nomSandbox string, ancien agent.Mixin, errAncien error, nouveau agent.Mixin) {
-	if errAncien != nil {
-		// Le message distingue les deux causes — l'utilisateur agit
-		// différemment sur un cache purgé et sur un fichier corrompu — mais
-		// AUCUNE des deux n'est silencieuse.
-		if errors.Is(errAncien, os.ErrNotExist) {
-			fmt.Fprintf(sortie,
-				"attention : aucune référence de configuration pour la sandbox %s — dérive non vérifiable "+
-					"(cache purgé, ou sandbox créée hors de ce den) ; %v\n",
-				nomSandbox, errAncien)
+// A missing reference is reported too, not silenced: a purged cache/, a
+// hand-created sandbox, or one from an older den are all "den doesn't
+// know", never "nothing changed" — staying silent there would be
+// fail-open exactly where drift detection is needed most.
+func reportDrift(out io.Writer, sandboxName string, previous agent.Mixin, previousErr error, current agent.Mixin) {
+	if previousErr != nil {
+		// The message distinguishes the two causes — a purged cache and a
+		// corrupt file call for different user action — but neither stays
+		// silent.
+		if errors.Is(previousErr, os.ErrNotExist) {
+			fmt.Fprintf(out,
+				"warning: no configuration reference for sandbox %s — drift can't be checked "+
+					"(purged cache, or sandbox created outside this den); %v\n",
+				sandboxName, previousErr)
 			return
 		}
-		fmt.Fprintf(sortie, "attention : dérive de configuration non vérifiable : %v\n", errAncien)
+		fmt.Fprintf(out, "warning: configuration drift can't be checked: %v\n", previousErr)
 		return
 	}
-	diffs := agent.Differences(ancien, nouveau)
+	diffs := agent.Differences(previous, current)
 	if len(diffs) == 0 {
 		return
 	}
-	fmt.Fprintf(sortie,
-		"attention : la sandbox %s tourne avec le mixin de son `sbx create`, pas avec la configuration actuelle :\n",
-		nomSandbox)
-	for _, ligne := range diffs {
-		fmt.Fprintf(sortie, "  - %s\n", ligne)
+	fmt.Fprintf(out,
+		"warning: sandbox %s is running with the mixin from its `sbx create`, not the current configuration:\n",
+		sandboxName)
+	for _, line := range diffs {
+		fmt.Fprintf(out, "  - %s\n", line)
 	}
-	fmt.Fprintf(sortie,
-		"  rien ne réapplique un mixin à une VM en marche : `sbx rm --force %s` puis relance pour l'appliquer.\n",
-		nomSandbox)
+	fmt.Fprintf(out,
+		"  nothing reapplies a mixin to a running VM: `sbx rm --force %s` then relaunch to apply it.\n",
+		sandboxName)
 }
 
-// signaleDossiersGitAbsents avertit quand une sandbox VIVANTE ne monte pas les
-// dossiers git que le worktree demandé exige.
+// reportMissingGitDirs warns when a LIVE sandbox doesn't mount the git
+// dirs a requested worktree needs.
 //
-// Le cas réel est celui d'une sandbox créée par un den antérieur au correctif
-// F1 : elle tourne, elle porte peut-être du travail, et son git est inopérant.
-// Rien ne remonte un mount à une VM en marche, donc le seul remède est la
-// destruction — d'où un AVERTISSEMENT et pas un refus : c'est à l'utilisateur de
-// décider s'il détruit, et il peut avoir de bonnes raisons d'y retourner sans
-// git.
+// The real case: a sandbox created before fix F1, still running, with
+// dead git. Nothing remounts a running VM, so the only fix is
+// destruction — hence a WARNING, not a refusal: it's the user's call.
 //
-// Le `:ro` est retiré avant comparaison : c'est une option de mount, pas une
-// partie du chemin (même traitement que Sandbox.Workdir).
-func signaleDossiersGitAbsents(sortie io.Writer, nomSandbox string, montes, attendus []string) {
-	if len(attendus) == 0 {
+// The `:ro` suffix is stripped before comparing: it's a mount option, not
+// part of the path (same treatment as Sandbox.Workdir).
+func reportMissingGitDirs(out io.Writer, sandboxName string, mounted, expected []string) {
+	if len(expected) == 0 {
 		return
 	}
-	presents := make(map[string]bool, len(montes))
-	for _, w := range montes {
-		presents[strings.TrimSuffix(w, ":ro")] = true
+	present := make(map[string]bool, len(mounted))
+	for _, w := range mounted {
+		present[strings.TrimSuffix(w, ":ro")] = true
 	}
-	var manquants []string
-	for _, g := range attendus {
-		if !presents[g] {
-			manquants = append(manquants, g)
+	var missing []string
+	for _, dir := range expected {
+		if !present[dir] {
+			missing = append(missing, dir)
 		}
 	}
-	if len(manquants) == 0 {
+	if len(missing) == 0 {
 		return
 	}
-	fmt.Fprintf(sortie,
-		"attention : la sandbox %s ne monte pas le dossier git de ses dépôts — git y est inopérant "+
-			"(« fatal: not a git repository » sur status, diff, commit et push) :\n", nomSandbox)
-	for _, g := range manquants {
-		fmt.Fprintf(sortie, "  - %s absent des workspaces de la VM\n", g)
+	fmt.Fprintf(out,
+		"warning: sandbox %s doesn't mount its repos' git dir — git is dead there "+
+			"(\"fatal: not a git repository\" on status, diff, commit and push):\n", sandboxName)
+	for _, dir := range missing {
+		fmt.Fprintf(out, "  - %s missing from the VM's workspaces\n", dir)
 	}
-	fmt.Fprintf(sortie,
-		"  cette sandbox précède le correctif ; rien ne remonte un mount à une VM en marche : "+
-			"`den rm %s` puis relance.\n", nomSandbox)
+	fmt.Fprintf(out,
+		"  this sandbox predates the fix; nothing remounts a running VM: "+
+			"`den rm %s` then relaunch.\n", sandboxName)
 }
 
-// Attache ouvre un shell interactif dans la sandbox.
+// Attach opens an interactive shell in the sandbox.
 //
-// `sbx exec` et non `sbx run` : run attache la commande du FLAVOR de l'image
-// (souvent `claude`), n'a aucun flag pour la remplacer, et son `-- ARGS` ne fait
-// qu'ajouter des arguments.
+// `sbx exec`, not `sbx run`: run attaches the image FLAVOR's command
+// (often `claude`), has no flag to replace it, and its `-- ARGS` only
+// appends arguments.
 //
-// Le -w reste AVANT le nom de sandbox. `sbx exec [flags] SANDBOX COMMAND
-// [ARG...]` : postposé, il serait lu comme un argument de la COMMAND et
-// arriverait tel quel à `bash -l`.
-func Attache(ctx context.Context, r sbx.Runner, nomSandbox, workdir string) error {
+// -w stays BEFORE the sandbox name: in `sbx exec [flags] SANDBOX COMMAND
+// [ARG...]`, placed after it would be read as a COMMAND argument and
+// reach `bash -l` verbatim.
+func Attach(ctx context.Context, r sbx.Runner, sandboxName, workdir string) error {
 	argv := []string{"exec", "-it"}
 	if workdir != "" {
 		argv = append(argv, "-w", workdir)
 	}
-	argv = append(argv, nomSandbox, "bash", "-l")
+	argv = append(argv, sandboxName, "bash", "-l")
 	return r.Attach(ctx, argv...)
 }
 
-func premier(s []string) string {
+func first(s []string) string {
 	if len(s) == 0 {
 		return ""
 	}

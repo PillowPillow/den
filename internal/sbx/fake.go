@@ -6,95 +6,87 @@ import (
 	"strings"
 )
 
-// Reponse est ce que le Fake renvoie pour un appel donné.
-type Reponse struct {
-	Sortie []byte
+// Response is what the Fake returns for a given call.
+type Response struct {
+	Output []byte
 	Err    error
 }
 
-// Fake est le double de test de Runner.
+// Fake is the test double of Runner.
 //
-// Il vit dans le paquet de production et non dans un `_test.go` À DESSEIN :
-// policy, cli et agent en ont tous besoin, et un double par paquet dériverait
-// aussitôt du contrat réel. `internal/` en borne déjà la portée.
+// It lives in the production package rather than in a `_test.go` ON PURPOSE:
+// policy, cli and agent all need it, and a double per package would drift
+// from the real contract right away. `internal/` already bounds its scope.
 type Fake struct {
-	// Appels enregistre chaque invocation, Run et Attach confondues, dans
-	// l'ordre. C'est sur lui que portent les assertions générales.
-	Appels [][]string
+	// Calls records every invocation, Run and Attach alike, in order. It's what
+	// general assertions check.
+	Calls [][]string
 
-	// Attaches enregistre UNIQUEMENT les appels à Attach, dans l'ordre. Run et
-	// Attach sont irréconciliables (cf. runner.go) : un Run dont l'argv
-	// commence par "exec" ne doit jamais compter comme une attache, et une
-	// attache doit rester détectable même si un Run légitime a un argv voisin.
-	// Attach alimente Appels ET Attaches ; Run n'alimente que Appels.
+	// Attaches records ONLY the calls to Attach, in order. Run and Attach are
+	// irreconcilable (see runner.go): a Run whose argv starts with "exec" must
+	// never count as an attach, and an attach must stay detectable even if a
+	// legitimate Run has a similar argv. Attach feeds both Calls and Attaches;
+	// Run feeds only Calls.
 	Attaches [][]string
 
-	// Reponses associe une réponse à un appel exact, clé = args joints par un
-	// espace (ex. "ls --json"). Un argument qui contient lui-même une espace
-	// (un chemin de workspace, par exemple) peut donc produire une clé
-	// ambiguë avec un autre appel : à éviter en scriptant Reponses.
-	Reponses map[string]Reponse
+	// Responses maps a call to a response, key = args joined by a space (e.g.
+	// "ls --json"). An argument that itself contains a space (a workspace path,
+	// say) can therefore produce a key ambiguous with another call: avoid that
+	// when scripting Responses.
+	Responses map[string]Response
 
-	// Defaut sert quand aucune entrée de Reponses ne correspond.
-	Defaut Reponse
+	// Default is used when no Responses entry matches.
+	Default Response
 
-	// ErreurAttach est renvoyée par Attach. Le fait que l'attache ait eu lieu
-	// reste enregistré dans Appels même si elle échoue.
-	ErreurAttach error
+	// AttachErr is returned by Attach. The fact that the attach happened is
+	// still recorded in Calls even if it fails.
+	AttachErr error
 }
 
-// Run renvoie une COPIE de la sortie scriptée (jamais la slice sous-jacente) :
-// un appelant qui modifierait le résultat reçu ne doit pas corrompre les
-// appels suivants qui retombent sur la même entrée de Reponses ou sur Defaut.
+// Run returns a COPY of the scripted output (never the underlying slice): a
+// caller that mutates the received result must not corrupt later calls that
+// fall back on the same Responses entry or on Default.
 func (f *Fake) Run(_ context.Context, args ...string) ([]byte, error) {
-	f.Appels = append(f.Appels, slices.Clone(args))
-	if r, ok := f.Reponses[strings.Join(args, " ")]; ok {
-		return slices.Clone(r.Sortie), r.Err
+	f.Calls = append(f.Calls, slices.Clone(args))
+	if r, ok := f.Responses[strings.Join(args, " ")]; ok {
+		return slices.Clone(r.Output), r.Err
 	}
-	return slices.Clone(f.Defaut.Sortie), f.Defaut.Err
+	return slices.Clone(f.Default.Output), f.Default.Err
 }
 
 func (f *Fake) Attach(_ context.Context, args ...string) error {
-	f.Appels = append(f.Appels, slices.Clone(args))
+	f.Calls = append(f.Calls, slices.Clone(args))
 	f.Attaches = append(f.Attaches, slices.Clone(args))
-	return f.ErreurAttach
+	return f.AttachErr
 }
 
-// DernierAppel renvoie le dernier appel enregistré, ou nil s'il n'y en a aucun.
-func (f *Fake) DernierAppel() []string {
-	if len(f.Appels) == 0 {
-		return nil
-	}
-	return f.Appels[len(f.Appels)-1]
-}
-
-// AAppele indique si un appel a commencé par ce préfixe d'arguments. Assertion
-// par préfixe et non par égalité : un test qui vérifie « on a bien fait un
-// create » ne doit pas casser parce qu'un chemin de plus a été monté.
-func (f *Fake) AAppele(prefixe ...string) bool {
-	for _, a := range f.Appels {
-		if len(a) >= len(prefixe) && slices.Equal(a[:len(prefixe)], prefixe) {
+// HasCalled reports whether a call started with this argument prefix.
+// Assertion by prefix, not equality: a test checking "a create did happen"
+// must not break because one more path got mounted.
+func (f *Fake) HasCalled(prefix ...string) bool {
+	for _, a := range f.Calls {
+		if len(a) >= len(prefix) && slices.Equal(a[:len(prefix)], prefix) {
 			return true
 		}
 	}
 	return false
 }
 
-// AAttache indique si une ATTACHE (jamais un Run) a commencé par ce préfixe.
-// Même patron que AAppele, mais sur Attaches : c'est elle qu'il faut utiliser
-// pour asserter qu'un shell interactif a bien été branché, ou qu'aucune
-// attache n'a eu lieu (policy bloquée, `--detach`).
-func (f *Fake) AAttache(prefixe ...string) bool {
+// HasAttached reports whether an ATTACH (never a Run) started with this
+// prefix. Same pattern as HasCalled, but over Attaches: use it to assert that
+// an interactive shell was wired up, or that no attach happened (policy
+// blocked, `--detach`).
+func (f *Fake) HasAttached(prefix ...string) bool {
 	for _, a := range f.Attaches {
-		if len(a) >= len(prefixe) && slices.Equal(a[:len(prefixe)], prefixe) {
+		if len(a) >= len(prefix) && slices.Equal(a[:len(prefix)], prefix) {
 			return true
 		}
 	}
 	return false
 }
 
-// Garde-fou de compilation : Fake doit rester substituable à Runner. Vit ici,
-// avec le code de production, et pas dans un `_test.go` : si Runner change,
-// l'échec doit sortir dès `go build ./...`, pas au premier `go test` d'un
-// paquet tiers qui consomme Fake.
+// Compile-time guard: Fake must stay substitutable for Runner. Lives here,
+// with production code, not in a `_test.go`: if Runner changes, the failure
+// must surface at `go build ./...`, not at the first `go test` of some
+// downstream package that consumes Fake.
 var _ Runner = (*Fake)(nil)

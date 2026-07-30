@@ -4,48 +4,46 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
-// Sandbox est une sandbox telle que `sbx ls --json` la décrit.
+// Sandbox is a sandbox as `sbx ls --json` describes it.
 //
-// Le schéma est celui de sbx v0.35.0, relevé le 2026-07-28 :
+// The schema is that of sbx v0.35.0, recorded 2026-07-28:
 //
 //	{"sandboxes":[{"name","id","agent","status","workspaces":["/p","/p:ro"]}]}
 //
-// Il n'y a AUCUN champ de date : l'âge d'une sandbox n'est pas calculable, et
-// la colonne « âge » du spec §5 a été retirée en conséquence.
+// There is NO date field: a sandbox's age isn't computable, and the "age"
+// column of spec §5 was dropped as a result.
 //
-// Le décodage est volontairement tolérant aux champs inconnus (contrairement au
-// YAML de configuration, strict) : cette sortie vient d'un outil tiers, pas de
-// l'utilisateur. Un champ ajouté par une version ultérieure de sbx ne doit pas
-// casser `den ls`.
+// Decoding is deliberately tolerant of unknown fields (unlike the strict
+// configuration YAML): this output comes from a third-party tool, not from
+// the user. A field added by a later sbx version must not break `den ls`.
 type Sandbox struct {
-	Nom        string   `json:"name"`
-	ID         string   `json:"id"`
+	Name       string   `json:"name"`
 	Agent      string   `json:"agent"`
-	Statut     string   `json:"status"`
+	Status     string   `json:"status"`
 	Workspaces []string `json:"workspaces"`
 }
 
-// Nest est le nest d'origine, déduit du nom — sbx n'ayant pas de labels, le nom
-// est le seul porteur d'état.
+// Nest is the sandbox's originating nest, derived from the name — sbx having
+// no labels, the name is the only state carrier.
 func (s Sandbox) Nest() string {
-	nest, _ := DecomposeNom(s.Nom)
+	nest, _ := SplitName(s.Name)
 	return nest
 }
 
-// Worktree est le worktree d'origine, vide si la sandbox n'en porte pas.
+// Worktree is the originating worktree, empty if the sandbox carries none.
 func (s Sandbox) Worktree() string {
-	_, wt := DecomposeNom(s.Nom)
+	_, wt := SplitName(s.Name)
 	return wt
 }
 
-// Workdir est le répertoire de travail naturel : le PREMIER workspace, qui est
-// par construction le premier repo (ou son worktree) — den les monte avant le
-// profil agent. Le suffixe « :ro » est retiré : c'est une option de mount, pas
-// une partie du chemin.
+// Workdir is the natural working directory: the FIRST workspace, which is by
+// construction the first repo (or its worktree) — den mounts those before the
+// agent profile. The ":ro" suffix is stripped: it's a mount option, not part
+// of the path.
 func (s Sandbox) Workdir() string {
 	if len(s.Workspaces) == 0 {
 		return ""
@@ -53,152 +51,129 @@ func (s Sandbox) Workdir() string {
 	return strings.TrimSuffix(s.Workspaces[0], ":ro")
 }
 
-// StatutEnMarche est la valeur de `status` d'une sandbox qui tourne.
-// Relevée le 2026-07-28 sur le schéma de sbx v0.35.0.
-const StatutEnMarche = "running"
+// StatusRunning is the `status` value of a sandbox that is running.
+// Recorded 2026-07-28 against the sbx v0.35.0 schema.
+const StatusRunning = "running"
 
-// StatutArretee est la valeur de `status` d'une sandbox arrêtée — l'état où sbx
-// range TOUT SEUL les sandboxes inactives, au bout de quelques minutes (constaté
-// au smoke du 2026-07-29).
+// StatusStopped is the `status` value of a stopped sandbox — the state sbx
+// parks inactive sandboxes into BY ITSELF, after a few minutes (observed in
+// the 2026-07-29 smoke test).
 //
-// Elle accepte un `sbx exec`, qui la redémarre au passage. C'est donc un état de
-// repos, pas une panne.
-const StatutArretee = "stopped"
+// It accepts an `sbx exec`, which restarts it in the process. It is therefore
+// a resting state, not a failure.
+const StatusStopped = "stopped"
 
-// Trouve rend la sandbox de ce nom parmi boxes, ou nil.
+// Find returns the sandbox with this name among boxes, or nil.
 //
-// Le POINTEUR, et pas un booléen : c'est la sandbox trouvée qui porte le statut
-// réel et les workspaces que la VM monte vraiment. Une version antérieure
-// réduisait cette recherche à un `Existe` booléen, et jetait les deux — d'où
-// l'attache dans une VM arrêtée et le `-w` recalculé depuis une configuration
-// que la VM ne monte pas.
+// A POINTER, not a boolean: it's the found sandbox that carries the real
+// status and the workspaces the VM actually mounts. An earlier version
+// reduced this lookup to a boolean `Exists` and threw both away — hence
+// attaching into a stopped VM and `-w` recomputed from a configuration the VM
+// doesn't mount.
 //
-// Le nom est comparé ENTIER : « api » et « api.feat12 » sont deux sandboxes,
-// jamais l'une le préfixe de l'autre.
-func Trouve(boxes []Sandbox, nom string) *Sandbox {
+// The name is compared WHOLE: "api" and "api.feat12" are two sandboxes,
+// never one the prefix of the other.
+func Find(boxes []Sandbox, name string) *Sandbox {
 	for i := range boxes {
-		if boxes[i].Nom == nom {
+		if boxes[i].Name == name {
 			return &boxes[i]
 		}
 	}
 	return nil
 }
 
-// EstArretee dit si la sandbox est au repos — attachable, mais au prix d'un
-// redémarrage que l'appelant a intérêt à annoncer : il prend plusieurs secondes,
-// et un `den <nest>` muet pendant ce temps-là ressemble à un gel.
+// IsStopped reports whether the sandbox is at rest — attachable, but at the
+// cost of a restart the caller should announce: it takes several seconds, and
+// a silent `den <nest>` during that time looks like a hang.
 //
-// Séparée de VerifieAttachable À DESSEIN : « faut-il prévenir ? » et « faut-il
-// refuser ? » sont deux questions, et les confondre est exactement ce qui a
-// produit le refus que le smoke du 2026-07-29 a invalidé.
-func (s Sandbox) EstArretee() bool { return s.Statut == StatutArretee }
+// Kept SEPARATE from CheckAttachable ON PURPOSE: "should we warn?" and
+// "should we refuse?" are two different questions, and conflating them is
+// exactly what produced the refusal the 2026-07-29 smoke test invalidated.
+func (s Sandbox) IsStopped() bool { return s.Status == StatusStopped }
 
-// VerifieAttachable refuse une sandbox dans laquelle den ne doit pas ouvrir de
-// shell. C'est la garde partagée par `den <nest>` (spawn-or-attach) et
-// `den sh` : les deux finissent par un `sbx exec`.
+// CheckAttachable refuses a sandbox den must not open a shell into. It's the
+// guard shared by `den <nest>` (spawn-or-attach) and `den sh`: both end in an
+// `sbx exec`.
 //
-// DEUX statuts passent, et le second est le correctif du smoke du 2026-07-29 :
+// TWO statuses pass, and the second is the 2026-07-29 smoke-test fix:
 //
-//   - « running » : rien à dire ;
-//   - « stopped » : `sbx exec` redémarre la sandbox de façon transparente
-//     (« Sandbox <nom> started successfully »). Refuser était plus strict que
-//     sbx lui-même, et le remède qu'on affichait — `den rm` — DÉTRUISAIT un état
-//     qui aurait survécu : mesuré, un fichier écrit dans la couche conteneur est
-//     toujours là après stop/exec. Avec l'arrêt automatique des sandboxes
-//     inactives, ce cas est la NORME au retour sur une VM `--detach`, pas
-//     l'exception.
+//   - "running": nothing to say;
+//   - "stopped": `sbx exec` restarts the sandbox transparently ("Sandbox
+//     <name> started successfully"). Refusing was stricter than sbx itself,
+//     and the remedy shown — `den rm` — DESTROYED state that would have
+//     survived: a file written into the container layer is still there after
+//     stop/exec. With automatic shutdown of inactive sandboxes, this case is
+//     the NORM on returning to a `--detach` VM, not the exception.
 //
-// La réserve qui justifiait le refus est levée, et elle l'est par mesure : les
-// startup commands des kits SE REJOUENT à la reprise. Compteur de
-// « dispatcher run » dans /var/log/sbx-kit-startup.log passé de 2 à 3 après un
-// stop puis un exec, avec la chaîne complète des kits dans l'ordre de l'argv et
-// le mixin de den en dernier. Une VM reprise n'est donc pas fonctionnellement
-// incomplète — la config git globale et la commande de fraîcheur de l'agent y
-// repassent.
+// A WHITELIST regardless: anything that is neither is refused. A blacklist
+// would let through any status a later sbx version introduced — including an
+// error status — and den has no way to know that list here. The accepted
+// price: a transitory startup status could make a `den <nest>` launched too
+// early fail. The message renders the status read, which makes the case
+// diagnosable and reportable.
 //
-// LISTE BLANCHE quand même : tout ce qui n'est ni l'un ni l'autre est refusé.
-// Une liste noire laisserait passer n'importe quel statut qu'une version
-// ultérieure de sbx introduirait — y compris un statut d'erreur — et den n'a
-// aucun moyen de connaître cette liste ici. Le prix ASSUMÉ : un éventuel statut
-// transitoire de démarrage ferait échouer un `den <nest>` lancé trop tôt. Le
-// message rend le statut lu, ce qui rend le cas diagnosticable et rapportable.
-//
-// La remédiation ne nomme que des commandes ATTESTÉES, et l'attestation a deux
-// sources qui ne se valent pas :
-//
-//   - les sous-commandes `sbx` viennent du relevé du 2026-07-28, versé au spec
-//     §14.0 (`sbx ls`, `sbx rm --force`). `sbx start` n'y apparaît pas et
-//     personne ne peut le falsifier ici, sbx n'étant pas installable sur cette
-//     machine : suggérer une commande peut-être inexistante serait pire qu'un
-//     commentaire faux ;
-//   - `den rm` est une commande de DEN, attestée par la source du dépôt
-//     (internal/cli/rm.go). L'argument ci-dessus ne s'y applique pas.
-//
-// Et c'est `den rm` qui passe EN PREMIER, parce qu'il fait strictement plus :
-// il détruit la VM comme `sbx rm --force`, mais nettoie en plus les worktrees
-// que den a créés pour cette sandbox. Envoyer l'utilisateur directement sur sbx
-// lui laisse des worktrees orphelins sous worktree_root, sans rien lui dire.
-// `sbx rm --force` reste nommé comme repli : il marche même quand ~/.den est
-// cassé, ce dont `den rm` a besoin pour situer les worktrees.
-func (s Sandbox) VerifieAttachable() error {
-	if s.Statut == StatutEnMarche || s.Statut == StatutArretee {
+// The remediation names only ATTESTED commands: `sbx` subcommands come from
+// the 2026-07-28 survey (spec §14.0); `den rm` is a den command, attested by
+// the repo's own source (internal/cli/rm.go). `den rm` comes FIRST because it
+// does strictly more: it destroys the VM like `sbx rm --force`, but also
+// cleans up the worktrees den created for this sandbox. Sending the user
+// straight to sbx leaves orphaned worktrees under worktree_root, without
+// telling them.
+func (s Sandbox) CheckAttachable() error {
+	if s.Status == StatusRunning || s.Status == StatusStopped {
 		return nil
 	}
 	return fmt.Errorf(
-		"sandbox %q : statut lu %q, attendu %q ou %q — den n'attache pas dans une VM dont il ne "+
-			"sait rien ; inspecte-la avec `sbx ls`, ou détruis-la puis relance : `den rm %s` "+
-			"(qui nettoie aussi les worktrees ; repli `sbx rm --force %s`, qui ne détruit que la VM)",
-		s.Nom, s.Statut, StatutEnMarche, StatutArretee, s.Nom, s.Nom)
+		"sandbox %q: status read %q, expected %q or %q — den does not attach into a VM it "+
+			"knows nothing about; inspect it with `sbx ls`, or destroy it and relaunch: `den rm %s` "+
+			"(which also cleans up worktrees; fallback `sbx rm --force %s`, which only destroys the VM)",
+		s.Name, s.Status, StatusRunning, StatusStopped, s.Name, s.Name)
 }
 
-// Ls liste les sandboxes vivantes, triées par nom.
+// Ls lists live sandboxes, sorted by name.
 func Ls(ctx context.Context, r Runner) ([]Sandbox, error) {
-	sortie, err := r.Run(ctx, "ls", "--json")
+	output, err := r.Run(ctx, "ls", "--json")
 	if err != nil {
-		// TEL QUEL, sans enveloppe : ErreurExec rend déjà le binaire et son argv
-		// COMPLET (« sbx ls --json : … »), et un « sbx ls : » ajouté devant
-		// écrivait la sous-commande deux fois sur la première ligne que voit un
-		// utilisateur dont sbx n'est pas installé. Ce que l'enveloppe ajoutait
-		// est strictement moins précis que ce qu'elle répétait. Tenu par
-		// TestLsNeRepetePasLaSousCommande.
+		// AS IS, no wrapper: ExecError already renders the full binary and argv
+		// ("sbx ls --json: ..."), and an "sbx ls: " prepended in front wrote the
+		// subcommand twice on the first line seen by a user without sbx
+		// installed. What the wrapper added was strictly less precise than what
+		// it repeated. Held by TestLsDoesNotRepeatTheSubcommand.
 		//
-		// Les échecs de DÉCODAGE ci-dessous gardent leur préfixe : eux ne sont
-		// situés par personne d'autre.
+		// The DECODING failures below keep their prefix: nothing else locates
+		// them.
 		return nil, err
 	}
 
-	// Décodage en deux temps, exprès : un objet JSON valide mais SANS la clé
-	// "sandboxes" (sbx qui la renommerait) doit être une ERREUR, pas un zéro
-	// silencieux. Ls n'a pas de canal de sortie autre que l'erreur pour le
-	// signaler, et le silence coûte plus cher ailleurs que sur den ls lui-même :
-	// den sh/den rm liraient une liste vide et affirmeraient à l'utilisateur
-	// qu'une sandbox bien vivante n'existe pas, au lieu de dire que la lecture a
-	// échoué. Même politique que le champ `allowed` de `sbx policy check`
-	// (task 11), pour la même raison.
+	// Two-step decoding, on purpose: a valid JSON object WITHOUT the
+	// "sandboxes" key (sbx renaming it) must be an ERROR, not a silent zero. Ls
+	// has no output channel other than the error to signal it, and silence
+	// costs more elsewhere than on den ls itself: den sh/den rm would read an
+	// empty list and tell the user a live sandbox doesn't exist, instead of
+	// saying the read failed. Same policy as the `allowed` field of `sbx
+	// policy check` (task 11), for the same reason.
 	//
-	// HYPOTHÈSE NON VÉRIFIÉE (sbx n'est pas installé sur cette machine) : le cas
-	// « zéro sandbox vivante » émet la clé "sandboxes" avec un tableau vide ou
-	// nul, jamais son absence totale (`{}` nu). Si un premier smoke test sur une
-	// vraie machine montre un `{}` nu quand rien ne tourne, cette garde doit
-	// être relâchée.
-	var champs map[string]json.RawMessage
-	if err := json.Unmarshal(sortie, &champs); err != nil {
-		// La sortie brute est dans le message : sans elle, un changement de
-		// schéma côté sbx serait indiagnosticable.
-		return nil, fmt.Errorf("sbx ls : sortie JSON illisible (%w) : %s", err, string(sortie))
+	// UNVERIFIED ASSUMPTION (sbx isn't installed on this machine): the "zero
+	// live sandboxes" case emits the "sandboxes" key with an empty or null
+	// array, never its outright absence (a bare `{}`). If a first smoke test
+	// on a real machine shows a bare `{}` when nothing is running, this guard
+	// must be relaxed.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(output, &fields); err != nil {
+		// The raw output is in the message: without it, a schema change on
+		// sbx's side would be undiagnosable.
+		return nil, fmt.Errorf("sbx ls: unreadable JSON output (%w): %s", err, string(output))
 	}
-	brut, presente := champs["sandboxes"]
-	if !presente {
-		return nil, fmt.Errorf("sbx ls : clé %q absente de la sortie JSON : %s", "sandboxes", string(sortie))
+	raw, present := fields["sandboxes"]
+	if !present {
+		return nil, fmt.Errorf("sbx ls: key %q absent from the JSON output: %s", "sandboxes", string(output))
 	}
 
 	var boxes []Sandbox
-	if err := json.Unmarshal(brut, &boxes); err != nil {
-		return nil, fmt.Errorf("sbx ls : sortie JSON illisible (%w) : %s", err, string(sortie))
+	if err := json.Unmarshal(raw, &boxes); err != nil {
+		return nil, fmt.Errorf("sbx ls: unreadable JSON output (%w): %s", err, string(output))
 	}
 
-	sort.Slice(boxes, func(i, j int) bool {
-		return boxes[i].Nom < boxes[j].Nom
-	})
+	slices.SortFunc(boxes, func(a, b Sandbox) int { return strings.Compare(a.Name, b.Name) })
 	return boxes, nil
 }

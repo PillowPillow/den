@@ -19,72 +19,71 @@ import (
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
-// denTest construit un ~/.den temporaire complet avec un dépôt git réel.
+// denTest builds a complete temporary ~/.den home backed by a real git repo.
 func denTest(t *testing.T) (denHome, repo string) {
 	t.Helper()
 	return denTestSSH(t, "  mode: agent-forward\n")
 }
 
-// egressUnHote est l'`egress:` de tous les tests qui ne jouent pas sur la
-// dérive de configuration.
-const egressUnHote = "  - github.com\n"
+// oneHostEgress is the `egress:` block for every test that doesn't exercise
+// configuration drift.
+const oneHostEgress = "  - github.com\n"
 
-// denTestSSH permet de faire varier le bloc `ssh:` — c'est le seul levier qui
-// ajoute un TROISIÈME workspace, et donc le seul qui rende leur ordre observable.
-func denTestSSH(t *testing.T, blocSSH string) (denHome, repo string) {
+// denTestSSH lets the `ssh:` block vary — the only lever that adds a THIRD
+// workspace, and so the only one that makes their order observable.
+func denTestSSH(t *testing.T, sshBlock string) (denHome, repo string) {
 	t.Helper()
 	denHome = t.TempDir()
 	repo = filepath.Join(t.TempDir(), "api")
 
-	creeDepot(t, repo)
+	createRepo(t, repo)
 
-	ecrisConfig(t, denHome, blocSSH, egressUnHote)
-	// Deux kits déclarés, pas zéro : sans eux, le mixin serait le seul `--kit`
-	// de l'argv et « le mixin est layeré en dernier » se vérifierait tout seul.
+	writeConfig(t, denHome, sshBlock, oneHostEgress)
+	// Two kits declared, not zero: without them the mixin would be the argv's
+	// only `--kit`, and "the mixin layers last" would trivially hold on its
+	// own.
 	//
-	// Les dossiers sont CRÉÉS. La version précédente les déclarait sans jamais
-	// les créer : tous les tests de ce fichier envoyaient donc à `sbx create`
-	// des chemins de kit inexistants et s'en satisfaisaient — le fixture
-	// portait exactement le défaut que TestSpawnRefuseUnKitInexistant instruit.
-	ecris(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
+	// The directories are CREATED: a stack pointing at kit paths that don't
+	// exist on disk is exactly the defect TestSpawnRefusesAMissingKit guards
+	// against.
+	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
 		"image: devx:v1\nkits: [transverse]\nkit: devx-kit\n")
 	for _, kit := range []string{"transverse", "devx-kit"} {
 		if err := os.MkdirAll(filepath.Join(denHome, "stacks", "devx", kit), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	ecris(t, filepath.Join(denHome, "nests", "api.yaml"), "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	write(t, filepath.Join(denHome, "nests", "api.yaml"), "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 	return denHome, repo
 }
 
-// creeDepot fait un dépôt git RÉEL avec un commit, seul état depuis lequel
-// `git worktree add` a un point de départ à donner à une nouvelle branche.
-func creeDepot(t *testing.T, chemin string) {
+// createRepo makes a REAL git repo with one commit, the only state
+// `git worktree add` can branch a new worktree from.
+func createRepo(t *testing.T, path string) {
 	t.Helper()
-	if err := os.MkdirAll(chemin, 0o755); err != nil {
+	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range [][]string{
 		{"init", "-b", "main"},
-		{"config", "user.email", "t@exemple.test"},
+		{"config", "user.email", "t@example.test"},
 		{"config", "user.name", "T"},
 		{"commit", "--allow-empty", "-m", "initial"},
 	} {
 		cmd := exec.Command("git", c...)
-		cmd.Dir = chemin
+		cmd.Dir = path
 		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v : %v\n%s", c, err, out)
+			t.Fatalf("git %v: %v\n%s", c, err, out)
 		}
 	}
 }
 
-// ecrisConfig (ré)écrit le config.yaml du den home. Extrait de denTestSSH pour
-// que les tests de dérive puissent RÉÉCRIRE la cascade entre deux spawns : c'est
-// le seul moyen de reproduire une config qui a bougé sous une VM qui, elle, n'a
-// pas bougé.
-func ecrisConfig(t *testing.T, denHome, blocSSH, blocEgress string) {
+// writeConfig (re)writes the den home's config.yaml. Split out of
+// denTestSSH so drift tests can REWRITE the cascade between two spawns — the
+// only way to reproduce a config that moved under a VM that didn't.
+func writeConfig(t *testing.T, denHome, sshBlock, egressBlock string) {
 	t.Helper()
-	ecris(t, filepath.Join(denHome, "config.yaml"), `agents:
+	write(t, filepath.Join(denHome, "config.yaml"), `agents:
   claude:
     config_dir: `+filepath.Join(denHome, "agents", "claude")+`
     env: { CLAUDE_CONFIG_DIR: "{config_dir}" }
@@ -94,90 +93,87 @@ defaults:
   agent: claude
   stack: devx
 ssh:
-`+blocSSH+`worktree_layout: central
+`+sshBlock+`worktree_layout: central
 worktree_root: `+filepath.Join(denHome, "worktrees")+`
 egress:
-`+blocEgress)
+`+egressBlock)
 }
 
-func ecris(t *testing.T, chemin, contenu string) {
+func write(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(chemin), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(chemin, []byte(contenu), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// policyInstantanee : mêmes réglages que le défaut, mais sur une horloge SIMULÉE
-// que Sommeil fait avancer.
+// instantPolicy returns the default settle-loop settings on a SIMULATED
+// clock that Sleep advances.
 //
-// Le patron naturel — un Sommeil sans effet posé à côté de time.Now — est un
-// double CASSÉ : l'horloge n'avance alors pas d'un intervalle par tour, la
-// boucle n'atteint jamais sa limite temporelle et sort sur sa borne en tours,
-// avec une erreur « défaut de l'appelant » qui n'a rien d'un fail-closed. Les
-// tests où tout passe au premier tour ne le voient même pas ; ceux où la policy
-// bloque resteraient verts en ne prouvant plus rien. D'où le couple Sommeil /
-// Maintenant partageant la même horloge, et l'assertion sur la CAUSE de l'échec
-// dans TestSpawnNAttachePasSiLaPolicyNePasse.
-func policyInstantanee() policy.Options {
-	o := policy.OptionsDefaut()
-	horloge := time.Now()
-	o.Sommeil = func(d time.Duration) { horloge = horloge.Add(d) }
-	o.Maintenant = func() time.Time { return horloge }
+// A no-op Sleep next to a real time.Now is a BROKEN double: the clock never
+// advances by an interval per round, the loop never hits its deadline, and
+// it exits on the round bound instead — a caller-fault error that isn't a
+// fail-closed. Hence the shared Sleep/Now clock, and the assertion on the
+// FAILURE CAUSE in TestSpawnDoesNotAttachWhenPolicyFails.
+func instantPolicy() policy.Options {
+	o := policy.DefaultOptions()
+	clock := time.Now()
+	o.Sleep = func(d time.Duration) { clock = clock.Add(d) }
+	o.Now = func() time.Time { return clock }
 	return o
 }
 
-// depsTest : sbx factice qui répond « aucune sandbox » puis « tout autorisé ».
-func depsTest() (*sbx.Fake, Deps) {
-	return depsAvecVerdict(`{"allowed": true}`)
+// fakeDeps returns a fake sbx that answers "no sandbox" then "everything
+// allowed".
+func fakeDeps() (*sbx.Fake, Deps) {
+	return fakeDepsWithVerdict(`{"allowed": true}`)
 }
 
-func depsAvecVerdict(verdict string) (*sbx.Fake, Deps) {
+func fakeDepsWithVerdict(verdict string) (*sbx.Fake, Deps) {
 	f := &sbx.Fake{
-		Reponses: map[string]sbx.Reponse{
-			"ls --json": {Sortie: []byte(`{"sandboxes":[]}`)},
+		Responses: map[string]sbx.Response{
+			"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
 		},
-		Defaut: sbx.Reponse{Sortie: []byte(verdict)},
+		Default: sbx.Response{Output: []byte(verdict)},
 	}
 	return f, Deps{
 		Sbx:    f,
 		Git:    worktree.NewGit(),
-		Policy: policyInstantanee(),
-		Sortie: io.Discard,
+		Policy: instantPolicy(),
+		Out:    io.Discard,
 	}
 }
 
-func TestSpawnSequenceNominale(t *testing.T) {
+func TestSpawnRunsTheNominalSequence(t *testing.T) {
 	denHome, repo := denTest(t)
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !f.AAppele("create", "--name", "api", "--template", "devx:v1") {
-		t.Errorf("un create doit avoir eu lieu ; appels : %v", f.Appels)
+	if !f.HasCalled("create", "--name", "api", "--template", "devx:v1") {
+		t.Errorf("a create must have happened; calls: %v", f.Calls)
 	}
-	if !f.AAppele("policy", "check", "network", "--sandbox", "api", "--json", "github.com") {
-		t.Errorf("le settle-loop doit avoir tourné sur l'egress de la cascade ; appels : %v", f.Appels)
+	if !f.HasCalled("policy", "check", "network", "--sandbox", "api", "--json", "github.com") {
+		t.Errorf("the settle-loop must have run on the cascade's egress; calls: %v", f.Calls)
 	}
-	// AAttache et non AAppele : Appels confond Run et Attach, et un Run à la
-	// place d'un Attach rendrait à l'utilisateur un shell muet, sans tty.
-	if !f.AAttache("exec", "-it", "-w", repo, "api", "bash", "-l") {
-		t.Errorf("l'attache doit avoir eu lieu ; attaches : %v", f.Attaches)
+	// HasAttached, not HasCalled: Calls conflates Run and Attach, and a Run in
+	// place of an Attach would hand the user a mute shell, with no tty.
+	if !f.HasAttached("exec", "-it", "-w", repo, "api", "bash", "-l") {
+		t.Errorf("the attach must have happened; attaches: %v", f.Attaches)
 	}
 }
 
-// D1 — 14ᵉ configuration hostile (T10). `Global.Validate()` n'avait qu'un seul
-// appelant, `den doctor` : `worktree_layout: centrl` traversait donc le spawn
-// sans être vu et retombait SILENCIEUSEMENT sur `central`, changeant la
-// disposition des worktrees sur une faute de frappe. Le refus doit tomber avant
-// le moindre effet de bord — sinon l'utilisateur nettoie à la main.
-func TestSpawnRefuseUneConfigurationInvalide(t *testing.T) {
+// D1 (T10, hostile config #14): Global.Validate() used to be called only by
+// `den doctor`, so `worktree_layout: centrl` passed spawn unseen and
+// silently fell back to `central`, changing worktree layout on a typo. The
+// refusal must land before any side effect, or the user cleans up by hand.
+func TestSpawnRefusesInvalidConfiguration(t *testing.T) {
 	denHome, _ := denTest(t)
-	ecris(t, filepath.Join(denHome, "config.yaml"), `agents:
+	write(t, filepath.Join(denHome, "config.yaml"), `agents:
   claude:
     config_dir: `+filepath.Join(denHome, "agents", "claude")+`
     update: "claude update"
@@ -186,37 +182,37 @@ defaults:
   stack: devx
 worktree_layout: centrl
 `)
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
 	if err == nil {
-		t.Fatal("attendu un refus de `worktree_layout: centrl`, obtenu nil")
+		t.Fatal("expected a refusal of `worktree_layout: centrl`, got nil")
 	}
 	if !strings.Contains(err.Error(), "centrl") {
-		t.Errorf("erreur = %q, attendu la valeur fautive nommée", err.Error())
+		t.Errorf("error = %q, expected the offending value named", err.Error())
 	}
-	if len(f.Appels) != 0 || len(f.Attaches) != 0 {
-		t.Errorf("aucun appel à sbx ne doit précéder le refus ; appels : %v, attaches : %v", f.Appels, f.Attaches)
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
 	}
-	// Ni effet de bord sur le disque : le profil de l'agent est créé par un
-	// MkdirAll au milieu de la séquence.
+	// No disk side effect either: the agent profile is created by a
+	// MkdirAll midway through the sequence.
 	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
-		t.Error("le profil de l'agent ne doit pas avoir été créé avant le refus")
+		t.Error("the agent profile must not have been created before the refusal")
 	}
 }
 
-// L'ordre est une propriété de sûreté : attacher avant que la policy soit
-// posée, c'est exactement le « ça marche à moitié » que le spec §7 interdit.
-func TestSpawnAttacheApresLeSettleLoop(t *testing.T) {
+// Ordering is a safety property: attaching before the policy is in place is
+// exactly the half-working state spec §7 forbids.
+func TestSpawnAttachesAfterTheSettleLoop(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	iCreate, iPolicy, iExec := -1, -1, -1
-	for i, a := range f.Appels {
+	for i, a := range f.Calls {
 		if len(a) > 0 && a[0] == "create" && iCreate < 0 {
 			iCreate = i
 		}
@@ -228,1250 +224,1238 @@ func TestSpawnAttacheApresLeSettleLoop(t *testing.T) {
 		}
 	}
 	if iCreate < 0 || iPolicy < 0 || iExec < 0 {
-		t.Fatalf("create (%d), policy (%d) et exec (%d) doivent tous avoir eu lieu ; appels : %v",
-			iCreate, iPolicy, iExec, f.Appels)
+		t.Fatalf("create (%d), policy (%d) and exec (%d) must all have happened; calls: %v",
+			iCreate, iPolicy, iExec, f.Calls)
 	}
 	if !(iCreate < iPolicy && iPolicy < iExec) {
-		t.Errorf("ordre attendu create (%d) < policy (%d) < attache (%d) ; appels : %v",
-			iCreate, iPolicy, iExec, f.Appels)
+		t.Errorf("expected order create (%d) < policy (%d) < attach (%d); calls: %v",
+			iCreate, iPolicy, iExec, f.Calls)
 	}
 }
 
-// Fail-closed de bout en bout : policy bloquée ⇒ aucune attache.
-func TestSpawnNAttachePasSiLaPolicyNePasse(t *testing.T) {
+// End-to-end fail-closed: policy blocked ⇒ no attach.
+func TestSpawnDoesNotAttachWhenPolicyFails(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsAvecVerdict(`{"allowed": false}`)
+	f, d := fakeDepsWithVerdict(`{"allowed": false}`)
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
 	if err == nil {
-		t.Fatal("une policy qui ne passe pas doit faire échouer le spawn")
+		t.Fatal("a policy that doesn't pass must fail the spawn")
 	}
-	// Le spawn doit échouer pour la BONNE raison. Settle a deux sorties en
-	// erreur : le fail-closed (ce qu'on teste) et la borne en tours, réservée
-	// aux horloges qui mentent. Sans cette distinction, un double d'horloge
-	// cassé rendrait ce test vert sans que le fail-closed soit jamais exercé.
+	// The spawn must fail for the RIGHT reason. Settle has two error exits:
+	// fail-closed (what we're testing) and the round bound, reserved for a
+	// lying clock. Without this distinction, a broken clock double would
+	// keep this test green without ever exercising the fail-closed path.
 	if !strings.Contains(err.Error(), "fail-closed") {
-		t.Errorf("l'échec doit être le fail-closed de la policy ; obtenu : %v", err)
+		t.Errorf("the failure must be the policy's fail-closed; got: %v", err)
 	}
-	if strings.Contains(err.Error(), "défaut de l'appelant") {
-		t.Errorf("Settle a buté sur sa borne en tours (horloge de test cassée), "+
-			"pas sur le fail-closed ; obtenu : %v", err)
+	if strings.Contains(err.Error(), "caller fault") {
+		t.Errorf("Settle hit its round bound (broken test clock), not the fail-closed; got: %v", err)
 	}
 	if len(f.Attaches) != 0 {
-		t.Errorf("aucune attache ne doit avoir lieu ; attaches : %v", f.Attaches)
+		t.Errorf("no attach must happen; attaches: %v", f.Attaches)
 	}
 }
 
-// Spawn-or-attach (spec §11) : un nom déjà vivant n'est pas une erreur.
-func TestSpawnAttacheSansRecreerSiLaSandboxExiste(t *testing.T) {
+// Spawn-or-attach (spec §11): a name that's already live is not an error.
+func TestSpawnAttachesWithoutRecreatingWhenSandboxExists(t *testing.T) {
 	denHome, repo := denTest(t)
-	f, d := depsTest()
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if f.AAppele("create") {
-		t.Errorf("aucun create ne doit avoir lieu sur une sandbox vivante ; appels : %v", f.Appels)
+	if f.HasCalled("create") {
+		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
 	}
-	// Le settle-loop doit tourner AUSSI sur cette branche — c'est celle
-	// qu'emprunte tout spawn après le premier. Sans cette assertion, un
-	// settle-loop replié dans la branche `create` laisse la suite verte
-	// pendant que `den api` attache un shell sans avoir vérifié la policy.
-	if !f.AAppele("policy", "check", "network", "--sandbox", "api", "--json", "github.com") {
-		t.Errorf("le settle-loop doit tourner aussi sur une sandbox vivante ; appels : %v", f.Appels)
+	// The settle-loop must run on THIS branch too — it's the one every spawn
+	// after the first takes. Without this assertion, a settle-loop folded
+	// into the `create` branch only would stay green while `den api`
+	// attaches a shell without ever checking the policy.
+	if !f.HasCalled("policy", "check", "network", "--sandbox", "api", "--json", "github.com") {
+		t.Errorf("the settle-loop must also run on a live sandbox; calls: %v", f.Calls)
 	}
-	if !f.AAttache("exec", "-it", "-w", repo, "api", "bash", "-l") {
-		t.Errorf("l'attache doit avoir lieu ; attaches : %v", f.Attaches)
+	if !f.HasAttached("exec", "-it", "-w", repo, "api", "bash", "-l") {
+		t.Errorf("the attach must happen; attaches: %v", f.Attaches)
 	}
 }
 
-// C'est le nom COMPLET, worktree inclus, qui doit être cherché parmi les
-// sandboxes vivantes. Chercher `o.Nest` reviendrait à confondre `api` et
-// `api.feat12` : indétectable tant que le seul test à sandbox vivante n'a pas
-// de worktree, puisque les deux valeurs y coïncident.
+// It's the FULL name, worktree included, that must be looked up among live
+// sandboxes. Searching on `o.Nest` alone would conflate `api` with
+// `api.feat12` — undetectable as long as the only live-sandbox test has no
+// worktree, since the two values then coincide.
 //
-// Le `-w` attendu est `/w`, le workspace que la VM déclare — et non le chemin de
-// worktree que la cascade recalculerait. Cette attente-là appartient au test
-// dédié ci-dessous (TestSpawnAttacheDansLeWorkdirRemonteParLaVM) ; ici, elle
-// n'est qu'une conséquence.
-func TestSpawnChercheLeNomWorktreeeParmiLesSandboxesVivantes(t *testing.T) {
+// The expected `-w` is `/w`, the workspace the VM reports, not the worktree
+// path the cascade would recompute. That expectation belongs to
+// TestSpawnAttachesInTheWorkdirReportedByTheVM below; here it's only a side
+// effect.
+func TestSpawnLooksUpTheWorktreeNameAmongLiveSandboxes(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsTest()
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["/w"]}]}`),
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["/w"]}]}`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if f.AAppele("create") {
-		t.Errorf("aucun create ne doit avoir lieu sur api.feat12 vivante ; appels : %v", f.Appels)
+	if f.HasCalled("create") {
+		t.Errorf("no create must happen on a live api.feat12; calls: %v", f.Calls)
 	}
-	if !f.AAttache("exec", "-it", "-w", "/w", "api.feat12", "bash", "-l") {
-		t.Errorf("l'attache doit viser api.feat12 ; attaches : %v", f.Attaches)
+	if !f.HasAttached("exec", "-it", "-w", "/w", "api.feat12", "bash", "-l") {
+		t.Errorf("the attach must target api.feat12; attaches: %v", f.Attaches)
 	}
 }
 
-// D2 — le `-w` d'une sandbox VIVANTE vient du workspace que la VM MONTE, jamais
-// d'un chemin recalculé depuis la configuration courante.
+// D2: a LIVE sandbox's `-w` comes from the workspace the VM actually
+// MOUNTS, never a path recomputed from the current configuration.
 //
-// Une VM monte les workspaces de son `sbx create` d'origine : si le premier repo
-// du nest a changé de chemin depuis (ou si `-w` a été ajouté), le chemin
-// recalculé n'existe tout simplement pas dedans, et `sbx exec -w` échoue — ou
-// pire, atterrit ailleurs. sbx.Sandbox.Workdir existe depuis la tâche 8
-// exactement pour ça.
+// A VM mounts the workspaces of its original `sbx create`: if the nest's
+// first repo has since moved (or `-w` was added), the recomputed path
+// simply doesn't exist inside it, and `sbx exec -w` fails — or worse, lands
+// elsewhere. sbx.Sandbox.Workdir exists exactly for this.
 //
-// Le `:ro` du fixture n'est pas décoratif : il distingue `b.Workdir()` (qui le
-// retire) de `b.Workspaces[0]` (qui le garderait), et sépare donc les deux
-// implémentations possibles.
-func TestSpawnAttacheDansLeWorkdirRemonteParLaVM(t *testing.T) {
+// The fixture's `:ro` isn't decorative: it distinguishes `b.Workdir()`
+// (which strips it) from `b.Workspaces[0]` (which would keep it), the two
+// possible implementations.
+func TestSpawnAttachesInTheWorkdirReportedByTheVM(t *testing.T) {
 	denHome, repo := denTest(t)
-	f, d := depsTest()
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running",` +
-			`"workspaces":["/monte/par/la/vm:ro","/profil"]}]}`),
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running",` +
+			`"workspaces":["/mounted/by/the/vm:ro","/profile"]}]}`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.AAttache("exec", "-it", "-w", "/monte/par/la/vm", "api", "bash", "-l") {
-		t.Errorf("le -w doit venir du workspace de la VM ; attaches : %v", f.Attaches)
+	if !f.HasAttached("exec", "-it", "-w", "/mounted/by/the/vm", "api", "bash", "-l") {
+		t.Errorf("-w must come from the VM's workspace; attaches: %v", f.Attaches)
 	}
-	// Et surtout PAS le chemin que la cascade recalcule : c'est lui, le défaut.
+	// And definitely NOT the path the cascade recomputes: that's the defect.
 	for _, a := range f.Attaches {
 		if slices.Contains(a, repo) {
-			t.Errorf("le -w ne doit pas être le chemin recalculé %s ; attache : %v", repo, a)
+			t.Errorf("-w must not be the recomputed path %s; attach: %v", repo, a)
 		}
 	}
 }
 
-// Le corollaire de D2, dans le seul cas que rien ne couvrait : une VM qui ne
-// remonte AUCUN workspace n'a pas de workdir, et l'attache doit alors OMETTRE le
-// -w — jamais retomber sur le chemin recalculé depuis la configuration.
-//
-// Mesuré par la relecture : replier sur le chemin recalculé quand `Workdir()`
-// est vide laissait `go test ./...` entièrement vert. Le comportement était bon,
-// il n'était pas verrouillé — et c'est D2 à l'identique qui repointait par ce
-// trou.
-func TestSpawnNInventePasDeWorkdirQuandLaVMNeMonteRien(t *testing.T) {
+// D2's corollary, the one case nothing covered: a VM that mounts NO
+// workspace has no workdir, and the attach must OMIT -w — never fall back
+// to the path recomputed from configuration. Falling back there was
+// previously unlocked by no test: behavior was correct but unverified.
+func TestSpawnDoesNotInventAWorkdirWhenTheVMMountsNothing(t *testing.T) {
 	denHome, repo := denTest(t)
-	f, d := depsTest()
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running"}]}`),
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running"}]}`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.AAttache("exec", "-it", "api", "bash", "-l") {
-		t.Errorf("sans workspace, l'attache doit omettre le -w ; attaches : %v", f.Attaches)
+	if !f.HasAttached("exec", "-it", "api", "bash", "-l") {
+		t.Errorf("without a workspace, the attach must omit -w; attaches: %v", f.Attaches)
 	}
 	for _, a := range f.Attaches {
 		if slices.Contains(a, "-w") {
-			t.Errorf("aucun -w ne doit être posé ; attache : %v", a)
+			t.Errorf("no -w must be set; attach: %v", a)
 		}
 		if slices.Contains(a, repo) {
-			t.Errorf("le chemin recalculé %s ne doit pas resservir ; attache : %v", repo, a)
+			t.Errorf("the recomputed path %s must not resurface; attach: %v", repo, a)
 		}
 	}
 }
 
-// D1 — une sandbox trouvée mais qui NE TOURNE PAS n'est pas une sandbox vivante.
+// D1: a sandbox found but NOT RUNNING is not a live sandbox.
 //
-// Avant ce contrôle, sbx.Existe ne rendait qu'un booléen et jetait le Statut :
-// `den api` sur une VM `exited` affichait « déjà vivante : attache » puis
-// lançait un `sbx exec` dans une VM arrêtée.
+// Before this check, sbx.Exists returned only a bool and discarded Status:
+// `den api` on an `exited` VM printed "already live: attaching" then ran
+// `sbx exec` against a stopped VM.
 //
-// F2 du smoke réel du 2026-07-29 : une sandbox ARRÊTÉE se reprend, elle ne se
-// détruit pas.
-//
-// sbx range tout seul les sandboxes inactives au bout de quelques minutes, donc
-// c'est l'état NORMAL au retour sur une VM `--detach` — et `sbx exec` la
-// redémarre de façon transparente. Le refus d'avant envoyait sur `den rm`, qui
-// détruit un état que le stop avait préservé.
-func TestSpawnReprendUneSandboxArretee(t *testing.T) {
+// F2: a STOPPED sandbox is resumed, not destroyed — sbx parks idle
+// sandboxes after a few minutes, so it's the NORMAL state on returning to a
+// `--detach` VM, and `sbx exec` restarts it transparently. The old refusal
+// pointed at `den rm`, which destroys state the stop had preserved.
+func TestSpawnResumesAStoppedSandbox(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsTest()
-	var sortie bytes.Buffer
-	d.Sortie = &sortie
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w"]}]}`),
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w"]}]}`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("une sandbox arrêtée doit être reprise, pas refusée : %v", err)
+		t.Fatalf("a stopped sandbox must be resumed, not refused: %v", err)
 	}
 
-	// Reprise = attache. Le -w vient des workspaces de la VM, comme sur une VM
-	// vivante : c'est son `create` qui les porte, pas la config d'aujourd'hui.
-	if !f.AAttache("exec", "-it", "-w", "/w", "api", "bash", "-l") {
-		t.Errorf("la reprise doit attacher dans le workdir de la VM ; attaches : %v", f.Attaches)
+	// Resuming = attaching. -w comes from the VM's workspaces, as on a live
+	// VM: it's carried by its `create`, not by today's config.
+	if !f.HasAttached("exec", "-it", "-w", "/w", "api", "bash", "-l") {
+		t.Errorf("resuming must attach in the VM's workdir; attaches: %v", f.Attaches)
 	}
-	// Et surtout PAS de create : le nom est pris par une VM qui porte du travail.
-	if f.AAppele("create") {
-		t.Errorf("aucun create sur un nom déjà pris ; appels : %v", f.Appels)
+	// And definitely no create: the name is held by a VM carrying work.
+	if f.HasCalled("create") {
+		t.Errorf("no create on a name already taken; calls: %v", f.Calls)
 	}
-	// La reprise prend plusieurs secondes : muette, elle ressemble à un gel.
-	if !strings.Contains(sortie.String(), "arrêtée") {
-		t.Errorf("la reprise doit être annoncée ; sortie :\n%s", sortie.String())
+	// Resuming takes several seconds: silent, it looks like a hang.
+	if !strings.Contains(out.String(), "stopped") {
+		t.Errorf("the resume must be announced; output:\n%s", out.String())
 	}
-	// Ce que le message ne doit PLUS proposer : c'était le défaut de F2, un
-	// remède qui détruit l'état que l'arrêt venait de préserver.
-	if strings.Contains(sortie.String(), "den rm") {
-		t.Errorf("une reprise ne doit pas proposer de détruire la VM ; sortie :\n%s", sortie.String())
+	// What the message must NOT suggest anymore: F2's old defect, a remedy
+	// that destroys the state the stop had just preserved.
+	if strings.Contains(out.String(), "den rm") {
+		t.Errorf("a resume must not suggest destroying the VM; output:\n%s", out.String())
 	}
 }
 
-// La liste blanche reste FAIL-CLOSED pour tout le RESTE : les autres valeurs de
-// `status` que sbx peut émettre ne sont pas relevées. Une liste NOIRE
-// attacherait dans tout statut qu'une version ultérieure de sbx introduirait, y
-// compris un statut d'erreur. Le prix assumé : un statut transitoire de
-// démarrage ferait échouer un `den api` lancé trop tôt, avec un message qui
-// nomme le statut lu.
-func TestSpawnRefuseUneSandboxQuiNeTournePas(t *testing.T) {
-	for _, statut := range []string{"exited", "paused", "Running", ""} {
-		t.Run("statut="+statut, func(t *testing.T) {
+// The allowlist stays FAIL-CLOSED for everything else: sbx status values
+// other than `running` aren't recognized. A denylist would attach on any
+// status a later sbx version might introduce, including an error status.
+// The accepted cost: a transient startup status makes a too-early
+// `den api` fail, with a message naming the status read.
+func TestSpawnRefusesASandboxThatIsNotRunning(t *testing.T) {
+	for _, status := range []string{"exited", "paused", "Running", ""} {
+		t.Run("status="+status, func(t *testing.T) {
 			denHome, _ := denTest(t)
-			f, d := depsTest()
-			f.Reponses["ls --json"] = sbx.Reponse{
-				Sortie: []byte(`{"sandboxes":[{"name":"api","status":"` + statut +
+			f, d := fakeDeps()
+			f.Responses["ls --json"] = sbx.Response{
+				Output: []byte(`{"sandboxes":[{"name":"api","status":"` + status +
 					`","workspaces":["/w"]}]}`),
 			}
 
 			err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
 			if err == nil {
-				t.Fatalf("un statut %q ne doit pas être traité comme vivant", statut)
+				t.Fatalf("a status %q must not be treated as live", status)
 			}
-			// Le message doit rendre le statut LU : sans lui, l'utilisateur ne
-			// sait pas de quoi den se plaint ni quoi taper ensuite.
+			// The message must render the status READ: without it, the user
+			// doesn't know what den is complaining about or what to type
+			// next.
 			//
-			// strconv.Quote, pas le statut nu : sur le sous-cas statut="",
-			// `strings.Contains(err, "")` est vrai par construction et n'assert
-			// rien. La forme quotée est celle que le message rend (`%q`).
-			if !strings.Contains(err.Error(), strconv.Quote(statut)) ||
+			// strconv.Quote, not the bare status: on the status="" sub-case,
+			// `strings.Contains(err, "")` is trivially true and asserts
+			// nothing. The quoted form is what the message actually renders
+			// (`%q`).
+			if !strings.Contains(err.Error(), strconv.Quote(status)) ||
 				!strings.Contains(err.Error(), strconv.Quote("running")) {
-				t.Errorf("le message doit rendre le statut lu et celui attendu ; obtenu : %v", err)
+				t.Errorf("the message must render the status read and the one expected; got: %v", err)
 			}
 			if !strings.Contains(err.Error(), "api") {
-				t.Errorf("le message doit nommer la sandbox ; obtenu : %v", err)
+				t.Errorf("the message must name the sandbox; got: %v", err)
 			}
 			if len(f.Attaches) != 0 {
-				t.Errorf("aucune attache dans une VM arrêtée ; attaches : %v", f.Attaches)
+				t.Errorf("no attach in a stopped VM; attaches: %v", f.Attaches)
 			}
-			// Ni create (le nom est pris) ni settle-loop : den s'arrête net.
-			if f.AAppele("create") {
-				t.Errorf("aucun create ne doit être tenté sur un nom déjà pris ; appels : %v", f.Appels)
+			// No create (the name is taken) and no settle-loop: den stops
+			// dead.
+			if f.HasCalled("create") {
+				t.Errorf("no create must be attempted on a name already taken; calls: %v", f.Calls)
 			}
 		})
 	}
 }
 
-// D3 — rien ne réapplique un mixin à une VM en marche.
+// D3: nothing reapplies a mixin to a running VM.
 //
-// Un `egress:` RÉTRÉCI passe donc le settle-loop en silence : la policy large
-// que la VM porte depuis son create autorise évidemment la liste étroite qu'on
-// lui soumet. L'utilisateur croit sa sandbox resserrée alors qu'elle est restée
-// ouverte. (Le sens inverse, élargir, échoue proprement sur le settle-loop.)
+// A NARROWED `egress:` passes the settle-loop silently: the wide policy the
+// VM carries from its create obviously allows the narrow list submitted to
+// it. The user believes their sandbox tightened when it stayed open. (The
+// opposite, widening, fails cleanly on the settle-loop.)
 //
-// PIÈGE D'ORDRE, et raison d'être de ce test : Spawn RÉÉCRIT le mixin à chaque
-// passage (étape 5), AVANT la branche spawn-or-attach. Une comparaison faite
-// après cette écriture compare le mixin à lui-même et ne détecte JAMAIS rien,
-// avec une suite parfaitement verte. C'est la mutation tueuse : déplacer le
-// LisMixin après le EcrisMixin.
-func TestSpawnAvertitQuandLaConfigADeriveSousLaSandbox(t *testing.T) {
+// ORDERING TRAP, and the reason this test exists: Spawn REWRITES the mixin
+// on every pass (step 5), BEFORE the spawn-or-attach branch. A comparison
+// made after that write compares the mixin to itself and never detects
+// anything, with a fully green suite. The killer mutation: moving ReadMixin
+// after WriteMixin.
+func TestSpawnWarnsWhenConfigHasDriftedUnderTheSandbox(t *testing.T) {
 	denHome, repo := denTest(t)
-	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
+	writeConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
 
-	// Premier passage : la sandbox est créée, et c'est CE mixin-là qu'elle porte.
-	f, d := depsTest()
-	journal := &bytes.Buffer{}
-	d.Sortie = journal
+	// First pass: the sandbox is created, and THIS is the mixin it carries.
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
-		t.Fatalf("premier spawn : erreur inattendue : %v", err)
+		t.Fatalf("first spawn: unexpected error: %v", err)
 	}
-	if !f.AAppele("create", "--name", "api") {
-		t.Fatalf("le premier spawn doit créer la sandbox ; appels : %v", f.Appels)
+	if !f.HasCalled("create", "--name", "api") {
+		t.Fatalf("the first spawn must create the sandbox; calls: %v", f.Calls)
 	}
 
-	// La configuration se resserre. La VM, elle, ne bouge pas.
-	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	// The configuration narrows. The VM doesn't move.
+	writeConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
 	}
-	journal.Reset()
+	log.Reset()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("second spawn : erreur inattendue : %v", err)
+		t.Fatalf("second spawn: unexpected error: %v", err)
 	}
-	sortie := journal.String()
-	if !strings.Contains(sortie, "api.anthropic.com") {
-		t.Errorf("l'avertissement doit NOMMER l'egress qui a disparu de la config ;\n%s", sortie)
+	out := log.String()
+	if !strings.Contains(out, "api.anthropic.com") {
+		t.Errorf("the warning must NAME the egress that vanished from the config;\n%s", out)
 	}
-	if !strings.Contains(sortie, "attention") {
-		t.Errorf("la dérive doit être annoncée comme un avertissement ;\n%s", sortie)
+	if !strings.Contains(out, "warning") {
+		t.Errorf("the drift must be announced as a warning;\n%s", out)
 	}
-	// On AVERTIT, on ne refuse pas : refuser casserait un `den api` qui marchait
-	// hier pour un YAML anodin (décision arrêtée, cf. handoff T12 §6).
+	// We WARN, we don't refuse: refusing would break a `den api` that
+	// worked yesterday over a harmless YAML change (decision settled, see
+	// T12 §6).
 	if len(f.Attaches) != 1 {
-		t.Errorf("la dérive avertit puis attache ; attaches : %v", f.Attaches)
+		t.Errorf("drift warns then attaches; attaches: %v", f.Attaches)
 	}
 }
 
-// Le pendant indispensable : sans dérive, aucun avertissement. Un avertissement
-// qui sort à CHAQUE attache ne serait plus lu du tout — et rendrait le test
-// ci-dessus vert sans rien prouver.
-func TestSpawnNAvertitPasSansDerive(t *testing.T) {
+// The essential counterpart: no drift, no warning. A warning printed on
+// EVERY attach would stop being read at all, and would let the test above
+// pass without proving anything.
+func TestSpawnDoesNotWarnWithoutDrift(t *testing.T) {
 	denHome, repo := denTest(t)
-	f, d := depsTest()
-	journal := &bytes.Buffer{}
-	d.Sortie = journal
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
-		t.Fatalf("premier spawn : erreur inattendue : %v", err)
+		t.Fatalf("first spawn: unexpected error: %v", err)
 	}
 
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
 	}
-	journal.Reset()
+	log.Reset()
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("second spawn : erreur inattendue : %v", err)
+		t.Fatalf("second spawn: unexpected error: %v", err)
 	}
-	if sortie := journal.String(); strings.Contains(sortie, "attention") {
-		t.Errorf("une configuration inchangée ne doit rien signaler ;\n%s", sortie)
+	if out := log.String(); strings.Contains(out, "warning") {
+		t.Errorf("an unchanged configuration must report nothing;\n%s", out)
 	}
 }
 
-// La branche CREATE ne doit jamais avertir : c'est le create qui POSE le mixin,
-// il ne peut pas avoir dérivé de lui-même.
+// The CREATE branch must never warn: it's the create that LAYS DOWN the
+// mixin, so it can't have drifted from itself.
 //
-// Le cas piégeux est un cache/ qui survit à la sandbox : le spec §3 déclare
-// cache/ reconstructible et den ne le purge pas, donc un `sbx rm` suivi d'un
-// `den api` retrouve le mixin de la sandbox DÉFUNTE sur le disque. Un
-// avertissement hissé hors de la branche « vivante » sortirait là, sur une
-// sandbox qui reçoit pourtant la configuration exacte.
-func TestSpawnNAvertitPasSurLaBrancheCreate(t *testing.T) {
+// The tricky case is a cache/ surviving the sandbox: spec §3 declares
+// cache/ reconstructible and den doesn't purge it, so `sbx rm` followed by
+// `den api` finds the DEFUNCT sandbox's mixin still on disk. A warning
+// hoisted outside the "live" branch would fire there, on a sandbox that
+// actually gets the exact configuration.
+func TestSpawnDoesNotWarnOnTheCreateBranch(t *testing.T) {
 	denHome, _ := denTest(t)
-	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
+	writeConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
 
-	f, d := depsTest()
-	journal := &bytes.Buffer{}
-	d.Sortie = journal
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
-		t.Fatalf("premier spawn : erreur inattendue : %v", err)
+		t.Fatalf("first spawn: unexpected error: %v", err)
 	}
 
-	// La config change, la sandbox a disparu (`sbx rm`), le cache reste.
-	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
-	journal.Reset()
+	// The config changes, the sandbox is gone (`sbx rm`), the cache remains.
+	writeConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
+	log.Reset()
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
-		t.Fatalf("second spawn : erreur inattendue : %v", err)
+		t.Fatalf("second spawn: unexpected error: %v", err)
 	}
-	if !f.AAppele("create", "--name", "api") {
-		t.Fatalf("le second spawn doit créer ; appels : %v", f.Appels)
+	if !f.HasCalled("create", "--name", "api") {
+		t.Fatalf("the second spawn must create; calls: %v", f.Calls)
 	}
-	if sortie := journal.String(); strings.Contains(sortie, "attention") {
-		t.Errorf("un create pose le mixin : rien à signaler ;\n%s", sortie)
+	if out := log.String(); strings.Contains(out, "warning") {
+		t.Errorf("a create lays down the mixin: nothing to report;\n%s", out)
 	}
 }
 
-// Le mixin sur disque est la RÉFÉRENCE du `create` : il ne doit pas être
-// réécrit quand la sandbox est déjà vivante.
+// The on-disk mixin is the create's REFERENCE: it must not be rewritten
+// while the sandbox is already live.
 //
-// Sinon la dérive s'efface elle-même : le premier `den api` avertit, réécrit la
-// référence au passage, et le second se tait — alors que la VM, elle, n'a
-// toujours pas bougé. C'est le défaut le plus coûteux du lot, parce qu'il rend
-// la détection MUETTE exactement dans le cas où elle sert, sans jamais rien
-// faire échouer.
-func TestSpawnNeReecritPasLeMixinDUneSandboxVivante(t *testing.T) {
+// Otherwise drift erases itself: the first `den api` warns and overwrites
+// the reference along the way, and the second stays silent — even though
+// the VM still hasn't moved. The costliest defect of the lot: it makes
+// detection MUTE exactly where it matters, without ever failing anything.
+func TestSpawnDoesNotRewriteTheMixinOfALiveSandbox(t *testing.T) {
 	denHome, repo := denTest(t)
-	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
+	writeConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
 
-	f, d := depsTest()
-	journal := &bytes.Buffer{}
-	d.Sortie = journal
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
-		t.Fatalf("premier spawn : erreur inattendue : %v", err)
+		t.Fatalf("first spawn: unexpected error: %v", err)
 	}
 	spec := filepath.Join(denHome, "cache", "mixins", "api", "spec.yaml")
 	reference, err := os.ReadFile(spec)
 	if err != nil {
-		t.Fatalf("le create doit avoir écrit %s : %v", spec, err)
+		t.Fatalf("create must have written %s: %v", spec, err)
 	}
 
-	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	writeConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
 	}
 
-	// Deux attaches d'affilée : la seconde est celle qui trahit une référence
-	// écrasée par la première.
-	for tour := 1; tour <= 2; tour++ {
-		journal.Reset()
+	// Two attaches in a row: the second is the one that would expose a
+	// reference clobbered by the first.
+	for round := 1; round <= 2; round++ {
+		log.Reset()
 		if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-			t.Fatalf("tour %d : erreur inattendue : %v", tour, err)
+			t.Fatalf("round %d: unexpected error: %v", round, err)
 		}
-		apres, err := os.ReadFile(spec)
+		after, err := os.ReadFile(spec)
 		if err != nil {
-			t.Fatalf("tour %d : lecture de %s : %v", tour, spec, err)
+			t.Fatalf("round %d: reading %s: %v", round, spec, err)
 		}
-		if string(apres) != string(reference) {
-			t.Fatalf("tour %d : le mixin de référence a été réécrit sur une sandbox vivante ;\n"+
-				"avant :\n%s\naprès :\n%s", tour, reference, apres)
+		if string(after) != string(reference) {
+			t.Fatalf("round %d: the reference mixin was rewritten on a live sandbox;\n"+
+				"before:\n%s\nafter:\n%s", round, reference, after)
 		}
-		if !strings.Contains(journal.String(), "api.anthropic.com") {
-			t.Errorf("tour %d : la dérive doit rester signalée ;\n%s", tour, journal.String())
+		if !strings.Contains(log.String(), "api.anthropic.com") {
+			t.Errorf("round %d: the drift must stay reported;\n%s", round, log.String())
 		}
 	}
 }
 
-// Une référence ABSENTE doit s'annoncer, elle aussi.
+// A MISSING reference must be announced too.
 //
-// Mesuré par la relecture : un `rm -rf ~/.den/cache` — opération que le spec §3
-// déclare SÛRE — désactivait DÉFINITIVEMENT la détection de dérive pour cette
-// sandbox. La branche attache ne repose jamais la référence, donc le silence
-// n'était pas « une fois », il était « pour toujours » : le trou que D3 venait
-// de fermer, rouvert par une action documentée comme anodine.
+// `rm -rf ~/.den/cache` — an operation spec §3 declares SAFE — permanently
+// disabled drift detection for that sandbox: the attach branch never
+// re-lays the reference, so the silence wasn't "once", it was "forever".
+// The "first spawn" that would justify silence never takes this path: it
+// goes through create. Hence the TWO rounds below — the second proves
+// nothing closes the gap on its own.
 //
-// Le « premier spawn » qui justifiait ce silence ne passe JAMAIS par ici : il
-// prend la branche create. D'où les DEUX tours ci-dessous — le second est celui
-// qui prouve que rien ne se referme tout seul.
-// marqueursAbsence : ce qui n'appartient QU'AU message de référence absente.
-// Les deux tests ci-dessous s'en servent en miroir — l'un exige leur présence,
-// l'autre leur absence. C'est ce couple, et lui seul, qui verrouille le fait que
-// den rend DEUX messages différents pour deux situations différentes.
-var marqueursAbsence = []string{"aucune référence de configuration", "cache purgé"}
+// absenceMarkers: text that belongs ONLY to the missing-reference message.
+// The two tests below use it as a mirror — one requires its presence, the
+// other its absence — and that pair alone locks in that den renders two
+// DIFFERENT messages for two different situations.
+var absenceMarkers = []string{"no configuration reference", "purged cache"}
 
-func TestSpawnSignaleUneReferenceAbsenteApresPurgeDuCache(t *testing.T) {
+func TestSpawnReportsAMissingReferenceAfterCachePurge(t *testing.T) {
 	denHome, repo := denTest(t)
-	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
+	writeConfig(t, denHome, "  mode: agent-forward\n", "  - api.anthropic.com\n  - github.com\n")
 
-	f, d := depsTest()
-	journal := &bytes.Buffer{}
-	d.Sortie = journal
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
-		t.Fatalf("premier spawn : erreur inattendue : %v", err)
+		t.Fatalf("first spawn: unexpected error: %v", err)
 	}
 
-	// `rm -rf ~/.den/cache`, et la config se resserre dans le dos de la VM.
+	// `rm -rf ~/.den/cache`, and the config narrows behind the VM's back.
 	if err := os.RemoveAll(filepath.Join(denHome, "cache")); err != nil {
 		t.Fatal(err)
 	}
-	ecrisConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	writeConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
 	}
 
-	for tour := 1; tour <= 2; tour++ {
-		journal.Reset()
+	for round := 1; round <= 2; round++ {
+		log.Reset()
 		if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-			t.Fatalf("tour %d : erreur inattendue : %v", tour, err)
+			t.Fatalf("round %d: unexpected error: %v", round, err)
 		}
-		sortie := journal.String()
-		if !strings.Contains(sortie, "non vérifiable") {
-			t.Errorf("tour %d : une référence absente doit être signalée ;\n%s", tour, sortie)
+		out := log.String()
+		if !strings.Contains(out, "can't be checked") {
+			t.Errorf("round %d: a missing reference must be reported;\n%s", round, out)
 		}
-		if !strings.Contains(sortie, "attention") {
-			t.Errorf("tour %d : ce doit être un avertissement ;\n%s", tour, sortie)
+		if !strings.Contains(out, "warning") {
+			t.Errorf("round %d: this must be a warning;\n%s", round, out)
 		}
-		// Et le message doit être CELUI de l'absence, pas celui du fichier
-		// corrompu. Cette distinction est le seul consommateur du %w sur
-		// os.ErrNotExist : sans elle, un refactor peut collapser les deux
-		// messages, rendre l'enveloppe sans objet, et laisser
-		// TestLisMixinAbsentEstDistinguableDUneLectureCassee vert en prouvant
-		// une distinction que plus personne n'exploite.
-		for _, marqueur := range marqueursAbsence {
-			if !strings.Contains(sortie, marqueur) {
-				t.Errorf("tour %d : le message d'ABSENCE doit contenir %q ;\n%s", tour, marqueur, sortie)
+		// And the message must be the ABSENCE one, not the corrupt-file
+		// one. This distinction is the only consumer of the %w on
+		// os.ErrNotExist: without it, a refactor could collapse the two
+		// messages and leave
+		// TestReadMixinAbsentIsDistinguishableFromABrokenRead green while
+		// proving a distinction nobody exploits anymore.
+		for _, marker := range absenceMarkers {
+			if !strings.Contains(out, marker) {
+				t.Errorf("round %d: the ABSENCE message must contain %q;\n%s", round, marker, out)
 			}
 		}
 	}
-	// Et l'attache a bien lieu à chaque tour : ne pas savoir ne bloque pas.
+	// And the attach happens every round: not knowing doesn't block.
 	if len(f.Attaches) != 2 {
-		t.Errorf("chaque tour doit attacher ; attaches : %v", f.Attaches)
+		t.Errorf("every round must attach; attaches: %v", f.Attaches)
 	}
 }
 
-// Une référence ILLISIBLE s'annonce aussi — den ne peut pas répondre à la
-// question, et se taire là-dessus se lirait comme « rien n'a changé ».
-func TestSpawnSignaleUneDeriveNonVerifiable(t *testing.T) {
+// An UNREADABLE reference must be announced too: den can't answer the
+// question, and staying silent about it would read as "nothing changed".
+func TestSpawnReportsUnverifiableDrift(t *testing.T) {
 	denHome, repo := denTest(t)
-	ecris(t, filepath.Join(denHome, "cache", "mixins", "api", "spec.yaml"), "\tpas du yaml")
+	write(t, filepath.Join(denHome, "cache", "mixins", "api", "spec.yaml"), "\tnot yaml")
 
-	f, d := depsTest()
-	journal := &bytes.Buffer{}
-	d.Sortie = journal
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	sortie := journal.String()
-	if !strings.Contains(sortie, "non vérifiable") {
-		t.Errorf("une référence illisible doit être signalée comme telle ;\n%s", sortie)
+	out := log.String()
+	if !strings.Contains(out, "can't be checked") {
+		t.Errorf("an unreadable reference must be reported as such;\n%s", out)
 	}
-	// Le MIROIR du test d'absence : un fichier corrompu n'est pas un cache
-	// purgé, et envoyer l'utilisateur sur la mauvaise cause lui fait chercher au
-	// mauvais endroit. Sans cette assertion, collapser les deux messages en un
-	// seul laisse toute la suite verte.
-	for _, marqueur := range marqueursAbsence {
-		if strings.Contains(sortie, marqueur) {
-			t.Errorf("un fichier CORROMPU ne doit pas rendre le message d'absence (%q) ;\n%s", marqueur, sortie)
+	// The MIRROR of the absence test: a corrupt file is not a purged cache,
+	// and sending the user to the wrong cause makes them look in the wrong
+	// place.
+	for _, marker := range absenceMarkers {
+		if strings.Contains(out, marker) {
+			t.Errorf("a CORRUPT file must not render the absence message (%q);\n%s", marker, out)
 		}
 	}
-	// Et l'attache a bien lieu : une dérive invérifiable ne bloque pas.
+	// And the attach happens: unverifiable drift doesn't block.
 	if len(f.Attaches) != 1 {
-		t.Errorf("l'attache doit avoir lieu ; attaches : %v", f.Attaches)
+		t.Errorf("the attach must happen; attaches: %v", f.Attaches)
 	}
 }
 
-func TestSpawnAvecWorktree(t *testing.T) {
+func TestSpawnWithWorktree(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !f.AAppele("create", "--name", "api.feat12") {
-		t.Errorf("le nom doit porter le worktree ; appels : %v", f.Appels)
+	if !f.HasCalled("create", "--name", "api.feat12") {
+		t.Errorf("the name must carry the worktree; calls: %v", f.Calls)
 	}
-	chemin := filepath.Join(denHome, "worktrees", "feat12", "api")
-	if _, err := os.Stat(chemin); err != nil {
-		t.Errorf("le worktree doit exister en %s : %v", chemin, err)
+	worktreePath := filepath.Join(denHome, "worktrees", "feat12", "api")
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Errorf("the worktree must exist at %s: %v", worktreePath, err)
 	}
-	// Et c'est le worktree, pas le repo, qui est monté — en premier positionnel.
-	ws := workspacesDe(appelCommencantPar(f, "create"))
-	if len(ws) == 0 || ws[0] != chemin {
-		t.Errorf("le worktree doit être le premier workspace ; workspaces = %v", ws)
+	// And it's the worktree, not the repo, that's mounted — as the first
+	// positional.
+	ws := workspacesOf(callStartingWith(f, "create"))
+	if len(ws) == 0 || ws[0] != worktreePath {
+		t.Errorf("the worktree must be the first workspace; workspaces = %v", ws)
 	}
-	// Le nom worktreeé doit traverser TOUTE la séquence : un settle-loop scopé
-	// sur « api » validerait la policy d'une autre sandbox que celle créée.
-	if !f.AAppele("policy", "check", "network", "--sandbox", "api.feat12", "--json", "github.com") {
-		t.Errorf("le settle-loop doit être scopé sur api.feat12 ; appels : %v", f.Appels)
+	// The worktreed name must travel through the WHOLE sequence: a
+	// settle-loop scoped on plain "api" would validate another sandbox's
+	// policy.
+	if !f.HasCalled("policy", "check", "network", "--sandbox", "api.feat12", "--json", "github.com") {
+		t.Errorf("the settle-loop must be scoped on api.feat12; calls: %v", f.Calls)
 	}
-	if !f.AAttache("exec", "-it", "-w", chemin, "api.feat12", "bash", "-l") {
-		t.Errorf("l'attache doit ouvrir dans le worktree ; attaches : %v", f.Attaches)
+	if !f.HasAttached("exec", "-it", "-w", worktreePath, "api.feat12", "bash", "-l") {
+		t.Errorf("the attach must open in the worktree; attaches: %v", f.Attaches)
 	}
 }
 
-// F1 du smoke réel du 2026-07-29 : un worktree monté SEUL est un worktree où
-// git est mort.
+// F1: a worktree mounted ALONE is a worktree where git is dead.
 //
-// Le `.git` d'un worktree lié n'est pas un dossier mais un fichier
-// « gitdir: <repo>/.git/worktrees/<nom> ». Ce chemin-là appartient au dépôt
-// principal, que den ne montait pas : dans la microVM, TOUTE commande git
-// répondait « fatal: not a git repository », donc ni status, ni diff, ni commit,
-// ni push — le cas d'usage central de `-w`. Mesuré sur sbx v0.35.0, et muet
-// jusqu'à la première commande git de l'agent.
+// A linked worktree's `.git` is not a directory but a file reading
+// `gitdir: <repo>/.git/worktrees/<name>`, pointing into the main repo —
+// which den didn't mount. Every git command in the microVM failed with
+// "fatal: not a git repository": no status, diff, commit or push, the
+// central use case of `-w`.
 //
-// Ce qui est monté est le DOSSIER GIT COMMUN (`<repo>/.git`) et non le dépôt
-// entier : il porte l'admin dir, les objets et les refs — tout ce dont un commit
-// a besoin — et laisse l'arbre de travail principal invisible dans la VM, ce qui
-// est précisément l'isolation pour laquelle `-w` existe. Mesuré aussi : monter
-// le dépôt entier rend git fonctionnel mais réexpose l'arbre principal EN
-// ÉCRITURE.
+// What's mounted is the COMMON GIT DIR (`<repo>/.git`), not the whole
+// repo: it carries the admin dir, objects and refs — everything a commit
+// needs — while keeping the main worktree invisible in the VM, exactly the
+// isolation `-w` exists for. Mounting the whole repo would also fix git,
+// but re-exposes the main worktree WRITABLE.
 //
-// Un montage par repo, pas un seul : `-w` propage le worktree sur TOUS les repos
-// du nest (spec §13.4), et chacun a son propre dossier git commun.
-func TestSpawnMonteLeDossierGitDeChaqueRepoAvecUnWorktree(t *testing.T) {
+// One mount per repo, not a single one: `-w` propagates the worktree to
+// EVERY repo of the nest (spec §13.4), each with its own common git dir.
+func TestSpawnMountsEachRepoGitDirWithAWorktree(t *testing.T) {
 	denHome, repoA := denTest(t)
 	repoB := filepath.Join(t.TempDir(), "web")
-	creeDepot(t, repoB)
-	ecris(t, filepath.Join(denHome, "nests", "api.yaml"),
+	createRepo(t, repoB)
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
 		"stack: devx\nrepos:\n  - { path: "+repoA+" }\n  - { path: "+repoB+" }\n")
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	ws := workspacesDe(appelCommencantPar(f, "create"))
-	attendu := []string{
+	ws := workspacesOf(callStartingWith(f, "create"))
+	expected := []string{
 		filepath.Join(denHome, "worktrees", "feat12", "api"),
 		filepath.Join(denHome, "worktrees", "feat12", "web"),
-		gitResolu(t, repoA),
-		gitResolu(t, repoB),
+		resolvedGitDir(t, repoA),
+		resolvedGitDir(t, repoB),
 		filepath.Join(denHome, "agents", "claude"),
 	}
-	if !slices.Equal(ws, attendu) {
-		t.Errorf("workspaces = %v,\nattendu       %v", ws, attendu)
+	if !slices.Equal(ws, expected) {
+		t.Errorf("workspaces = %v,\nexpected      %v", ws, expected)
 	}
 
-	// L'assertion qui donne sa RAISON à la forme résolue ci-dessus, et que ne
-	// satisferait aucun `filepath.Join(repo, ".git")` : le chemin monté doit être
-	// celui que le fichier `.git` du worktree désigne. Ces deux-là peuvent
-	// différer — sur macOS /var est un lien vers /private/var, et git écrit la
-	// forme résolue — et dans la microVM il n'y a plus de lien pour rattraper
-	// l'écart : un montage sous la forme non résolue laisserait le `gitdir:`
-	// pointer dans le vide, exactement la panne que ce test instruit.
+	// The assertion that gives the resolved form above its REASON, which no
+	// `filepath.Join(repo, ".git")` would satisfy: the mounted path must be
+	// the one the worktree's `.git` file designates. The two can differ —
+	// on macOS /var is a symlink to /private/var, and git writes the
+	// resolved form — and inside the microVM there's no symlink left to
+	// bridge the gap: mounting the unresolved form would leave `gitdir:`
+	// pointing at nothing, exactly the failure this test guards against.
 	for i, repo := range []string{repoA, repoB} {
 		wt := ws[i]
-		lien, err := os.ReadFile(filepath.Join(wt, ".git"))
+		link, err := os.ReadFile(filepath.Join(wt, ".git"))
 		if err != nil {
-			t.Fatalf("%s : le .git d'un worktree lié doit être un fichier : %v", wt, err)
+			t.Fatalf("%s: a linked worktree's .git must be a file: %v", wt, err)
 		}
-		cible := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(lien)), "gitdir:"))
-		monte := ws[2+i]
-		if !strings.HasPrefix(cible, monte+string(filepath.Separator)) {
-			t.Errorf("worktree de %s : `gitdir:` désigne %q, hors du workspace monté %q — "+
-				"dans la microVM ce chemin ne se résoudra pas", repo, cible, monte)
+		target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(link)), "gitdir:"))
+		mounted := ws[2+i]
+		if !strings.HasPrefix(target, mounted+string(filepath.Separator)) {
+			t.Errorf("worktree of %s: `gitdir:` points at %q, outside the mounted workspace %q — "+
+				"inside the microVM this path won't resolve", repo, target, mounted)
 		}
 	}
 }
 
-// gitResolu rend le `.git` du dépôt tel que GIT le nomme.
-func gitResolu(t *testing.T, repo string) string {
+// resolvedGitDir returns a repo's `.git` path the way git itself names it.
+func resolvedGitDir(t *testing.T, repo string) string {
 	t.Helper()
-	reel, err := filepath.EvalSymlinks(repo)
+	real, err := filepath.EvalSymlinks(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(reel, ".git")
+	return filepath.Join(real, ".git")
 }
 
-// F1, l'autre moitié : une sandbox créée AVANT le correctif tourne toujours, et
-// elle ne monte pas les `.git`. Rien ne remonte un mount à une VM vivante, et
-// signaleDerive est aveugle à ce cas (le mixin, lui, n'a pas bougé) : sans ce
-// signal, l'utilisateur se rattache à une VM où git est mort et ne l'apprend
-// qu'à sa première commande git — exactement la panne muette que F1 corrige.
-func TestSpawnSignaleUneVMSansLesDossiersGit(t *testing.T) {
+// F1, the other half: a sandbox created BEFORE the fix is still running,
+// and it doesn't mount the `.git` dirs. Nothing remounts a live VM, and
+// reportDrift is blind to this case (the mixin hasn't changed): without
+// this signal, the user reattaches to a VM with dead git and only finds
+// out on their first git command — the silent failure F1 fixes.
+func TestSpawnReportsAVMMissingGitDirs(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsTest()
-	var sortie bytes.Buffer
-	d.Sortie = &sortie
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
 	wt := filepath.Join(denHome, "worktrees", "feat12", "api")
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["` +
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["` +
 			wt + `"]}]}`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// AVERTIR, pas refuser : la VM porte peut-être du travail en cours, et
-	// l'utilisateur peut avoir de bonnes raisons d'y retourner sans git.
-	if !f.AAttache("exec", "-it", "-w", wt, "api.feat12", "bash", "-l") {
-		t.Errorf("den doit quand même attacher ; attaches : %v", f.Attaches)
+	// WARN, don't refuse: the VM might carry work in progress, and the
+	// user may have good reasons to return to it without git.
+	if !f.HasAttached("exec", "-it", "-w", wt, "api.feat12", "bash", "-l") {
+		t.Errorf("den must still attach; attaches: %v", f.Attaches)
 	}
-	if !strings.Contains(sortie.String(), "git") {
-		t.Errorf("den doit signaler que git sera inopérant ; sortie :\n%s", sortie.String())
+	if !strings.Contains(out.String(), "git") {
+		t.Errorf("den must report that git will be inoperative; output:\n%s", out.String())
 	}
-	// Le remède est la destruction : rien ne remonte un mount à une VM vivante.
-	if !strings.Contains(sortie.String(), "den rm api.feat12") {
-		t.Errorf("le message doit donner le remède exact ; sortie :\n%s", sortie.String())
+	// The remedy is destruction: nothing remounts a live VM.
+	if !strings.Contains(out.String(), "den rm api.feat12") {
+		t.Errorf("the message must give the exact remedy; output:\n%s", out.String())
 	}
 }
 
-// La contrepartie, qui empêche l'avertissement de crier sur les VM correctes :
-// une sandbox qui monte bien les dossiers git ne doit rien déclencher.
-func TestSpawnNeSignaleRienQuandLesDossiersGitSontMontes(t *testing.T) {
+// The counterpart, which keeps the warning from firing on correct VMs: a
+// sandbox that does mount its git dirs must trigger nothing.
+func TestSpawnReportsNothingWhenGitDirsAreMounted(t *testing.T) {
 	denHome, repo := denTest(t)
-	f, d := depsTest()
-	var sortie bytes.Buffer
-	d.Sortie = &sortie
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
 	wt := filepath.Join(denHome, "worktrees", "feat12", "api")
-	// Le `:ro` est une option de mount, pas une partie du chemin : il ne doit
-	// pas faire échouer la comparaison.
-	f.Reponses["ls --json"] = sbx.Reponse{
-		Sortie: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["` +
-			wt + `","` + gitResolu(t, repo) + `:ro"]}]}`),
+	// The `:ro` is a mount option, not part of the path: it must not break
+	// the comparison.
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["` +
+			wt + `","` + resolvedGitDir(t, repo) + `:ro"]}]}`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if strings.Contains(sortie.String(), "den rm") {
-		t.Errorf("aucun avertissement sur une VM correcte ; sortie :\n%s", sortie.String())
+	if strings.Contains(out.String(), "den rm") {
+		t.Errorf("no warning on a correct VM; output:\n%s", out.String())
 	}
 }
 
-// La contrepartie : SANS worktree, le dépôt entier est déjà monté et son `.git`
-// avec. Un montage supplémentaire serait redondant, et surtout il masquerait la
-// vraie raison du premier — un `.git` monté « pour git » alors que git marchait
-// déjà se propagerait à des cas où il n'a rien à faire.
-func TestSpawnNeMonteAucunDossierGitSansWorktree(t *testing.T) {
+// The counterpart: WITHOUT a worktree, the whole repo is already mounted,
+// `.git` included. An extra mount would be redundant, and worse, would
+// mask the real reason for the first one — a `.git` mounted "for git" when
+// git already worked would spread to cases where it has no business
+// being.
+func TestSpawnMountsNoGitDirWithoutAWorktree(t *testing.T) {
 	denHome, repo := denTest(t)
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	ws := workspacesDe(appelCommencantPar(f, "create"))
-	attendu := []string{repo, filepath.Join(denHome, "agents", "claude")}
-	if !slices.Equal(ws, attendu) {
-		t.Errorf("workspaces = %v, attendu %v", ws, attendu)
+	ws := workspacesOf(callStartingWith(f, "create"))
+	expected := []string{repo, filepath.Join(denHome, "agents", "claude")}
+	if !slices.Equal(ws, expected) {
+		t.Errorf("workspaces = %v, expected %v", ws, expected)
 	}
 }
 
-// VERROU : le PREMIER workspace doit être le repo (ou son worktree).
+// LOCKED INVARIANT: the FIRST workspace must be the repo (or its
+// worktree).
 //
-// sbx.Sandbox.Workdir prend le premier workspace de `sbx ls` pour répertoire de
-// travail, et rien à SON niveau ne peut vérifier que l'appelant l'a bien rangé
-// en tête — c'est ici, à l'unique endroit qui compose cette liste, que le
-// contrat doit être verrouillé. Le profil agent (toujours présent) et le dossier
-// SSH (mode « mount ») sont les deux candidats naturels à le doubler.
-func TestSpawnMonteLeRepoAvantLeProfilAgentEtSSH(t *testing.T) {
-	// Le dossier est CRÉÉ : la version précédente montait un chemin qui
-	// n'existait pas et s'en satisfaisait — c'est précisément le défaut que
-	// TestSpawnRefuseUnSSHDirInexistant instruit, et le fixture le portait.
+// sbx.Sandbox.Workdir takes `sbx ls`'s first workspace as the working
+// directory, and nothing at its level can verify the caller kept it
+// first — this is the one place that builds the list, so the contract
+// must be locked here. The agent profile (always present) and the SSH dir
+// (mount mode) are the two natural candidates to displace it.
+func TestSpawnMountsTheRepoBeforeTheAgentProfileAndSSH(t *testing.T) {
+	// The directory is CREATED: a version mounting a nonexistent path is
+	// exactly the defect TestSpawnRefusesAMissingSSHDir guards against.
 	sshDir := filepath.Join(t.TempDir(), "ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	denHome, repo := denTestSSH(t, "  mode: mount\n  dir: "+sshDir+"\n")
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	ws := workspacesDe(appelCommencantPar(f, "create"))
-	attendu := []string{repo, filepath.Join(denHome, "agents", "claude"), sshDir}
-	if !slices.Equal(ws, attendu) {
-		t.Errorf("workspaces = %v, attendu %v", ws, attendu)
+	ws := workspacesOf(callStartingWith(f, "create"))
+	expected := []string{repo, filepath.Join(denHome, "agents", "claude"), sshDir}
+	if !slices.Equal(ws, expected) {
+		t.Errorf("workspaces = %v, expected %v", ws, expected)
 	}
-	// Même contrat vu de l'autre bout : c'est ce premier workspace qui devient
-	// le -w de l'attache.
-	if !f.AAttache("exec", "-it", "-w", repo, "api", "bash", "-l") {
-		t.Errorf("l'attache doit ouvrir dans le repo ; attaches : %v", f.Attaches)
+	// The same contract seen from the other end: this first workspace
+	// becomes the attach's -w.
+	if !f.HasAttached("exec", "-it", "-w", repo, "api", "bash", "-l") {
+		t.Errorf("the attach must open in the repo; attaches: %v", f.Attaches)
 	}
 }
 
-// D5 — en `ssh.mode: mount`, ssh.dir part en workspace, donc VERBATIM dans
-// l'argv de `sbx create`. Invariant n°3 du plan : ne jamais passer à sbx un
-// chemin que den n'a pas garanti présent — un chemin inexistant devient un
-// mount d'un dossier vide qui ÉCRASE la vue de l'utilisateur sur ses clés.
-// Validate() couvre déjà le cas « ssh.dir non déclaré » ; celui-ci est le cas
-// « déclaré mais absent du disque », que seule une sonde du système peut voir.
-func TestSpawnRefuseUnSSHDirInexistant(t *testing.T) {
-	sshDir := filepath.Join(t.TempDir(), "ssh-jamais-cree")
+// D5: in `ssh.mode: mount`, ssh.dir becomes a workspace, so it goes
+// VERBATIM into `sbx create`'s argv. Plan invariant #3: never pass sbx a
+// path den hasn't guaranteed exists — a missing path becomes a mount of an
+// empty directory that OVERWRITES the user's view of their keys.
+// Validate() already covers "ssh.dir not declared"; this is "declared but
+// absent from disk", visible only to a system probe.
+func TestSpawnRefusesAMissingSSHDir(t *testing.T) {
+	sshDir := filepath.Join(t.TempDir(), "ssh-never-created")
 	denHome, _ := denTestSSH(t, "  mode: mount\n  dir: "+sshDir+"\n")
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
 	if err == nil {
-		t.Fatal("un ssh.dir inexistant doit être refusé, obtenu nil")
+		t.Fatal("a missing ssh.dir must be refused, got nil")
 	}
 	if !strings.Contains(err.Error(), sshDir) {
-		t.Errorf("erreur = %q, attendu le chemin complet du dossier manquant", err.Error())
+		t.Errorf("error = %q, expected the full path of the missing directory", err.Error())
 	}
-	// Refusé AVANT le moindre effet de bord, comme les repos manquants.
-	if len(f.Appels) != 0 || len(f.Attaches) != 0 {
-		t.Errorf("aucun appel sbx ne doit précéder le refus ; appels : %v, attaches : %v", f.Appels, f.Attaches)
+	// Refused BEFORE any side effect, like the missing repos.
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
 	}
 	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
-		t.Error("le profil de l'agent ne doit pas avoir été créé avant le refus")
+		t.Error("the agent profile must not have been created before the refusal")
 	}
 }
 
-// La contrepartie : les modes qui ne montent RIEN ne doivent pas se mettre à
-// exiger un ssh.dir sur disque. Sans ce cas, un contrôle hissé hors du
-// `mode == "mount"` casserait agent-forward et none sans qu'on le voie.
-func TestSpawnNExigePasDeSSHDirHorsDuModeMount(t *testing.T) {
+// The counterpart: modes that mount NOTHING must not start requiring an
+// ssh.dir on disk. Without this case, a check hoisted outside
+// `mode == "mount"` would break agent-forward and none unnoticed.
+func TestSpawnDoesNotRequireSSHDirOutsideMountMode(t *testing.T) {
 	for _, mode := range []string{"agent-forward", "none"} {
 		t.Run(mode, func(t *testing.T) {
 			denHome, _ := denTestSSH(t, "  mode: "+mode+"\n")
-			_, d := depsTest()
+			_, d := fakeDeps()
 			if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-				t.Fatalf("mode %q : erreur inattendue : %v", mode, err)
+				t.Fatalf("mode %q: unexpected error: %v", mode, err)
 			}
 		})
 	}
 }
 
-// D3 — `none` et `agent-forward` n'ajoutent AUCUN workspace, et c'est voulu,
-// pas oublié. La distinction n'est pas théorique : un `if mode == "mount"` sans
-// `else` ne permet à personne de trancher entre « rien à faire » et « cas
-// oublié », et c'est exactement cette ambiguïté qui a produit le diagnostic
-// « toute sandbox par défaut sort sans accès SSH ». Ce diagnostic était FAUX —
-// agent-forward passe par l'héritage de SSH_AUTH_SOCK par le process sbx, ce
-// que prouve internal/sbx TestExecRunTransmetLEnvironnementDeDen — mais il
-// était indécidable à la lecture de ce fichier-ci.
+// D3: `none` and `agent-forward` add NO workspace, by design, not by
+// omission. The distinction isn't theoretical: an `if mode == "mount"`
+// with no `else` leaves nobody able to tell "nothing to do" from
+// "forgotten case" apart, and that ambiguity produced the (false)
+// diagnosis that every default sandbox ships without SSH access —
+// agent-forward actually relies on sbx inheriting SSH_AUTH_SOCK, proved by
+// internal/sbx's TestExecRunTransmitsDenEnvironment.
 //
-// Ce que ce test verrouille, et que le commentaire de spawn.go affirme : les
-// trois modes montent les mêmes workspaces, à ssh.dir près, qui n'appartient
-// qu'à mount.
-func TestSpawnNAjouteAucunWorkspaceHorsDuModeMount(t *testing.T) {
-	// ssh.dir est DÉCLARÉ et EXISTE dans les trois configurations. Sans cela,
-	// « agent-forward ne monte pas ssh.dir » se confondrait avec « il n'y avait
-	// rien à monter », et la mutation qui hisserait l'append hors du `mount`
-	// resterait invisible.
+// What this test locks in, matching spawn.go's comment: the three modes
+// mount the same workspaces, except for ssh.dir, which belongs to mount
+// alone.
+func TestSpawnAddsNoWorkspaceOutsideMountMode(t *testing.T) {
+	// ssh.dir is DECLARED and EXISTS in all three configurations. Without
+	// that, "agent-forward doesn't mount ssh.dir" would be indistinguishable
+	// from "there was nothing to mount", and a mutation hoisting the append
+	// outside `mount` would stay invisible.
 	sshDir := filepath.Join(t.TempDir(), "ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	// La liste est NORMALISÉE avant comparaison : denTestSSH refait un den home
-	// et un repo à chaque appel, donc les chemins bruts diffèrent d'un mode à
-	// l'autre et ne se comparent pas d'égal à égal. Ce qui est comparé est la
-	// FORME de la liste — quels rôles, dans quel ordre — c'est-à-dire
-	// exactement la propriété dont on veut la preuve. Un chemin inattendu
-	// apparaît tel quel plutôt que d'être avalé.
-	formeDe := func(mode string) []string {
+	// The list is NORMALIZED before comparison: denTestSSH rebuilds a den
+	// home and repo on every call, so raw paths differ across modes and
+	// can't be compared directly. What's compared is the list's SHAPE —
+	// which roles, in which order — exactly the property under test. An
+	// unexpected path surfaces as-is rather than being swallowed.
+	shapeOf := func(mode string) []string {
 		t.Helper()
 		denHome, repo := denTestSSH(t, "  mode: "+mode+"\n  dir: "+sshDir+"\n")
-		f, d := depsTest()
+		f, d := fakeDeps()
 		if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-			t.Fatalf("mode %q : erreur inattendue : %v", mode, err)
+			t.Fatalf("mode %q: unexpected error: %v", mode, err)
 		}
 		roles := map[string]string{
 			repo: "<repo>",
-			filepath.Join(denHome, "agents", "claude"): "<profil-agent>",
+			filepath.Join(denHome, "agents", "claude"): "<agent-profile>",
 			sshDir: "<ssh.dir>",
 		}
-		var forme []string
-		for _, w := range workspacesDe(appelCommencantPar(f, "create")) {
-			role, connu := roles[w]
-			if !connu {
-				role = "<inconnu:" + w + ">"
+		var shape []string
+		for _, w := range workspacesOf(callStartingWith(f, "create")) {
+			role, known := roles[w]
+			if !known {
+				role = "<unknown:" + w + ">"
 			}
-			forme = append(forme, role)
+			shape = append(shape, role)
 		}
-		return forme
+		return shape
 	}
 
-	none := formeDe("none")
-	agentForward := formeDe("agent-forward")
-	mount := formeDe("mount")
+	none := shapeOf("none")
+	agentForward := shapeOf("agent-forward")
+	mount := shapeOf("mount")
 
 	if !slices.Equal(agentForward, none) {
-		t.Errorf("agent-forward monte %v, none monte %v : attendu exactement la MÊME liste — "+
-			"agent-forward n'ajoute aucun workspace, il repose sur l'héritage de SSH_AUTH_SOCK "+
-			"par le process sbx", agentForward, none)
+		t.Errorf("agent-forward mounts %v, none mounts %v: expected exactly the SAME list — "+
+			"agent-forward adds no workspace, it relies on sbx inheriting SSH_AUTH_SOCK",
+			agentForward, none)
 	}
-	// La comparaison ci-dessus serait satisfaite par deux listes vides. Les
-	// deux assertions suivantes disent CE QUE monte chaque mode.
-	if attendu := []string{"<repo>", "<profil-agent>"}; !slices.Equal(agentForward, attendu) {
-		t.Errorf("agent-forward monte %v, attendu %v", agentForward, attendu)
+	// The comparison above would also pass for two empty lists. The next
+	// two assertions say WHAT each mode mounts.
+	if expected := []string{"<repo>", "<agent-profile>"}; !slices.Equal(agentForward, expected) {
+		t.Errorf("agent-forward mounts %v, expected %v", agentForward, expected)
 	}
-	if attendu := []string{"<repo>", "<profil-agent>", "<ssh.dir>"}; !slices.Equal(mount, attendu) {
-		t.Errorf("mount monte %v, attendu %v", mount, attendu)
+	if expected := []string{"<repo>", "<agent-profile>", "<ssh.dir>"}; !slices.Equal(mount, expected) {
+		t.Errorf("mount mounts %v, expected %v", mount, expected)
 	}
 	if len(mount) != len(agentForward)+1 {
-		t.Errorf("mount monte %d workspace(s) et agent-forward %d : attendu exactement un de plus, "+
-			"et ce un-là est ssh.dir", len(mount), len(agentForward))
+		t.Errorf("mount mounts %d workspace(s) and agent-forward %d: expected exactly one more, "+
+			"and that one is ssh.dir", len(mount), len(agentForward))
 	}
 }
 
-// F3 — les kits partent en `--kit` dans l'argv de `sbx create`, exactement
-// comme ssh.dir y part en workspace. C'est le même invariant n°3 du plan (ne
-// jamais passer à sbx un chemin que den n'a pas garanti), et l'asymétrie était
-// le défaut : D2 gardait les kits dans `doctor` seulement, donc `den api`
-// rendait rc=0 et envoyait des chemins inexistants à sbx pour qui ne lance pas
-// `den doctor`.
-func TestSpawnRefuseUnKitInexistant(t *testing.T) {
-	for _, kit := range []string{"transverse", "devx-kit"} { // `kits:` pluriel, puis `kit:` singulier
+// F3: kits go into `sbx create`'s `--kit` argv, exactly as ssh.dir goes in
+// as a workspace — same plan invariant #3 (never pass sbx a path den
+// hasn't guaranteed). The asymmetry was the defect: kit checks lived only
+// in `doctor`, so `den api` exited 0 and sent sbx nonexistent paths for
+// anyone who skipped `den doctor`.
+func TestSpawnRefusesAMissingKit(t *testing.T) {
+	for _, kit := range []string{"transverse", "devx-kit"} { // plural `kits:`, then singular `kit:`
 		t.Run(kit, func(t *testing.T) {
 			denHome, _ := denTest(t)
-			manquant := filepath.Join(denHome, "stacks", "devx", kit)
-			if err := os.RemoveAll(manquant); err != nil {
+			missing := filepath.Join(denHome, "stacks", "devx", kit)
+			if err := os.RemoveAll(missing); err != nil {
 				t.Fatal(err)
 			}
-			f, d := depsTest()
+			f, d := fakeDeps()
 
 			err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
 			if err == nil {
-				t.Fatal("un kit inexistant doit être refusé, obtenu nil")
+				t.Fatal("a missing kit must be refused, got nil")
 			}
-			if !strings.Contains(err.Error(), manquant) {
-				t.Errorf("erreur = %q, attendu le chemin complet du kit manquant", err.Error())
+			if !strings.Contains(err.Error(), missing) {
+				t.Errorf("error = %q, expected the full path of the missing kit", err.Error())
 			}
-			// La stack qui le déclare : avec plusieurs stacks, un chemin seul
-			// ne dit pas quel stack.yaml corriger.
+			// The stack that declares it: with several stacks, a bare path
+			// doesn't say which stack.yaml to fix.
 			if !strings.Contains(err.Error(), "devx") {
-				t.Errorf("erreur = %q, attendu la stack fautive nommée", err.Error())
+				t.Errorf("error = %q, expected the offending stack named", err.Error())
 			}
-			// Refusé AVANT tout effet de bord, comme les repos et ssh.dir.
-			if len(f.Appels) != 0 || len(f.Attaches) != 0 {
-				t.Errorf("aucun appel sbx ne doit précéder le refus ; appels : %v, attaches : %v",
-					f.Appels, f.Attaches)
+			// Refused BEFORE any side effect, like the repos and ssh.dir.
+			if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+				t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v",
+					f.Calls, f.Attaches)
 			}
 			if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
-				t.Error("le profil de l'agent ne doit pas avoir été créé avant le refus")
+				t.Error("the agent profile must not have been created before the refusal")
 			}
 		})
 	}
 }
 
-// Une entrée VIDE dans `kits:` (pluriel) doit être ignorée, comme elle l'est
-// déjà par doctor et par sbx.ArgvCreate. Le premier jet de F3 ne filtrait que
-// le `kit:` SINGULIER vide : mesuré, `kits: ["", "transverse"]` passait
-// `den doctor` en « tout est en ordre » et faisait refuser `den <nest>` avec un
-// « kit introuvable :  » au chemin vide. Deux juges du même champ ne jugeaient
-// pas pareil — le motif même de T2-min-5.
+// An EMPTY entry in `kits:` (plural) must be ignored, as it already is by
+// doctor and by sbx.CreateArgv. F3's first pass filtered only the
+// SINGULAR `kit:` when empty: `kits: ["", "transverse"]` passed
+// `den doctor` as "all clear" yet made `den <nest>` refuse with a
+// "kit not found: " on an empty path — two judges of the same field
+// disagreeing, the very defect T2-min-5 names.
 //
-// Le pendant côté doctor est TestRunIgnoreUneEntreeVideDansKits : les deux
-// tiennent la MÊME propriété par les deux bouts, et c'est ce qui rend visible
-// toute divergence future entre les deux chemins.
-func TestSpawnIgnoreUneEntreeVideDansKits(t *testing.T) {
+// The doctor-side counterpart is TestRunIgnoresAnEmptyEntryInKits: both
+// hold the SAME property from the two ends, which is what makes any
+// future divergence between the two paths visible.
+func TestSpawnIgnoresAnEmptyEntryInKits(t *testing.T) {
 	denHome, _ := denTest(t)
-	ecris(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
+	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
 		"image: devx:v1\nkits: [\"\", transverse]\nkit: devx-kit\n")
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("une entrée vide dans kits: doit être ignorée, pas refusée : %v", err)
+		t.Fatalf("an empty entry in kits: must be ignored, not refused: %v", err)
 	}
-	// Et elle ne doit pas non plus se glisser dans l'argv : un `--kit ""`
-	// atteindrait sbx.
-	kits := kitsDe(appelCommencantPar(f, "create"))
+	// And it must not slip into the argv either: a `--kit ""` would reach
+	// sbx.
+	kits := kitsOf(callStartingWith(f, "create"))
 	for i, k := range kits {
 		if k == "" {
-			t.Errorf("--kit n°%d est vide ; kits = %v", i, kits)
+			t.Errorf("--kit #%d is empty; kits = %v", i, kits)
 		}
 	}
-	// L'ordre de layering reste celui de la déclaration, l'entrée vide retirée.
-	attendu := []string{
+	// The layering order stays the declaration order, empty entry removed.
+	expected := []string{
 		filepath.Join(denHome, "stacks", "devx", "transverse"),
 		filepath.Join(denHome, "stacks", "devx", "devx-kit"),
 		filepath.Join(denHome, "cache", "mixins", "api"),
 	}
-	if !slices.Equal(kits, attendu) {
-		t.Errorf("kits = %v, attendu %v", kits, attendu)
+	if !slices.Equal(kits, expected) {
+		t.Errorf("kits = %v, expected %v", kits, expected)
 	}
 }
 
-// La contrepartie : une stack qui ne déclare AUCUN kit est parfaitement valide
-// (spec §4.2) et ne doit rien exiger. Sans ce cas, un contrôle qui refuserait
-// la chaîne vide casserait toutes les stacks sans kit.
-func TestSpawnAccepteUneStackSansKit(t *testing.T) {
+// The counterpart: a stack declaring NO kit is perfectly valid (spec
+// §4.2) and must require nothing. Without this case, a check refusing the
+// empty string would break every kit-less stack.
+func TestSpawnAcceptsAStackWithoutKit(t *testing.T) {
 	denHome, _ := denTest(t)
-	ecris(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"), "image: devx:v1\n")
-	_, d := depsTest()
+	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"), "image: devx:v1\n")
+	_, d := fakeDeps()
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("une stack sans kit doit rester valide : %v", err)
+		t.Fatalf("a stack without a kit must stay valid: %v", err)
 	}
 }
 
-// F4 du smoke réel du 2026-07-29 : `-w feature/123` était refusé, alors que
-// c'est un nom de branche parfaitement ordinaire — et le premier que tape qui
-// travaille sur une forge.
+// F4: `-w feature/123` used to be refused, even though it's a perfectly
+// ordinary branch name — the first one anyone working on a forge types.
 //
-// Ce qui est aplati, c'est ce qui devient un NOM : la sandbox et le dossier de
-// worktree. La branche, elle, garde le nom que l'utilisateur a tapé : c'est
-// celui de son `git log`, de sa forge et de sa PR.
+// What gets flattened is whatever becomes a NAME: the sandbox and the
+// worktree directory. The branch keeps what the user typed — the name
+// their `git log`, forge and PR all use.
 //
-// Les assertions suivent l'aller-retour que `den rm` empruntera : nom de
-// sandbox → sbx.DecomposeNom → worktree.Chemin → le dossier qu'Assure a
-// réellement créé. Un aplatissement qui ne serait pas appliqué aux TROIS
-// romprait cette chaîne, et `den rm` nettoierait à côté.
-func TestSpawnAplatitLeNomDeSandboxEtGardeLaBranche(t *testing.T) {
+// The assertions follow the round trip `den rm` will take: sandbox name →
+// sbx.SplitName → worktree.Path → the directory Ensure actually created.
+// Flattening applied to fewer than all THREE would break that chain, and
+// `den rm` would clean up the wrong place.
+func TestSpawnFlattensTheSandboxNameAndKeepsTheBranch(t *testing.T) {
 	denHome, repo := denTest(t)
-	f, d := depsTest()
-	var sortie bytes.Buffer
-	d.Sortie = &sortie
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
 
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "api", Worktree: "feature/123"}, d); err != nil {
-		t.Fatalf("« feature/123 » est un nom de branche légitime : %v", err)
+		t.Fatalf("\"feature/123\" is a legitimate branch name: %v", err)
 	}
 
-	if !f.AAppele("create", "--name", "api.feature-123") {
-		t.Errorf("le nom de sandbox doit être aplati ; appels : %v", f.Appels)
+	if !f.HasCalled("create", "--name", "api.feature-123") {
+		t.Errorf("the sandbox name must be flattened; calls: %v", f.Calls)
 	}
-	// Le settle-loop et l'attache doivent viser LE MÊME nom : un aplatissement
-	// posé au seul endroit du `create` laisserait la policy scopée sur un nom
-	// que sbx ne connaît pas.
-	if !f.AAppele("policy", "check", "network", "--sandbox", "api.feature-123") {
-		t.Errorf("le settle-loop doit être scopé sur le nom aplati ; appels : %v", f.Appels)
-	}
-
-	chemin := filepath.Join(denHome, "worktrees", "feature-123", "api")
-	if _, err := os.Stat(chemin); err != nil {
-		t.Errorf("le dossier de worktree doit être aplati lui aussi (%s) : %v", chemin, err)
-	}
-	if !f.AAttache("exec", "-it", "-w", chemin, "api.feature-123", "bash", "-l") {
-		t.Errorf("l'attache doit ouvrir dans le worktree aplati ; attaches : %v", f.Attaches)
+	// The settle-loop and the attach must target the SAME name: flattening
+	// applied only at `create` would leave the policy scoped on a name sbx
+	// doesn't know.
+	if !f.HasCalled("policy", "check", "network", "--sandbox", "api.feature-123") {
+		t.Errorf("the settle-loop must be scoped on the flattened name; calls: %v", f.Calls)
 	}
 
-	// L'aller-retour, en toutes lettres : c'est LUI que `den rm` emprunte pour
-	// retrouver le dossier à nettoyer, et il ne dispose de rien d'autre que du
-	// nom de sandbox. Un aplatissement appliqué au nom mais pas au dossier
-	// laisserait ces deux chemins diverger, et `den rm` nettoierait à côté.
-	_, wt := sbx.DecomposeNom("api.feature-123")
-	if got := worktree.Chemin("central", filepath.Join(denHome, "worktrees"), wt, repo); got != chemin {
-		t.Errorf("`den rm` chercherait le worktree en %q, il est en %q", got, chemin)
+	worktreePath := filepath.Join(denHome, "worktrees", "feature-123", "api")
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Errorf("the worktree directory must be flattened too (%s): %v", worktreePath, err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", worktreePath, "api.feature-123", "bash", "-l") {
+		t.Errorf("the attach must open in the flattened worktree; attaches: %v", f.Attaches)
 	}
 
-	// Et la branche, elle, n'est PAS aplatie.
-	if got := brancheDe(t, chemin); got != "feature/123" {
-		t.Errorf("branche = %q, attendu feature/123 — c'est la branche de l'utilisateur", got)
+	// The round trip, spelled out: it's what `den rm` uses to find the
+	// directory to clean up, with nothing else to go on but the sandbox
+	// name. Flattening applied to the name but not the directory would let
+	// these two paths diverge, and `den rm` would clean up the wrong place.
+	_, wt := sbx.SplitName("api.feature-123")
+	if got := worktree.Path("central", filepath.Join(denHome, "worktrees"), wt, repo); got != worktreePath {
+		t.Errorf("`den rm` would look for the worktree at %q, it's at %q", got, worktreePath)
 	}
 
-	// L'aplatissement est annoncé : sans ça, l'utilisateur cherche « feature/123 »
-	// dans `den ls` et ne l'y trouve jamais.
-	for _, attendu := range []string{"feature/123", "api.feature-123"} {
-		if !strings.Contains(sortie.String(), attendu) {
-			t.Errorf("la sortie doit annoncer le renommage (%q attendu) ;\n%s", attendu, sortie.String())
+	// And the branch is NOT flattened.
+	if got := branchOf(t, worktreePath); got != "feature/123" {
+		t.Errorf("branch = %q, expected feature/123 — that's the user's branch", got)
+	}
+
+	// The flattening is announced: otherwise the user looks for
+	// "feature/123" in `den ls` and never finds it.
+	for _, expected := range []string{"feature/123", "api.feature-123"} {
+		if !strings.Contains(out.String(), expected) {
+			t.Errorf("the output must announce the rename (expected %q);\n%s", expected, out.String())
 		}
 	}
 }
 
-// La contrepartie : ce qu'aplatir ne peut PAS réparer reste refusé, et refusé
-// avant tout effet de bord. « -wip » ne pèche par aucun caractère interdit — le
-// « - » est licite ailleurs dans un nom — mais par sa position : un nom qui
-// commence par un tiret est indiscernable d'un flag. Le préfixer d'office
-// reviendrait à choisir un nom à la place de l'utilisateur.
-func TestSpawnRefuseUnWorktreeQuAplatirNeRepareraitPas(t *testing.T) {
+// The counterpart: what flattening can't fix stays refused, before any
+// side effect. "-wip" has no forbidden character — "-" is legal elsewhere
+// in a name — but its position is the problem: a name starting with a
+// dash is indistinguishable from a flag. Prefixing it automatically would
+// mean choosing a name on the user's behalf.
+func TestSpawnRefusesAWorktreeFlatteningCannotFix(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "-wip"}, d)
 	if err == nil {
-		t.Fatal("un worktree commençant par « - » doit être refusé")
+		t.Fatal("a worktree starting with \"-\" must be refused")
 	}
 	if !strings.Contains(err.Error(), "-wip") {
-		t.Errorf("le message doit rendre le nom TAPÉ, pas sa forme aplatie ; obtenu : %v", err)
+		t.Errorf("the message must render the name as TYPED, not its flattened form; got: %v", err)
 	}
-	if len(f.Appels) != 0 {
-		t.Errorf("aucun appel sbx ne doit avoir eu lieu ; appels : %v", f.Appels)
+	if len(f.Calls) != 0 {
+		t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
 	}
 	if _, err := os.Stat(filepath.Join(denHome, "worktrees")); err == nil {
-		t.Error("aucun worktree ne doit avoir été créé")
+		t.Error("no worktree must have been created")
 	}
 }
 
-// Spec §11 : « Chemin repo introuvable → stop AVANT tout create ».
-func TestSpawnStoppeAvantCreateSiUnRepoManque(t *testing.T) {
+// Spec §11: "repo path not found → stop BEFORE any create".
+func TestSpawnStopsBeforeCreateWhenARepoIsMissing(t *testing.T) {
 	denHome, repo := denTest(t)
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err == nil {
-		t.Fatal("un repo introuvable doit faire échouer le spawn")
+		t.Fatal("a missing repo must fail the spawn")
 	} else if !strings.Contains(err.Error(), repo) {
-		t.Errorf("le message doit nommer le repo manquant ; obtenu : %v", err)
+		t.Errorf("the message must name the missing repo; got: %v", err)
 	}
-	// Aucun appel du tout, et pas seulement aucun create : le contrôle doit
-	// précéder même le `sbx ls` du spawn-or-attach.
-	if len(f.Appels) != 0 {
-		t.Errorf("aucun appel sbx ne doit avoir eu lieu ; appels : %v", f.Appels)
+	// No call at all, not just no create: the check must precede even the
+	// spawn-or-attach's `sbx ls`.
+	if len(f.Calls) != 0 {
+		t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
 	}
-	// Et aucun effet de bord SUR DISQUE. Le spec §11 écrit « stop avant tout
-	// create », mais l'intention est « avant tout effet de bord » : sans ces
-	// deux contrôles, déplacer la garde juste avant le bloc spawn-or-attach
-	// laisserait derrière elle le profil agent et le mixin, tout en gardant
-	// l'assertion sur f.Appels vraie.
-	for _, chemin := range []string{
+	// And no disk side effect either. Spec §11 says "stop before any
+	// create", but the intent is "before any side effect": without both
+	// checks, moving the guard just before the spawn-or-attach block would
+	// leave the agent profile and mixin behind while still keeping the
+	// calls assertion true.
+	for _, path := range []string{
 		filepath.Join(denHome, "agents", "claude"),
 		filepath.Join(denHome, "cache", "mixins"),
 	} {
-		if _, err := os.Stat(chemin); err == nil {
-			t.Errorf("aucun effet de bord ne doit avoir eu lieu, or %s existe", chemin)
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("no side effect must have happened, yet %s exists", path)
 		}
 	}
 }
 
-// Le profil agent est monté RW : un config_dir vide monterait un chemin vide, et
-// le message d'un MkdirAll("") ne désignerait rien. Contrôlé avant tout effet de
-// bord, et le message nomme le fichier à corriger.
-func TestSpawnRefuseUnAgentSansConfigDir(t *testing.T) {
+// The agent profile is mounted RW: an empty config_dir would mount an
+// empty path, and a bare MkdirAll("")'s error would name nothing. Checked
+// before any side effect, and the message names the file to fix.
+func TestSpawnRefusesAnAgentWithoutConfigDir(t *testing.T) {
 	denHome, _ := denTest(t)
-	ecris(t, filepath.Join(denHome, "config.yaml"), `agents:
+	write(t, filepath.Join(denHome, "config.yaml"), `agents:
   claude:
     update: "claude update"
 defaults:
   agent: claude
   stack: devx
 `)
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d)
 	if err == nil {
-		t.Fatal("un agent sans config_dir doit faire échouer le spawn")
+		t.Fatal("an agent without config_dir must fail the spawn")
 	}
 	if !strings.Contains(err.Error(), filepath.Join(denHome, "config.yaml")) {
-		t.Errorf("le message doit nommer le fichier fautif ; obtenu : %v", err)
+		t.Errorf("the message must name the offending file; got: %v", err)
 	}
-	if len(f.Appels) != 0 {
-		t.Errorf("aucun appel sbx ne doit avoir eu lieu ; appels : %v", f.Appels)
+	if len(f.Calls) != 0 {
+		t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
 	}
 	if _, err := os.Stat(filepath.Join(denHome, "worktrees")); err == nil {
-		t.Error("aucun worktree ne doit avoir été créé")
+		t.Error("no worktree must have been created")
 	}
 }
 
-func TestSpawnDetachNAttachePas(t *testing.T) {
+func TestSpawnDetachDoesNotAttach(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.AAppele("create", "--name", "api") {
-		t.Errorf("le create doit avoir lieu ; appels : %v", f.Appels)
+	if !f.HasCalled("create", "--name", "api") {
+		t.Errorf("the create must happen; calls: %v", f.Calls)
 	}
-	if !f.AAppele("policy", "check", "network", "--sandbox", "api") {
-		t.Errorf("--detach ne dispense pas du settle-loop ; appels : %v", f.Appels)
+	if !f.HasCalled("policy", "check", "network", "--sandbox", "api") {
+		t.Errorf("--detach doesn't skip the settle-loop; calls: %v", f.Calls)
 	}
 	if len(f.Attaches) != 0 {
-		t.Errorf("--detach ne doit pas attacher ; attaches : %v", f.Attaches)
+		t.Errorf("--detach must not attach; attaches: %v", f.Attaches)
 	}
 }
 
-// Le profil agent est monté RW et doit exister : sbx créerait sinon un dossier
-// vide au mount, et l'agent repartirait de zéro à chaque spawn.
-func TestSpawnCreeLeProfilAgent(t *testing.T) {
+// The agent profile is mounted RW and must exist: sbx would otherwise
+// mount an empty directory, and the agent would start from scratch on
+// every spawn.
+func TestSpawnCreatesTheAgentProfile(t *testing.T) {
 	denHome, _ := denTest(t)
-	_, d := depsTest()
+	_, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err != nil {
-		t.Errorf("le config_dir de l'agent doit exister : %v", err)
+		t.Errorf("the agent's config_dir must exist: %v", err)
 	}
 }
 
-func TestSpawnEcritLeMixin(t *testing.T) {
+func TestSpawnWritesTheMixin(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	spec := filepath.Join(denHome, "cache", "mixins", "api", "spec.yaml")
-	contenu, err := os.ReadFile(spec)
+	content, err := os.ReadFile(spec)
 	if err != nil {
-		t.Fatalf("le mixin doit être écrit en %s : %v", spec, err)
+		t.Fatalf("the mixin must be written to %s: %v", spec, err)
 	}
-	if !strings.Contains(string(contenu), "github.com") {
-		t.Errorf("le mixin doit porter l'egress de la cascade :\n%s", contenu)
+	if !strings.Contains(string(content), "github.com") {
+		t.Errorf("the mixin must carry the cascade's egress:\n%s", content)
 	}
-	// Ordre de layering complet : kits transverses, puis kit de la stack, puis
-	// le mixin — TOUJOURS en dernier (le dispatcher sbx fait `exit $rc` au
-	// premier échec et priverait les kits suivants de leurs startup commands).
+	// Full layering order: transverse kits, then the stack's kit, then the
+	// mixin — ALWAYS last (sbx's dispatcher does `exit $rc` on the first
+	// failure and would starve later kits of their startup commands).
 	stackDir := filepath.Join(denHome, "stacks", "devx")
-	attendu := []string{
+	expected := []string{
 		filepath.Join(stackDir, "transverse"),
 		filepath.Join(stackDir, "devx-kit"),
 		filepath.Dir(spec),
 	}
-	if k := kitsDe(appelCommencantPar(f, "create")); !slices.Equal(k, attendu) {
-		t.Errorf("--kit = %v, attendu %v", k, attendu)
+	if k := kitsOf(callStartingWith(f, "create")); !slices.Equal(k, expected) {
+		t.Errorf("--kit = %v, expected %v", k, expected)
 	}
 }
 
-// Les trois options de cascade doivent atteindre nest.Resolve.
+// The three cascade options must reach nest.Resolve.
 //
-// Chacune est exercée par une valeur INVALIDE : c'est le seul moyen d'obtenir,
-// sans sbx, un message qui dépend de la VALEUR passée — donc la preuve qu'elle
-// a traversé. Une option muette (`Only` ou `Agent` non transmis) fait retomber
-// le spawn sur le défaut et réussit en silence : `--agent claude-next`
-// monterait le profil de l'agent par défaut et écrirait SES variables
-// d'environnement dans le mixin, sans un mot.
-func TestSpawnPropageLesOptionsDeCascade(t *testing.T) {
-	cas := []struct {
-		nom     string
-		options Options
-		attendu string
+// Each is exercised with an INVALID value: the only way, without sbx, to
+// get a message that depends on the VALUE passed — proof it made it
+// through. A silently dropped option (`Only` or `Agent` not forwarded)
+// would fall back to the default and succeed quietly: `--agent
+// claude-next` would mount the default agent's profile and write ITS
+// environment variables into the mixin, without a word.
+func TestSpawnPropagatesCascadeOptions(t *testing.T) {
+	cases := []struct {
+		name     string
+		options  Options
+		expected string
 	}{
-		{"Without", Options{Nest: "api", Without: []string{"inconnu"}}, `--without : repo "inconnu"`},
-		{"Only", Options{Nest: "api", Only: []string{"inconnu"}}, `--only : repo "inconnu"`},
-		{"Agent", Options{Nest: "api", Agent: "inconnu"}, `agent "inconnu"`},
+		{"Without", Options{Nest: "api", Without: []string{"unknown"}}, `--without: repo "unknown"`},
+		{"Only", Options{Nest: "api", Only: []string{"unknown"}}, `--only: repo "unknown"`},
+		{"Agent", Options{Nest: "api", Agent: "unknown"}, `agent "unknown"`},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
 			denHome, _ := denTest(t)
-			f, d := depsTest()
+			f, d := fakeDeps()
 
 			err := Spawn(context.Background(), denHome, c.options, d)
 			if err == nil {
-				t.Fatalf("%s avec une valeur inconnue doit faire échouer le spawn", c.nom)
+				t.Fatalf("%s with an unknown value must fail the spawn", c.name)
 			}
-			if !strings.Contains(err.Error(), c.attendu) {
-				t.Errorf("%s n'atteint pas la cascade (attendu %q) ; obtenu : %v", c.nom, c.attendu, err)
+			if !strings.Contains(err.Error(), c.expected) {
+				t.Errorf("%s doesn't reach the cascade (expected %q); got: %v", c.name, c.expected, err)
 			}
-			if len(f.Appels) != 0 {
-				t.Errorf("aucun appel sbx ne doit avoir eu lieu ; appels : %v", f.Appels)
+			if len(f.Calls) != 0 {
+				t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
 			}
 		})
 	}
 }
 
-// L'échec de `sbx create` doit être recontextualisé. Le message brut d'Exec.Run
-// est préfixé de l'argv COMPLET — une ligne géante avec tous les --kit et tous
-// les workspaces — dans laquelle l'étape qui a échoué devient illisible.
-func TestSpawnNommeLEtapeQuandLeCreateEchoue(t *testing.T) {
+// A failed `sbx create` must be recontextualized. Exec.Run's raw message
+// is prefixed with the FULL argv — a giant line with every --kit and every
+// workspace — in which the failed step becomes unreadable.
+func TestSpawnNamesTheStepWhenCreateFails(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsTest()
-	f.Defaut = sbx.Reponse{Err: errors.New("boum")}
+	f, d := fakeDeps()
+	f.Default = sbx.Response{Err: errors.New("boom")}
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
 	if err == nil {
-		t.Fatal("un create en échec doit faire échouer le spawn")
+		t.Fatal("a failing create must fail the spawn")
 	}
-	if !strings.Contains(err.Error(), "création de la sandbox api") {
-		t.Errorf("le message doit nommer l'étape et la sandbox ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "creating sandbox api") {
+		t.Errorf("the message must name the step and the sandbox; got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "boum") {
-		t.Errorf("le message doit conserver la cause ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("the message must keep the cause; got: %v", err)
 	}
 	if len(f.Attaches) != 0 {
-		t.Errorf("aucune attache ne doit avoir lieu ; attaches : %v", f.Attaches)
+		t.Errorf("no attach must happen; attaches: %v", f.Attaches)
 	}
 }
 
-// Spawn refuse un den home relatif AVANT tout effet de bord.
+// Spawn refuses a relative den home BEFORE any side effect.
 //
-// C'est cet invariant — garanti par nest.Resolve — qui rend `denHome` et
-// `r.DenHome` interchangeables, et donc INDÉTECTABLE par construction le choix
-// de celui qu'on passe à EcrisMixin : Resolve pose r.DenHome = denHome dès lors
-// qu'il est absolu, et refuse tout le reste. Ce qui se teste ici n'est pas le
-// choix, c'est l'invariant qui le rend sans conséquence.
-func TestSpawnRefuseUnDenHomeRelatif(t *testing.T) {
+// This invariant — guaranteed by nest.Resolve — is what makes `denHome`
+// and `r.DenHome` interchangeable, so the choice of which one feeds
+// WriteMixin is INDETECTABLE by construction: Resolve sets
+// r.DenHome = denHome only when it's absolute, and refuses everything
+// else. What's under test isn't that choice, it's the invariant that
+// makes it inconsequential.
+func TestSpawnRefusesARelativeDenHome(t *testing.T) {
 	denHome, _ := denTest(t)
 	t.Chdir(filepath.Dir(denHome))
-	f, d := depsTest()
+	f, d := fakeDeps()
 
 	err := Spawn(context.Background(), filepath.Base(denHome), Options{Nest: "api"}, d)
 	if err == nil {
-		t.Fatal("un den home relatif doit faire échouer le spawn")
+		t.Fatal("a relative den home must fail the spawn")
 	}
-	if !strings.Contains(err.Error(), "non absolu") {
-		t.Errorf("le message doit nommer la cause ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "not an absolute path") {
+		t.Errorf("the message must name the cause; got: %v", err)
 	}
-	if len(f.Appels) != 0 {
-		t.Errorf("aucun appel sbx ne doit avoir eu lieu ; appels : %v", f.Appels)
+	if len(f.Calls) != 0 {
+		t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
 	}
 }
 
-// Une Sortie nil ne doit pas paniquer au milieu d'un spawn : l'appelant qui
-// oublie de la remplir a déjà, à ce stade, une sandbox créée et démarrée.
-func TestSpawnTolereUneSortieNil(t *testing.T) {
+// A nil Out must not panic mid-spawn: a caller who forgets to set it
+// already has, by this point, a sandbox created and started.
+func TestSpawnToleratesANilOut(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := depsTest()
-	d.Sortie = nil
+	f, d := fakeDeps()
+	d.Out = nil
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.AAppele("create", "--name", "api") {
-		t.Errorf("le spawn doit s'être déroulé ; appels : %v", f.Appels)
+	if !f.HasCalled("create", "--name", "api") {
+		t.Errorf("the spawn must have run; calls: %v", f.Calls)
 	}
 }
 
-func appelCommencantPar(f *sbx.Fake, tete string) []string {
-	for _, a := range f.Appels {
-		if len(a) > 0 && a[0] == tete {
+func callStartingWith(f *sbx.Fake, head string) []string {
+	for _, a := range f.Calls {
+		if len(a) > 0 && a[0] == head {
 			return a
 		}
 	}
 	return nil
 }
 
-// kitsDe extrait les valeurs des `--kit` d'un argv, dans l'ordre.
-func kitsDe(argv []string) []string {
+// kitsOf extracts the `--kit` values of an argv, in order.
+func kitsOf(argv []string) []string {
 	var out []string
 	for i, a := range argv {
 		if a == "--kit" && i+1 < len(argv) {
@@ -1481,26 +1465,26 @@ func kitsDe(argv []string) []string {
 	return out
 }
 
-// workspacesDe extrait les positionnels d'un `sbx create`, c'est-à-dire tout ce
-// qui suit l'agent positionnel.
-func workspacesDe(argv []string) []string {
-	i := slices.Index(argv, sbx.AgentPositionnel)
+// workspacesOf extracts the positionals of a `sbx create`, i.e. everything
+// after the positional agent.
+func workspacesOf(argv []string) []string {
+	i := slices.Index(argv, sbx.PositionalAgent)
 	if i < 0 {
 		return nil
 	}
 	return argv[i+1:]
 }
 
-// brancheDe rend la branche checkoutée d'un worktree. Passe par git et non par
-// la lecture de `.git/HEAD` : le `.git` d'un worktree LIÉ est un fichier de
-// renvoi, pas un dossier.
-func brancheDe(t *testing.T, chemin string) string {
+// branchOf returns a worktree's checked-out branch. Goes through git
+// rather than reading `.git/HEAD` directly: a LINKED worktree's `.git` is
+// a redirect file, not a directory.
+func branchOf(t *testing.T, path string) string {
 	t.Helper()
 	cmd := exec.Command("git", "branch", "--show-current")
-	cmd.Dir = chemin
+	cmd.Dir = path
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("git branch --show-current dans %s : %v\n%s", chemin, err, out)
+		t.Fatalf("git branch --show-current in %s: %v\n%s", path, err, out)
 	}
 	return strings.TrimSpace(string(out))
 }

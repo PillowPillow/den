@@ -1,4 +1,0 @@
-stack: devx
-# Chemin d'exemple à adapter : `den doctor` le signalera tant qu'il ne pointe pas sur un dépôt réel.
-repos:
-  - { path: ~/dev/mon-projet }

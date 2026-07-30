@@ -1,12 +1,11 @@
-// Package doctor diagnostique une installation den : configuration cohérente,
-// stacks et repos présents, sbx disponible. Aucun effet de bord, aucun réseau.
+// Package doctor diagnoses a den installation: consistent configuration,
+// stacks and repos present, sbx available. No side effects, no network.
 package doctor
 
 import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -14,359 +13,284 @@ import (
 	"github.com/PillowPillow/den/internal/nest"
 )
 
-// Niveau dit ce qu'un diagnostic PÈSE sur le code de sortie de `den doctor`.
+// Level says how much a diagnostic weighs on `den doctor`'s exit code.
 //
-// Trois états et non deux. Le `OK bool` d'avant n'avait qu'un seul consommateur
-// hors tests — internal/cli/doctor.go, où `!c.OK` incrémente directement le
-// compteur qui décide du code de retour — et il ne savait donc dire que « rien
-// à signaler » ou « échec bloquant ». Le contrôle de ssh.mode introduit un
-// troisième cas, réel : une configuration parfaitement légale dont
-// l'utilisateur doit néanmoins être averti.
-//
-// Les deux façons de le rendre avec un booléen sont fausses, et c'est ce qui
-// justifie le type : `OK: false` ferait ÉCHOUER `den doctor` sur une machine
-// saine où l'on travaille en local sans dépôt distant ; `OK: true` avec un
-// Detail alarmant mentirait sur le champ même qui décide du code de sortie.
-//
-// Un champ ajouté À CÔTÉ du booléen (`Avertissement bool`) aurait laissé
-// exister des couples incohérents. Le remplacer ferme cette porte.
-type Niveau int
+// Three states, not two: a healthy machine working locally without a remote
+// repo must not fail, yet a config value the user should still be told about
+// isn't a plain success either. A bool cannot hold that third case without
+// lying on one side or the other.
+type Level int
 
 const (
-	// NiveauOK : rien à signaler.
-	NiveauOK Niveau = iota
-	// NiveauAvertissement : à lire, mais den fonctionne et le code de sortie
-	// reste nul.
-	NiveauAvertissement
-	// NiveauEchec : den ne fonctionnera pas correctement en l'état.
-	NiveauEchec
+	// LevelOK: nothing to report.
+	LevelOK Level = iota
+	// LevelWarning: worth reading, but den works and the exit code stays zero.
+	LevelWarning
+	// LevelFail: den will not work correctly as configured.
+	LevelFail
 )
 
-// Check est le résultat d'un diagnostic unitaire.
+// Check is the result of one diagnostic.
 type Check struct {
-	Nom    string
-	Niveau Niveau
+	Name   string
+	Level  Level
 	Detail string
 }
 
-// Bloquant dit si ce diagnostic doit faire sortir `den doctor` en non-zéro.
-// SEUL NiveauEchec l'est.
-//
-// Méthode, et non comparaison recopiée chez l'appelant : c'est la source unique
-// de cette décision. Avec `!c.OK` recalculé à chaque site, un troisième état
-// aurait pu être bloquant chez l'un et pas chez l'autre.
-func (c Check) Bloquant() bool { return c.Niveau == NiveauEchec }
+// Blocking reports whether this diagnostic should make `den doctor` exit
+// non-zero. Only LevelFail is.
+func (c Check) Blocking() bool { return c.Level == LevelFail }
 
-// Deps injecte les accès système, pour que les tests tournent sans sbx installé
-// et sans dépendre de l'arborescence réelle de la machine.
+// Deps injects system access, so tests run without sbx installed and without
+// depending on the machine's real filesystem.
 type Deps struct {
 	LookPath func(string) (string, error)
 	Stat     func(string) (os.FileInfo, error)
-	// VersionGit rend la sortie brute de `git --version`. Injectée au même
-	// titre que LookPath et Stat : sans elle, le diagnostic de version
-	// rendrait un verdict différent selon le git du poste, et le plancher ne
-	// serait vérifiable sur aucune machine en particulier.
-	VersionGit func() (string, error)
-	// Getenv lit l'environnement de den. Injectée pour la même raison que les
-	// trois autres : le contrôle de SSH_AUTH_SOCK rendrait sinon un verdict
-	// différent selon que la session qui lance la suite a un agent SSH en
-	// marche — vert sur un poste de développement, rouge en CI.
+	// GitVersion returns the raw output of `git --version`.
+	GitVersion func() (string, error)
+	// Getenv reads den's environment, for the SSH_AUTH_SOCK check.
 	Getenv func(string) string
 }
 
-// DepsSysteme renvoie les dépendances réelles.
-func DepsSysteme() Deps {
-	return Deps{LookPath: exec.LookPath, Stat: os.Stat, VersionGit: versionGitSysteme, Getenv: os.Getenv}
+// SystemDeps returns the real dependencies.
+func SystemDeps() Deps {
+	return Deps{LookPath: exec.LookPath, Stat: os.Stat, GitVersion: systemGitVersion, Getenv: os.Getenv}
 }
 
-// versionGitSysteme exécute `git --version`. Seul appel de doctor à lancer un
-// processus : il ne lit aucun dépôt, n'écrit rien, et ne dépend pas du cwd.
-func versionGitSysteme() (string, error) {
+// systemGitVersion runs `git --version`. The only doctor call that spawns a
+// process: it reads no repository, writes nothing, and does not depend on cwd.
+func systemGitVersion() (string, error) {
 	out, err := exec.Command("git", "--version").Output()
 	return string(out), err
 }
 
-// Plancher de version git. `git rev-parse --path-format=absolute` est le seul
-// appel de den qui l'impose — internal/worktree/worktree.go:599 (identifie) et
-// :611 (communDe), relevés par grep sur "path-format" — et cette option est
-// apparue dans git 2.31. En dessous, git rejette l'option et l'utilisateur
-// récolte le message de git au premier worktree, jamais un diagnostic de den.
-//
-// La version d'apparition vient des notes de version de git, pas d'une mesure :
-// ce poste n'a qu'un seul git installé et ne peut pas l'établir. Ce qui EST
-// mesuré ici, c'est quels appels de den portent l'option.
+// Minimum git version den requires. `git rev-parse --path-format=absolute` is
+// the only den call that needs it (internal/worktree/worktree.go), and that
+// option appeared in git 2.31; below it, git rejects the flag and the user
+// sees git's own error at the first worktree instead of a den diagnostic.
 const (
-	gitMajeurMin = 2
-	gitMineurMin = 31
+	minGitMajor = 2
+	minGitMinor = 31
 )
 
-// analyseVersionGit extrait le couple majeur.mineur de la sortie de
-// `git --version`. Les distributions suffixent librement — « 2.39.5 (Apple
-// Git-154) », « 2.45.2.windows.1 » — donc on ne lit que les deux premiers
-// nombres et on ignore le reste.
+// parseGitVersion extracts the major.minor pair from `git --version` output.
+// Distributions suffix freely ("2.39.5 (Apple Git-154)", "2.45.2.windows.1"),
+// so only the first two numbers are read and the rest is ignored.
 //
-// Une sortie illisible est une ERREUR, pas un 0.0. Ce que cela change,
-// exactement : **rien au verdict**. Run rend un check en échec dans les deux
-// cas, et `den doctor` sort non-zéro dès qu'un check échoue — un git
-// parfaitement bon dont le packageur aurait changé le format EST donc refusé,
-// des deux façons.
-//
-// Ce que cela change, c'est le MESSAGE, et c'est là tout l'intérêt : l'erreur
-// nomme la sortie réellement reçue, là où un 0.0 annoncerait « git 0.0 est trop
-// ancien, den exige 2.31 » à quelqu'un qui a peut-être git 2.99, et l'enverrait
-// chercher un problème de version qu'il n'a pas. Ce qui reste faux — le refus
-// d'un git bon au format inattendu — se répare en élargissant le parseur, pas
-// en devinant un numéro.
-func analyseVersionGit(sortie string) (majeur, mineur int, err error) {
-	illisible := func() (int, int, error) {
-		return 0, 0, fmt.Errorf("sortie de `git --version` illisible : %q", strings.TrimSpace(sortie))
+// An unreadable output is an error, not 0.0: Run fails the check either way,
+// but naming the output actually received keeps the message honest instead of
+// telling a user on a fine, differently-formatted git that "git 0.0" is too old.
+func parseGitVersion(output string) (major, minor int, err error) {
+	unreadable := func() (int, int, error) {
+		return 0, 0, fmt.Errorf("unreadable `git --version` output: %q", strings.TrimSpace(output))
 	}
-	champs := strings.Fields(sortie)
-	if len(champs) < 3 || champs[0] != "git" || champs[1] != "version" {
-		return illisible()
+	fields := strings.Fields(output)
+	if len(fields) < 3 || fields[0] != "git" || fields[1] != "version" {
+		return unreadable()
 	}
-	nombres := strings.Split(champs[2], ".")
-	if len(nombres) < 2 {
-		return illisible()
+	numbers := strings.Split(fields[2], ".")
+	if len(numbers) < 2 {
+		return unreadable()
 	}
-	if majeur, err = strconv.Atoi(nombres[0]); err != nil {
-		return illisible()
+	if major, err = strconv.Atoi(numbers[0]); err != nil {
+		return unreadable()
 	}
-	if mineur, err = strconv.Atoi(nombres[1]); err != nil {
-		return illisible()
+	if minor, err = strconv.Atoi(numbers[1]); err != nil {
+		return unreadable()
 	}
-	return majeur, mineur, nil
+	return major, minor, nil
 }
 
-// Run exécute tous les diagnostics et renvoie la liste complète, échecs compris.
-// On ne s'arrête jamais au premier problème : l'utilisateur doit tout voir d'un coup.
+// Run executes every diagnostic and returns the full list, failures included.
+// It never stops at the first problem: the user must see everything at once.
 func Run(denHome string, d Deps) []Check {
 	var checks []Check
-	ajoute := func(nom string, ok bool, format string, args ...any) {
-		niveau := NiveauEchec
+	add := func(name string, ok bool, format string, args ...any) {
+		level := LevelFail
 		if ok {
-			niveau = NiveauOK
+			level = LevelOK
 		}
-		checks = append(checks, Check{Nom: nom, Niveau: niveau, Detail: fmt.Sprintf(format, args...)})
+		checks = append(checks, Check{Name: name, Level: level, Detail: fmt.Sprintf(format, args...)})
 	}
-	// avertit est SÉPARÉ d'ajoute, et non un troisième argument de celui-ci :
-	// les diagnostics existants sont bel et bien binaires, et leur imposer un
-	// niveau explicite n'aurait ajouté qu'une occasion de se tromper.
-	avertit := func(nom string, format string, args ...any) {
-		checks = append(checks, Check{Nom: nom, Niveau: NiveauAvertissement, Detail: fmt.Sprintf(format, args...)})
+	// warn is kept separate from add: the existing diagnostics are genuinely
+	// binary, and forcing an explicit level on all of them would only invite
+	// mistakes.
+	warn := func(name string, format string, args ...any) {
+		checks = append(checks, Check{Name: name, Level: LevelWarning, Detail: fmt.Sprintf(format, args...)})
 	}
 
-	// 1. sbx présent
-	if chemin, err := d.LookPath("sbx"); err != nil {
-		ajoute("sbx", false, "binaire sbx introuvable dans le PATH")
+	// 1. sbx present
+	if path, err := d.LookPath("sbx"); err != nil {
+		add("sbx", false, "sbx binary not found in PATH")
 	} else {
-		ajoute("sbx", true, "%s", chemin)
+		add("sbx", true, "%s", path)
 	}
 
-	// 1bis. git assez récent. Diagnostiqué à côté de sbx : ce sont les deux
-	// binaires sans lesquels den ne peut rien, et aucun des deux ne dépend de
-	// la configuration — un den home vide ne doit pas priver l'utilisateur de
-	// ces deux réponses-là.
-	if sortie, err := d.VersionGit(); err != nil {
-		ajoute("git", false, "version de git indéterminable : %v", err)
-	} else if majeur, mineur, err := analyseVersionGit(sortie); err != nil {
-		ajoute("git", false, "%v", err)
-	} else if majeur < gitMajeurMin || (majeur == gitMajeurMin && mineur < gitMineurMin) {
-		// La version LUE et la version EXIGÉE : sans les deux, l'utilisateur
-		// sait qu'il doit agir mais pas jusqu'où monter.
-		ajoute("git", false,
-			"%s est trop ancien : den exige git %d.%d ou plus — `git rev-parse --path-format=absolute`, "+
-				"par lequel den situe tout worktree, n'existe pas avant",
-			strings.TrimSpace(sortie), gitMajeurMin, gitMineurMin)
+	// 2. git recent enough. Checked next to sbx: neither depends on
+	// configuration, so an empty den home must not withhold either answer.
+	if output, err := d.GitVersion(); err != nil {
+		add("git", false, "could not determine git version: %v", err)
+	} else if major, minor, err := parseGitVersion(output); err != nil {
+		add("git", false, "%v", err)
+	} else if major < minGitMajor || (major == minGitMajor && minor < minGitMinor) {
+		// Name both the version read and the version required: the user
+		// needs to know how far to upgrade, not just that they must.
+		add("git", false,
+			"%s is too old: den requires git %d.%d or later — `git rev-parse --path-format=absolute`, "+
+				"which den uses to locate every worktree, does not exist before that",
+			strings.TrimSpace(output), minGitMajor, minGitMinor)
 	} else {
-		ajoute("git", true, "%s", strings.TrimSpace(sortie))
+		add("git", true, "%s", strings.TrimSpace(output))
 	}
 
-	// 2. config.yaml chargeable
+	// 3. config.yaml loadable
 	//
-	// LoadGlobalSansValider, et non LoadGlobal : le second refuse une config
-	// incohérente, ce qui ferait sortir Run juste en dessous et rendrait
-	// l'étape 3 — comme les stacks et les nests — inatteignable. doctor est le
-	// seul endroit du projet où « charger » et « juger » doivent rester
-	// séparés, parce qu'il est le seul dont le travail est de tout montrer.
-	g, err := config.LoadGlobalSansValider(denHome)
+	// LoadGlobalUnvalidated, not LoadGlobal: the latter rejects an
+	// inconsistent config, which would return right here and make stacks and
+	// nests unreachable. doctor is the one place in the project where
+	// "load" and "judge" must stay separate, because its job is to show
+	// everything.
+	g, err := config.LoadGlobalUnvalidated(denHome)
 	if err != nil {
-		ajoute("config.yaml", false, "%v", err)
-		return checks // sans config, tout le reste est indécidable
+		add("config.yaml", false, "%v", err)
+		return checks // without a config, nothing else is decidable
 	}
-	ajoute("config.yaml", true, "%s/config.yaml", denHome)
+	add("config.yaml", true, "%s", config.GlobalPath(denHome))
 
-	// 3. cohérence interne de la config
-	erreursConfig := g.Validate()
-	for _, e := range erreursConfig {
-		ajoute("config", false, "%v", e)
+	// 4. internal config consistency
+	configErrors := g.Validate()
+	for _, e := range configErrors {
+		add("config", false, "%v", e)
 	}
-	if len(erreursConfig) == 0 {
-		ajoute("config", true, "cohérente")
+	if len(configErrors) == 0 {
+		add("config", true, "consistent")
 	}
 
-	// 4. stacks
+	// 5. stacks
 	stacks, err := config.LoadStacks(denHome)
 	if err != nil {
-		// Échec STRUCTUREL seulement (dossier stacks/ illisible) : une stack qui
-		// ne se décode pas n'atteint plus jamais cette branche, elle part dans
-		// Cassees juste en dessous.
-		ajoute("stacks", false, "%v", err)
-		stacks = config.Stacks{Saines: map[string]*config.Stack{}}
+		// Structural failure only (unreadable stacks/ directory): a stack
+		// that fails to decode lands in Broken below instead.
+		add("stacks", false, "%v", err)
+		stacks = config.Stacks{Healthy: map[string]*config.Stack{}}
 	} else {
-		// Même format et même verdict que la ligne « nests », sa voisine
-		// immédiate à l'écran : deux totaux côte à côte qui ne comptent pas
-		// pareil se lisent comme une contradiction, et c'est le total qu'on
-		// parcourt en diagonale.
-		ajoute("stacks", len(stacks.Cassees) == 0, "%d déclarée(s), %d illisible(s)",
-			len(stacks.Saines), len(stacks.Cassees))
+		// Same shape and verdict as the "nests" line right below it: two
+		// neighboring totals that count differently read as a contradiction.
+		add("stacks", len(stacks.Broken) == 0, "%d declared, %d unreadable",
+			len(stacks.Healthy), len(stacks.Broken))
 	}
-	// Chaque stack cassée est nommée SÉPARÉMENT, comme les nests cassés plus
-	// bas. Avant la séparation Saines/Cassees, une seule stack fautive faisait
-	// échouer LoadStacks en bloc : doctor retombait sur une map vide et rendait
-	// ensuite « defaults.stack introuvable » puis « nest X : stack introuvable »
-	// pour des stacks parfaitement saines — des diagnostics FAUX qui envoyaient
-	// réparer le mauvais fichier.
-	for _, c := range stacks.Cassees {
-		ajoute("stack "+c.Nom, false, "illisible : %v", c.Err)
+	// Each broken stack is named individually, like broken nests further
+	// down: a single bad stack must not sink the diagnosis of the others.
+	for _, c := range stacks.Broken {
+		add("stack "+c.Name, false, "unreadable: %v", c.Err)
 	}
 	if g.Defaults.Stack != "" {
-		// Get et non un test d'appartenance : lui seul distingue « illisible » de
-		// « pas déclarée », et c'est la source unique de ce verdict.
+		// Get, not a membership test: only Get distinguishes "unreadable"
+		// from "not declared", the source of this verdict.
 		if _, err := stacks.Get(g.Defaults.Stack); err != nil {
-			// Sans suffixe : Get situe déjà ce qu'il faut situer, et le coller
-			// derrière une erreur YAML multi-ligne la rendait trompeuse.
-			ajoute("defaults.stack", false, "%v", err)
+			add("defaults.stack", false, "%v", err)
 		} else {
-			ajoute("defaults.stack", true, "%s", g.Defaults.Stack)
+			add("defaults.stack", true, "%s", g.Defaults.Stack)
 		}
 	}
 
-	// 4bis. kits des stacks : chaque chemin doit exister AVANT que sbx ne le
-	// reçoive. Un kit manquant n'échoue pas au chargement de la config mais au
-	// boot de la microVM, où le dispatcher fait `exit $rc` : l'utilisateur voit
-	// une VM qui meurt, pas un message de den. Tri des noms de stacks : la liste
-	// est destinée à l'affichage, une map Go n'est pas ordonnée.
-	// Noms ne rend que les stacks SAINES : une stack cassée n'a pas de kits à
-	// contrôler, et a déjà été signalée nommément juste au-dessus.
-	for _, nomStack := range stacks.Noms() {
-		// KitsDeclares est la source UNIQUE de « quels kits, dans quel ordre » :
-		// elle rend `kits:` puis `kit:`, entrées vides filtrées. Recomposer la
-		// liste ici — ce que faisait la version précédente — laissait doctor et
-		// le chemin de spawn diverger sur les entrées vides, chacun restant vert
-		// de son côté.
-		for _, k := range stacks.Saines[nomStack].KitsDeclares() {
+	// 6. stack kits: each path must exist before sbx receives it. A
+	// missing kit doesn't fail at config load, it fails at microVM boot,
+	// where the dispatcher does `exit $rc` — the user sees a dying VM, not a
+	// den message. Names sorted for display, since a Go map has no order.
+	// Names lists only healthy stacks: a broken stack has no kits to check
+	// and was already named above.
+	for _, stackName := range stacks.Names() {
+		// DeclaredKits is the single source of "which kits, in which
+		// order"; it already filters empty entries.
+		for _, k := range stacks.Healthy[stackName].DeclaredKits() {
 			if _, err := d.Stat(k); err != nil {
-				ajoute("stack "+nomStack, false, "kit introuvable : %s", k)
+				add("stack "+stackName, false, "kit not found: %s", k)
 			}
 		}
 	}
 
-	// 4ter. ssh.dir, en mode mount seulement : c'est le seul mode où il est
-	// monté en workspace et part donc dans l'argv de `sbx create`. Hors de ce
-	// mode il n'est monté nulle part et son absence n'est pas une faute.
-	// Validate() ne juge que « déclaré ou non » ; « déclaré mais absent du
-	// disque » demande une sonde du système, d'où d.Stat.
+	// 7. ssh.dir, mount mode only: it's the only mode where it's mounted
+	// as a workspace and ends up in `sbx create`'s argv. Validate() only
+	// judges "declared or not"; "declared but missing on disk" needs a
+	// filesystem probe, hence d.Stat.
 	if g.SSH.Mode == "mount" && g.SSH.Dir != "" {
 		if _, err := d.Stat(g.SSH.Dir); err != nil {
-			ajoute("ssh.dir", false,
-				"%s introuvable — en mode « mount » ce dossier est monté dans la sandbox, "+
-					"et un chemin absent y monterait un dossier vide à la place des clés", g.SSH.Dir)
+			add("ssh.dir", false,
+				"%s not found — in \"mount\" mode this directory is mounted into the sandbox, "+
+					"and a missing path would mount an empty directory instead of the keys", g.SSH.Dir)
 		} else {
-			ajoute("ssh.dir", true, "%s", g.SSH.Dir)
+			add("ssh.dir", true, "%s", g.SSH.Dir)
 		}
 	}
 
-	// 4quater. ssh.mode agent-forward — le DÉFAUT de la configuration
-	// (config.LoadGlobalSansValider le pose quand `ssh.mode` est absent).
+	// 8. ssh.mode agent-forward — the config's DEFAULT
+	// (config.LoadGlobalUnvalidated sets it when `ssh.mode` is absent).
 	//
-	// Ce mode n'ajoute AUCUN argument à l'argv de `sbx create` et AUCUNE entrée
-	// au mixin : il repose entièrement sur le fait que le process sbx hérite de
-	// l'environnement de den, SSH_AUTH_SOCK compris. Cet héritage est PROUVÉ et
-	// non supposé — internal/sbx TestExecRunTransmetLEnvironnementDeDen — mais
-	// il n'a rien à transmettre si la variable est absente.
+	// This mode adds no argument to `sbx create`'s argv and no mixin entry:
+	// it relies entirely on the sbx process inheriting den's environment,
+	// SSH_AUTH_SOCK included — proven, not assumed, by internal/sbx
+	// TestExecRunTransmitsDenEnvironment — but there is nothing to inherit
+	// if the variable is absent.
 	//
-	// AVERTISSEMENT et non échec, et c'est tout l'objet du type Niveau :
-	// travailler en local sans dépôt distant est parfaitement légitime, et den
-	// n'a aucun moyen de savoir si l'utilisateur a besoin de SSH. Faire échouer
-	// `den doctor` là-dessus le rendrait rouge sur une machine saine.
+	// WARNING, not failure, and that's the whole point of Level: working
+	// locally without a remote repo is legitimate, and den has no way to
+	// know whether the user needs SSH. Failing `den doctor` over this would
+	// turn a healthy machine red.
 	//
-	// Ce que ce contrôle ne dit PAS : que la sandbox aura effectivement un accès
-	// SSH quand la variable est présente. Que sbx propage le socket jusque DANS
-	// la microVM est une hypothèse consignée au spec (A10), invérifiable ici.
-	//
-	// « absent OU VIDE », et pas « absent » : den lit l'environnement par
-	// os.Getenv, qui rend "" dans les deux cas (mesuré ; os.LookupEnv les
-	// distinguerait, den ne l'appelle pas). Annoncer « absent » sur un
-	// `SSH_AUTH_SOCK=` posé vide décrirait une cause plausible plutôt que ce
-	// qui a été vu — et enverrait chercher une variable qui est là.
+	// "absent OR EMPTY", not "absent": den reads the environment with
+	// os.Getenv, which returns "" for both cases (os.LookupEnv would tell
+	// them apart, den doesn't call it) — naming "absent" on a variable set
+	// empty would describe a plausible cause instead of what was observed.
 	if g.SSH.Mode == "agent-forward" {
 		if socket := d.Getenv("SSH_AUTH_SOCK"); socket == "" {
-			avertit("ssh.mode",
-				"agent-forward, mais SSH_AUTH_SOCK est absent ou vide dans l'environnement de den : "+
-					"il n'y a aucun agent SSH à transmettre, les sandboxes n'auront pas d'accès SSH "+
-					"et `git push` échouera depuis la VM, loin de la cause — démarre un agent "+
-					"(`eval $(ssh-agent)` puis `ssh-add`), ou passe `ssh.mode` à « mount » dans %s",
-				filepath.Join(denHome, "config.yaml"))
+			warn("ssh.mode",
+				"agent-forward, but SSH_AUTH_SOCK is absent or empty in den's environment: "+
+					"there is no SSH agent to forward, sandboxes will have no SSH access "+
+					"and `git push` will fail from the VM, far from the cause — start an agent "+
+					"(`eval $(ssh-agent)` then `ssh-add`), or set `ssh.mode` to \"mount\" in %s",
+				config.GlobalPath(denHome))
 		} else {
-			// La valeur est NOMMÉE : un « ok » qui ne dit pas ce qu'il a vu ne
-			// permet pas de repérer un socket périmé.
-			ajoute("ssh.mode", true, "agent-forward, SSH_AUTH_SOCK=%s", socket)
+			// The value is named: an "ok" that doesn't say what it saw
+			// wouldn't let anyone spot a stale socket.
+			add("ssh.mode", true, "agent-forward, SSH_AUTH_SOCK=%s", socket)
 		}
 	}
 
-	// 5. profils agents — ÉTAPE SUPPRIMÉE, et pourquoi elle ne revient pas.
-	//
-	// Elle rejugeait `update`, déjà jugé par Validate() à l'étape 3, mais sur
-	// `== ""` là où Validate() juge sur TrimSpace (corrigé en T2-min-5,
-	// précisément parce que deux juges d'un même champ doivent juger pareil).
-	// Deux conséquences mesurées sur le binaire, à un espace près dans le YAML :
-	//
-	//	update: ""     → 2 [FAIL] pour 1 faute, « 2 diagnostic(s) en échec »
-	//	update: "   "  → 1 [FAIL],              « 1 diagnostic(s) en échec »
-	//
-	// Elle n'attrapait rien que Validate() laisse passer — `x == ""` implique
-	// `strings.TrimSpace(x) == ""`, et l'étape 3 est jouée INCONDITIONNELLEMENT
-	// avant celle-ci (aucun `return` entre les deux). Son message était en outre
-	// le moins actionnable des deux : « agent claude », là où Validate() nomme la
-	// clé à corriger (`agents.claude.update`).
-	//
-	// Ce qui la remplace n'est pas rien : Validate() la couvre entièrement, et
-	// TestDoctorNeCompteQuUnEchecParUpdateFautif verrouille le compte — l'étape
-	// elle-même n'était couverte par AUCUN test (mesuré : `== "" && false`
-	// laissait `go test ./... -count=1` entièrement vert).
+	// (a step re-judging agents.*.update was removed here: config.Global.Validate()
+	// already covers it via TrimSpace, the stricter test — see validate.go.)
 
-	// 6. nests : stack référencée existante, repos présents sur disque
-	nests, casses, err := nest.ListNests(denHome)
+	// 9. nests: referenced stack exists, repos present on disk
+	nests, brokenNests, err := nest.ListNests(denHome)
 	if err != nil {
-		ajoute("nests", false, "%v", err)
+		add("nests", false, "%v", err)
 		return checks
 	}
-	// Un nest cassé est signalé nommément et n'empêche pas de diagnostiquer les
-	// autres : c'est précisément le rôle de doctor.
-	for _, c := range casses {
-		ajoute("nest "+c.Nom, false, "illisible : %v", c.Err)
+	// A broken nest is named individually and doesn't stop the others from
+	// being diagnosed: that's precisely doctor's job.
+	for _, c := range brokenNests {
+		add("nest "+c.Name, false, "unreadable: %v", c.Err)
 	}
 	for _, n := range nests {
-		nomStack := n.Stack
-		if nomStack == "" {
-			nomStack = g.Defaults.Stack
+		stackName := n.Stack
+		if stackName == "" {
+			stackName = g.Defaults.Stack
 		}
-		// Get : le nest doit apprendre si SA stack est illisible ou absente, deux
-		// réparations différentes. Un test d'appartenance dirait « introuvable »
-		// des deux, et c'est ce qui rendait doctor faux quand une autre stack
-		// cassait le chargement entier.
-		if _, err := stacks.Get(nomStack); err != nil {
-			ajoute("nest "+n.Name, false, "%v", err)
+		// Get: the nest must learn whether ITS stack is unreadable or
+		// missing — two different fixes. A membership test would say
+		// "not found" for both, which is what made doctor lie whenever
+		// some other stack broke the whole load.
+		if _, err := stacks.Get(stackName); err != nil {
+			add("nest "+n.Name, false, "%v", err)
 		}
 		for _, r := range n.Repos {
 			if _, err := d.Stat(r.Path); err != nil {
-				ajoute("nest "+n.Name, false, "repo introuvable : %s", r.Path)
+				add("nest "+n.Name, false, "repo not found: %s", r.Path)
 			}
 		}
 	}
-	if len(nests) > 0 || len(casses) > 0 {
-		ajoute("nests", len(casses) == 0, "%d déclaré(s), %d illisible(s)", len(nests), len(casses))
+	if len(nests) > 0 || len(brokenNests) > 0 {
+		add("nests", len(brokenNests) == 0, "%d declared, %d unreadable", len(nests), len(brokenNests))
 	}
 
 	return checks

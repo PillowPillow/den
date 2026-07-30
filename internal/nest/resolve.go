@@ -10,37 +10,36 @@ import (
 	"github.com/PillowPillow/den/internal/config"
 )
 
-// Options porte les surcharges issues des flags CLI (dernier niveau de la cascade).
+// Options carries the overrides coming from CLI flags (the cascade's last level).
 type Options struct {
 	Agent   string   // --agent
 	Without []string // --without
 	Only    []string // --only
 }
 
-// jetonConfigDir est le marqueur substitué dans les valeurs d'env de l'agent.
+// configDirToken is the marker substituted in the agent's env values.
 //
-// Ce qu'il vaut est un FAIT : le chemin HÔTE du profil de l'agent, celui que
-// den crée et que `sbx create` reçoit en workspace.
+// What it holds is a FACT: the HOST path of the agent's profile, the one den
+// creates and that `sbx create` receives as a workspace.
 //
-// Ce qui en fait une valeur utile DANS la VM est une HYPOTHÈSE, non vérifiée —
-// A11 du spec §14.1 : que sbx monte chaque workspace au même chemin absolu dans
-// la VM que sur l'hôte. Convention du projet : tout ce qui concerne le
-// comportement réel de sbx est une hypothèse à documenter, jamais une
-// affirmation. Elle ne peut pas être tranchée ici (sbx n'est pas installé sur
-// cette machine), et le double de test ne la touche pas.
+// That this is useful INSIDE the VM is an unverified HYPOTHESIS — spec §14.1
+// A11: that sbx mounts each workspace at the same absolute path in the VM as
+// on the host. Project convention: anything about sbx's actual behavior is a
+// hypothesis to document, never an assertion. It cannot be settled here (sbx
+// is not installed on this machine).
 //
-// Si elle est fausse, CLAUDE_CONFIG_DIR pointe dans le vide côté VM et l'agent
-// repart de zéro à chaque spawn, sans un mot — voir A11 pour ce qui la
-// falsifierait au premier smoke, et pour l'autre chose qui en dépend (le
-// `-w <chemin hôte>` de toutes les attaches).
-const jetonConfigDir = "{config_dir}"
+// If it is false, CLAUDE_CONFIG_DIR points nowhere inside the VM and the
+// agent starts from scratch on every spawn, silently — see A11 for what would
+// falsify it at the first smoke test, and for what else depends on it (the
+// `-w <host path>` of every attach).
+const configDirToken = "{config_dir}"
 
-// Resolved est un nest entièrement résolu : plus rien à recalculer en aval.
-// Le plan Spawn le consomme tel quel pour fabriquer le mixin et l'argv sbx create.
+// Resolved is a fully resolved nest: nothing left to compute downstream.
+// internal/spawn consumes it as-is to build the mixin and the sbx create argv.
 type Resolved struct {
-	// DenHome est TOUJOURS absolu (Resolve le garantit) : le mixin généré
-	// s'écrit sous <DenHome>/cache/mixins/, et ce chemin part ensuite tel quel
-	// vers `sbx create`, où le cwd n'est plus garanti.
+	// DenHome is ALWAYS absolute (Resolve guarantees it): the generated mixin
+	// is written under <DenHome>/cache/mixins/, and that path then goes as-is
+	// to `sbx create`, where cwd is no longer guaranteed.
 	DenHome string
 
 	Nest  *Nest
@@ -48,16 +47,16 @@ type Resolved struct {
 
 	AgentName      string
 	Agent          config.Agent
-	AgentConfigDir string // override nest s'il existe, sinon registre global
+	AgentConfigDir string // nest override if present, else the global registry
 
-	// Env est l'union PRÊTE À POSER : env de l'agent ∪ env du nest, le nest
-	// gagnant, {config_dir} substitué PARTOUT (agent comme nest). La
-	// substitution est une règle de cascade, pas d'affichage : elle appartient
-	// ici, pas au mixin.
+	// Env is the union READY TO APPLY: agent env ∪ nest env, nest winning,
+	// {config_dir} substituted EVERYWHERE (both agent and nest). The
+	// substitution is a cascade rule, not a display concern: it belongs here,
+	// not in the mixin.
 	Env map[string]string
 
-	Egress []string // union triée baseline ∪ stack ∪ nest
-	Repos  []Repo   // sélection appliquée, ordre de déclaration
+	Egress []string // sorted union of baseline ∪ stack ∪ nest
+	Repos  []Repo   // applied selection, declaration order
 
 	SSHMode        string
 	SSHDir         string
@@ -65,95 +64,95 @@ type Resolved struct {
 	WorktreeRoot   string
 }
 
-// fusionneEnv applique la cascade agent ← nest et substitue {config_dir} dans
-// les DEUX sources : un nest peut réaffirmer une variable de l'agent (par ex.
-// CLAUDE_CONFIG_DIR) avec le même jeton, et le nest gagnant dans la cascade,
-// une substitution asymétrique laisserait le jeton littéral l'emporter.
-// Renvoie toujours une map non-nil : les consommateurs itèrent sans garde.
-func fusionneEnv(agentEnv, nestEnv map[string]string, configDir string) map[string]string {
+// mergeEnv applies the agent ← nest cascade and substitutes {config_dir} in
+// BOTH sources: a nest may reassert an agent variable (e.g. CLAUDE_CONFIG_DIR)
+// with the same token, and since the nest wins the cascade, an asymmetric
+// substitution would let the literal token win instead.
+// Always returns a non-nil map: consumers iterate without a guard.
+func mergeEnv(agentEnv, nestEnv map[string]string, configDir string) map[string]string {
 	out := make(map[string]string, len(agentEnv)+len(nestEnv))
 	for k, v := range agentEnv {
-		out[k] = strings.ReplaceAll(v, jetonConfigDir, configDir)
+		out[k] = strings.ReplaceAll(v, configDirToken, configDir)
 	}
 	for k, v := range nestEnv {
-		out[k] = strings.ReplaceAll(v, jetonConfigDir, configDir) // le nest est plus bas dans la cascade : il gagne
+		out[k] = strings.ReplaceAll(v, configDirToken, configDir) // the nest is lower in the cascade: it wins
 	}
 	return out
 }
 
-// ResolveAgent détermine l'agent actif et son config_dir.
-// Priorité du nom : flag --agent > defaults.agent.
-// Priorité du config_dir : override du nest pour CET agent > registre global.
-func ResolveAgent(g *config.Global, n *Nest, flagAgent string) (string, config.Agent, string, error) {
-	nom := flagAgent
-	if nom == "" {
-		nom = g.Defaults.Agent
+// resolveAgent determines the active agent and its config_dir.
+// Name priority: --agent flag > defaults.agent.
+// config_dir priority: nest override for THIS agent > global registry.
+func resolveAgent(g *config.Global, n *Nest, flagAgent string) (string, config.Agent, string, error) {
+	name := flagAgent
+	if name == "" {
+		name = g.Defaults.Agent
 	}
 
-	a, ok := g.Agents[nom]
+	a, ok := g.Agents[name]
 	if !ok {
-		dispos := slices.Sorted(maps.Keys(g.Agents))
+		available := slices.Sorted(maps.Keys(g.Agents))
 		return "", config.Agent{}, "", fmt.Errorf(
-			"agent %q inconnu (agents déclarés : %v)", nom, dispos)
+			"unknown agent %q (declared agents: %v)", name, available)
 	}
 
 	configDir := a.ConfigDir
 	if n != nil {
-		if override, ok := n.Agents[nom]; ok && override != "" {
+		if override, ok := n.Agents[name]; ok && override != "" {
 			configDir = override
 		}
 	}
-	return nom, a, configDir, nil
+	return name, a, configDir, nil
 }
 
-// Resolve applique la cascade complète global ← stack ← nest ← flags.
+// Resolve applies the full global ← stack ← nest ← flags cascade.
 //
-// stacks est un config.Stacks et non une map : le verdict « cette stack est-elle
-// utilisable » distingue « illisible » de « pas déclarée », et cette distinction
-// appartient à config.Stacks.Get, sa source unique. Une map seule ne pourrait
-// dire que « introuvable » — y compris d'une stack bel et bien présente dont le
-// stack.yaml porte une faute de frappe, envoyant l'utilisateur créer un fichier
-// qu'il a déjà.
+// stacks is a config.Stacks rather than a map: the verdict "is this stack
+// usable" distinguishes "unreadable" from "not declared", and that
+// distinction belongs to config.Stacks.Get, its single source of truth. A map
+// alone could only say "not found" — including for a stack that IS present
+// but whose stack.yaml has a typo, sending the user to create a file that
+// already exists.
 func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o Options) (*Resolved, error) {
 	if !filepath.IsAbs(denHome) {
 		return nil, fmt.Errorf(
-			"den home %q : chemin non absolu (les chemins dérivés partent tels quels vers "+
-				"git worktree et sbx create, où le cwd n'est plus garanti)", denHome)
+			"den home %q: not an absolute path (derived paths go as-is to "+
+				"git worktree and sbx create, where cwd is no longer guaranteed)", denHome)
 	}
 
-	nomStack := n.Stack
-	if nomStack == "" {
-		nomStack = g.Defaults.Stack
+	stackName := n.Stack
+	if stackName == "" {
+		stackName = g.Defaults.Stack
 	}
-	s, err := stacks.Get(nomStack)
+	s, err := stacks.Get(stackName)
 	if err != nil {
-		// Rien n'est ajouté après l'erreur de Get : elle situe elle-même ce
-		// qu'il faut situer (le dossier des stacks sur « introuvable », le
-		// stack.yaml fautif sur « illisible »). Un suffixe collé ici atterrissait
-		// derrière le diagnostic MULTI-LIGNE de yaml.v3, où il se lisait comme la
-		// localisation de sa dernière ligne.
-		return nil, fmt.Errorf("nest %q : %w", n.Name, err)
-	}
-
-	nomAgent, agent, configDir, err := ResolveAgent(g, n, o.Agent)
-	if err != nil {
-		return nil, fmt.Errorf("nest %q : %w", n.Name, err)
+		// Nothing is appended after Get's error: it already locates what
+		// needs locating (the stacks directory for "not found", the faulty
+		// stack.yaml for "unreadable"). A suffix here would land behind
+		// yaml.v3's MULTI-LINE diagnostic, where it would read as the
+		// location of its last line.
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
 
-	repos, err := SelectRepos(n.Repos, o.Without, o.Only)
+	agentName, agent, configDir, err := resolveAgent(g, n, o.Agent)
 	if err != nil {
-		return nil, fmt.Errorf("nest %q : %w", n.Name, err)
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
+	}
+
+	repos, err := selectRepos(n.Repos, o.Without, o.Only)
+	if err != nil {
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
 
 	return &Resolved{
 		DenHome:        denHome,
 		Nest:           n,
 		Stack:          s,
-		AgentName:      nomAgent,
+		AgentName:      agentName,
 		Agent:          agent,
 		AgentConfigDir: configDir,
-		Env:            fusionneEnv(agent.Env, n.Env, configDir),
-		Egress:         UnionEgress(g.Egress, s.Egress, n.Egress),
+		Env:            mergeEnv(agent.Env, n.Env, configDir),
+		Egress:         unionEgress(g.Egress, s.Egress, n.Egress),
 		Repos:          repos,
 		SSHMode:        g.SSH.Mode,
 		SSHDir:         g.SSH.Dir,

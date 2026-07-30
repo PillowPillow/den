@@ -13,555 +13,553 @@ import (
 	"time"
 )
 
-// Ces tests exercent Exec, PAS sbx : le binaire invoqué est toujours "sh" (ou
-// un nom inventé pour le cas "introuvable"), jamais "sbx". Ils restent
-// hermétiques et rapides (millisecondes) — aucun réseau, rien en dehors du
-// processus courant.
+// These tests exercise Exec, NOT sbx: the binary invoked is always "sh" (or a
+// made-up name for the "not found" case), never "sbx". They stay hermetic and
+// fast (milliseconds) — no network, nothing outside the current process.
 
-// Un binaire introuvable doit laisser exec.ErrNotFound repérable dans la
-// chaîne : c'est ce qui permet à un appelant de distinguer « sbx absent du
-// PATH » d'un échec applicatif quelconque.
-func TestExecRunBinaireIntrouvable(t *testing.T) {
-	e := &Exec{Bin: "den-binaire-qui-nexiste-pas-x7q"}
+// A missing binary must leave exec.ErrNotFound detectable in the chain:
+// that's what lets a caller distinguish "sbx missing from the PATH" from any
+// application failure.
+func TestExecRunMissingBinary(t *testing.T) {
+	e := &Exec{Bin: "den-binary-that-does-not-exist-x7q"}
 	if _, err := e.Run(context.Background(), "ls"); !errors.Is(err, exec.ErrNotFound) {
-		t.Errorf("err = %v, attendu exec.ErrNotFound dans la chaîne", err)
+		t.Errorf("err = %v, want exec.ErrNotFound in the chain", err)
 	}
 }
 
-// L'échec de PREMIER CONTACT — sbx pas encore installé — est le plus probable
-// de tous, et c'est le seul que l'utilisateur puisse réparer lui-même. Le
-// message qu'il produit doit donc être en français, dire quoi faire, et ne pas
-// laisser l'utilisateur seul devant « exec: "sbx": executable file not found in
-// $PATH » (message d'os/exec, en anglais, sans remède).
+// The FIRST-CONTACT failure — sbx not yet installed — is the most likely of
+// all, and the only one the user can fix themselves. The message it produces
+// must say what to do, and must not leave the user staring at
+// `exec: "sbx": executable file not found in $PATH` (os/exec's message, with
+// no remedy).
 //
-// `den doctor` est nommé parce qu'il diagnostique EXACTEMENT ce cas
-// (internal/doctor/doctor.go, étape 1 : « binaire sbx introuvable dans le
-// PATH ») — et parce qu'avant ce test, `den doctor` n'apparaissait dans AUCUN
-// message utilisateur du projet, seulement dans des commentaires.
+// `den doctor` is named because it diagnoses EXACTLY this case
+// (internal/doctor/doctor.go, step 1: "sbx binary not found in the PATH") —
+// and because before this test, `den doctor` appeared in NO user-facing
+// message in the project, only in comments.
 //
-// L'absence de l'anglais est assertée SÉPARÉMENT de la présence du français :
-// un message qui ajouterait la traduction sans retirer la ligne d'os/exec
-// resterait vert sur la seule assertion de présence.
-func TestExecRunBinaireIntrouvableRendUnMessageActionnableEnFrancais(t *testing.T) {
-	const bin = "den-binaire-qui-nexiste-pas-x7q"
+// The absence of the os/exec wording is asserted SEPARATELY from the presence
+// of the actionable one: a message that added the translation without
+// dropping the os/exec line would stay green on the presence assertion alone.
+func TestExecRunMissingBinaryProducesAnActionableMessage(t *testing.T) {
+	const bin = "den-binary-that-does-not-exist-x7q"
 	e := &Exec{Bin: bin}
 
 	_, err := e.Run(context.Background(), "ls", "--json")
 	if err == nil {
-		t.Fatal("un binaire absent doit produire une erreur")
+		t.Fatal("a missing binary must produce an error")
 	}
 	message := err.Error()
 
-	for _, attendu := range []string{bin, "introuvable dans le PATH", "den doctor"} {
-		if !strings.Contains(message, attendu) {
-			t.Errorf("le message doit contenir %q ; obtenu : %s", attendu, message)
+	for _, want := range []string{bin, "not found in the PATH", "den doctor"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the message must contain %q; got: %s", want, message)
 		}
 	}
-	for _, anglais := range []string{"executable file not found", "exec: "} {
-		if strings.Contains(message, anglais) {
-			t.Errorf("reste d'anglais %q dans le message : %s", anglais, message)
+	for _, leftover := range []string{"executable file not found", "exec: "} {
+		if strings.Contains(message, leftover) {
+			t.Errorf("leftover os/exec wording %q in the message: %s", leftover, message)
 		}
 	}
-	// La chaîne d'erreurs ne doit pas être sacrifiée au message : c'est elle qui
-	// permet à un appelant de reconnaître ce cas sans comparer des chaînes.
+	// The error chain must not be sacrificed to the message: it's what lets a
+	// caller recognize this case without comparing strings.
 	if !errors.Is(err, exec.ErrNotFound) {
-		t.Errorf("exec.ErrNotFound doit rester repérable dans la chaîne ; err = %v", err)
+		t.Errorf("exec.ErrNotFound must stay detectable in the chain; err = %v", err)
 	}
 }
 
-// Même exigence sur Attach : c'est par lui que passent `den sh` et l'attache
-// finale de `den <nest>`. Le message n'a aucune raison d'être en anglais d'un
-// côté et en français de l'autre.
-func TestExecAttachBinaireIntrouvableRendUnMessageActionnableEnFrancais(t *testing.T) {
-	const bin = "den-binaire-qui-nexiste-pas-x7q"
+// Same requirement on Attach: it's what `den sh` and the final attach of
+// `den <nest>` go through. There's no reason the message should read
+// differently on one side or the other.
+func TestExecAttachMissingBinaryProducesAnActionableMessage(t *testing.T) {
+	const bin = "den-binary-that-does-not-exist-x7q"
 	e := &Exec{Bin: bin}
 
 	err := e.Attach(context.Background(), "exec", "-it", "api", "bash", "-l")
 	if err == nil {
-		t.Fatal("un binaire absent doit produire une erreur")
+		t.Fatal("a missing binary must produce an error")
 	}
 	message := err.Error()
 
-	for _, attendu := range []string{bin, "introuvable dans le PATH", "den doctor"} {
-		if !strings.Contains(message, attendu) {
-			t.Errorf("le message doit contenir %q ; obtenu : %s", attendu, message)
+	for _, want := range []string{bin, "not found in the PATH", "den doctor"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the message must contain %q; got: %s", want, message)
 		}
 	}
 	if strings.Contains(message, "executable file not found") {
-		t.Errorf("reste d'anglais dans le message : %s", message)
+		t.Errorf("leftover os/exec wording in the message: %s", message)
 	}
 	if !errors.Is(err, exec.ErrNotFound) {
-		t.Errorf("exec.ErrNotFound doit rester repérable dans la chaîne ; err = %v", err)
+		t.Errorf("exec.ErrNotFound must stay detectable in the chain; err = %v", err)
 	}
 }
 
-// Le code de sortie doit rester accessible via errors.As, et stderr doit
-// survivre dans le message : les deux sont perdus si l'erreur n'est pas
-// enveloppée avec %w.
-func TestExecRunCodeSortieEtStderrPreserves(t *testing.T) {
+// The exit code must stay reachable via errors.As, and stderr must survive in
+// the message: both are lost if the error isn't wrapped with %w.
+func TestExecRunPreservesExitCodeAndStderr(t *testing.T) {
 	e := &Exec{Bin: "sh"}
-	_, err := e.Run(context.Background(), "-c", "echo boum >&2; exit 3")
+	_, err := e.Run(context.Background(), "-c", "echo boom >&2; exit 3")
 	if err == nil {
-		t.Fatalf("erreur attendue, obtenu nil")
+		t.Fatalf("expected an error, got nil")
 	}
 
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
-		t.Fatalf("errors.As(err, &exitErr) doit réussir ; err = %v (%T)", err, err)
+		t.Fatalf("errors.As(err, &exitErr) must succeed; err = %v (%T)", err, err)
 	}
 	if exitErr.ExitCode() != 3 {
-		t.Errorf("code de sortie = %d, attendu 3", exitErr.ExitCode())
+		t.Errorf("exit code = %d, want 3", exitErr.ExitCode())
 	}
-	if !strings.Contains(err.Error(), "boum") {
-		t.Errorf("message = %q, doit contenir la sortie stderr (%q)", err.Error(), "boum")
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("message = %q, must contain the stderr output (%q)", err.Error(), "boom")
 	}
 }
 
-// Un contexte annulé AVANT le démarrage du process est le seul cas où os/exec
-// remonte le motif de lui-même : Cmd.Start rend ctx.Err() sans rien lancer.
-// C'est le cas facile, et il ne prouve RIEN du cas suivant.
-func TestExecRunContexteAnnuleAvantDemarrage(t *testing.T) {
+// A context canceled BEFORE the process starts is the one case where os/exec
+// surfaces the reason on its own: Cmd.Start returns ctx.Err() without
+// launching anything. This is the easy case, and it proves NOTHING about the
+// next one.
+func TestExecRunContextCanceledBeforeStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	e := &Exec{Bin: "sh"}
 	if _, err := e.Run(ctx, "-c", "true"); !errors.Is(err, context.Canceled) {
-		t.Errorf("err = %v, attendu context.Canceled dans la chaîne", err)
+		t.Errorf("err = %v, want context.Canceled in the chain", err)
 	}
 }
 
-// Le cas RÉEL du Ctrl-C : le contexte est annulé PENDANT l'exécution. Mesuré
-// trois fois (T11 deux fois, puis ici) : os/exec tue le process et Cmd.Wait
-// PRÉFÈRE l'erreur du process à celle du contexte, si bien que cmd.Run rend un
-// « signal: killed » qui n'enveloppe aucun motif de contexte. Le commentaire
-// d'ErreurExec affirmait pourtant la propriété ci-dessous — d'où le relevé
-// explicite de ctx.Err() dans Run.
+// The REAL Ctrl-C case: the context is canceled WHILE the process runs.
+// Measured repeatedly: os/exec kills the process and Cmd.Wait PREFERS the
+// process's error to the context's, so cmd.Run returns a "signal: killed"
+// that wraps no context reason. ExecError's comment used to claim the
+// property below anyway — hence Run's explicit read of ctx.Err().
 //
-// Les deux motifs sont exercés, parce qu'ils NE se comportent pas pareil pour
-// l'utilisateur (Ctrl-C contre timeout du settle-loop) et que rien ne garantit
-// qu'os/exec les traite identiquement.
+// Both reasons are exercised, because they don't behave the same for the user
+// (Ctrl-C versus the settle-loop's timeout) and nothing guarantees os/exec
+// treats them identically.
 //
-// # Pourquoi ce test se synchronise sur un témoin plutôt que sur l'horloge
+// # Why this test synchronizes on a witness rather than the clock
 //
-// Sa précondition — le process TOURNE ENCORE quand le contexte est interrompu —
-// était supposée, jamais observée : la version précédente interrompait après
-// 20 ms fixes. Deux défauts distincts en sont sortis, tous deux dans la sonde et
-// aucun dans Run :
+// Its precondition — the process is STILL RUNNING when the context is
+// interrupted — was assumed, never observed, by an earlier version that
+// canceled after a fixed 20 ms. Two distinct defects came out of that, both in
+// the probe and neither in Run:
 //
-//  1. Les DEUX interrupteurs couraient. Le cas « délai dépassé » portait une
-//     échéance à 20 ms, et une goroutine commune appelait en plus cancel() après
-//     20 ms ; celui qui gagnait fixait ctx.Err(). Quand la goroutine passait la
-//     première, le motif observé était Canceled et les quatre assertions
-//     tombaient d'un coup. Mesuré : 2 échecs sur 12 sous charge CPU, et un échec
-//     sur une suite complète `go test ./...`.
-//  2. L'interruption devançait le fork/exec. Latence mesurée entre Start et le
-//     premier octet exécuté par le script, sur 300 tirages : p50 = 0,7 ms,
-//     max = 1,0 ms à vide ; p50 = 8,5 ms, p99 = 22,2 ms, MAX = 26,2 ms sous
-//     saturation CPU 12×. Une échéance à 20 ms tombe donc RÉGULIÈREMENT avant le
-//     démarrage : Cmd.Start rend alors ctx.Err() sans rien lancer, il n'y a
-//     aucun *exec.ExitError à retrouver, et le test échouait sur la seule
-//     assertion qui exige un process réellement tué.
+//  1. Both triggers were racing. The "deadline exceeded" case carried a 20 ms
+//     deadline, and a shared goroutine also called cancel() after 20 ms;
+//     whichever won set ctx.Err(). When the goroutine won, the observed
+//     reason was Canceled and all four assertions failed at once.
+//  2. The interruption could beat the fork/exec. Measured latency between
+//     Start and the script's first executed byte, over 300 runs: p50 = 0.7 ms,
+//     max = 1.0 ms idle; p50 = 8.5 ms, p99 = 22.2 ms, MAX = 26.2 ms under 12x
+//     CPU saturation. A 20 ms deadline therefore fires REGULARLY before the
+//     process starts: Cmd.Start returns ctx.Err() without launching anything,
+//     there's no *exec.ExitError to find, and the test failed on the one
+//     assertion that requires a process actually killed.
 //
-// D'où le témoin : le script crée un fichier avant de dormir, et son existence
-// est ASSERTÉE après coup. Le cas « annulation » devient exact — la goroutine
-// attend le témoin puis annule, sans aucune hypothèse d'horloge. Le cas « délai
-// dépassé » ne peut pas l'être, une échéance courant dès sa création : sa marge
-// est portée à 500 ms, soit 19× le pire démarrage mesuré sous saturation, et le
-// témoin y sert de garde — s'il manquait, l'échec nommerait la marge à revoir au
-// lieu d'accuser une propriété de Run qui n'a pas été exercée.
-func TestExecRunMotifDAnnulationSurvitALaMortDuProcess(t *testing.T) {
-	// margeEcheance : voir la godoc ci-dessus. 500 ms = 19× le MAX mesuré
-	// (26,2 ms) sous saturation CPU 12×.
-	const margeEcheance = 500 * time.Millisecond
+// Hence the witness: the script creates a file before sleeping, and its
+// existence is ASSERTED afterward. The "cancellation" case becomes exact —
+// the goroutine waits for the witness then cancels, with no clock assumption.
+// The "deadline exceeded" case can't be, since a deadline runs from creation:
+// its margin is set to 500 ms, 19x the worst measured startup under
+// saturation, with the witness as a guard — without it, a failure would point
+// at the margin needing a bump instead of accusing an untested property of
+// Run.
+func TestExecRunCancellationReasonSurvivesProcessDeath(t *testing.T) {
+	// deadlineMargin: see the godoc above. 500 ms = 19x the measured MAX
+	// (26.2 ms) under saturation.
+	const deadlineMargin = 500 * time.Millisecond
 
-	cas := []struct {
-		nom string
-		// contexte rend un contexte dont l'interruption EN VOL est déjà armée,
-		// et dont c'est le SEUL interrupteur. temoin est le fichier que le
-		// script crée en démarrant.
-		contexte       func(t *testing.T, temoin string) context.Context
-		motif          error
-		motifAbsent    error
-		messageAttendu string
+	cases := []struct {
+		name string
+		// context returns a context whose in-flight interruption is already
+		// armed, and which is the ONLY trigger. witness is the file the
+		// script creates on startup.
+		context      func(t *testing.T, witness string) context.Context
+		reason       error
+		reasonAbsent error
+		wantMessage  string
 	}{
 		{
-			nom: "annulation",
-			contexte: func(t *testing.T, temoin string) context.Context {
+			name: "cancellation",
+			context: func(t *testing.T, witness string) context.Context {
 				ctx, cancel := context.WithCancel(context.Background())
 				t.Cleanup(cancel)
-				// Aucune échéance sur ce contexte : ctx.Err() ne peut valoir
-				// que context.Canceled. Et l'annulation n'est déclenchée
-				// qu'une fois le démarrage CONSTATÉ : ce cas-ci ne fait aucune
-				// hypothèse de durée.
+				// No deadline on this context: ctx.Err() can only be
+				// context.Canceled. And cancellation only fires once startup
+				// is CONFIRMED: this case makes no timing assumption at all.
 				go func() {
-					attendTemoin(temoin)
+					waitForWitness(witness)
 					cancel()
 				}()
 				return ctx
 			},
-			motif:          context.Canceled,
-			motifAbsent:    context.DeadlineExceeded,
-			messageAttendu: "interrompu (annulé)",
+			reason:       context.Canceled,
+			reasonAbsent: context.DeadlineExceeded,
+			wantMessage:  "interrupted (canceled)",
 		},
 		{
-			nom: "délai dépassé",
-			contexte: func(t *testing.T, _ string) context.Context {
-				ctx, cancel := context.WithTimeout(context.Background(), margeEcheance)
-				// cancel n'est appelé qu'APRÈS le corps du test : pendant le
-				// Run, l'échéance est le seul interrupteur, et ctx.Err() ne peut
-				// valoir que context.DeadlineExceeded.
+			name: "deadline exceeded",
+			context: func(t *testing.T, _ string) context.Context {
+				ctx, cancel := context.WithTimeout(context.Background(), deadlineMargin)
+				// cancel is only called AFTER the test body: during Run, the
+				// deadline is the only trigger, and ctx.Err() can only be
+				// context.DeadlineExceeded.
 				t.Cleanup(cancel)
 				return ctx
 			},
-			motif:          context.DeadlineExceeded,
-			motifAbsent:    context.Canceled,
-			messageAttendu: "interrompu (délai dépassé)",
+			reason:       context.DeadlineExceeded,
+			reasonAbsent: context.Canceled,
+			wantMessage:  "interrupted (deadline exceeded)",
 		},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			temoin := filepath.Join(t.TempDir(), "demarre")
-			ctx := c.contexte(t, temoin)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			witness := filepath.Join(t.TempDir(), "started")
+			ctx := c.context(t, witness)
 
-			e := &Exec{Bin: "sh", DelaiDeDrainage: 50 * time.Millisecond}
-			// `exec sleep 5` et non `sleep 5` : sans exec, dash forke et le
-			// petit-fils garde le tube (cf.
-			// TestExecRunBorneLAttenteQuandUnPetitFilsGardeLeTube).
-			_, err := e.Run(ctx, "-c", "touch "+temoin+"; exec sleep 5")
+			e := &Exec{Bin: "sh", DrainDelay: 50 * time.Millisecond}
+			// `exec sleep 5`, not `sleep 5`: without exec, dash forks and the
+			// grandchild keeps the pipe (see
+			// TestExecRunBoundsWaitWhenAGrandchildHoldsThePipe).
+			_, err := e.Run(ctx, "-c", "touch "+witness+"; exec sleep 5")
 			if err == nil {
-				t.Fatal("erreur attendue, obtenu nil")
+				t.Fatal("expected an error, got nil")
 			}
-			// LA PRÉCONDITION, vérifiée et non supposée : tout ce test porte sur
-			// une interruption survenue PENDANT l'exécution. Si le process n'a
-			// jamais démarré, Cmd.Start a rendu ctx.Err() sans rien lancer — un
-			// cas déjà couvert par TestExecRunContexteAnnuleAvantDemarrage, et
-			// qui ne prouve rien de celui-ci.
-			if _, errTemoin := os.Stat(temoin); errTemoin != nil {
-				t.Fatalf("le process n'a jamais démarré (témoin %s absent) : l'interruption a "+
-					"devancé le fork/exec, ce test ne mesure alors rien de ce qu'il prétend — "+
-					"augmente la marge d'échéance (%v)", temoin, margeEcheance)
+			// THE PRECONDITION, checked rather than assumed: this whole test is
+			// about an interruption occurring WHILE the process runs. If the
+			// process never started, Cmd.Start returned ctx.Err() without
+			// launching anything — a case already covered by
+			// TestExecRunContextCanceledBeforeStart, which proves nothing about
+			// this one.
+			if _, errWitness := os.Stat(witness); errWitness != nil {
+				t.Fatalf("the process never started (witness %s absent): the interruption beat "+
+					"the fork/exec, this test measures nothing it claims to — "+
+					"increase the deadline margin (%v)", witness, deadlineMargin)
 			}
-			if !errors.Is(err, c.motif) {
-				t.Errorf("errors.Is(err, %v) = false ; err = %v", c.motif, err)
+			if !errors.Is(err, c.reason) {
+				t.Errorf("errors.Is(err, %v) = false; err = %v", c.reason, err)
 			}
-			if errors.Is(err, c.motifAbsent) {
-				t.Errorf("errors.Is(err, %v) = true : les deux motifs sont confondus ; err = %v",
-					c.motifAbsent, err)
+			if errors.Is(err, c.reasonAbsent) {
+				t.Errorf("errors.Is(err, %v) = true: the two reasons are conflated; err = %v",
+					c.reasonAbsent, err)
 			}
-			// Le message doit DIRE l'interruption : « signal: killed » nu se lit
-			// comme un crash de sbx, et c'est précisément la confusion que le
-			// commentaire d'ErreurExec prétendait éviter.
-			if !strings.Contains(err.Error(), c.messageAttendu) {
-				t.Errorf("message = %q, attendu contenant %q", err.Error(), c.messageAttendu)
+			// The message must SAY the interruption: a bare "signal: killed"
+			// reads like sbx crashing, exactly the confusion ExecError's
+			// comment claimed to avoid.
+			if !strings.Contains(err.Error(), c.wantMessage) {
+				t.Errorf("message = %q, want it to contain %q", err.Error(), c.wantMessage)
 			}
-			// Sans cette assertion, joindre le motif d'annulation pourrait avoir
-			// remplacé la chaîne d'origine au lieu de s'y ajouter : les deux
-			// autres propriétés d'ErreurExec passeraient à la trappe.
+			// Without this assertion, joining the cancellation reason could
+			// have replaced the original chain instead of adding to it: the
+			// other two ExecError properties would slip through unnoticed.
 			var exitErr *exec.ExitError
 			if !errors.As(err, &exitErr) {
-				t.Errorf("le *exec.ExitError d'origine a été perdu ; err = %v (%T)", err, err)
+				t.Errorf("the original *exec.ExitError was lost; err = %v (%T)", err, err)
 			}
 		})
 	}
 }
 
-// attendTemoin bloque jusqu'à l'apparition du fichier que le script crée en
-// démarrant, et rend la main au plus tard au bout de limiteTemoin.
+// waitForWitness blocks until the file the script creates on startup
+// appears, returning at the latest after witnessTimeout.
 //
-// Appelée depuis une goroutine : elle ne peut donc pas faire échouer le test
-// elle-même (t.Fatalf hors de la goroutine de test est interdit). Elle abandonne
-// silencieusement à l'expiration, et c'est le Stat du corps du test qui
-// diagnostique — un seul endroit qui juge, celui qui a le droit de le faire.
-func attendTemoin(temoin string) {
-	// 100× le pire démarrage mesuré sous saturation CPU 12× (26,2 ms) : cette
-	// borne n'existe que pour ne pas laisser fuir une goroutine si le script
-	// échoue à démarrer, jamais pour arbitrer une course.
-	const limiteTemoin = 3 * time.Second
-	echeance := time.Now().Add(limiteTemoin)
-	for time.Now().Before(echeance) {
-		if _, err := os.Stat(temoin); err == nil {
+// Called from a goroutine: it therefore can't fail the test itself (t.Fatalf
+// outside the test goroutine is forbidden). It gives up silently on timeout,
+// and it's the test body's Stat that judges — a single place gets to decide.
+func waitForWitness(witness string) {
+	// 100x the worst measured startup under 12x CPU saturation (26.2 ms): this
+	// bound exists only so a goroutine doesn't leak if the script fails to
+	// start, never to arbitrate a race.
+	const witnessTimeout = 3 * time.Second
+	deadline := time.Now().Add(witnessTimeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(witness); err == nil {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
 }
 
-// Tuer le process ne suffit PAS à débloquer Run : dash forke pour `sleep 5`, et
-// le petit-fils garde le tube stdout ouvert — Wait bloque sur la copie tant
-// qu'il vit. Mesuré : 5,007 s pour une annulation à 20 ms, contre 21 ms avec
-// `exec sleep 5` (pas de fork) ou un binaire direct.
+// Killing the process is NOT enough to unblock Run: dash forks for `sleep 5`,
+// and the grandchild keeps stdout's pipe open — Wait blocks on the copy as
+// long as it lives. Measured: 5.007 s for a cancellation at 20 ms, versus
+// 21 ms with `exec sleep 5` (no fork) or a direct binary.
 //
-// ⚠️ HYPOTHÈSE, et non un fait : que `sbx` laisse lui aussi un descendant tenant
-// le tube (superviseur de microVM) n'a JAMAIS été observé — `sbx` n'est pas
-// installé, tout ce qui précède est mesuré sur `sh`. Si l'hypothèse est fausse,
-// cette borne ne sert jamais en production ; elle ne coûte rien pour autant, le
-// drainage écourté d'un succès étant désormais rendu comme un succès. Inscrite
-// au spec §14.1 avec ce qui la falsifierait.
+// ⚠️ ASSUMPTION, not a fact: that `sbx` also leaves a descendant holding the
+// pipe (a microVM supervisor) has NEVER been observed — `sbx` isn't
+// installed, everything above is measured on `sh`. If the assumption is
+// false, this bound never fires in production; it costs nothing either way,
+// since a drain cut short on a success is now reported as a success. Recorded
+// in spec §14.1 along with what would falsify it.
 //
-// Le test ne mesure pas une durée absolue (ce serait flaky sous charge) mais la
-// SÉPARATION : rendre la main nettement avant la fin naturelle du petit-fils.
+// The test doesn't measure an absolute duration (that would be flaky under
+// load) but the SEPARATION: returning well before the grandchild's natural
+// end.
 //
-// L'annulation attend le témoin, pour la même raison que
-// TestExecRunMotifDAnnulationSurvitALaMortDuProcess (voir sa godoc) — mais ici
-// le risque n'était pas un échec, c'était un SUCCÈS À VIDE : annulée avant que
-// dash n'ait forké (jusqu'à 26,2 ms de latence de démarrage mesurée sous
-// saturation, pour un délai fixé à 20 ms), Run rendait la main aussitôt, sans
-// petit-fils, sans tube tenu et sans que la borne ne serve — et l'assertion
-// « moins de 2 s » passait quand même. Un test qui passe à vide est
-// indiscernable d'un test qui passe.
+// The cancellation waits for the witness, for the same reason as
+// TestExecRunCancellationReasonSurvivesProcessDeath (see its godoc) — but here
+// the risk wasn't a failure, it was an EMPTY SUCCESS: canceled before dash had
+// forked (up to 26.2 ms of measured startup latency under saturation, for a
+// fixed 20 ms delay), Run would return right away, no grandchild, no held
+// pipe, and the bound never exercised — and the "under 2 s" assertion would
+// pass anyway. A test that passes vacuously is indistinguishable from one that
+// passes.
 //
-// LA FORME DU SCRIPT EST LE TEST. `sleep 5 & touch …; wait` place le fork AVANT
-// le témoin : quand le témoin apparaît, le petit-fils existe déjà et a hérité du
-// tube. La forme naïve — `touch …; sleep 5` — fait l'inverse et RUINE le test,
-// mesuré : le témoin y précède le fork, l'annulation tue dash avant qu'il ait
-// forké, aucun petit-fils ne tient le tube, et Run rend la main en 13 ms même
-// avec WaitDelay désarmé. Le tableau, contexte annulé sur témoin :
+// THE SCRIPT'S SHAPE IS THE TEST. `sleep 5 & touch ...; wait` places the fork
+// BEFORE the witness: once the witness appears, the grandchild already
+// exists and has inherited the pipe. The naive form — `touch ...; sleep 5` —
+// does the opposite and RUINS the test, measured: the witness precedes the
+// fork there, the cancellation kills dash before it forked, no grandchild
+// holds the pipe, and Run returns in 13 ms even with WaitDelay disarmed. The
+// table, context canceled on witness:
 //
-//	"touch T; sleep 5"        WaitDelay=0     →   13 ms   (aucun petit-fils)
-//	"sleep 5 & touch T; wait" WaitDelay=0     → 5001 ms   (le tube est tenu)
-//	"sleep 5 & touch T; wait" WaitDelay=50ms  →   59 ms   (la borne s'applique)
-//	"sleep 5 & touch T; wait" WaitDelay=2s    → 2006 ms   (à sa valeur)
+//	"touch T; sleep 5"        WaitDelay=0     →   13 ms   (no grandchild)
+//	"sleep 5 & touch T; wait" WaitDelay=0     → 5001 ms   (the pipe is held)
+//	"sleep 5 & touch T; wait" WaitDelay=50ms  →   59 ms   (the bound applies)
+//	"sleep 5 & touch T; wait" WaitDelay=2s    → 2006 ms   (at its value)
 //
-// C'est la deuxième ligne qui donne sa valeur à la troisième : sans elle, la
-// borne n'est pas ce qui fait rendre la main.
-func TestExecRunBorneLAttenteQuandUnPetitFilsGardeLeTube(t *testing.T) {
-	temoin := filepath.Join(t.TempDir(), "demarre")
+// It's the second line that gives the third its meaning: without it, the
+// bound isn't what makes Run return.
+func TestExecRunBoundsWaitWhenAGrandchildHoldsThePipe(t *testing.T) {
+	witness := filepath.Join(t.TempDir(), "started")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		attendTemoin(temoin)
+		waitForWitness(witness)
 		cancel()
 	}()
 
-	e := &Exec{Bin: "sh", DelaiDeDrainage: 50 * time.Millisecond}
-	debut := time.Now()
-	// Pas d'`exec` ici, contrairement à l'autre test, et c'est tout le sujet :
-	// le `&` forke un petit-fils, et c'est lui qui garde le tube. L'ordre
-	// fork-puis-témoin est ce qui rend la précondition observable (godoc).
-	if _, err := e.Run(ctx, "-c", "sleep 5 & touch "+temoin+"; wait"); err == nil {
-		t.Fatal("erreur attendue, obtenu nil")
+	e := &Exec{Bin: "sh", DrainDelay: 50 * time.Millisecond}
+	start := time.Now()
+	// No `exec` here, unlike the other test, and that's the whole point: the
+	// `&` forks a grandchild, and it's the one holding the pipe. The
+	// fork-then-witness order is what makes the precondition observable (see
+	// godoc).
+	if _, err := e.Run(ctx, "-c", "sleep 5 & touch "+witness+"; wait"); err == nil {
+		t.Fatal("expected an error, got nil")
 	}
-	// La précondition, vérifiée : sans témoin, le petit-fils n'a pas été forké,
-	// aucun tube n'est tenu, et l'assertion de durée ci-dessous serait vraie
-	// pour la mauvaise raison.
-	if _, err := os.Stat(temoin); err != nil {
-		t.Fatalf("le témoin %s est absent : le petit-fils n'a jamais été forké, aucun tube "+
-			"n'était tenu, et la borne d'attente n'a donc pas été exercée", temoin)
+	// The precondition, checked: without the witness, the grandchild was never
+	// forked, no pipe was held, and the duration assertion below would be
+	// true for the wrong reason.
+	if _, err := os.Stat(witness); err != nil {
+		t.Fatalf("witness %s is absent: the grandchild was never forked, no pipe was "+
+			"held, and the wait bound was therefore never exercised", witness)
 	}
-	if ecoule := time.Since(debut); ecoule > 2*time.Second {
-		t.Errorf("Run a mis %v à rendre la main : la borne d'attente ne s'applique pas "+
-			"(le petit-fils tient le tube pendant 5 s)", ecoule)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Run took %v to return: the wait bound doesn't apply "+
+			"(the grandchild holds the pipe for 5 s)", elapsed)
 	}
 }
 
-// LE CHEMIN NOMINAL, celui qu'aucun test ne couvrait quand WaitDelay a été
-// introduit : `sbx create` RÉUSSIT en laissant derrière lui un descendant qui a
-// hérité du tube stdout. Le contexte n'est JAMAIS annulé ici.
+// THE HAPPY PATH, the one no test covered when WaitDelay was introduced:
+// `sbx create` SUCCEEDS while leaving behind a descendant that inherited
+// stdout's pipe. The context is NEVER canceled here.
 //
-// WaitDelay n'est pas armé seulement par l'annulation du contexte : son minuteur
-// démarre aussi dès que Wait constate la sortie du process. Un succès dont les
-// tubes sont fermés par WaitDelay fait rendre exec.ErrWaitDelay À LA PLACE de
-// nil — donc « den n'a pas pu créer la sandbox » alors que la sandbox EXISTE, et
-// l'abandon de la séquence de spawn (ni settle, ni attache).
+// WaitDelay isn't armed only by context cancellation: its timer also starts
+// as soon as Wait observes the process exit. A success whose pipes are closed
+// by WaitDelay makes exec.ErrWaitDelay surface INSTEAD of nil — so "den
+// couldn't create the sandbox" while the sandbox EXISTS, and the spawn
+// sequence abandoned (neither settle nor attach).
 //
-// C'est exactement le scénario que la borne invoque pour se justifier — un
-// superviseur qui survit à `sbx create` — et qui reste une HYPOTHÈSE sur `sbx`
-// (spec §14.1) : le script ci-dessous est du `sh`, pas du `sbx`.
-func TestExecRunNEchouePasQuandUnDescendantSurvitAUnSuccesDuProcess(t *testing.T) {
-	cas := []struct {
-		nom     string
-		script  string
-		attendu string
+// It's exactly the scenario the bound exists to handle — a supervisor
+// surviving `sbx create` — and which remains an ASSUMPTION about `sbx` (spec
+// §14.1): the script below is `sh`, not `sbx`.
+func TestExecRunDoesNotFailWhenADescendantSurvivesAProcessSuccess(t *testing.T) {
+	cases := []struct {
+		name   string
+		script string
+		want   string
 	}{
-		{"descendant lancé après l'écriture", "echo demarree; sleep 5 &", "demarree\n"},
-		{"descendant lancé avant l'écriture", "sleep 5 & echo cree", "cree\n"},
+		{"descendant launched after the write", "echo started; sleep 5 &", "started\n"},
+		{"descendant launched before the write", "sleep 5 & echo created", "created\n"},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			e := &Exec{Bin: "sh", DelaiDeDrainage: 50 * time.Millisecond}
-			debut := time.Now()
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := &Exec{Bin: "sh", DrainDelay: 50 * time.Millisecond}
+			start := time.Now()
 
-			sortie, err := e.Run(context.Background(), "-c", c.script)
+			output, err := e.Run(context.Background(), "-c", c.script)
 			if err != nil {
-				t.Fatalf("le process est sorti avec SUCCÈS : Run ne doit pas rendre d'erreur ; err = %v", err)
+				t.Fatalf("the process exited with SUCCESS: Run must not return an error; err = %v", err)
 			}
-			if string(sortie) != c.attendu {
-				t.Errorf("sortie = %q, attendue %q : fermer le tube ne doit pas perdre "+
-					"ce que le fils direct a écrit avant de sortir", sortie, c.attendu)
+			if string(output) != c.want {
+				t.Errorf("output = %q, want %q: closing the pipe must not lose "+
+					"what the direct child wrote before exiting", output, c.want)
 			}
-			// La borne doit tout de même s'appliquer : sans elle, ce test
-			// passerait en attendant les 5 s du descendant, et ne prouverait
-			// plus que le succès est rendu SANS attendre.
-			if ecoule := time.Since(debut); ecoule > 2*time.Second {
-				t.Errorf("Run a mis %v : la borne d'attente ne s'applique plus", ecoule)
+			// The bound must still apply: without it, this test would pass by
+			// waiting out the descendant's 5 s, and would no longer prove the
+			// success is returned WITHOUT waiting.
+			if elapsed := time.Since(start); elapsed > 2*time.Second {
+				t.Errorf("Run took %v: the wait bound no longer applies", elapsed)
 			}
 		})
 	}
 }
 
-// La condition de la propriété précédente, isolée : le copieur d'os/exec draine
-// le tube EN CONTINU, donc ce que le fils direct a écrit avant de sortir est
-// déjà collecté quand WaitDelay ferme le tube.
+// The previous property's precondition, isolated: os/exec's copier drains the
+// pipe CONTINUOUSLY, so whatever the direct child wrote before exiting is
+// already collected by the time WaitDelay closes the pipe.
 //
-// 240 Kio, très au-delà du tampon d'un tube (64 Kio) : une troncature se verrait
-// ici, là où « demarree\n » tiendrait dans le tampon quoi qu'il arrive. Ce que
-// le DESCENDANT écrirait après la fermeture est perdu, et c'est voulu.
-func TestExecRunNeTronquePasLaSortieDejaEcriteParLeFilsDirect(t *testing.T) {
-	const lignes = 40000
-	e := &Exec{Bin: "sh", DelaiDeDrainage: 50 * time.Millisecond}
+// 240 KiB, well beyond a pipe's buffer (64 KiB): a truncation would show up
+// here, where "started\n" would fit in the buffer regardless. Whatever the
+// DESCENDANT would write after the close is lost, and that's intended.
+func TestExecRunDoesNotTruncateOutputAlreadyWrittenByTheDirectChild(t *testing.T) {
+	const lines = 40000
+	e := &Exec{Bin: "sh", DrainDelay: 50 * time.Millisecond}
 
-	sortie, err := e.Run(context.Background(), "-c", "yes ligne | head -n 40000; sleep 5 &")
+	output, err := e.Run(context.Background(), "-c", "yes line | head -n 40000; sleep 5 &")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := bytes.Count(sortie, []byte("\n")); got != lignes {
-		t.Errorf("sortie tronquée : %d lignes sur %d attendues (%d octets)",
-			got, lignes, len(sortie))
+	if got := bytes.Count(output, []byte("\n")); got != lines {
+		t.Errorf("truncated output: %d lines out of %d expected (%d bytes)",
+			got, lines, len(output))
 	}
 }
 
-// etatDeSortie rend un *os.ProcessState RÉEL pour le code de sortie demandé.
-// Fabriqué en exécutant un process : les champs d'os.ProcessState ne sont pas
-// exportés, et un double maison ne prouverait rien du type réellement inspecté.
-func etatDeSortie(t *testing.T, script string) *os.ProcessState {
+// exitState returns a REAL *os.ProcessState for the requested exit code.
+// Built by running a process: os.ProcessState's fields aren't exported, and a
+// hand-rolled double would prove nothing about the type actually inspected.
+func exitState(t *testing.T, script string) *os.ProcessState {
 	t.Helper()
 	cmd := exec.Command("sh", "-c", script)
-	_ = cmd.Run() // l'échec est attendu pour les codes non nuls
+	_ = cmd.Run() // failure is expected for nonzero codes
 	if cmd.ProcessState == nil {
-		t.Fatalf("aucun ProcessState pour %q", script)
+		t.Fatalf("no ProcessState for %q", script)
 	}
 	return cmd.ProcessState
 }
 
-// Les trois conditions de la garde, une par une. Les tests de bout en bout ne
-// couvrent que la première : os/exec ne rend ErrWaitDelay que sur un statut de
-// succès, si bien que les deux autres portent sur des états qu'on ne sait pas
-// provoquer à la demande. Sans ce test, elles resteraient sans preuve — et une
-// garde trop large convertirait un ÉCHEC de sbx en succès silencieux.
-func TestDrainageEcourteSurSuccesExigeLesTroisConditions(t *testing.T) {
-	succes := etatDeSortie(t, "true")
-	echec := etatDeSortie(t, "exit 3")
-	autreErreur := errors.New("panne quelconque")
+// The guard's three conditions, one at a time. End-to-end tests only cover
+// the first one: os/exec only returns ErrWaitDelay on a success status, so
+// the other two cover states we can't provoke on demand. Without this test
+// they'd stay unproven — and a guard that's too broad would turn an sbx
+// FAILURE into a silent success.
+func TestDrainCutShortOnSuccessRequiresAllThreeConditions(t *testing.T) {
+	success := exitState(t, "true")
+	failure := exitState(t, "exit 3")
+	otherErr := errors.New("some failure")
 
-	cas := []struct {
-		nom    string
+	cases := []struct {
+		name   string
 		err    error
-		errCtx error
-		etat   *os.ProcessState
-		veut   bool
+		ctxErr error
+		state  *os.ProcessState
+		want   bool
 	}{
-		{"drainage écourté sur un succès", exec.ErrWaitDelay, nil, succes, true},
-		{"drainage écourté, enveloppé", fmt.Errorf("x : %w", exec.ErrWaitDelay), nil, succes, true},
-		{"autre erreur", autreErreur, nil, succes, false},
-		{"aucune erreur", nil, nil, succes, false},
-		{"contexte annulé", exec.ErrWaitDelay, context.Canceled, succes, false},
-		{"délai du contexte dépassé", exec.ErrWaitDelay, context.DeadlineExceeded, succes, false},
-		{"process sorti en échec", exec.ErrWaitDelay, nil, echec, false},
-		{"process jamais démarré", exec.ErrWaitDelay, nil, nil, false},
+		{"drain cut short on a success", exec.ErrWaitDelay, nil, success, true},
+		{"drain cut short, wrapped", fmt.Errorf("x: %w", exec.ErrWaitDelay), nil, success, true},
+		{"other error", otherErr, nil, success, false},
+		{"no error", nil, nil, success, false},
+		{"context canceled", exec.ErrWaitDelay, context.Canceled, success, false},
+		{"context deadline exceeded", exec.ErrWaitDelay, context.DeadlineExceeded, success, false},
+		{"process exited with failure", exec.ErrWaitDelay, nil, failure, false},
+		{"process never started", exec.ErrWaitDelay, nil, nil, false},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			if got := drainageEcourteSurSucces(c.err, c.errCtx, c.etat); got != c.veut {
-				t.Errorf("drainageEcourteSurSucces(%v, %v, %v) = %v, attendu %v",
-					c.err, c.errCtx, c.etat, got, c.veut)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := drainCutShortOnSuccess(c.err, c.ctxErr, c.state); got != c.want {
+				t.Errorf("drainCutShortOnSuccess(%v, %v, %v) = %v, want %v",
+					c.err, c.ctxErr, c.state, got, c.want)
 			}
 		})
 	}
 }
 
-// La valeur NULLE d'Exec doit être la valeur sûre : `&Exec{Bin: "sbx"}` sans
-// réglage explicite doit être borné, pas suspendu sans fin. Le sens de 0 est
-// inversé entre le champ (« prends le défaut ») et cmd.WaitDelay (« attends
-// indéfiniment »), et c'est exactement le genre d'inversion qu'un refactor
-// perd. Vérifié sur delaiEffectif plutôt qu'en exécutant un process : la borne
-// est déjà prouvée par le test précédent, ici c'est le CHOIX du défaut.
-func TestDelaiEffectifNeRendJamaisZero(t *testing.T) {
-	if d := delaiEffectif(0); d != delaiDrainageDefaut {
-		t.Errorf("delaiEffectif(0) = %v, attendu le défaut %v (0 = attente sans fin côté os/exec)",
-			d, delaiDrainageDefaut)
+// Exec's NULL value must be the safe value: `&Exec{Bin: "sbx"}` with no
+// explicit setting must be bounded, not suspended forever. The meaning of 0
+// is inverted between the field ("take the default") and cmd.WaitDelay
+// ("wait forever"), exactly the kind of inversion a refactor loses. Checked
+// against effectiveDelay rather than by running a process: the bound is
+// already proven by the previous test, here it's the default's CHOICE.
+func TestEffectiveDelayNeverReturnsZero(t *testing.T) {
+	if d := effectiveDelay(0); d != defaultDrainDelay {
+		t.Errorf("effectiveDelay(0) = %v, want the default %v (0 = wait forever on os/exec's side)",
+			d, defaultDrainDelay)
 	}
-	if d := delaiEffectif(-1); d != delaiDrainageDefaut {
-		t.Errorf("delaiEffectif(-1) = %v, attendu le défaut %v", d, delaiDrainageDefaut)
+	if d := effectiveDelay(-1); d != defaultDrainDelay {
+		t.Errorf("effectiveDelay(-1) = %v, want the default %v", d, defaultDrainDelay)
 	}
-	if d := delaiEffectif(50 * time.Millisecond); d != 50*time.Millisecond {
-		t.Errorf("delaiEffectif(50ms) = %v : un réglage explicite doit être respecté", d)
+	if d := effectiveDelay(50 * time.Millisecond); d != 50*time.Millisecond {
+		t.Errorf("effectiveDelay(50ms) = %v: an explicit setting must be respected", d)
 	}
 }
 
-// L'accès SSH de TOUTE sandbox repose sur un mécanisme que rien, dans ce
-// fichier, ne rend visible : ni Run ni Attach ne renseignent cmd.Env, donc le
-// process sbx hérite de l'environnement de den — et avec lui de SSH_AUTH_SOCK,
-// le socket de l'agent SSH de l'hôte. C'est le seul support de
-// `ssh.mode: agent-forward`, qui est le DÉFAUT de la configuration
-// (internal/config/config.go), et qui n'ajoute ni argument à l'argv de
-// `sbx create` ni entrée au mixin.
+// SSH access for EVERY sandbox rests on a mechanism nothing in this file
+// makes visible: neither Run nor Attach set cmd.Env, so the sbx process
+// inherits den's environment — and with it SSH_AUTH_SOCK, the host's SSH
+// agent socket. It's the only support for `ssh.mode: agent-forward`, the
+// config DEFAULT (internal/config/config.go), which adds neither an argv
+// argument to `sbx create` nor a mixin entry.
 //
-// Rien dans le code n'exprimait cette dépendance : renseigner `cmd.Env = …`,
-// pour n'importe quelle bonne raison — neutraliser une variable, restreindre
-// l'environnement — couperait l'accès SSH de toutes les sandboxes sans casser
-// un seul autre test. Ces deux tests-ci sont ce qui l'interdit ; le précédent
-// existe déjà dans le projet (internal/worktree pose bien un cmd.Env pour
-// neutraliser la configuration git).
+// Nothing in the code expressed this dependency: setting `cmd.Env = ...`, for
+// any good reason — neutralizing a variable, restricting the environment —
+// would cut SSH access for every sandbox without breaking a single other
+// test. These two tests are what forbid it; the precedent already exists in
+// the project (internal/worktree does set a cmd.Env, to neutralize the git
+// configuration).
 //
-// CE QUI EST PROUVÉ ICI, et rien de plus : le process lancé par den reçoit
-// l'environnement de den. Que sbx propage ensuite ce socket DANS la microVM
-// n'est pas vérifiable sans sbx, et reste une hypothèse consignée au spec.
+// WHAT'S PROVEN HERE, and nothing more: the process den launches receives
+// den's environment. Whether sbx then propagates that socket INTO the microVM
+// isn't verifiable without sbx, and remains a spec assumption.
 //
-// La valeur est POSÉE par le test (t.Setenv) et non présupposée : asserter que
-// SSH_AUTH_SOCK est non vide sans l'avoir posé rendrait le test vert sur un
-// poste où un agent tourne, et rouge partout ailleurs. t.Setenv interdit
-// t.Parallel dans le test qui l'appelle.
-func TestExecRunTransmetLEnvironnementDeDen(t *testing.T) {
+// The value is SET by the test (t.Setenv), not assumed: asserting
+// SSH_AUTH_SOCK is non-empty without setting it would pass on a machine with
+// an agent running and fail everywhere else. t.Setenv forbids t.Parallel in
+// the calling test.
+func TestExecRunTransmitsDenEnvironment(t *testing.T) {
 	const socket = "/tmp/den-test-agent-ssh-run.sock"
 	t.Setenv("SSH_AUTH_SOCK", socket)
 
 	e := &Exec{Bin: "sh"}
 	out, err := e.Run(context.Background(), "-c", `printf %s "$SSH_AUTH_SOCK"`)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if vu := string(out); vu != socket {
-		t.Errorf("SSH_AUTH_SOCK vu par le process = %q, attendu %q — le process lancé par Run "+
-			"doit hériter de l'environnement de den (cmd.Env laissé nil) ; sans cet héritage, "+
-			"`ssh.mode: agent-forward`, qui est le défaut, ne donne plus aucun accès SSH aux sandboxes",
-			vu, socket)
+	if got := string(out); got != socket {
+		t.Errorf("SSH_AUTH_SOCK seen by the process = %q, want %q — the process Run launches "+
+			"must inherit den's environment (cmd.Env left nil); without this inheritance, "+
+			"`ssh.mode: agent-forward`, the default, would give sandboxes no SSH access at all",
+			got, socket)
 	}
 }
 
-// Même propriété sur Attach. Elle compte autant : `den sh` et l'attache finale
-// de `den <nest>` passent par là, et un environnement amputé n'y serait pas
-// plus visible que sur Run.
+// Same property on Attach. It matters just as much: `den sh` and the final
+// attach of `den <nest>` go through it, and a stripped environment wouldn't
+// be any more visible there than on Run.
 //
-// Le témoin passe par un FICHIER et non par stdout, parce qu'Attach branche
-// délibérément cmd.Stdout sur celui du processus courant — il n'y a rien à
-// capturer sans détourner os.Stdout de toute la suite. Le fichier vit dans
-// t.TempDir() : rien n'est écrit hors des bornes du test.
-func TestExecAttachTransmetLEnvironnementDeDen(t *testing.T) {
+// The witness goes through a FILE rather than stdout, because Attach
+// deliberately wires cmd.Stdout to the current process's — there's nothing to
+// capture without hijacking os.Stdout for the whole suite. The file lives in
+// t.TempDir(): nothing is written outside the test's bounds.
+func TestExecAttachTransmitsDenEnvironment(t *testing.T) {
 	const socket = "/tmp/den-test-agent-ssh-attach.sock"
 	t.Setenv("SSH_AUTH_SOCK", socket)
-	temoin := filepath.Join(t.TempDir(), "socket-vu")
+	witness := filepath.Join(t.TempDir(), "socket-seen")
 
 	e := &Exec{Bin: "sh"}
-	// `sh -c SCRIPT ARG0` : le premier argument après le script devient $0.
-	if err := e.Attach(context.Background(), "-c", `printf %s "$SSH_AUTH_SOCK" > "$0"`, temoin); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+	// `sh -c SCRIPT ARG0`: the first argument after the script becomes $0.
+	if err := e.Attach(context.Background(), "-c", `printf %s "$SSH_AUTH_SOCK" > "$0"`, witness); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	contenu, err := os.ReadFile(temoin)
+	content, err := os.ReadFile(witness)
 	if err != nil {
-		t.Fatalf("lecture du témoin %s : %v", temoin, err)
+		t.Fatalf("reading witness %s: %v", witness, err)
 	}
-	if vu := string(contenu); vu != socket {
-		t.Errorf("SSH_AUTH_SOCK vu par le process = %q, attendu %q — le process lancé par Attach "+
-			"doit hériter de l'environnement de den (cmd.Env laissé nil)", vu, socket)
+	if got := string(content); got != socket {
+		t.Errorf("SSH_AUTH_SOCK seen by the process = %q, want %q — the process Attach launches "+
+			"must inherit den's environment (cmd.Env left nil)", got, socket)
 	}
 }
 
-// Attach est la SEULE méthode où l'annulation du contexte ne doit RIEN faire :
-// un Ctrl-C tapé dans le shell de la sandbox est délivré par le driver tty au
-// groupe de processus, pas relayé via le contexte de den ; si le contexte se
-// termine pendant qu'Attach tourne, le shell ne doit ni être tué, ni voir son
-// issue normale remplacée par une erreur de contexte.
-func TestExecAttachIgnoreAnnulationContexte(t *testing.T) {
+// Attach is the ONLY method where context cancellation must do NOTHING: a
+// Ctrl-C typed in the sandbox's shell is delivered by the tty driver to the
+// process group, not relayed through den's context; if the context ends while
+// Attach runs, the shell must neither be killed nor have its normal outcome
+// replaced by a context error.
+func TestExecAttachIgnoresContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(20 * time.Millisecond)
@@ -570,6 +568,6 @@ func TestExecAttachIgnoreAnnulationContexte(t *testing.T) {
 
 	e := &Exec{Bin: "sh"}
 	if err := e.Attach(ctx, "-c", "sleep 0.05"); err != nil {
-		t.Errorf("erreur inattendue : %v (l'annulation du contexte ne doit pas affecter Attach)", err)
+		t.Errorf("unexpected error: %v (context cancellation must not affect Attach)", err)
 	}
 }

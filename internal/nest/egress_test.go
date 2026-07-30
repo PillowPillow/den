@@ -3,45 +3,45 @@ package nest
 import "testing"
 
 func TestUnionEgress(t *testing.T) {
-	cas := []struct {
-		nom     string
-		listes  [][]string
-		attendu []string
+	cases := []struct {
+		name     string
+		lists    [][]string
+		expected []string
 	}{
-		{"vide", nil, []string{}},
-		{"une seule liste triée", [][]string{{"b.com", "a.com"}}, []string{"a.com", "b.com"}},
+		{"empty", nil, []string{}},
+		{"a single sorted list", [][]string{{"b.com", "a.com"}}, []string{"a.com", "b.com"}},
 		{
-			"cascade global stack nest",
+			"global stack nest cascade",
 			[][]string{{"api.anthropic.com", "github.com"}, {"gitlab.digitaleo.com"}, {"10.22.11.54:27017"}},
 			[]string{"10.22.11.54:27017", "api.anthropic.com", "github.com", "gitlab.digitaleo.com"},
 		},
 		{
-			"doublons entre niveaux dedupliques",
+			"duplicates across levels deduped",
 			[][]string{{"github.com"}, {"github.com"}, {"github.com", "a.com"}},
 			[]string{"a.com", "github.com"},
 		},
-		{"listes vides ignorees", [][]string{nil, {"a.com"}, {}}, []string{"a.com"}},
-		{"chaines vides ignorees", [][]string{{"", "a.com", ""}}, []string{"a.com"}},
+		{"empty lists ignored", [][]string{nil, {"a.com"}, {}}, []string{"a.com"}},
+		{"empty strings ignored", [][]string{{"", "a.com", ""}}, []string{"a.com"}},
 	}
 
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			got := UnionEgress(c.listes...)
-			if len(got) != len(c.attendu) {
-				t.Fatalf("UnionEgress = %v, attendu %v", got, c.attendu)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := unionEgress(c.lists...)
+			if len(got) != len(c.expected) {
+				t.Fatalf("UnionEgress = %v, expected %v", got, c.expected)
 			}
 			for i := range got {
-				if got[i] != c.attendu[i] {
-					t.Fatalf("UnionEgress = %v, attendu %v", got, c.attendu)
+				if got[i] != c.expected[i] {
+					t.Fatalf("UnionEgress = %v, expected %v", got, c.expected)
 				}
 			}
 		})
 	}
 }
 
-func TestUnionEgressRenvoieToujoursUneSliceNonNil(t *testing.T) {
-	// Le rendu YAML du mixin distingue `allow: []` de `allow: null`.
-	if got := UnionEgress(); got == nil {
-		t.Error("attendu une slice vide non-nil")
+func TestUnionEgressAlwaysReturnsANonNilSlice(t *testing.T) {
+	// The mixin's YAML rendering distinguishes `allow: []` from `allow: null`.
+	if got := unionEgress(); got == nil {
+		t.Error("expected an empty, non-nil slice")
 	}
 }

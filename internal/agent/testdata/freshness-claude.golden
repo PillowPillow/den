@@ -1,0 +1,26 @@
+set -uo pipefail
+
+# non-login su: minimal PATH, restore the agent's bin_dirs.
+export PATH="$HOME/.local/bin:$HOME/.claude/local:$PATH"
+
+if ! command -v claude >/dev/null 2>&1; then
+  echo "agent claude: FATAL binary claude not found (PATH=$PATH)" >&2
+  exit 127
+fi
+
+attempt=1
+while [ "$attempt" -le 3 ]; do
+  if output="$(claude update 2>&1)"; then
+    echo "agent claude: up to date"
+    exit 0
+  fi
+  echo "agent claude: attempt ${attempt}/3 failed:" >&2
+  echo "$output" >&2
+  if [ "$attempt" -lt 3 ]; then
+    sleep 10
+  fi
+  attempt=$((attempt + 1))
+done
+
+echo "agent claude: FATAL update failed after 3 attempts (fail-closed)" >&2
+exit 1

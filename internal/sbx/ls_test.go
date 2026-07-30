@@ -11,20 +11,20 @@ import (
 	"unicode"
 )
 
-// Sortie RÉELLE de `sbx ls --json` (sbx v0.35.0, relevée le 2026-07-28),
-// ANONYMISÉE : le relevé est authentique, mais les chemins et l'identifiant
-// sont remplacés.
+// REAL output of `sbx ls --json` (sbx v0.35.0, recorded 2026-07-28),
+// ANONYMIZED: the record is genuine, but the paths and identifier are
+// replaced.
 //
-// Ce qui est préservé est ce qui a valeur de preuve — le SCHÉMA, et lui seul :
-// clé racine `sandboxes`, les cinq champs d'une entrée, `workspaces` comme
-// tableau de chemins ABSOLUS, dont l'un porte le suffixe `:ro`, un `id` en
-// forme d'UUID (8-4-4-4-12), et l'ABSENCE de tout champ de date — c'est elle
-// qui a fait retirer la colonne « âge » du spec §5.
+// What's preserved has evidentiary value — the SCHEMA, and only that: root
+// key `sandboxes`, the five fields of an entry, `workspaces` as an array of
+// ABSOLUTE paths, one of which carries the `:ro` suffix, an `id` shaped like a
+// UUID (8-4-4-4-12), and the ABSENCE of any date field — it's what got the
+// "age" column dropped from spec §5.
 //
-// Ce qui est remplacé n'en avait aucune : les chemins d'origine étaient ceux de
-// la machine de développement et nommaient un tiers. La valeur de preuve du
-// relevé est réelle ; la fuite le serait aussi si le dépôt sortait.
-const sortieLsReelle = `{
+// What's replaced had none: the original paths were those of the development
+// machine and named a third party. The record's evidentiary value is real;
+// so would the leak be if the repo went public.
+const realLsOutput = `{
   "sandboxes": [
     {
       "name": "den",
@@ -32,189 +32,189 @@ const sortieLsReelle = `{
       "agent": "shell",
       "status": "running",
       "workspaces": [
-        "/Users/dev/Development/Exemple/projet",
+        "/Users/dev/Development/Example/project",
         "/Users/dev/.agent_sbx",
-        "/Users/dev/Development/Autre/dependance:ro"
+        "/Users/dev/Development/Other/dependency:ro"
       ]
     }
   ]
 }`
 
-func TestLsDecodeLaSortieReelle(t *testing.T) {
-	f := &Fake{Reponses: map[string]Reponse{
-		"ls --json": {Sortie: []byte(sortieLsReelle)},
+func TestLsDecodesRealOutput(t *testing.T) {
+	f := &Fake{Responses: map[string]Response{
+		"ls --json": {Output: []byte(realLsOutput)},
 	}}
 
 	boxes, err := Ls(context.Background(), f)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(boxes) != 1 {
-		t.Fatalf("boxes = %v, attendu 1", boxes)
+		t.Fatalf("boxes = %v, want 1", boxes)
 	}
 	b := boxes[0]
-	if b.Nom != "den" || b.Agent != "shell" || b.Statut != "running" {
+	if b.Name != "den" || b.Agent != "shell" || b.Status != "running" {
 		t.Errorf("sandbox = %+v", b)
 	}
 	if len(b.Workspaces) != 3 {
-		t.Errorf("Workspaces = %v, attendu 3", b.Workspaces)
+		t.Errorf("Workspaces = %v, want 3", b.Workspaces)
 	}
-	// Workdir sert de -w à l'attache : le suffixe :ro doit être retiré, et
-	// c'est le PREMIER workspace (le repo, pas le profil agent).
-	if got := b.Workdir(); got != "/Users/dev/Development/Exemple/projet" {
+	// Workdir serves as -w for the attach: the :ro suffix must be stripped, and
+	// it's the FIRST workspace (the repo, not the agent profile).
+	if got := b.Workdir(); got != "/Users/dev/Development/Example/project" {
 		t.Errorf("Workdir = %q", got)
 	}
 }
 
-func TestLsAttribueNestEtWorktree(t *testing.T) {
-	f := &Fake{Reponses: map[string]Reponse{
-		"ls --json": {Sortie: []byte(
+func TestLsAssignsNestAndWorktree(t *testing.T) {
+	f := &Fake{Responses: map[string]Response{
+		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["/w"]}]}`)},
 	}}
 
 	boxes, err := Ls(context.Background(), f)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if boxes[0].Nest() != "api" || boxes[0].Worktree() != "feat12" {
 		t.Errorf("nest/worktree = %q/%q", boxes[0].Nest(), boxes[0].Worktree())
 	}
 }
 
-// Tout ce qui s'affiche est trié (convention du dépôt) — et sbx ne garantit
-// aucun ordre.
-func TestLsTriParNom(t *testing.T) {
-	f := &Fake{Reponses: map[string]Reponse{
-		"ls --json": {Sortie: []byte(
+// Everything displayed is sorted (repo convention) — and sbx guarantees no
+// order.
+func TestLsSortsByName(t *testing.T) {
+	f := &Fake{Responses: map[string]Response{
+		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"zeta"},{"name":"alpha"},{"name":"mu"}]}`)},
 	}}
 
 	boxes, err := Ls(context.Background(), f)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	for i, attendu := range []string{"alpha", "mu", "zeta"} {
-		if boxes[i].Nom != attendu {
-			t.Errorf("boxes[%d].Nom = %q, attendu %q", i, boxes[i].Nom, attendu)
+	for i, want := range []string{"alpha", "mu", "zeta"} {
+		if boxes[i].Name != want {
+			t.Errorf("boxes[%d].Name = %q, want %q", i, boxes[i].Name, want)
 		}
 	}
 }
 
-func TestLsAucuneSandbox(t *testing.T) {
-	f := &Fake{Reponses: map[string]Reponse{
-		"ls --json": {Sortie: []byte(`{"sandboxes":[]}`)},
+func TestLsNoSandbox(t *testing.T) {
+	f := &Fake{Responses: map[string]Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
 	}}
 
 	boxes, err := Ls(context.Background(), f)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(boxes) != 0 {
-		t.Errorf("boxes = %v, attendu vide", boxes)
+		t.Errorf("boxes = %v, want empty", boxes)
 	}
 }
 
-// Un JSON illisible doit produire un message qui contient la sortie brute :
-// sans elle, un changement de schéma sbx est indiagnosticable.
-func TestLsSortieIllisible(t *testing.T) {
-	f := &Fake{Reponses: map[string]Reponse{
-		"ls --json": {Sortie: []byte("pas du json")},
+// Unreadable JSON must produce a message that contains the raw output:
+// without it, a schema change on sbx's side is undiagnosable.
+func TestLsUnreadableOutput(t *testing.T) {
+	f := &Fake{Responses: map[string]Response{
+		"ls --json": {Output: []byte("not json")},
 	}}
 
 	if _, err := Ls(context.Background(), f); err == nil {
-		t.Fatal("une sortie non-JSON doit produire une erreur")
-	} else if !contientTout(err.Error(), "sbx ls", "pas du json") {
-		t.Errorf("message peu actionnable : %v", err)
+		t.Fatal("non-JSON output must produce an error")
+	} else if !containsAll(err.Error(), "sbx ls", "not json") {
+		t.Errorf("unhelpful message: %v", err)
 	}
 }
 
-// Une sortie TRONQUÉE — JSON valide jusqu'à la coupe — doit échouer bruyamment,
-// jamais se lire comme une liste courte.
+// TRUNCATED output — valid JSON up to the cut — must fail loudly, never read
+// as a short list.
 //
-// Ce cas n'est pas théorique : Run borne le drainage des tubes (voir
-// delaiDrainageDefaut) et rend désormais un SUCCÈS quand le process est sorti
-// proprement, même si un descendant tenait encore le tube. La sortie du fils
-// direct est complète (mesuré, cf. runner_test.go), mais c'est précisément le
-// genre de propriété qu'un changement d'os/exec ou de sbx peut retirer sans
-// prévenir — et une liste de sandboxes silencieusement amputée ferait recréer
-// par `den <nest>` une sandbox qui tourne déjà.
-func TestLsSortieTronquee(t *testing.T) {
-	complet := `{"sandboxes":[{"name":"api","status":"running"},{"name":"web","status":"running"}]}`
-	for _, coupe := range []int{len(complet) - 1, len(complet) / 2, 20} {
-		tronquee := complet[:coupe]
-		t.Run(tronquee, func(t *testing.T) {
-			f := &Fake{Reponses: map[string]Reponse{"ls --json": {Sortie: []byte(tronquee)}}}
+// This case isn't theoretical: Run bounds pipe drain (see
+// defaultDrainDelay) and now returns SUCCESS when the process exited cleanly,
+// even if a descendant still held the pipe open. The direct child's output is
+// complete (measured, see runner_test.go), but that's exactly the kind of
+// property an os/exec or sbx change could silently drop — and a silently
+// amputated sandbox list would make `den <nest>` recreate a sandbox that's
+// already running.
+func TestLsTruncatedOutput(t *testing.T) {
+	complete := `{"sandboxes":[{"name":"api","status":"running"},{"name":"web","status":"running"}]}`
+	for _, cut := range []int{len(complete) - 1, len(complete) / 2, 20} {
+		truncated := complete[:cut]
+		t.Run(truncated, func(t *testing.T) {
+			f := &Fake{Responses: map[string]Response{"ls --json": {Output: []byte(truncated)}}}
 
 			if _, err := Ls(context.Background(), f); err == nil {
-				t.Fatalf("une sortie tronquée doit produire une erreur, pas une liste amputée ; sortie = %q", tronquee)
-			} else if !contientTout(err.Error(), "sbx ls", tronquee) {
-				t.Errorf("message peu actionnable : %v", err)
+				t.Fatalf("truncated output must produce an error, not an amputated list; output = %q", truncated)
+			} else if !containsAll(err.Error(), "sbx ls", truncated) {
+				t.Errorf("unhelpful message: %v", err)
 			}
 		})
 	}
 }
 
-// Une sortie JSON valide mais au mauvais schéma (sbx renommerait "sandboxes")
-// ne doit pas se lire comme « aucune sandbox » : c'est indiscernable d'un
-// vrai zéro pour l'appelant, et den ls/sh/rm affirmeraient alors à tort
-// qu'aucune sandbox ne tourne. La sortie brute doit rester dans le message,
-// pour la même raison que pour un JSON illisible.
-func TestLsCleSandboxesAbsente(t *testing.T) {
-	f := &Fake{Reponses: map[string]Reponse{
-		"ls --json": {Sortie: []byte(`{"autrechose":[]}`)},
+// Valid JSON with the wrong schema (sbx renaming "sandboxes") must not read
+// as "no sandbox": that's indistinguishable from a genuine zero to the
+// caller, and den ls/sh/rm would then wrongly claim no sandbox is running.
+// The raw output must stay in the message, for the same reason as unreadable
+// JSON.
+func TestLsMissingSandboxesKey(t *testing.T) {
+	f := &Fake{Responses: map[string]Response{
+		"ls --json": {Output: []byte(`{"somethingelse":[]}`)},
 	}}
 
 	if _, err := Ls(context.Background(), f); err == nil {
-		t.Fatal("une clé sandboxes absente doit produire une erreur")
-	} else if !contientTout(err.Error(), "sbx ls", "sandboxes", "autrechose") {
-		t.Errorf("message peu actionnable : %v", err)
+		t.Fatal("a missing sandboxes key must produce an error")
+	} else if !containsAll(err.Error(), "sbx ls", "sandboxes", "somethingelse") {
+		t.Errorf("unhelpful message: %v", err)
 	}
 }
 
-// La clé "sandboxes" présente mais vide ou nulle reste un succès à zéro
-// sandbox : sbx ls --json n'a jamais été observé sans sandbox vivante, et
-// rien ne garantit lequel des deux JSON produit. Les deux doivent marcher.
-func TestLsZeroSandboxeVideOuNil(t *testing.T) {
-	for _, sortie := range []string{`{"sandboxes":[]}`, `{"sandboxes":null}`} {
-		f := &Fake{Reponses: map[string]Reponse{
-			"ls --json": {Sortie: []byte(sortie)},
+// The "sandboxes" key present but empty or null stays a zero-sandbox
+// success: sbx ls --json has never been observed without a live sandbox, and
+// nothing guarantees which of the two JSON forms it produces. Both must work.
+func TestLsZeroSandboxesEmptyOrNil(t *testing.T) {
+	for _, output := range []string{`{"sandboxes":[]}`, `{"sandboxes":null}`} {
+		f := &Fake{Responses: map[string]Response{
+			"ls --json": {Output: []byte(output)},
 		}}
 
 		boxes, err := Ls(context.Background(), f)
 		if err != nil {
-			t.Fatalf("sortie %s : erreur inattendue : %v", sortie, err)
+			t.Fatalf("output %s: unexpected error: %v", output, err)
 		}
 		if len(boxes) != 0 {
-			t.Errorf("sortie %s : boxes = %v, attendu vide", sortie, boxes)
+			t.Errorf("output %s: boxes = %v, want empty", output, boxes)
 		}
 	}
 }
 
-func TestLsPropageLErreurDuRunner(t *testing.T) {
-	sentinelle := errors.New("sbx introuvable")
-	f := &Fake{Defaut: Reponse{Err: sentinelle}}
+func TestLsPropagatesRunnerError(t *testing.T) {
+	sentinel := errors.New("sbx not found")
+	f := &Fake{Default: Response{Err: sentinel}}
 
-	if _, err := Ls(context.Background(), f); !errors.Is(err, sentinelle) {
-		t.Errorf("err = %v, attendu la sentinelle enveloppée", err)
+	if _, err := Ls(context.Background(), f); !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want the wrapped sentinel", err)
 	}
 }
 
-// Ls ne doit pas RÉPÉTER la sous-commande que l'erreur du runner nomme déjà.
+// Ls must not REPEAT the subcommand the runner's error already names.
 //
-// Mesuré sur le binaire, sbx absent du PATH :
+// Measured against the real binary, sbx missing from the PATH:
 //
-//	den: sbx ls : sbx ls --json : exec: "sbx": executable file not found in $PATH
+//	den: sbx ls: sbx ls --json: exec: "sbx": executable file not found in $PATH
 //
-// « sbx ls » deux fois sur la première ligne qu'un nouvel utilisateur voit :
-// une fois par l'enveloppe de Ls, une fois par ErreurExec.Error, qui rend
-// TOUJOURS le binaire et son argv complet. C'est l'enveloppe qui est de trop —
-// elle n'ajoute rien que l'argv ne dise mieux (« ls --json » plutôt que « ls »).
+// "sbx ls" twice on the first line a new user sees: once from Ls's wrapper,
+// once from ExecError.Error, which ALWAYS renders the binary and its full
+// argv. It's the wrapper that's redundant — it adds nothing the argv doesn't
+// say better ("ls --json" rather than "ls").
 //
-// L'*ErreurExec est fabriqué ici plutôt que produit par un vrai Exec : c'est le
-// type que la production fait remonter, et le fabriquer permet d'exercer la
-// composition Ls+ErreurExec sans dépendre d'un binaire quelconque.
-func TestLsNeRepetePasLaSousCommande(t *testing.T) {
-	f := &Fake{Defaut: Reponse{Err: &ErreurExec{
+// The *ExecError is built here rather than produced by a real Exec: it's the
+// type production returns, and building it lets us exercise the Ls+ExecError
+// composition without depending on any binary.
+func TestLsDoesNotRepeatTheSubcommand(t *testing.T) {
+	f := &Fake{Default: Response{Err: &ExecError{
 		Bin:  "sbx",
 		Args: []string{"ls", "--json"},
 		Err:  errors.New("exit status 1"),
@@ -222,19 +222,19 @@ func TestLsNeRepetePasLaSousCommande(t *testing.T) {
 
 	_, err := Ls(context.Background(), f)
 	if err == nil {
-		t.Fatal("une erreur du runner doit remonter")
+		t.Fatal("a runner error must propagate")
 	}
 	message := err.Error()
 	if n := strings.Count(message, "sbx ls"); n != 1 {
-		t.Errorf("« sbx ls » apparaît %d fois, attendu 1 fois ; message : %s", n, message)
+		t.Errorf("\"sbx ls\" appears %d times, want 1; message: %s", n, message)
 	}
 }
 
-// Et le cas de premier contact, vu depuis Ls — le chemin qu'empruntent les
-// QUATRE commandes qui touchent sbx (`den ls`, `den <nest>`, `den sh`,
-// `den rm`) : toutes appellent Ls avant quoi que ce soit d'autre.
-func TestLsBinaireAbsentRendUnMessageActionnable(t *testing.T) {
-	f := &Fake{Defaut: Reponse{Err: &ErreurExec{
+// And the first-contact case, seen from Ls — the path taken by the FOUR
+// commands that touch sbx (`den ls`, `den <nest>`, `den sh`, `den rm`): all of
+// them call Ls before anything else.
+func TestLsMissingBinaryProducesAnActionableMessage(t *testing.T) {
+	f := &Fake{Default: Response{Err: &ExecError{
 		Bin:  "sbx",
 		Args: []string{"ls", "--json"},
 		Err:  exec.ErrNotFound,
@@ -242,213 +242,209 @@ func TestLsBinaireAbsentRendUnMessageActionnable(t *testing.T) {
 
 	_, err := Ls(context.Background(), f)
 	if err == nil {
-		t.Fatal("un binaire absent doit produire une erreur")
+		t.Fatal("a missing binary must produce an error")
 	}
 	message := err.Error()
-	if !contientTout(message, "sbx", "introuvable dans le PATH", "den doctor") {
-		t.Errorf("message peu actionnable : %s", message)
+	if !containsAll(message, "sbx", "not found in the PATH", "den doctor") {
+		t.Errorf("unhelpful message: %s", message)
 	}
 	if strings.Contains(message, "executable file not found") {
-		t.Errorf("reste d'anglais dans le message : %s", message)
+		t.Errorf("leftover os/exec wording in the message: %s", message)
 	}
 }
 
-func TestTrouve(t *testing.T) {
-	boxes := []Sandbox{{Nom: "api"}, {Nom: "api.feat12"}, {Nom: "web"}}
+func TestFind(t *testing.T) {
+	boxes := []Sandbox{{Name: "api"}, {Name: "api.feat12"}, {Name: "web"}}
 
-	b := Trouve(boxes, "api.feat12")
+	b := Find(boxes, "api.feat12")
 	if b == nil {
-		t.Fatalf("Trouve(api.feat12) = nil, attendu la sandbox")
+		t.Fatalf("Find(api.feat12) = nil, want the sandbox")
 	}
-	// L'ADRESSE compte : les appelants lisent Statut et Workspaces sur la
-	// sandbox trouvée. Une copie d'un autre élément passerait un test sur le
-	// seul Nom.
+	// The ADDRESS matters: callers read Status and Workspaces on the found
+	// sandbox. A copy of another element would still pass a test on Name
+	// alone.
 	if b != &boxes[1] {
-		t.Errorf("Trouve doit rendre l'élément de la tranche ; obtenu %v", b)
+		t.Errorf("Find must return the slice's element; got %v", b)
 	}
-	if Trouve(boxes, "absente") != nil {
-		t.Errorf("Trouve(absente) doit rendre nil")
+	if Find(boxes, "absent") != nil {
+		t.Errorf("Find(absent) must return nil")
 	}
-	// Le nom est cherché ENTIER : « api » ne doit pas capturer « api.feat12 »,
-	// sinon un `den api` attacherait dans la sandbox du worktree.
-	if b := Trouve([]Sandbox{{Nom: "api.feat12"}}, "api"); b != nil {
-		t.Errorf("Trouve ne doit pas faire de correspondance par préfixe ; obtenu %v", b)
+	// The name is matched WHOLE: "api" must not capture "api.feat12", or a
+	// `den api` would attach into the worktree's sandbox.
+	if b := Find([]Sandbox{{Name: "api.feat12"}}, "api"); b != nil {
+		t.Errorf("Find must not match by prefix; got %v", b)
 	}
 }
 
-// VerifieAttachable est la garde partagée par `den <nest>` et `den sh` : les
-// deux chemins finissent par un `sbx exec`.
+// CheckAttachable is the guard shared by `den <nest>` and `den sh`: both paths
+// end in an `sbx exec`.
 //
-// « stopped » PASSE, et c'est mesuré, pas déduit (smoke du 2026-07-29, sbx
-// v0.35.0) : `sbx exec` redémarre une sandbox arrêtée de façon transparente
-// (« Sandbox duo.essai started successfully »), l'état de la couche conteneur
-// survit au stop, et le dispatcher REJOUE toutes les startup commands des kits à
-// la reprise — mixin de den compris (compteur de « dispatcher run » du
-// /var/log/sbx-kit-startup.log passé de 2 à 3, chaîne complète des kits dans
-// l'ordre de l'argv). Une VM reprise est donc fonctionnellement complète.
+// "stopped" PASSES, and it's measured, not assumed (2026-07-29 smoke test,
+// sbx v0.35.0): `sbx exec` restarts a stopped sandbox transparently ("Sandbox
+// duo.essai started successfully"), the container-layer state survives the
+// stop, and the dispatcher REPLAYS every kit startup command on resume —
+// den's mixin included. A resumed VM is therefore functionally complete.
 //
-// C'était la réserve qui justifiait le refus : elle est levée. Refuser coûtait
-// plus cher que la panne — sbx arrête les sandboxes inactives tout seul, donc le
-// cas est la NORME au retour sur une VM `--detach`, et le remède affiché
-// (`den rm`) détruisait un état qui aurait survécu.
+// That was the reservation justifying the refusal: it's lifted. Refusing cost
+// more than the failure — sbx stops inactive sandboxes on its own, so the
+// case is the NORM on returning to a `--detach` VM, and the remedy shown
+// (`den rm`) destroyed state that would have survived.
 //
-// LISTE BLANCHE quand même, et c'est le reste du test : les autres valeurs que
-// sbx peut émettre ne sont pas relevées. Une liste noire laisserait passer tout
-// statut qu'une version ultérieure introduirait, y compris un statut d'erreur —
-// d'où les cas « exited », « paused », « Running » et « ».
-func TestVerifieAttachable(t *testing.T) {
-	for _, statut := range []string{StatutEnMarche, StatutArretee} {
-		if err := (Sandbox{Nom: "api", Statut: statut}).VerifieAttachable(); err != nil {
-			t.Errorf("une sandbox %q doit passer ; obtenu : %v", statut, err)
+// A WHITELIST regardless, and that's the rest of the test: other values sbx
+// may emit are not accepted. A blacklist would let through any status a later
+// version introduced — hence the "exited", "paused", "Running" and "" cases.
+func TestCheckAttachable(t *testing.T) {
+	for _, status := range []string{StatusRunning, StatusStopped} {
+		if err := (Sandbox{Name: "api", Status: status}).CheckAttachable(); err != nil {
+			t.Errorf("a %q sandbox must pass; got: %v", status, err)
 		}
 	}
 
-	for _, statut := range []string{"exited", "paused", "Running", ""} {
-		t.Run("statut="+statut, func(t *testing.T) {
-			err := Sandbox{Nom: "api", Statut: statut}.VerifieAttachable()
+	for _, status := range []string{"exited", "paused", "Running", ""} {
+		t.Run("status="+status, func(t *testing.T) {
+			err := Sandbox{Name: "api", Status: status}.CheckAttachable()
 			if err == nil {
-				t.Fatalf("un statut %q ne doit pas être traité comme en marche", statut)
+				t.Fatalf("a %q status must not be treated as running", status)
 			}
-			// Format d'erreur du projet : le contexte, le détail, et les valeurs
-			// disponibles. Sans le statut LU, l'utilisateur ne sait pas de quoi
-			// den se plaint ; sans le statut ATTENDU, il ne sait pas ce qui
-			// aurait convenu.
+			// Repo error format: the context, the detail, and the available
+			// values. Without the status READ, the user doesn't know what den is
+			// complaining about; without the EXPECTED statuses, they don't know
+			// what would have worked.
 			//
-			// strconv.Quote et non le statut nu : sur le sous-cas statut="",
-			// `strings.Contains(err, "")` est vrai PAR CONSTRUCTION et n'assert
-			// rien du tout (mesuré : en retirant s.Statut du message, ce sous-cas
-			// restait vert alors que les quatre autres rougissaient). La forme
-			// quotée est celle que le message rend — `%q` — et elle discrimine
-			// aussi le statut vide.
-			if !contientTout(err.Error(), "api", strconv.Quote(statut),
-				strconv.Quote(StatutEnMarche), strconv.Quote(StatutArretee)) {
-				t.Errorf("le message doit rendre la sandbox, le statut lu et les DEUX statuts "+
-					"attachables ; obtenu : %v", err)
+			// strconv.Quote rather than the bare status: on the status="" case,
+			// `strings.Contains(err, "")` is true BY CONSTRUCTION and asserts
+			// nothing (measured: removing s.Status from the message left this
+			// subcase green while the other four went red). The quoted form is
+			// what the message renders — %q — and it discriminates the empty
+			// status too.
+			if !containsAll(err.Error(), "api", strconv.Quote(status),
+				strconv.Quote(StatusRunning), strconv.Quote(StatusStopped)) {
+				t.Errorf("the message must render the sandbox, the read status and BOTH "+
+					"attachable statuses; got: %v", err)
 			}
 		})
 	}
 }
 
-// EstArretee distingue les deux statuts attachables, parce que l'un des deux
-// mérite d'être dit : la reprise prend plusieurs secondes, et un `den <nest>`
-// muet pendant ce temps-là ressemble à un gel.
+// IsStopped distinguishes the two attachable statuses, because one of the two
+// deserves to be said: resuming takes several seconds, and a silent
+// `den <nest>` during that time looks like a hang.
 //
-// C'est aussi ce qui empêche de retomber dans le refus : la question « faut-il
-// prévenir ? » est séparée de la question « faut-il refuser ? », et un appelant
-// ne peut pas répondre à la seconde en croyant répondre à la première.
-func TestEstArretee(t *testing.T) {
-	if !(Sandbox{Statut: StatutArretee}).EstArretee() {
-		t.Error("une sandbox « stopped » est arrêtée")
+// It's also what keeps the code from sliding back into refusing: "should we
+// warn?" is separate from "should we refuse?", and a caller must not answer
+// the second while believing it answers the first.
+func TestIsStopped(t *testing.T) {
+	if !(Sandbox{Status: StatusStopped}).IsStopped() {
+		t.Error("a \"stopped\" sandbox is stopped")
 	}
-	for _, statut := range []string{StatutEnMarche, "exited", ""} {
-		if (Sandbox{Statut: statut}).EstArretee() {
-			t.Errorf("un statut %q n'est pas « arrêtée » : la reprise ne concerne que %q",
-				statut, StatutArretee)
+	for _, status := range []string{StatusRunning, "exited", ""} {
+		if (Sandbox{Status: status}).IsStopped() {
+			t.Errorf("a %q status is not \"stopped\": only %q resumes",
+				status, StatusStopped)
 		}
 	}
 }
 
-// Le message ne doit nommer QUE des sous-commandes sbx ATTESTÉES.
+// The message must name ONLY ATTESTED sbx subcommands.
 //
-// Suggérer à l'utilisateur une commande peut-être inexistante est pire qu'un
-// commentaire faux : le commentaire ne trompe qu'un développeur.
+// Suggesting a possibly nonexistent command to the user is worse than a false
+// comment: the comment only misleads a developer.
 //
-// LISTE BLANCHE — et c'est tout l'objet de ce test. Une version antérieure
-// interdisait la seule chaîne « sbx start » : liste NOIRE d'un élément, qui ne
-// disait rien de `sbx resume` ni d'un `den up --force` inventé demain (mesuré :
-// message enrichi des deux, suite entière verte). C'était exactement l'anti-
-// patron que VerifieEnMarche argumente contre, dix lignes plus haut, pour les
-// statuts. On extrait donc TOUT ce que le message présente comme une commande —
-// les segments entre backticks — et on exige que chacun soit attesté.
-func TestVerifieAttachableNeSuggereQueDesCommandesAttestees(t *testing.T) {
-	// DEUX sources d'attestation, et elles ne se valent pas :
+// WHITELIST — and that's the whole point of this test. An earlier version
+// forbade only the single string "sbx start": a one-element BLACKLIST, which
+// said nothing about `sbx resume` or a `den up --force` invented tomorrow
+// (measured: a message enriched with both left the whole suite green). That
+// was exactly the anti-pattern CheckAttachable argues against, ten lines up,
+// for statuses. So we extract EVERYTHING the message presents as a command —
+// the backtick segments — and require each to be attested.
+func TestCheckAttachableOnlySuggestsAttestedCommands(t *testing.T) {
+	// TWO sources of attestation, and they don't carry equal weight:
 	//
-	//   - les sous-commandes `sbx` viennent du relevé du 2026-07-28, versé au
-	//     spec §14.0 : create, ls, exec, ports, policy check, rm --force
-	//     (sbx-devbox ajoute stop, template save, secret, inspect, login).
-	//     `sbx start` n'y figure pas, et sbx n'est pas installable ici :
-	//     personne ne peut le falsifier. Étendre cette liste demande un RELEVÉ,
-	//     pas une intuition ;
-	//   - `den rm` est une commande de DEN, attestée par la source du dépôt
-	//     (internal/cli/rm.go, newRmCmd). L'argument « on ne sait pas si elle
-	//     existe » ne s'y applique pas : on la lit.
-	attestees := []string{"sbx ls", "sbx rm --force api", "den rm api"}
+	//   - `sbx` subcommands come from the 2026-07-28 survey, recorded in spec
+	//     §14.0: create, ls, exec, ports, policy check, rm --force (sbx-devbox
+	//     adds stop, template save, secret, inspect, login). `sbx start`
+	//     doesn't appear there, and sbx isn't installable here: nobody can
+	//     verify it. Extending this list needs a SURVEY, not a guess;
+	//   - `den rm` is a DEN command, attested by the repo's own source
+	//     (internal/cli/rm.go, newRmCmd). The "we don't know if it exists"
+	//     argument doesn't apply: we can read it.
+	attested := []string{"sbx ls", "sbx rm --force api", "den rm api"}
 
-	err := Sandbox{Nom: "api", Statut: "exited"}.VerifieAttachable()
+	err := Sandbox{Name: "api", Status: "exited"}.CheckAttachable()
 	if err == nil {
-		t.Fatal("un statut « exited » doit produire une erreur")
+		t.Fatal("an \"exited\" status must produce an error")
 	}
 	message := err.Error()
 
-	commandes := entreBackticks(message)
-	if len(commandes) == 0 {
-		t.Fatalf("le message doit présenter sa remédiation entre backticks ; obtenu : %v", err)
+	commands := betweenBackticks(message)
+	if len(commands) == 0 {
+		t.Fatalf("the message must present its remediation between backticks; got: %v", err)
 	}
-	for _, c := range commandes {
-		if !slices.Contains(attestees, c) {
-			t.Errorf("commande NON ATTESTÉE proposée à l'utilisateur : %q ; message : %v", c, err)
+	for _, c := range commands {
+		if !slices.Contains(attested, c) {
+			t.Errorf("UNATTESTED command suggested to the user: %q; message: %v", c, err)
 		}
 	}
 
-	// Second filet, indépendant des backticks : TOUTE occurrence de « sbx <mot> »
-	// dans le message, backtickée ou non, doit nommer une sous-commande attestée.
-	// Sans lui, le test ne tient que par la convention typographique du dépôt —
-	// mesuré, deux commandes inventées SANS backticks laissaient la suite verte.
-	for _, sc := range sousCommandesSbx(message) {
+	// Second net, independent of backticks: ANY occurrence of "sbx <word>" in
+	// the message, backticked or not, must name an attested subcommand.
+	// Without it, the test would only hold by the repo's typographic
+	// convention — measured, two invented commands WITHOUT backticks left the
+	// suite green.
+	for _, sc := range sbxSubcommands(message) {
 		if !slices.Contains([]string{"ls", "rm"}, sc) {
-			t.Errorf("sous-commande sbx NON ATTESTÉE proposée à l'utilisateur : %q ; message : %v", sc, err)
+			t.Errorf("UNATTESTED sbx subcommand suggested to the user: %q; message: %v", sc, err)
 		}
 	}
 
-	// Et la porte de sortie doit être là : un refus sans remédiation oblige
-	// l'utilisateur à deviner.
-	if !slices.Contains(commandes, "sbx rm --force api") {
-		t.Errorf("le message doit donner la remédiation exacte ; obtenu : %v", err)
+	// And the way out must be there: a refusal without remediation forces the
+	// user to guess.
+	if !slices.Contains(commands, "sbx rm --force api") {
+		t.Errorf("the message must give the exact remediation; got: %v", err)
 	}
 
-	// La remédiation de DEN passe d'abord : `den rm api` fait ce que fait
-	// `sbx rm --force api` ET nettoie les worktrees que den a créés pour cette
-	// sandbox (internal/cli/rm.go, nettoieWorktrees). Envoyer l'utilisateur
-	// directement sur sbx lui laisse des worktrees orphelins sous
-	// worktree_root, sans rien lui dire.
-	if !slices.Contains(commandes, "den rm api") {
-		t.Errorf("le message doit proposer `den rm api`, qui nettoie aussi les worktrees ; obtenu : %v", err)
+	// den's remediation comes first: `den rm api` does what `sbx rm --force
+	// api` does AND cleans up the worktrees den created for this sandbox
+	// (internal/cli/rm.go, cleanWorktrees). Sending the user straight to sbx
+	// leaves orphaned worktrees under worktree_root, without telling them.
+	if !slices.Contains(commands, "den rm api") {
+		t.Errorf("the message must suggest `den rm api`, which also cleans up worktrees; got: %v", err)
 	}
 	if strings.Index(message, "den rm api") > strings.Index(message, "sbx rm --force api") {
-		t.Errorf("`den rm api` doit précéder `sbx rm --force api` : c'est la remédiation complète, "+
-			"l'autre est le repli ; obtenu : %v", err)
+		t.Errorf("`den rm api` must precede `sbx rm --force api`: it's the full remediation, "+
+			"the other is the fallback; got: %v", err)
 	}
 }
 
-// entreBackticks rend les segments `…` d'un message, c'est-à-dire tout ce que
-// den présente à l'utilisateur comme une commande à taper.
-func entreBackticks(s string) []string {
+// betweenBackticks returns the `...` segments of a message, i.e. everything den
+// presents to the user as a command to type.
+func betweenBackticks(s string) []string {
 	var out []string
 	for {
 		i := strings.Index(s, "`")
 		if i < 0 {
 			return out
 		}
-		reste := s[i+1:]
-		j := strings.Index(reste, "`")
+		rest := s[i+1:]
+		j := strings.Index(rest, "`")
 		if j < 0 {
 			return out
 		}
-		out = append(out, reste[:j])
-		s = reste[j+1:]
+		out = append(out, rest[:j])
+		s = rest[j+1:]
 	}
 }
 
-// sousCommandesSbx rend le mot qui suit chaque « sbx » du message, backticks ou
-// pas.
+// sbxSubcommands returns the word following each "sbx " in the message,
+// backticked or not.
 //
-// CE QUE CE FILET N'ATTRAPE PAS, et il faut le dire plutôt que de laisser croire
-// le contraire : une commande `den` inventée écrite hors backticks (« den up
-// --force ») passe au travers, parce que « den » apparaît légitimement en prose
-// dans le message (« den n'attache pas… ») et qu'aucune heuristique ne sépare le
-// mot français du nom de programme. C'est la liste blanche des backticks qui
-// couvre ce cas-là, et elle seule.
-func sousCommandesSbx(s string) []string {
+// WHAT THIS NET DOESN'T CATCH, and it's worth saying rather than implying
+// otherwise: an invented `den` command written outside backticks ("den up
+// --force") slips through, because "den" legitimately appears in the
+// message's prose ("den does not attach...") and no heuristic separates prose
+// from a program name. It's the backtick whitelist that covers that case, and
+// only it.
+func sbxSubcommands(s string) []string {
 	var out []string
 	for {
 		i := strings.Index(s, "sbx ")
@@ -456,21 +452,21 @@ func sousCommandesSbx(s string) []string {
 			return out
 		}
 		s = s[i+len("sbx "):]
-		fin := strings.IndexFunc(s, func(r rune) bool {
+		end := strings.IndexFunc(s, func(r rune) bool {
 			return !unicode.IsLetter(r) && r != '-'
 		})
-		if fin < 0 {
-			fin = len(s)
+		if end < 0 {
+			end = len(s)
 		}
-		if fin > 0 {
-			out = append(out, s[:fin])
+		if end > 0 {
+			out = append(out, s[:end])
 		}
 	}
 }
 
-func contientTout(s string, morceaux ...string) bool {
-	for _, m := range morceaux {
-		if !strings.Contains(s, m) {
+func containsAll(s string, parts ...string) bool {
+	for _, p := range parts {
+		if !strings.Contains(s, p) {
 			return false
 		}
 	}

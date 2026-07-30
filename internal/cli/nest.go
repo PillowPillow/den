@@ -16,7 +16,7 @@ import (
 func newNestCmd(denHome *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "nest",
-		Short: "Inspecter les nests déclarés",
+		Short: "Inspect the declared nests",
 	}
 	cmd.AddCommand(newNestLsCmd(denHome), newNestShowCmd(denHome))
 	return cmd
@@ -25,19 +25,19 @@ func newNestCmd(denHome *string) *cobra.Command {
 func newNestLsCmd(denHome *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "ls",
-		Short: "Liste les nests déclarés",
-		Args:  aucunArgument,
+		Short: "List the declared nests",
+		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
 			}
-			nests, casses, err := nest.ListNests(home)
+			nests, broken, err := nest.ListNests(home)
 			if err != nil {
 				return err
 			}
-			if len(nests) == 0 && len(casses) == 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "aucun nest déclaré dans %s/nests\n", home)
+			if len(nests) == 0 && len(broken) == 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "no nest declared in %s/nests\n", home)
 				return nil
 			}
 
@@ -53,53 +53,44 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 			if err := w.Flush(); err != nil {
 				return err
 			}
-			avertitDesNestsMasques(cmd, nests)
+			warnAboutShadowedNests(cmd, nests)
 
-			if len(casses) > 0 {
+			if len(broken) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout())
-				for _, c := range casses {
-					fmt.Fprintf(cmd.OutOrStdout(), "! %s : %v\n", c.Nom, c.Err)
+				for _, b := range broken {
+					fmt.Fprintf(cmd.OutOrStdout(), "! %s: %v\n", b.Name, b.Err)
 				}
-				return fmt.Errorf("%d nest(s) illisible(s) sur %d", len(casses), len(nests)+len(casses))
+				return fmt.Errorf("%d unreadable nest(s) out of %d", len(broken), len(nests)+len(broken))
 			}
 			return nil
 		},
 	}
 }
 
-// avertitDesNestsMasques signale les nests qui portent le nom d'une
-// sous-commande. Ceux-là sont déclarés, listés et résolus par `den nest show`,
-// mais `den <nom>` lancera TOUJOURS la sous-commande : cobra la trouve avant que
-// l'argument n'atteigne le RunE de la racine. Ils ne sont donc jamais
-// spawnables, et sans cet avertissement rien ne le dit — den nommerait un objet
-// qu'il refuse ensuite d'adresser, le défaut trouvé en T3 avec `-api`.
+// warnAboutShadowedNests reports the nests that carry a subcommand's name.
+// Those are declared, listed and resolved by `den nest show`, but `den <name>`
+// will ALWAYS run the subcommand: cobra finds it before the argument reaches
+// the root's RunE. They can never be spawned, and nothing else says so.
 //
-// C'est la contrepartie de la suggestion de `den doctr` : celle-ci aide quand le
-// nest N'EXISTE PAS et que le nom ressemble à une commande ; celle-là quand le
-// nest existe et que le nom EST une commande. Le choix « la racine est la
-// commande de spawn » (spec §11) crée les deux, il faut les tenir tous les deux.
+// On stderr, so `den nest ls | ...` stays pipeable, and nothing at all when
+// there is no collision: a permanent warning stops being read.
 //
-// Sur stderr, pour que `den nest ls | …` reste tuyautable. Rien du tout quand il
-// n'y a pas de collision : un avertissement permanent ne se lit plus.
-//
-// La comparaison porte sur les noms ET les alias de root.Commands(), c'est-à-dire
-// exactement ce que cobra consulte pour router un argument — et jamais sur une
-// liste en dur, qui divergerait au prochain AddCommand. La correspondance est
-// EXACTE : un nest « l » n'est pas masqué par `ls` (vérifié, cobra ne fait pas
-// de correspondance par préfixe pour router).
-func avertitDesNestsMasques(cmd *cobra.Command, nests []*nest.Nest) {
-	commandes := map[string]bool{}
-	for _, sous := range cmd.Root().Commands() {
-		commandes[sous.Name()] = true
-		for _, alias := range sous.Aliases {
-			commandes[alias] = true
+// The comparison covers the names AND the aliases of root.Commands(), exactly
+// what cobra consults to route an argument, and never a hardcoded list. The
+// match is EXACT: a nest named "l" is not shadowed by `ls`.
+func warnAboutShadowedNests(cmd *cobra.Command, nests []*nest.Nest) {
+	commands := map[string]bool{}
+	for _, sub := range cmd.Root().Commands() {
+		commands[sub.Name()] = true
+		for _, alias := range sub.Aliases {
+			commands[alias] = true
 		}
 	}
 	for _, n := range nests {
-		if commandes[n.Name] {
+		if commands[n.Name] {
 			fmt.Fprintf(cmd.ErrOrStderr(),
-				"avertissement : le nest %q est masqué par la sous-commande `den %s` — "+
-					"`den %s` lancera la commande, jamais ce nest. Renomme-le pour pouvoir le spawner.\n",
+				"warning: nest %q is shadowed by the `den %s` subcommand — "+
+					"`den %s` will run the command, never this nest. Rename it to be able to spawn it.\n",
 				n.Name, n.Name, n.Name)
 		}
 	}
@@ -109,8 +100,8 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 	var opts nest.Options
 	cmd := &cobra.Command{
 		Use:   "show <nest>",
-		Short: "Affiche un nest entièrement résolu",
-		Args:  exactementUnArg,
+		Short: "Show a fully resolved nest",
+		Args:  exactlyOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {
@@ -132,17 +123,17 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ecrisResolution(cmd.OutOrStdout(), r)
+			writeResolution(cmd.OutOrStdout(), r)
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&opts.Agent, "agent", "", "agent à utiliser (défaut : defaults.agent)")
-	cmd.Flags().StringSliceVar(&opts.Without, "without", nil, "exclure ces repos optionnels")
-	cmd.Flags().StringSliceVar(&opts.Only, "only", nil, "ne garder que ces repos optionnels")
+	cmd.Flags().StringVar(&opts.Agent, "agent", "", "agent to use (default: defaults.agent)")
+	cmd.Flags().StringSliceVar(&opts.Without, "without", nil, "exclude these optional repos")
+	cmd.Flags().StringSliceVar(&opts.Only, "only", nil, "keep only these optional repos")
 	return cmd
 }
 
-func ecrisResolution(w io.Writer, r *nest.Resolved) {
+func writeResolution(w io.Writer, r *nest.Resolved) {
 	fmt.Fprintf(w, "nest:   %s\n", r.Nest.Name)
 	fmt.Fprintf(w, "stack:  %s (image %s)\n", r.Stack.Name, r.Stack.Image)
 	fmt.Fprintf(w, "agent:  %s\n", r.AgentName)
@@ -153,11 +144,11 @@ func ecrisResolution(w io.Writer, r *nest.Resolved) {
 
 	fmt.Fprintln(w, "repos:")
 	for _, repo := range r.Repos {
-		statut := "requis"
+		status := "required"
 		if repo.Optional {
-			statut = "optionnel"
+			status = "optional"
 		}
-		fmt.Fprintf(w, "  - %s (%s)\n", repo.Path, statut)
+		fmt.Fprintf(w, "  - %s (%s)\n", repo.Path, status)
 	}
 
 	fmt.Fprintf(w, "egress (%d):\n", len(r.Egress))
@@ -166,29 +157,29 @@ func ecrisResolution(w io.Writer, r *nest.Resolved) {
 	}
 
 	if len(r.Env) > 0 {
-		fmt.Fprintln(w, "env (résolu):")
-		// L'ordre d'itération des maps Go n'est pas déterministe : tout ce qui
-		// s'affiche est trié.
+		fmt.Fprintln(w, "env (resolved):")
+		// Go map iteration order is not deterministic: everything printed is
+		// sorted.
 		for _, k := range slices.Sorted(maps.Keys(r.Env)) {
 			fmt.Fprintf(w, "  %s=%s\n", k, r.Env[k])
 		}
 	}
 
 	if len(r.Nest.Ports.Publish) > 0 {
-		fmt.Fprintln(w, "ports déclarés:")
+		fmt.Fprintln(w, "declared ports:")
 		for _, p := range r.Nest.Ports.Publish {
-			marques := []string{}
+			marks := []string{}
 			if p.Open {
-				marques = append(marques, "open")
+				marks = append(marks, "open")
 			}
 			if p.LoopbackLock {
-				marques = append(marques, "loopback-locked")
+				marks = append(marks, "loopback-locked")
 			}
-			suffixe := ""
-			if len(marques) > 0 {
-				suffixe = " [" + strings.Join(marques, ", ") + "]"
+			suffix := ""
+			if len(marks) > 0 {
+				suffix = " [" + strings.Join(marks, ", ") + "]"
 			}
-			fmt.Fprintf(w, "  - %s -> %d%s\n", p.Name, p.Container, suffixe)
+			fmt.Fprintf(w, "  - %s -> %d%s\n", p.Name, p.Container, suffix)
 		}
 	}
 }

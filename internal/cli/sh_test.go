@@ -9,158 +9,157 @@ import (
 	"github.com/PillowPillow/den/internal/sbx"
 )
 
-func TestShAttacheDansLeWorkdir(t *testing.T) {
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profil"]}]}`)},
+func TestShAttachesInTheWorkdir(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]}`)},
 	}}
 
-	if _, err := executeCmdAvecSbx(t, f, "sh", "api"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var attache []string
-	for _, a := range f.Appels {
+	var attach []string
+	for _, a := range f.Calls {
 		if len(a) > 0 && a[0] == "exec" {
-			attache = a
+			attach = a
 		}
 	}
-	if attache == nil {
-		t.Fatalf("aucune attache ; appels : %v", f.Appels)
+	if attach == nil {
+		t.Fatalf("no attach; calls: %v", f.Calls)
 	}
-	if !slices.Contains(attache, "-w") || !slices.Contains(attache, "/w/api") {
-		t.Errorf("l'attache doit poser le workdir sur le premier workspace ; obtenu : %v", attache)
+	if !slices.Contains(attach, "-w") || !slices.Contains(attach, "/w/api") {
+		t.Errorf("the attach must set the workdir to the first workspace; got: %v", attach)
 	}
-	if !slices.Contains(attache, "bash") {
-		t.Errorf("l'attache doit lancer un shell ; obtenu : %v", attache)
+	if !slices.Contains(attach, "bash") {
+		t.Errorf("the attach must launch a shell; got: %v", attach)
 	}
 }
 
-// Le `:ro` du fixture n'est pas décoratif : il sépare `b.Workdir()` (qui le
-// retire) de `b.Workspaces[0]` (qui le garderait). Sans lui, les deux
-// implémentations passent — mesuré par la relecture sur ce fichier précisément.
+// The fixture's `:ro` suffix is not decorative: it separates b.Workdir()
+// (which strips it) from b.Workspaces[0] (which would keep it). Without it,
+// both implementations pass — measured by review, on this exact file.
 //
-// Complément indispensable au test ci-dessus, qui scanne f.Appels : Appels
-// CONFOND Run et Attach (cf. sbx/fake.go), donc un `Run("exec", …)` — shell muet,
-// sans tty — le satisfait tout autant qu'une vraie attache. Seul f.Attaches
-// distingue les deux. Ce test verrouille aussi le `-it` et l'argv COMPLET, dans
-// l'ordre : `sbx exec [flags] SANDBOX COMMAND`, un `-w` postposé arriverait tel
-// quel à `bash -l` au lieu de fixer le répertoire.
-func TestShAttacheAvecUnTtyEtPasUnRun(t *testing.T) {
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profil"]}]}`)},
+// Necessary complement to the test above, which scans f.Calls: Calls CONFLATES
+// Run and Attach (see sbx/fake.go), so a `Run("exec", ...)` — a mute shell,
+// no tty — satisfies it just as much as a real attach. Only f.Attaches tells
+// the two apart. This test also locks the `-it` flag and the FULL argv, in
+// order: `sbx exec [flags] SANDBOX COMMAND` — a postponed `-w` would land as-is
+// on `bash -l` instead of setting the working directory.
+func TestShAttachesWithATtyNotARun(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]}`)},
 	}}
 
-	if _, err := executeCmdAvecSbx(t, f, "sh", "api"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.AAttache("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
-		t.Errorf("l'attache doit être un Attach, argv complet et ordonné ; attaches : %v", f.Attaches)
+	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+		t.Errorf("the attach must be an Attach, with the full ordered argv; attaches: %v", f.Attaches)
 	}
 }
 
-// `sbx run` lancerait le flavor de l'image (souvent claude) : jamais.
+// `sbx run` would launch the image's flavor (often claude): never.
 //
-// Le `"status":"running"` du fixture n'est pas décoratif : `den sh` refuse
-// désormais toute sandbox dont le statut n'est pas explicitement « en marche »
-// (cf. TestShRefuseUneSandboxQuiNeTournePas), et un fixture sans `status`
-// n'atteindrait plus l'attache du tout.
-func TestShNUtiliseJamaisSbxRun(t *testing.T) {
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`)},
+// The fixture's `"status":"running"` is not decorative: `den sh` now refuses
+// any sandbox whose status is not explicitly "running" (see
+// TestShRefusesASandboxThatIsNotRunning), and a fixture without `status` would
+// no longer even reach the attach.
+func TestShNeverUsesSbxRun(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`)},
 	}}
 
-	if _, err := executeCmdAvecSbx(t, f, "sh", "api"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if f.AAppele("run") {
-		t.Errorf("den sh ne doit jamais passer par `sbx run` ; appels : %v", f.Appels)
+	if f.HasCalled("run") {
+		t.Errorf("den sh must never go through `sbx run`; calls: %v", f.Calls)
 	}
 }
 
-// Un nom inexistant doit lister ce qui tourne : « not found » seul oblige
-// l'utilisateur à relancer une autre commande pour savoir quoi taper.
-func TestShNomInconnu(t *testing.T) {
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(`{"sandboxes":[{"name":"api"},{"name":"web"}]}`)},
+// An unknown name must list what is running: "not found" alone would force
+// the user to run another command just to know what to type.
+func TestShUnknownName(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api"},{"name":"web"}]}`)},
 	}}
 
-	_, err := executeCmdAvecSbx(t, f, "sh", "absente")
+	_, err := executeCmdWithSbx(t, f, "sh", "missing")
 	if err == nil {
-		t.Fatal("un nom de sandbox inconnu doit produire une erreur")
+		t.Fatal("an unknown sandbox name must produce an error")
 	}
-	for _, attendu := range []string{"absente", "api", "web"} {
-		if !strings.Contains(err.Error(), attendu) {
-			t.Errorf("le message doit contenir %q ; obtenu : %v", attendu, err)
+	for _, expected := range []string{"missing", "api", "web"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("the message must contain %q; got: %v", expected, err)
 		}
 	}
 	if len(f.Attaches) != 0 {
-		t.Errorf("un nom inconnu ne doit attacher nulle part ; attaches : %v", f.Attaches)
+		t.Errorf("an unknown name must attach nowhere; attaches: %v", f.Attaches)
 	}
 }
 
-// F2, sur l'AUTRE chemin : `den sh` doit reprendre une sandbox arrêtée, comme
-// `den <nest>`. Prouvé ICI et pas seulement dans internal/spawn — rien, au
-// niveau de sbx.VerifieAttachable, ne garantit que newShCmd l'appelle, et une
-// politique élargie d'un seul côté rouvrirait le défaut de l'autre.
-func TestShReprendUneSandboxArretee(t *testing.T) {
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(
+// F2, on the OTHER path: `den sh` must resume a stopped sandbox, like
+// `den <nest>`. Proven HERE and not only in internal/spawn — nothing at the
+// level of sbx.CheckAttachable guarantees newShCmd calls it, and a policy
+// widened on only one side would reopen the defect on the other.
+func TestShResumesAStoppedSandbox(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
 	}}
 
-	if _, err := executeCmdAvecSbx(t, f, "sh", "api"); err != nil {
-		t.Fatalf("une sandbox arrêtée doit être reprise : %v", err)
+	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+		t.Fatalf("a stopped sandbox must be resumed: %v", err)
 	}
-	if !f.AAttache("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
-		t.Errorf("la reprise doit attacher dans le workdir de la VM ; attaches : %v", f.Attaches)
+	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+		t.Errorf("resuming must attach in the VM's workdir; attaches: %v", f.Attaches)
 	}
 }
 
-// La même garde que sur `den <nest>`, sur l'AUTRE chemin : les deux finissent
-// par un `sbx exec`, et les deux sont faux dans une VM dont den ne sait rien. Un
-// `den sh` qui ouvre un shell dans une sandbox `exited` n'est pas moins faux
-// qu'un `den <nest>` qui le fait — et c'est bien le même défaut, pas un cousin.
-func TestShRefuseUneSandboxQuiNeTournePas(t *testing.T) {
-	for _, statut := range []string{"exited", "paused", "Running", ""} {
-		t.Run("statut="+statut, func(t *testing.T) {
-			f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-				"ls --json": {Sortie: []byte(
-					`{"sandboxes":[{"name":"api","status":"` + statut + `","workspaces":["/w/api"]}]}`)},
+// The same guard as on `den <nest>`, on the OTHER path: both end in an
+// `sbx exec`, and both are wrong on a VM den knows nothing about. A `den sh`
+// that opens a shell in an `exited` sandbox is no less wrong than a
+// `den <nest>` that does — and it is the very same defect, not a cousin.
+func TestShRefusesASandboxThatIsNotRunning(t *testing.T) {
+	for _, status := range []string{"exited", "paused", "Running", ""} {
+		t.Run("status="+status, func(t *testing.T) {
+			f := &sbx.Fake{Responses: map[string]sbx.Response{
+				"ls --json": {Output: []byte(
+					`{"sandboxes":[{"name":"api","status":"` + status + `","workspaces":["/w/api"]}]}`)},
 			}}
 
-			_, err := executeCmdAvecSbx(t, f, "sh", "api")
+			_, err := executeCmdWithSbx(t, f, "sh", "api")
 			if err == nil {
-				t.Fatalf("un statut %q ne doit pas donner lieu à une attache", statut)
+				t.Fatalf("status %q must not lead to an attach", status)
 			}
-			// strconv.Quote, pas le statut nu : sur le sous-cas statut="",
-			// `strings.Contains(err, "")` est vrai par construction et n'assert
-			// rien. La forme quotée est celle que le message rend (`%q`).
-			if !strings.Contains(err.Error(), strconv.Quote(statut)) ||
+			// strconv.Quote, not the bare status: on the status="" subcase,
+			// `strings.Contains(err, "")` is trivially true and asserts
+			// nothing. The quoted form is what the message renders (`%q`).
+			if !strings.Contains(err.Error(), strconv.Quote(status)) ||
 				!strings.Contains(err.Error(), strconv.Quote("running")) {
-				t.Errorf("le message doit rendre le statut lu et celui attendu ; obtenu : %v", err)
+				t.Errorf("the message must render both the read status and the expected one; got: %v", err)
 			}
 			if len(f.Attaches) != 0 {
-				t.Errorf("aucune attache dans une VM arrêtée ; attaches : %v", f.Attaches)
+				t.Errorf("no attach in a stopped VM; attaches: %v", f.Attaches)
 			}
 		})
 	}
 }
 
-// Aucune sandbox vivante : le message ne peut pas proposer de liste, il doit le
-// DIRE. « (vivantes : []) » enverrait l'utilisateur chercher une faute de frappe
-// dans une liste vide.
-func TestShSansAucuneSandbox(t *testing.T) {
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(`{"sandboxes":[]}`)},
+// No live sandbox at all: the message cannot offer a list, it must SAY so.
+// "(live: [])" would send the user looking for a typo in an empty list.
+func TestShWithNoSandboxAtAll(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
 	}}
 
-	_, err := executeCmdAvecSbx(t, f, "sh", "absente")
+	_, err := executeCmdWithSbx(t, f, "sh", "missing")
 	if err == nil {
-		t.Fatal("un nom de sandbox inconnu doit produire une erreur")
+		t.Fatal("an unknown sandbox name must produce an error")
 	}
-	if !strings.Contains(err.Error(), "aucune sandbox") {
-		t.Errorf("le message doit dire qu'aucune sandbox ne tourne ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "no sandbox is running") {
+		t.Errorf("the message must say no sandbox is running; got: %v", err)
 	}
 }

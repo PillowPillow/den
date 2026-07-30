@@ -1,0 +1,4 @@
+stack: devx
+# Example path to adapt: `den doctor` reports it as long as it does not point at a real repository.
+repos:
+  - { path: ~/dev/my-project }

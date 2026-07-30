@@ -12,5 +12,5 @@ docker.io/library/dgdevx:v1
 shell
 /den/worktrees/feat12/api
 /den/worktrees/feat12/front
-/home/moi/.den/agents/claude
-/home/moi/.ssh_sbx
+/home/me/.den/agents/claude
+/home/me/.ssh_sbx

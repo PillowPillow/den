@@ -7,17 +7,17 @@ import (
 	"testing"
 )
 
-// ecrisConfig crée un DEN_HOME temporaire contenant le config.yaml fourni.
-func ecrisConfig(t *testing.T, contenu string) string {
+// writeConfig creates a temporary DEN_HOME containing the given config.yaml content.
+func writeConfig(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(contenu), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return dir
 }
 
-const configComplet = `
+const fullConfig = `
 agents:
   claude:
     config_dir: ~/.den/agents/claude
@@ -37,10 +37,10 @@ egress:
   - github.com
 `
 
-// configValide est le plus petit config.yaml que Validate accepte. Les tests de
-// refus le concatènent avec la seule faute qu'ils instruisent, pour qu'un échec
-// désigne cette faute-là et pas un manque collatéral.
-const configValide = `agents:
+// validConfig is the smallest config.yaml that Validate accepts. Rejection
+// tests concatenate it with the single fault they're testing, so a failure
+// points at that fault and not at some unrelated gap.
+const validConfig = `agents:
   claude:
     config_dir: /tmp/den/claude
     update: "claude update"
@@ -49,198 +49,197 @@ defaults:
   stack: devx
 `
 
-func TestLoadGlobalChampsComplets(t *testing.T) {
+func TestLoadGlobalFullFields(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := LoadGlobal(ecrisConfig(t, configComplet))
+	g, err := LoadGlobal(writeConfig(t, fullConfig))
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	a, ok := g.Agents["claude"]
 	if !ok {
-		t.Fatal("agent claude absent du registre")
+		t.Fatal("agent claude missing from registry")
 	}
 	if want := filepath.Join(home, ".den/agents/claude"); a.ConfigDir != want {
-		t.Errorf("ConfigDir = %q, attendu %q (tilde expansé)", a.ConfigDir, want)
+		t.Errorf("ConfigDir = %q, want %q (tilde expanded)", a.ConfigDir, want)
 	}
 	if a.Update != "claude update" {
-		t.Errorf("Update = %q, attendu %q", a.Update, "claude update")
+		t.Errorf("Update = %q, want %q", a.Update, "claude update")
 	}
-	// $HOME doit traverser intact : il sera résolu dans la VM.
+	// $HOME must cross unchanged: it's resolved inside the VM.
 	if len(a.BinDirs) != 2 || a.BinDirs[0] != "$HOME/.local/bin" {
-		t.Errorf("BinDirs = %v, attendu $HOME préservé", a.BinDirs)
+		t.Errorf("BinDirs = %v, want $HOME preserved", a.BinDirs)
 	}
 	if a.Env["CLAUDE_CONFIG_DIR"] != "{config_dir}" {
-		t.Errorf("Env = %v, attendu le placeholder {config_dir} intact", a.Env)
+		t.Errorf("Env = %v, want the {config_dir} placeholder intact", a.Env)
 	}
 	if g.Defaults.Agent != "claude" || g.Defaults.Stack != "devx" {
 		t.Errorf("Defaults = %+v", g.Defaults)
 	}
 	if g.SSH.Mode != "mount" {
-		t.Errorf("SSH.Mode = %q, attendu mount", g.SSH.Mode)
+		t.Errorf("SSH.Mode = %q, want mount", g.SSH.Mode)
 	}
 	if want := filepath.Join(home, ".ssh_sbx"); g.SSH.Dir != want {
-		t.Errorf("SSH.Dir = %q, attendu %q", g.SSH.Dir, want)
+		t.Errorf("SSH.Dir = %q, want %q", g.SSH.Dir, want)
 	}
 	if g.WorktreeLayout != "per-repo" {
 		t.Errorf("WorktreeLayout = %q", g.WorktreeLayout)
 	}
 	if want := filepath.Join(home, "perso/wt"); g.WorktreeRoot != want {
-		t.Errorf("WorktreeRoot = %q, attendu %q", g.WorktreeRoot, want)
+		t.Errorf("WorktreeRoot = %q, want %q", g.WorktreeRoot, want)
 	}
 	if len(g.Egress) != 2 {
-		t.Errorf("Egress = %v, attendu 2 entrées", g.Egress)
+		t.Errorf("Egress = %v, want 2 entries", g.Egress)
 	}
 }
 
-// Les défauts s'appliquent AVANT le contrôle de cohérence : un config.yaml sans
-// `worktree_layout:` ni `ssh:` est parfaitement valide, et LoadGlobal — qui
-// valide désormais — ne doit pas le refuser au motif que ces champs sont vides.
-func TestLoadGlobalDefautsAppliques(t *testing.T) {
-	denHome := ecrisConfig(t, configValide)
+// Defaults apply BEFORE the consistency check: a config.yaml without
+// `worktree_layout:` or `ssh:` is perfectly valid, and LoadGlobal — which now
+// validates — must not reject it on the grounds that these fields are empty.
+func TestLoadGlobalDefaultsApplied(t *testing.T) {
+	denHome := writeConfig(t, validConfig)
 	g, err := LoadGlobal(denHome)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if g.SSH.Mode != "agent-forward" {
-		t.Errorf("SSH.Mode = %q, attendu le défaut agent-forward", g.SSH.Mode)
+		t.Errorf("SSH.Mode = %q, want default agent-forward", g.SSH.Mode)
 	}
 	if g.WorktreeLayout != "central" {
-		t.Errorf("WorktreeLayout = %q, attendu le défaut central", g.WorktreeLayout)
+		t.Errorf("WorktreeLayout = %q, want default central", g.WorktreeLayout)
 	}
-	// Le défaut est relatif AU den home courant, pas littéralement ~/.den/worktrees :
-	// sur un DEN_HOME temporaire, les worktrees doivent rester dans ce home-là.
+	// The default is relative to the CURRENT den home, not literally
+	// ~/.den/worktrees: on a temporary DEN_HOME, worktrees must stay under
+	// that home.
 	if want := filepath.Join(denHome, "worktrees"); g.WorktreeRoot != want {
-		t.Errorf("WorktreeRoot = %q, attendu le défaut %q", g.WorktreeRoot, want)
+		t.Errorf("WorktreeRoot = %q, want default %q", g.WorktreeRoot, want)
 	}
 }
 
-func TestLoadGlobalFichierAbsent(t *testing.T) {
+func TestLoadGlobalMissingFile(t *testing.T) {
 	denHome := t.TempDir()
 	_, err := LoadGlobal(denHome)
 	if err == nil {
-		t.Fatal("attendu une erreur quand config.yaml est absent")
+		t.Fatal("expected an error when config.yaml is missing")
 	}
-	// Le message doit être actionnable : il nomme le chemin cherché.
-	chemin := filepath.Join(denHome, "config.yaml")
-	if !strings.Contains(err.Error(), chemin) {
-		t.Errorf("erreur = %q, attendu le chemin complet du fichier manquant", err.Error())
+	// The message must be actionable: it names the path that was searched.
+	path := filepath.Join(denHome, "config.yaml")
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error = %q, expected the full path of the missing file", err.Error())
 	}
-	// Une seule fois, et en français : le *fs.PathError de l'OS porte déjà le
-	// chemin que cette enveloppe vient de nommer. C'est la première ligne que
-	// voit un utilisateur dont ~/.den n'existe pas encore, sur `den doctor`
-	// comme sur `den <nest>`.
-	if n := strings.Count(err.Error(), chemin); n != 1 {
-		t.Errorf("le chemin apparaît %d fois, attendu 1 ; message : %s", n, err.Error())
+	// Exactly once: the OS's *fs.PathError already carries the path this
+	// wrapper just named. This is the first line a user with no ~/.den yet sees.
+	if n := strings.Count(err.Error(), path); n != 1 {
+		t.Errorf("path appears %d times, want 1; message: %s", n, err.Error())
 	}
+	// And in den's own wording: FileError replaces the OS's raw reason, it
+	// does not let it leak through.
 	if strings.Contains(err.Error(), "no such file or directory") {
-		t.Errorf("reste d'anglais dans le message : %s", err.Error())
+		t.Errorf("the raw OS reason must not leak: %s", err.Error())
 	}
 }
 
-func TestLoadGlobalYamlInvalide(t *testing.T) {
-	if _, err := LoadGlobal(ecrisConfig(t, "agents: [ceci n'est pas une map")); err == nil {
-		t.Fatal("attendu une erreur sur YAML invalide")
+func TestLoadGlobalInvalidYaml(t *testing.T) {
+	if _, err := LoadGlobal(writeConfig(t, "agents: [this is not a map")); err == nil {
+		t.Fatal("expected an error on invalid YAML")
 	}
 }
 
-// Une clé mal orthographiée doit être une erreur, jamais un silence : `egres:`
-// laisse l'allowlist vide, et la sandbox n'atteint plus api.anthropic.com sans
-// que rien ne l'ait signalé. C'est exactement ce que `den doctor` doit attraper.
-func TestLoadGlobalRejetteUneCleInconnue(t *testing.T) {
-	denHome := ecrisConfig(t, "defaults:\n  agent: claude\n  stack: devx\negres:\n  - api.anthropic.com\n")
+// A misspelled key must be an error, never a silence: `egres:` leaves the
+// allowlist empty, and the sandbox stops reaching api.anthropic.com without
+// anything reporting it. That's exactly what `den doctor` must catch.
+func TestLoadGlobalRejectsAnUnknownKey(t *testing.T) {
+	denHome := writeConfig(t, "defaults:\n  agent: claude\n  stack: devx\negres:\n  - api.anthropic.com\n")
 	_, err := LoadGlobal(denHome)
 	if err == nil {
-		t.Fatal("attendu une erreur sur la clé inconnue `egres`")
+		t.Fatal("expected an error on the unknown key `egres`")
 	}
 	if !strings.Contains(err.Error(), "egres") {
-		t.Errorf("erreur = %q, attendu une mention de la clé fautive", err.Error())
+		t.Errorf("error = %q, expected a mention of the offending key", err.Error())
 	}
 	if !strings.Contains(err.Error(), filepath.Join(denHome, "config.yaml")) {
-		t.Errorf("erreur = %q, attendu le chemin du fichier fautif", err.Error())
+		t.Errorf("error = %q, expected the path of the offending file", err.Error())
 	}
 }
 
-// Un config.yaml vide est une config qui ne déclare rien, pas un fichier corrompu :
-// Validate() dira ce qui manque en clair. yaml.v3 renvoie io.EOF sur un fichier
-// vide, ce qui ne doit surtout pas remonter tel quel à l'utilisateur.
+// An empty config.yaml is a config that declares nothing, not a corrupt file:
+// Validate() will say plainly what's missing. yaml.v3 returns io.EOF on an
+// empty file, which must never surface as-is to the user.
 //
-// Le sujet est LoadGlobalSansValider : c'est lui qui porte le contrat « lire
-// n'est pas juger », dont `den doctor` dépend pour tout montrer d'un coup.
-// LoadGlobal, lui, doit refuser — les deux moitiés sont vérifiées ici parce
-// qu'elles ne se tiennent que l'une par l'autre.
-func TestLoadGlobalSansValiderFichierVide(t *testing.T) {
-	denHome := ecrisConfig(t, "")
-	g, err := LoadGlobalSansValider(denHome)
+// The subject is LoadGlobalUnvalidated: it carries the "reading is not
+// judging" contract that `den doctor` relies on to show everything at once.
+// LoadGlobal, on the other hand, must refuse — both halves are checked here
+// because they only make sense together.
+func TestLoadGlobalUnvalidatedEmptyFile(t *testing.T) {
+	denHome := writeConfig(t, "")
+	g, err := LoadGlobalUnvalidated(denHome)
 	if err != nil {
-		t.Fatalf("un config.yaml vide ne doit pas être une erreur de chargement : %v", err)
+		t.Fatalf("an empty config.yaml must not be a load error: %v", err)
 	}
 	if g.SSH.Mode != "agent-forward" {
-		t.Errorf("SSH.Mode = %q, attendu le défaut appliqué même sur fichier vide", g.SSH.Mode)
+		t.Errorf("SSH.Mode = %q, expected the default applied even on an empty file", g.SSH.Mode)
 	}
 	if errs := g.Validate(); len(errs) == 0 {
-		t.Error("attendu que Validate signale une config vide")
+		t.Error("expected Validate to flag an empty config")
 	}
 	if _, err := LoadGlobal(denHome); err == nil {
-		t.Error("LoadGlobal doit refuser un config.yaml vide, sinon la validation reste facultative")
+		t.Error("LoadGlobal must refuse an empty config.yaml, or validation stays optional")
 	}
 }
 
-// --- D1 : Validate() n'avait qu'UN appelant, doctor.go:59 -------------------
+// --- D1: Validate() had only ONE caller, doctor.go:59 -----------------------
 //
-// Conséquence mesurée avant correctif : `den <nest>`, `den ls`, `den sh` et
-// `den rm` chargeaient sans jamais valider. Les trois tests qui suivent
-// verrouillent les trois dettes que cela laissait passer.
+// Consequence measured before the fix: `den <nest>`, `den ls`, `den sh` and
+// `den rm` loaded without ever validating. The three tests below lock down
+// the three regressions that allowed.
 
-// 14ᵉ configuration hostile (T10) : `centrl` retombait SILENCIEUSEMENT sur
-// `central` — LoadGlobal ne défaute que sur la chaîne vide, et personne
-// n'appelait Validate sur ce chemin. Une faute de frappe changeait donc la
-// disposition des worktrees sans un mot.
-func TestLoadGlobalRefuseUnWorktreeLayoutInconnu(t *testing.T) {
-	denHome := ecrisConfig(t, configValide+"worktree_layout: centrl\n")
+// 14th hostile configuration (T10): `centrl` silently fell back to `central`
+// — LoadGlobal only defaults the empty string, and nobody called Validate on
+// this path. A typo would therefore change the worktree layout without a word.
+func TestLoadGlobalRejectsAnUnknownWorktreeLayout(t *testing.T) {
+	denHome := writeConfig(t, validConfig+"worktree_layout: centrl\n")
 	_, err := LoadGlobal(denHome)
 	if err == nil {
-		t.Fatal("attendu un refus de `worktree_layout: centrl`, obtenu nil")
+		t.Fatal("expected a rejection of `worktree_layout: centrl`, got nil")
 	}
 	if !strings.Contains(err.Error(), "centrl") {
-		t.Errorf("erreur = %q, attendu la valeur fautive nommée", err.Error())
+		t.Errorf("error = %q, expected the offending value named", err.Error())
 	}
 	if !strings.Contains(err.Error(), filepath.Join(denHome, "config.yaml")) {
-		t.Errorf("erreur = %q, attendu le chemin complet du fichier à corriger", err.Error())
+		t.Errorf("error = %q, expected the full path of the file to fix", err.Error())
 	}
 }
 
-// T4-min-4 : un `config_dir` vide devient la chaîne vide dans `{config_dir}` et
-// ATTEINT la microVM. Validate l'interdisait déjà ; le chemin de spawn ne
-// l'appelait pas.
-func TestLoadGlobalRefuseUnConfigDirVide(t *testing.T) {
-	denHome := ecrisConfig(t, "agents:\n  claude:\n    config_dir: \"\"\n    update: \"claude update\"\n"+
+// T4-min-4: an empty `config_dir` becomes the empty string in `{config_dir}`
+// and REACHES the microVM. Validate already forbade it; the spawn path didn't call it.
+func TestLoadGlobalRejectsAnEmptyConfigDir(t *testing.T) {
+	denHome := writeConfig(t, "agents:\n  claude:\n    config_dir: \"\"\n    update: \"claude update\"\n"+
 		"defaults:\n  agent: claude\n  stack: devx\n")
 	_, err := LoadGlobal(denHome)
 	if err == nil {
-		t.Fatal("attendu un refus d'un config_dir vide, obtenu nil")
+		t.Fatal("expected a rejection of an empty config_dir, got nil")
 	}
 	if !strings.Contains(err.Error(), "agents.claude.config_dir") {
-		t.Errorf("erreur = %q, attendu la clé fautive nommée", err.Error())
+		t.Errorf("error = %q, expected the offending key named", err.Error())
 	}
 }
 
-// Refuser au chargement ne doit pas dégrader le diagnostic en « première faute
-// trouvée » : l'utilisateur doit voir d'un coup tout ce qu'il a à réparer,
-// exactement comme `den doctor`. Deux fautes indépendantes, les deux nommées.
-func TestLoadGlobalCumuleToutesLesErreurs(t *testing.T) {
-	denHome := ecrisConfig(t, configValide+"ssh:\n  mode: nfs\nworktree_layout: centrl\n")
+// Refusing at load time must not degrade the diagnostic to "first fault
+// found": the user must see everything to fix at once, exactly like
+// `den doctor`. Two independent faults, both named.
+func TestLoadGlobalAccumulatesAllErrors(t *testing.T) {
+	denHome := writeConfig(t, validConfig+"ssh:\n  mode: nfs\nworktree_layout: centrl\n")
 	_, err := LoadGlobal(denHome)
 	if err == nil {
-		t.Fatal("attendu un refus, obtenu nil")
+		t.Fatal("expected a rejection, got nil")
 	}
-	for _, attendu := range []string{"nfs", "centrl"} {
-		if !strings.Contains(err.Error(), attendu) {
-			t.Errorf("erreur = %q, attendu la mention de %q : LoadGlobal doit cumuler, pas s'arrêter à la première faute",
-				err.Error(), attendu)
+	for _, want := range []string{"nfs", "centrl"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected a mention of %q: LoadGlobal must accumulate, not stop at the first fault",
+				err.Error(), want)
 		}
 	}
 }

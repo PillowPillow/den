@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-// ecrisStack crée <denHome>/stacks/<nom>/stack.yaml et renvoie denHome.
-func ecrisStack(t *testing.T, denHome, nom, contenu string) string {
+// writeStack creates <denHome>/stacks/<name>/stack.yaml and returns denHome.
+func writeStack(t *testing.T, denHome, name, content string) string {
 	t.Helper()
-	dir := filepath.Join(denHome, "stacks", nom)
+	dir := filepath.Join(denHome, "stacks", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "stack.yaml"), []byte(contenu), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "stack.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return denHome
@@ -23,7 +23,7 @@ func ecrisStack(t *testing.T, denHome, nom, contenu string) string {
 
 func TestLoadStack(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "dgdevx", `
+	writeStack(t, denHome, "dgdevx", `
 image: dgdevx:v1
 parent: devx
 kit: ./kit
@@ -33,416 +33,409 @@ egress:
 
 	s, err := LoadStack(denHome, "dgdevx")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if s.Name != "dgdevx" || s.Image != "dgdevx:v1" || s.Parent != "devx" {
 		t.Errorf("stack = %+v", s)
 	}
 	if want := filepath.Join(denHome, "stacks", "dgdevx"); s.Dir != want {
-		t.Errorf("Dir = %q, attendu %q", s.Dir, want)
+		t.Errorf("Dir = %q, want %q", s.Dir, want)
 	}
 	if want := filepath.Join(denHome, "stacks", "dgdevx", "kit"); s.Kit != want {
-		t.Errorf("Kit = %q, attendu un chemin absolu %q", s.Kit, want)
+		t.Errorf("Kit = %q, want an absolute path %q", s.Kit, want)
 	}
 	if len(s.Egress) != 1 || s.Egress[0] != "gitlab.digitaleo.com" {
 		t.Errorf("Egress = %v", s.Egress)
 	}
 }
 
-// Le nom d'une stack est le nom de son dossier — cas nominal et unique.
-func TestLoadStackNomDeduitDuDossier(t *testing.T) {
+// A stack's name is its directory name — the sole, nominal case.
+func TestLoadStackNameComesFromTheDirectory(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
 	s, err := LoadStack(denHome, "devx")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if s.Name != "devx" {
-		t.Errorf("Name = %q, attendu %q déduit du dossier", s.Name, "devx")
+		t.Errorf("Name = %q, want %q derived from the directory", s.Name, "devx")
 	}
 }
 
-// Même règle que pour les nests : une stack ne porte pas son nom dans son
-// contenu. LoadStacks indexait sa map par ce `name:`, alors que LoadStack
-// cherche par nom de dossier — deux clés pour un même objet.
-func TestLoadStackRejetteUnNomDansLeContenu(t *testing.T) {
+// Same rule as for nests: a stack doesn't carry its name in its content.
+// LoadStacks indexes its map by this directory name, while LoadStack looks up
+// by directory name too — two keys for one object must never diverge.
+func TestLoadStackRejectsANameInTheContent(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", "name: autre\nimage: devx:v1\n")
+	writeStack(t, denHome, "devx", "name: other\nimage: devx:v1\n")
 	_, err := LoadStack(denHome, "devx")
 	if err == nil {
-		t.Fatal("attendu un rejet : l'identité d'une stack vient de son dossier, pas de son contenu")
+		t.Fatal("expected a rejection: a stack's identity comes from its directory, not its content")
 	}
 	if !strings.Contains(err.Error(), "name") {
-		t.Errorf("erreur = %q, attendu une mention de la clé `name`", err.Error())
+		t.Errorf("error = %q, expected a mention of the `name` key", err.Error())
 	}
 }
 
-// LoadStacks doit indexer par le nom de dossier, la seule identité qui existe :
-// c'est par cette clé que defaults.stack et nest.stack sont résolus.
-func TestLoadStacksIndexeParLeNomDeDossier(t *testing.T) {
+// LoadStacks must index by directory name, the only identity that exists:
+// it's this key that resolves defaults.stack and nest.stack.
+func TestLoadStacksIndexesByDirectoryName(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
 
 	stacks, err := LoadStacks(denHome)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	s, ok := stacks.Saines["devx"]
+	s, ok := stacks.Healthy["devx"]
 	if !ok {
-		t.Fatalf("stacks = %v, attendu une entrée sous le nom de dossier %q", stacks.Saines, "devx")
+		t.Fatalf("stacks = %v, expected an entry under the directory name %q", stacks.Healthy, "devx")
 	}
 	if s.Name != "devx" {
-		t.Errorf("Name = %q, attendu %q", s.Name, "devx")
+		t.Errorf("Name = %q, want %q", s.Name, "devx")
 	}
 }
 
-func TestLoadStackRejetteUneCleInconnue(t *testing.T) {
+func TestLoadStackRejectsAnUnknownKey(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", "image: devx:v1\negres: [github.com]\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\negres: [github.com]\n")
 	_, err := LoadStack(denHome, "devx")
 	if err == nil {
-		t.Fatal("attendu une erreur sur la clé inconnue `egres`")
+		t.Fatal("expected an error on the unknown key `egres`")
 	}
 	if !strings.Contains(err.Error(), "egres") {
-		t.Errorf("erreur = %q, attendu une mention de la clé fautive", err.Error())
+		t.Errorf("error = %q, expected a mention of the offending key", err.Error())
 	}
 }
 
-func TestLoadStackFichierVide(t *testing.T) {
+func TestLoadStackEmptyFile(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", "")
+	writeStack(t, denHome, "devx", "")
 	s, err := LoadStack(denHome, "devx")
 	if err != nil {
-		t.Fatalf("un stack.yaml vide ne doit pas être une erreur de chargement : %v", err)
+		t.Fatalf("an empty stack.yaml must not be a load error: %v", err)
 	}
 	if s.Name != "devx" {
-		t.Errorf("Name = %q, attendu %q déduit du dossier", s.Name, "devx")
+		t.Errorf("Name = %q, want %q derived from the directory", s.Name, "devx")
 	}
 }
 
-// Une stack absente et une stack illisible appellent deux gestes différents :
-// « déclare-la » contre « répare les droits ». `doctor` relaie ce message tel
-// quel, il doit donc trancher.
-func TestLoadStackAbsente(t *testing.T) {
+// A missing stack and an unreadable stack call for two different fixes:
+// "declare it" versus "fix the permissions". `doctor` relays this message
+// verbatim, it must decide which.
+func TestLoadStackMissing(t *testing.T) {
 	denHome := t.TempDir()
-	_, err := LoadStack(denHome, "fantome")
+	_, err := LoadStack(denHome, "ghost")
 	if err == nil {
-		t.Fatal("attendu une erreur pour une stack absente")
+		t.Fatal("expected an error for a missing stack")
 	}
-	if !strings.Contains(err.Error(), "introuvable") {
-		t.Errorf("erreur = %q, attendu un message d'absence explicite", err.Error())
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, expected an explicit not-found message", err.Error())
 	}
-	if !strings.Contains(err.Error(), filepath.Join(denHome, "stacks", "fantome")) {
-		t.Errorf("erreur = %q, attendu le chemin attendu de la stack", err.Error())
+	if !strings.Contains(err.Error(), filepath.Join(denHome, "stacks", "ghost")) {
+		t.Errorf("error = %q, expected the stack's expected path", err.Error())
 	}
 }
 
-func TestLoadStackIllisible(t *testing.T) {
+func TestLoadStackUnreadable(t *testing.T) {
 	denHome := t.TempDir()
-	// stack.yaml présent mais illisible (ici : c'est un dossier) — ce n'est pas
-	// une absence, et le message ne doit pas le prétendre.
+	// stack.yaml present but unreadable (here: it's a directory) — this is not
+	// a missing stack, and the message must not claim it is.
 	if err := os.MkdirAll(filepath.Join(denHome, "stacks", "devx", "stack.yaml"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadStack(denHome, "devx")
 	if err == nil {
-		t.Fatal("attendu une erreur pour une stack illisible")
+		t.Fatal("expected an error for an unreadable stack")
 	}
-	if strings.Contains(err.Error(), "introuvable") {
-		t.Errorf("erreur = %q : la stack existe, elle est illisible", err.Error())
+	if strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q: the stack exists, it's unreadable", err.Error())
 	}
-	if !strings.Contains(err.Error(), "lecture") {
-		t.Errorf("erreur = %q, attendu un message d'erreur de lecture", err.Error())
+	if !strings.Contains(err.Error(), "read") {
+		t.Errorf("error = %q, expected a read-error message", err.Error())
 	}
 }
 
-func TestLoadStackRefuseUnNomQuiSortDeDenHome(t *testing.T) {
-	racine := t.TempDir()
-	denHome := filepath.Join(racine, "home")
-	// Une stack parfaitement valide, mais HORS du den home.
-	ecrisStack(t, racine, "dehors", "image: dehors:v1\n")
+func TestLoadStackRejectsANameThatEscapesDenHome(t *testing.T) {
+	root := t.TempDir()
+	denHome := filepath.Join(root, "home")
+	// A perfectly valid stack, but OUTSIDE the den home.
+	writeStack(t, root, "outside", "image: outside:v1\n")
 
-	// <denHome>/stacks/../../stacks/dehors == <racine>/stacks/dehors
-	if _, err := LoadStack(denHome, "../../stacks/dehors"); err == nil {
-		t.Error("LoadStack a chargé une stack située hors du den home")
+	// <denHome>/stacks/../../stacks/outside == <root>/stacks/outside
+	if _, err := LoadStack(denHome, "../../stacks/outside"); err == nil {
+		t.Error("LoadStack loaded a stack located outside the den home")
 	}
 	if _, err := LoadStack(denHome, ".."); err == nil {
-		t.Error("LoadStack(\"..\") = nil, attendu un rejet")
+		t.Error(`LoadStack("..") = nil, want a rejection`)
 	}
 }
 
-func TestLoadStacksToutes(t *testing.T) {
+func TestLoadStacksAll(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
-	ecrisStack(t, denHome, "dgdevx", "image: dgdevx:v1\nparent: devx\n")
-	// un dossier sans stack.yaml doit être ignoré silencieusement, pas planter
-	if err := os.MkdirAll(filepath.Join(denHome, "stacks", "brouillon"), 0o755); err != nil {
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "dgdevx", "image: dgdevx:v1\nparent: devx\n")
+	// a directory without a stack.yaml must be silently ignored, not crash
+	if err := os.MkdirAll(filepath.Join(denHome, "stacks", "draft"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	stacks, err := LoadStacks(denHome)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(stacks.Saines) != 2 {
-		t.Fatalf("attendu 2 stacks, obtenu %d : %v", len(stacks.Saines), stacks.Saines)
+	if len(stacks.Healthy) != 2 {
+		t.Fatalf("expected 2 stacks, got %d: %v", len(stacks.Healthy), stacks.Healthy)
 	}
-	if stacks.Saines["dgdevx"].Parent != "devx" {
-		t.Errorf("parent de dgdevx = %q", stacks.Saines["dgdevx"].Parent)
+	if stacks.Healthy["dgdevx"].Parent != "devx" {
+		t.Errorf("parent of dgdevx = %q", stacks.Healthy["dgdevx"].Parent)
 	}
 }
 
-func TestLoadStacksDossierAbsent(t *testing.T) {
-	// Pas de dossier stacks/ : ce n'est pas une erreur, c'est un den vide.
+func TestLoadStacksMissingDirectory(t *testing.T) {
+	// No stacks/ directory: not an error, just an empty den.
 	stacks, err := LoadStacks(t.TempDir())
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(stacks.Saines) != 0 {
-		t.Errorf("attendu 0 stack, obtenu %d", len(stacks.Saines))
+	if len(stacks.Healthy) != 0 {
+		t.Errorf("expected 0 stacks, got %d", len(stacks.Healthy))
 	}
 }
 
-func TestLoadStackResoutLesKitsTransverses(t *testing.T) {
+func TestLoadStackResolvesCrossCuttingKits(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", `image: devx:v1
+	writeStack(t, denHome, "devx", `image: devx:v1
 kit: ./kit
 kits:
   - ../../kits/ssh-known-hosts
-  - /absolu/deja
+  - /already/absolute
 `)
 
 	s, err := LoadStack(denHome, "devx")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	attendus := []string{
+	want := []string{
 		filepath.Join(denHome, "kits", "ssh-known-hosts"),
-		"/absolu/deja",
+		"/already/absolute",
 	}
-	if len(s.Kits) != len(attendus) {
-		t.Fatalf("Kits = %v, attendu %d entrées", s.Kits, len(attendus))
+	if len(s.Kits) != len(want) {
+		t.Fatalf("Kits = %v, want %d entries", s.Kits, len(want))
 	}
-	for i, a := range attendus {
+	for i, a := range want {
 		if s.Kits[i] != a {
-			t.Errorf("Kits[%d] = %q, attendu %q", i, s.Kits[i], a)
+			t.Errorf("Kits[%d] = %q, want %q", i, s.Kits[i], a)
 		}
 	}
 }
 
-// L'ordre est un ordre de LAYERING : le trier casserait la sémantique.
-func TestLoadStackPreserveLOrdreDesKits(t *testing.T) {
+// The order is a LAYERING order: sorting it would break the semantics.
+func TestLoadStackPreservesKitOrder(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", `image: devx:v1
+	writeStack(t, denHome, "devx", `image: devx:v1
 kits: [./z-dernier, ./a-premier]
 `)
 
 	s, err := LoadStack(denHome, "devx")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if filepath.Base(s.Kits[0]) != "z-dernier" || filepath.Base(s.Kits[1]) != "a-premier" {
-		t.Errorf("l'ordre déclaré doit être préservé ; obtenu %v", s.Kits)
+		t.Errorf("the declared order must be preserved; got %v", s.Kits)
 	}
 }
 
-// KitsDeclares est la SOURCE UNIQUE de « quels kits, dans quel ordre » :
-// doctor et le chemin de spawn la consomment tous deux. Ses deux propriétés
-// sont donc testées ici, à la source, et non deux fois chez les consommateurs.
-func TestStackKitsDeclares(t *testing.T) {
-	cas := []struct {
-		nom     string
-		stack   Stack
-		attendu []string
+// DeclaredKits is the SOLE SOURCE of "which kits, in what order": both
+// doctor and the spawn path consume it. Its two properties are therefore
+// tested here, at the source, not twice at the consumers.
+func TestStackDeclaredKits(t *testing.T) {
+	cases := []struct {
+		name  string
+		stack Stack
+		want  []string
 	}{
 		{
-			// L'ordre de LAYERING : `kits:` (transverses) puis `kit:`. Le
-			// mixin est ajouté après par sbx.ArgvCreate et doit rester dernier.
-			"ordre de layering : kits: puis kit:",
-			Stack{Kits: []string{"/k/transverse", "/k/autre"}, Kit: "/k/devx"},
-			[]string{"/k/transverse", "/k/autre", "/k/devx"},
+			// The LAYERING order: `kits:` (cross-cutting) then `kit:`. The
+			// mixin is appended afterward by sbx.CreateArgv and must stay last.
+			"layering order: kits: then kit:",
+			Stack{Kits: []string{"/k/transverse", "/k/other"}, Kit: "/k/devx"},
+			[]string{"/k/transverse", "/k/other", "/k/devx"},
 		},
 		{
-			// La dette du fix round 2 : le filtre ne portait que sur le `kit:`
-			// singulier, jamais sur une entrée vide DANS `kits:`.
-			"entree vide dans kits: (pluriel)",
+			// The round-2 fix's regression: the filter only covered the
+			// singular `kit:`, never an empty entry INSIDE `kits:`.
+			"empty entry in kits: (plural)",
 			Stack{Kits: []string{"", "/k/transverse", ""}, Kit: "/k/devx"},
 			[]string{"/k/transverse", "/k/devx"},
 		},
 		{
-			"kit: singulier vide",
+			"singular kit: empty",
 			Stack{Kits: []string{"/k/transverse"}, Kit: ""},
 			[]string{"/k/transverse"},
 		},
 		{
-			// Une stack sans kit est valide (spec §4.2) : liste vide, pas nil
-			// piégeux ni entrée fantôme.
-			"aucun kit declare",
+			// A stack without a kit is valid (spec §4.2): an empty slice, not
+			// a tricky nil nor a phantom entry.
+			"no kit declared",
 			Stack{},
 			[]string{},
 		},
 		{
-			"que des entrees vides",
+			"only empty entries",
 			Stack{Kits: []string{"", ""}, Kit: ""},
 			[]string{},
 		},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			obtenu := c.stack.KitsDeclares()
-			if !slices.Equal(obtenu, c.attendu) {
-				t.Errorf("KitsDeclares() = %v, attendu %v", obtenu, c.attendu)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := c.stack.DeclaredKits()
+			if !slices.Equal(got, c.want) {
+				t.Errorf("DeclaredKits() = %v, want %v", got, c.want)
 			}
 		})
 	}
 }
 
-// KitsDeclares ne doit pas écrire dans la stack qu'elle lit : elle est appelée
-// deux fois sur le chemin de spawn (contrôle d'existence, puis argv), et un
-// aliasing du slice sous-jacent ferait diverger le second appel du premier.
-func TestStackKitsDeclaresNeModifiePasLaStack(t *testing.T) {
+// DeclaredKits must not write into the stack it reads: it's called twice on
+// the spawn path (existence check, then argv), and aliasing the underlying
+// slice would make the second call diverge from the first.
+func TestStackDeclaredKitsDoesNotMutateTheStack(t *testing.T) {
 	s := Stack{Kits: []string{"/k/a", "/k/b"}, Kit: "/k/c"}
-	premier := s.KitsDeclares()
-	premier[0] = "/k/ECRASE"
+	first := s.DeclaredKits()
+	first[0] = "/k/OVERWRITTEN"
 
 	if !slices.Equal(s.Kits, []string{"/k/a", "/k/b"}) {
-		t.Errorf("Kits modifiée par l'appelant : %v", s.Kits)
+		t.Errorf("Kits mutated by the caller: %v", s.Kits)
 	}
-	if second := s.KitsDeclares(); !slices.Equal(second, []string{"/k/a", "/k/b", "/k/c"}) {
-		t.Errorf("second appel = %v, attendu identique au premier", second)
+	if second := s.DeclaredKits(); !slices.Equal(second, []string{"/k/a", "/k/b", "/k/c"}) {
+		t.Errorf("second call = %v, want identical to the first", second)
 	}
 }
 
-func TestLoadStackSansKits(t *testing.T) {
+func TestLoadStackWithoutKits(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
 
 	s, err := LoadStack(denHome, "devx")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(s.Kits) != 0 {
-		t.Errorf("Kits = %v, attendu vide", s.Kits)
+		t.Errorf("Kits = %v, want empty", s.Kits)
 	}
 }
 
-// Une stack cassée ne masque PAS les stacks saines — 16ᵉ configuration hostile,
-// trouvée en exerçant le binaire assemblé (tâche 17c).
+// A broken stack does NOT hide the healthy stacks.
 //
-// Avant, LoadStack échouait et LoadStacks propageait l'erreur en bloc : une
-// faute de frappe dans une stack que PERSONNE n'utilise faisait échouer
-// `den <nest>` et `den nest show` sur un nest référençant une stack saine.
-// C'est la doctrine que ListNests applique aux nests depuis T16 ; elle
-// n'avait jamais été appliquée aux stacks.
-func TestLoadStacksUneStackCasseeNeMasquePasLesSaines(t *testing.T) {
+// Before this, LoadStack would fail and LoadStacks would propagate the error
+// in bulk: a typo in a stack nobody uses would fail `den <nest>` and
+// `den nest show` on a nest referencing a perfectly healthy stack. This is
+// the same doctrine ListNests applies to nests.
+func TestLoadStacksABrokenStackDoesNotHideTheHealthyOnes(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
-	ecrisStack(t, denHome, "autre", "image: autre:v1\nimag: faute-de-frappe\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "other", "image: other:v1\nimag: typo\n")
 
 	stacks, err := LoadStacks(denHome)
 	if err != nil {
-		t.Fatalf("une stack cassée ne doit pas faire échouer le chargement : %v", err)
+		t.Fatalf("a broken stack must not fail the load: %v", err)
 	}
-	if stacks.Saines["devx"] == nil {
-		t.Fatalf("la stack saine devx a disparu ; saines = %v", stacks.Noms())
+	if stacks.Healthy["devx"] == nil {
+		t.Fatalf("the healthy stack devx has disappeared; healthy = %v", stacks.Names())
 	}
-	if len(stacks.Cassees) != 1 || stacks.Cassees[0].Nom != "autre" {
-		t.Fatalf("attendu exactement la stack « autre » en cassée ; obtenu %+v", stacks.Cassees)
+	if len(stacks.Broken) != 1 || stacks.Broken[0].Name != "other" {
+		t.Fatalf("expected exactly the stack \"other\" as broken; got %+v", stacks.Broken)
 	}
-	// La cause reste attachée : sans elle, doctor ne pourrait dire QUE réparer.
-	if !strings.Contains(stacks.Cassees[0].Err.Error(), "imag") {
-		t.Errorf("l'erreur de la stack cassée doit nommer la clé fautive ; obtenu : %v",
-			stacks.Cassees[0].Err)
+	// The cause stays attached: without it, doctor couldn't say WHAT to fix.
+	if !strings.Contains(stacks.Broken[0].Err.Error(), "imag") {
+		t.Errorf("the broken stack's error must name the offending key; got: %v",
+			stacks.Broken[0].Err)
 	}
-	// Et une stack cassée n'est PAS déclarée saine : sans quoi le spawn la
-	// prendrait pour bonne et partirait avec une Stack à zéro (image vide).
-	if _, ok := stacks.Saines["autre"]; ok {
-		t.Error("une stack cassée ne doit pas figurer parmi les saines")
+	// And a broken stack is NOT marked healthy: otherwise spawn would take it
+	// for good and proceed with a zero-value Stack (empty image).
+	if _, ok := stacks.Healthy["other"]; ok {
+		t.Error("a broken stack must not appear among the healthy ones")
 	}
 }
 
-// Get doit dire LAQUELLE des deux situations se présente : « illisible » et
-// « introuvable » ne se réparent pas pareil. Répondre « introuvable » d'une
-// stack qui existe enverrait l'utilisateur créer un fichier qu'il a déjà.
-func TestStacksGetDistingueIllisibleDeAbsente(t *testing.T) {
+// Get must say WHICH of the two situations applies: "unreadable" and "not
+// found" don't get fixed the same way. Answering "not found" for a stack that
+// exists would send the user to create a file they already have.
+func TestStacksGetDistinguishesUnreadableFromMissing(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
-	ecrisStack(t, denHome, "autre", "image: autre:v1\nimag: faute\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "other", "image: other:v1\nimag: typo\n")
 	stacks, err := LoadStacks(denHome)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := stacks.Get("devx"); err != nil {
-		t.Errorf("une stack saine doit se résoudre : %v", err)
+		t.Errorf("a healthy stack must resolve: %v", err)
 	}
 
-	_, errCassee := stacks.Get("autre")
-	if errCassee == nil {
-		t.Fatal("une stack cassée ne doit pas se résoudre")
+	_, errBroken := stacks.Get("other")
+	if errBroken == nil {
+		t.Fatal("a broken stack must not resolve")
 	}
-	if !strings.Contains(errCassee.Error(), "illisible") {
-		t.Errorf("stack cassée : le message doit dire « illisible », pas « introuvable » ; obtenu : %v", errCassee)
+	if !strings.Contains(errBroken.Error(), "unreadable") {
+		t.Errorf("broken stack: message must say \"unreadable\", not \"not found\"; got: %v", errBroken)
 	}
 
-	_, errAbsente := stacks.Get("jamais-declaree")
-	if errAbsente == nil {
-		t.Fatal("une stack absente ne doit pas se résoudre")
+	_, errMissing := stacks.Get("never-declared")
+	if errMissing == nil {
+		t.Fatal("a missing stack must not resolve")
 	}
-	if !strings.Contains(errAbsente.Error(), "introuvable") {
-		t.Errorf("stack absente : le message doit dire « introuvable » ; obtenu : %v", errAbsente)
+	if !strings.Contains(errMissing.Error(), "not found") {
+		t.Errorf("missing stack: message must say \"not found\"; got: %v", errMissing)
 	}
-	// Les stacks proposées sont les SAINES : proposer une stack cassée comme
-	// solution de repli enverrait droit dans le mur.
-	if strings.Contains(errAbsente.Error(), "autre") {
-		t.Errorf("la liste des stacks déclarées ne doit proposer que des stacks saines ; obtenu : %v", errAbsente)
+	// The suggested stacks are the HEALTHY ones: proposing a broken stack as
+	// a fallback would send the user straight into a wall.
+	if strings.Contains(errMissing.Error(), "other") {
+		t.Errorf("the list of declared stacks must only propose healthy stacks; got: %v", errMissing)
 	}
 }
 
-// Le dossier des stacks n'a de valeur que sur « introuvable », et il doit
-// atterrir sur la BONNE ligne.
+// The stacks directory only has value on "not found", and it must land on
+// the RIGHT line.
 //
-// L'erreur de yaml.v3 est multi-ligne. Coller « (dans <D>/stacks) » derrière
-// elle — ce que faisait l'appelant — produisait, mesuré :
-//
-//	stack "devx" : illisible : <D>/stacks/devx/stack.yaml : YAML invalide : yaml: unmarshal errors:
-//	  line 2: clé inconnue "imag" (dans <D>/stacks)
-//
-// qui se lit comme si « line 2 » se trouvait dans <D>/stacks. Le suffixe y est
-// de surcroît REDONDANT : le chemin complet du stack.yaml fautif est déjà cité
-// deux lignes plus haut. Sur « introuvable », au contraire, il est la seule
-// indication de l'endroit où créer la stack manquante.
-func TestStacksGetNeSitueQueLesStacksIntrouvables(t *testing.T) {
+// yaml.v3's error is multi-line. Appending "(in <D>/stacks)" behind it — what
+// the caller used to do — reads as if "line 2" were located inside
+// <D>/stacks, and is redundant besides: the broken stack.yaml's full path is
+// already cited two lines above. On "not found", by contrast, it's the only
+// indication of where to create the missing stack.
+func TestStacksGetOnlyLocatesMissingStacks(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisStack(t, denHome, "devx", "image: devx:v1\nimag: faute\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\nimag: typo\n")
 	stacks, err := LoadStacks(denHome)
 	if err != nil {
 		t.Fatal(err)
 	}
-	racine := filepath.Join(denHome, "stacks")
+	root := filepath.Join(denHome, "stacks")
 
-	// Cassée : le stack.yaml fautif est déjà nommé, rien ne doit être ajouté
-	// après le diagnostic multi-ligne de yaml.v3.
-	_, errCassee := stacks.Get("devx")
-	if errCassee == nil {
-		t.Fatal("une stack cassée ne doit pas se résoudre")
+	// Broken: the offending stack.yaml is already named, nothing should be
+	// appended after yaml.v3's multi-line diagnostic.
+	_, errBroken := stacks.Get("devx")
+	if errBroken == nil {
+		t.Fatal("a broken stack must not resolve")
 	}
-	if strings.Contains(errCassee.Error(), racine+")") {
-		t.Errorf("le dossier des stacks est collé derrière une erreur YAML multi-ligne, "+
-			"où il se lit comme la localisation de la dernière ligne ; obtenu :\n%s", errCassee)
+	if strings.Contains(errBroken.Error(), root+")") {
+		t.Errorf("the stacks directory is appended behind a multi-line YAML error, "+
+			"where it reads as the location of the last line; got:\n%s", errBroken)
 	}
-	// Le chemin du fichier fautif, lui, doit bien y être.
-	if !strings.Contains(errCassee.Error(), filepath.Join(racine, "devx", "stack.yaml")) {
-		t.Errorf("le message doit nommer le stack.yaml fautif ; obtenu : %s", errCassee)
+	// The offending file's path, though, must indeed be there.
+	if !strings.Contains(errBroken.Error(), filepath.Join(root, "devx", "stack.yaml")) {
+		t.Errorf("message must name the offending stack.yaml; got: %s", errBroken)
 	}
 
-	// Introuvable : là, le dossier est la seule indication utile.
-	_, errAbsente := stacks.Get("jamais-declaree")
-	if errAbsente == nil {
-		t.Fatal("une stack absente ne doit pas se résoudre")
+	// Missing: there, the directory is the only useful indication.
+	_, errMissing := stacks.Get("never-declared")
+	if errMissing == nil {
+		t.Fatal("a missing stack must not resolve")
 	}
-	if !strings.Contains(errAbsente.Error(), racine) {
-		t.Errorf("le message doit dire OÙ la stack est attendue ; obtenu : %s", errAbsente)
+	if !strings.Contains(errMissing.Error(), root) {
+		t.Errorf("message must say WHERE the stack is expected; got: %s", errMissing)
 	}
 }
