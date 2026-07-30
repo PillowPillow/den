@@ -1,4 +1,10 @@
 {
+  "env": {
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_FORK_SUBAGENT": "1",
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "2"
+  },
   "extraKnownMarketplaces": {
     "greatkit": {
       "source": {
@@ -7,7 +13,11 @@
       }
     }
   },
+  "sandbox": {
+    "enabled": false
+  },
   "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
     "greatkit@greatkit": true
   }
 }
