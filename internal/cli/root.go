@@ -31,6 +31,11 @@ type Deps struct {
 	// tests, which build Deps by hand, leave it nil and skip the real ssh-add —
 	// keeping them owing nothing to the machine, exactly as they do for Git.
 	SSHAgent func() sshagent.Result
+	// IsTTY reports whether den's input is a terminal, for the `-i` checklist.
+	// Injected here for the same reason as SSHAgent: the wiring tests build
+	// Deps by hand, leave it nil, and `-i` then takes its clean refusal instead
+	// of depending on whether the suite happens to run under a terminal.
+	IsTTY func() bool
 }
 
 // SystemDeps wires the real system accesses: sbx from PATH, real git, the
@@ -42,6 +47,7 @@ func SystemDeps() Deps {
 		Git:      worktree.NewGit(),
 		Policy:   policy.DefaultOptions(),
 		SSHAgent: sshagent.System(),
+		IsTTY:    spawn.StdinIsTerminal,
 	}
 }
 
@@ -102,6 +108,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 		Git:      deps.Git,
 		Policy:   deps.Policy,
 		SSHAgent: deps.SSHAgent,
+		IsTTY:    deps.IsTTY,
 		// The real OS, named at the wiring site like every other system access:
 		// spawn has no SystemDeps constructor to hold it (see spawn.Deps), and a
 		// field left implicit here is a dependency the reader has to hunt for.

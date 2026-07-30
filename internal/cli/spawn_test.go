@@ -382,3 +382,89 @@ func TestDetachReachesSpawnOptions(t *testing.T) {
 		t.Errorf("without --detach, an attach must happen; attaches: %v", fWithout.Attaches)
 	}
 }
+
+// denHomeWithOptionalRepo: a spawnable den home whose nest declares one
+// required repo and one optional one — the shape `-i` exists for.
+func denHomeWithOptionalRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	api := filepath.Join(root, "api")
+	docs := filepath.Join(root, "docs")
+	for _, p := range []string{api, docs} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := denHomeFor(t, api)
+	writeUnder(t, dir, "nests/api.yaml",
+		"stack: devx\nrepos:\n  - { path: "+api+" }\n  - { path: "+docs+", optional: true }\n")
+	return dir
+}
+
+// runSpawnWithInput is runSpawn with a stdin the test controls: `-i` is the
+// only flag whose behavior depends on what cobra hands down as the command's
+// input.
+func runSpawnWithInput(t *testing.T, home string, deps spawn.Deps, input string, args ...string) (string, error) {
+	t.Helper()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	configureSpawn(root, &home, deps)
+	root.SetIn(strings.NewReader(input))
+	return executeCmd(t, root, args...)
+}
+
+// -i must reach spawn.Options. Proven by the contradiction it is the only
+// thing that can raise: unwired, the flag falls back to false and the spawn
+// succeeds on `--only docs` alone.
+func TestInteractiveFlagReachesSpawnOptions(t *testing.T) {
+	for _, name := range []string{"-i", "--interactive"} {
+		t.Run(name, func(t *testing.T) {
+			_, d := fakeSpawnDeps()
+
+			_, err := runSpawn(t, denHomeWithOptionalRepo(t), d, "api", name, "--only", "docs")
+			if err == nil {
+				t.Fatal("-i together with --only must be refused: the flag did not reach spawn.Options")
+			}
+			if !strings.Contains(err.Error(), "--only") {
+				t.Errorf("the refusal must name the flag in play: %v", err)
+			}
+		})
+	}
+}
+
+// The checklist reads the COMMAND's input, not os.Stdin: that is what makes it
+// scriptable in a test, and what makes cobra's SetIn meaningful here.
+func TestInteractiveReadsTheCommandInput(t *testing.T) {
+	f, d := fakeSpawnDeps()
+	d.IsTTY = func() bool { return true }
+
+	out, err := runSpawnWithInput(t, denHomeWithOptionalRepo(t), d, "1\n\n", "api", "-i")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "docs") {
+		t.Errorf("the checklist must be printed on the command's output:\n%s", out)
+	}
+	// "docs" unchecked: it must not be among the workspaces of the create.
+	for _, call := range f.Calls {
+		for _, arg := range call {
+			if strings.HasSuffix(arg, "/docs") {
+				t.Errorf("the unchecked repo must not be mounted; call: %v", call)
+			}
+		}
+	}
+}
+
+// Without an injected probe, `-i` refuses instead of reading a stream nobody
+// types into — the wiring tests build Deps by hand and must owe nothing to the
+// machine running them.
+func TestInteractiveRefusesWithoutATerminalProbe(t *testing.T) {
+	_, d := fakeSpawnDeps()
+
+	_, err := runSpawnWithInput(t, denHomeWithOptionalRepo(t), d, "\n", "api", "-i")
+	if err == nil {
+		t.Fatal("-i without a terminal probe must be refused")
+	}
+	if !strings.Contains(err.Error(), "--without") {
+		t.Errorf("the refusal must name the non-interactive equivalents: %v", err)
+	}
+}

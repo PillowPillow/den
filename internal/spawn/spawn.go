@@ -50,6 +50,21 @@ type Deps struct {
 	//
 	// Defaults to io.Discard when unset.
 	Err io.Writer
+	// In is what the `-i` checklist reads. Injected like every other side
+	// effect of this package, so the selection is exercised without a tty
+	// (interactive_test.go feeds it a strings.Reader).
+	//
+	// Only `-i` reads it: every other path of Spawn leaves it untouched, which
+	// is why the dozens of hand-built Deps in this package can keep ignoring it.
+	In io.Reader
+	// IsTTY reports whether In is a terminal, and is the ONE thing about `-i`
+	// no test covers — isolated into a one-liner (StdinIsTerminal) precisely so
+	// that it, and not the selection logic, is what stays untested.
+	//
+	// Nil means NO terminal, deliberately: an unwired probe must take `-i`'s
+	// clean refusal — which names --only/--without — rather than let the spawn
+	// block on a read nobody will answer.
+	IsTTY func() bool
 	// SSHAgent reports the state of the forwarded SSH agent. Injected, and
 	// nil-tolerant: a nil probe (every test that doesn't exercise SSH, plus the
 	// wiring double) simply skips the warning rather than reaching for a real
@@ -89,6 +104,9 @@ type Options struct {
 	Without  []string
 	Only     []string
 	Detach   bool
+	// Interactive is `-i`: pick the nest's optional repos from a checklist
+	// instead of naming them on the command line.
+	Interactive bool
 }
 
 // Spawn runs the spec §6 sequence in order: resolve → select repos →
@@ -113,6 +131,22 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		d.Err = io.Discard
 	}
 
+	// 0. A contradiction on the command line, refused before anything is read:
+	// `-i` and `--only`/`--without` are two answers to the same question.
+	//
+	// Refusing is the only one of the three possible readings a user cannot
+	// misinterpret — taking the flags as the checklist's initial state, or
+	// letting them win and ignoring `-i`, both leave someone convinced they
+	// selected something they did not. The repo already refuses rather than
+	// normalizing in silence (spec §2).
+	if o.Interactive {
+		if conflicting := selectionFlagsInPlay(o); conflicting != "" {
+			return fmt.Errorf(
+				"-i and %s both select repos, and they contradict each other — drop one: "+
+					"%s is the non-interactive form of the checklist", conflicting, conflicting)
+		}
+	}
+
 	// 1. Resolve the cascade.
 	g, err := config.LoadGlobal(denHome)
 	if err != nil {
@@ -126,8 +160,17 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	if err != nil {
 		return err
 	}
+	// `-i` feeds the SAME input as `--without`, and nothing more: the checklist
+	// is a source of input placed in front of a selection rule that already
+	// exists and is already tested (nest.Resolve). Nothing here reopens it.
+	without := o.Without
+	if o.Interactive {
+		if without, err = interactiveWithout(d, n); err != nil {
+			return err
+		}
+	}
 	r, err := nest.Resolve(denHome, g, stacks, n, nest.Options{
-		Agent: o.Agent, Without: o.Without, Only: o.Only,
+		Agent: o.Agent, Without: without, Only: o.Only,
 	})
 	if err != nil {
 		return err
