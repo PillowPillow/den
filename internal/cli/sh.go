@@ -2,17 +2,30 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
+	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
+	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/spf13/cobra"
 )
 
 // newShCmd opens a shell in an already live sandbox.
 //
-// No den home is read: `den sh` works ONLY on what `sbx ls --json` reports, so
-// a broken ~/.den never costs the user their shell.
-func newShCmd(runner sbx.Runner) *cobra.Command {
+// What `den sh` DECIDES comes only from what `sbx ls --json` reports: the den
+// home is read for exactly one advisory purpose — ssh.mode, for the empty-agent
+// warning below — and every failure to read it is swallowed, so a broken ~/.den
+// still never costs the user their shell.
+//
+// denHome is a POINTER for the reason newRmCmd's is: --den-home is a persistent
+// flag, and its value only exists once cobra has parsed it, after this
+// constructor has returned.
+//
+// goos names the OS whose ssh-agent remedy the warning quotes. Threaded from
+// the wiring site like spawn.Deps.GOOS rather than read here from runtime.GOOS:
+// den's convention is that system access is named where the tree is assembled.
+func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Result, goos string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "sh <name>",
 		Short: "Open a shell in an existing sandbox",
@@ -34,6 +47,10 @@ func newShCmd(runner sbx.Runner) *cobra.Command {
 					fmt.Fprintf(cmd.OutOrStdout(),
 						"sandbox %s is stopped: it restarts on attach (its state is kept)\n", b.Name)
 				}
+				// Before the attach, never after: once the shell has the terminal,
+				// a warning printed behind it is a line the user scrolls past on
+				// the way out.
+				warnEmptyAgentOnReentry(cmd, denHome, sshAgent, goos)
 				// The workdir comes from the first workspace REPORTED BY THE VM,
 				// never from a path recomputed from the config: without it the
 				// user lands in the VM's home, not in their code.
@@ -47,4 +64,50 @@ func newShCmd(runner sbx.Runner) *cobra.Command {
 			return fmt.Errorf("sandbox %q not found (live: %v)", name, names)
 		},
 	}
+}
+
+// warnEmptyAgentOnReentry warns, on the command's stderr, when the sandbox the
+// user is about to re-enter would inherit an SSH agent holding no key.
+//
+// Why `den sh` warns at all: `spawn.WarnEmptySSHAgentOnReentry` holds that
+// argument, and the divergence from `den <nest>`'s preflight (an absent socket
+// says nothing here) with it. This function is the part that belongs to the
+// CLI: finding ssh.mode without letting the search cost anything.
+//
+// Hence errors are swallowed, all of them, and nothing here can fail the
+// command. `den sh`'s contract is that a broken den home never stands between
+// the user and a live sandbox, and a warning is advisory — so between the two,
+// the warning is what gives way. Silently: a "den could not read your config"
+// line on a command that reads it only to decide whether to say something else
+// would report den's plumbing as if it were the user's problem.
+//
+// LoadGlobal, not LoadGlobalUnvalidated: the latter is reserved for `den doctor`
+// (config.go), which needs to accumulate faults rather than stop at the first.
+// The consequence is accepted — an inconsistency elsewhere in config.yaml
+// silences this warning — because `den doctor` is the surface that names it, and
+// it names the agent too.
+//
+// The mode comes from the GLOBAL config, which is where the only ssh.mode den
+// has lives: nest.Resolve copies g.SSH.Mode verbatim (resolve.go), so no nest
+// can override it and `den sh`, which knows no nest, loses nothing by not
+// asking one.
+func warnEmptyAgentOnReentry(cmd *cobra.Command, denHome *string, sshAgent func() sshagent.Result, goos string) {
+	// A nil probe is the one case that needs no config at all: the probe is the
+	// only thing that can produce a verdict here, so with none there is nothing
+	// for a den home to be read FOR. (The tolerance itself lives in
+	// spawn.warnEmptySSHAgent — this is only about not working for nothing, and
+	// it is what keeps cli's own wiring tests off the machine's ~/.den.)
+	if sshAgent == nil {
+		return
+	}
+	home, err := config.Home(*denHome)
+	if err != nil {
+		return
+	}
+	g, err := config.LoadGlobal(home)
+	if err != nil {
+		return
+	}
+	spawn.WarnEmptySSHAgentOnReentry(cmd.ErrOrStderr(), g.SSH.Mode,
+		os.Getenv("SSH_AUTH_SOCK"), sshAgent, goos)
 }

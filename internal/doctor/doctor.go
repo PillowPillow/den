@@ -289,12 +289,19 @@ func Run(denHome string, d Deps) []Check {
 		socket := d.Getenv("SSH_AUTH_SOCK")
 		switch {
 		case socket == "":
+			// The load command comes from FixCommand, like the two branches below,
+			// and is NOT spelled out here: hardcoded, this was the one warning of
+			// the three that printed the bare `ssh-add` on darwin — the OS
+			// inconsistency the rest of this check exists to remove, surviving in
+			// the branch nobody had templated. `eval $(ssh-agent)` stays literal:
+			// starting an agent is the same command everywhere, only loading keys
+			// into it differs per OS.
 			warn("ssh.mode",
 				"agent-forward, but SSH_AUTH_SOCK is absent or empty in den's environment: "+
 					"there is no SSH agent to forward, sandboxes will have no SSH access "+
 					"and `git push` will fail from the VM, far from the cause — start an agent "+
-					"(`eval $(ssh-agent)` then `ssh-add`), or set `ssh.mode` to \"mount\" in %s",
-				config.GlobalPath(denHome))
+					"(`eval $(ssh-agent)` then `%s`), or set `ssh.mode` to \"mount\" in %s — %s",
+				sshagent.FixCommand(d.goos()), config.GlobalPath(denHome), sshagent.KeyNameCaveat)
 		default:
 			// Socket present: the old check stopped here and called it OK, blind
 			// to a forwarded agent that is empty or dead. Interrogate it — the
@@ -311,15 +318,16 @@ func Run(denHome string, d Deps) []Check {
 				warn("ssh.mode",
 					"agent-forward, but the agent at SSH_AUTH_SOCK=%s holds no identity: sandboxes "+
 						"inherit an empty agent and are denied SSH access (publickey), so `git push` "+
-						"fails from the VM far from the cause — load a key with `%s`",
-					socket, sshagent.FixCommand(d.goos()))
+						"fails from the VM far from the cause — load a key with `%s` — %s",
+					socket, sshagent.FixCommand(d.goos()), sshagent.KeyNameCaveat)
 			case sshagent.StateUnreachable:
 				warn("ssh.mode",
 					"agent-forward, but SSH_AUTH_SOCK=%s points at an unreachable agent (dead socket, "+
 						"no agent running, or ssh-add absent from PATH): sandboxes will have no SSH "+
 						"access and `git push` fails from the VM — start an agent and load a key with "+
-						"`%s`, or set `ssh.mode` to \"mount\" in %s",
-					socket, sshagent.FixCommand(d.goos()), config.GlobalPath(denHome))
+						"`%s`, or set `ssh.mode` to \"mount\" in %s — %s",
+					socket, sshagent.FixCommand(d.goos()), config.GlobalPath(denHome),
+					sshagent.KeyNameCaveat)
 			default:
 				// Without this arm, a State this switch doesn't model emitted NO
 				// ssh.mode line at all: `den doctor` stayed silent about the agent,

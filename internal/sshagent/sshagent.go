@@ -227,9 +227,59 @@ func System() func() Result {
 //
 // goos is a parameter, not a direct runtime.GOOS read, so each branch is
 // assertable in a test regardless of where it runs.
+//
+// TWO LIMITS OF THIS COMMAND, both decided rather than overlooked, because a
+// remedy den prints must not be read as a promise it does not make:
+//
+// macOS BEFORE 12 (Monterey) spells the flag `-K`; `--apple-use-keychain` is
+// the name Apple introduced with 12 and there is deliberately NO version
+// detection. den would have to shell out to sw_vers on the way to printing a
+// HINT — a string the user runs, not one den executes — and on an older macOS
+// the wrong spelling costs an "unknown option" plus ssh-add's own usage line,
+// which names the flag that machine does want. Paying a probe on every warning
+// to spare that, on releases Apple itself stopped updating, is the worse trade.
+// Verified on macOS 26.5.2 / OpenSSH 10.2p1; older macOS was not measurable
+// there, which is why this stays a decision and not a verification.
+//
+// KEYS THAT ARE NOT DEFAULT-NAMED are not loaded by either branch, and that
+// limit does not stay in this comment: it travels to the user, as
+// KeyNameCaveat, in every warning that quotes this command.
 func FixCommand(goos string) string {
 	if goos == "darwin" {
 		return "ssh-add --apple-use-keychain"
 	}
 	return "ssh-add"
 }
+
+// KeyNameCaveat is the sentence that must travel with every FixCommand den
+// prints, and it is what keeps the remedy from being a promise it cannot keep.
+//
+// Bare `ssh-add` — with or without the keychain flag — loads the DEFAULT names
+// only: ~/.ssh/id_rsa, id_ecdsa, id_ed25519 and their siblings. On a host whose
+// real keys are named anything else — a per-forge `id_ed25519_work`, the common
+// shape as soon as someone has more than one remote — the command den suggested
+// exits 0, `ssh-add -l` reports an identity, `den doctor` turns green, and
+// `git push` from the sandbox is still denied on publickey. Measured on the
+// verification machine, where the only default-named key was an `id_rsa` nothing
+// used and every key carrying real traffic was named otherwise: there, this was
+// not the tail case but the dominant one.
+//
+// den cannot name the right file for the user — it does not read
+// ~/.ssh/config's IdentityFile entries, and on that same machine the key in the
+// live agent had no `.pub` to be found by globbing either. So the message says
+// what den does know: which names the command covers, and that anything else has
+// to be passed explicitly.
+//
+// A CONSTANT, not a sentence retyped at each of the six warnings that need it
+// (three in spawn, three in doctor): a caveat pasted six times is a caveat that
+// ends up worded six ways, and the tests assert THIS symbol so a message that
+// drops it fails rather than quietly reverting to the old promise. It carries no
+// `%` verb, so callers concatenate it into a format string as-is.
+//
+// A STANDALONE SENTENCE, appended last, and that shape is the readable one:
+// spliced mid-message it landed inside the existing parenthesis of the
+// absent-socket warnings — a parenthetical holding its own parenthetical, ahead
+// of the clause about `ssh.mode: mount` it had nothing to do with. Rendered by
+// hand through the real binary, which is how that was seen.
+const KeyNameCaveat = "note: only default-named keys (~/.ssh/id_*) are loaded, " +
+	"so a key named otherwise has to be passed explicitly (`ssh-add ~/.ssh/<key>`)"

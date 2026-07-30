@@ -83,7 +83,11 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	root.AddCommand(newNestCmd(&denHome))
 	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor))
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
-	root.AddCommand(newShCmd(deps.Sbx))
+	// `den sh` gets the SSH probe and the OS too: re-entering a sandbox whose
+	// forwarded agent has been emptied fails `git push` exactly as a fresh
+	// `den <nest>` would, and this is the surface that re-enters most often.
+	// runtime.GOOS is named here, at the wiring site, like the spawn's below.
+	root.AddCommand(newShCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS))
 	root.AddCommand(newRmCmd(&denHome, deps.Sbx, deps.Git))
 
 	// spawn.Deps is ASSEMBLED here from the very fields newLsCmd just got:

@@ -707,22 +707,27 @@ func TestRunWarnsWhenTheForwardedAgentIsEmpty(t *testing.T) {
 // only place this suite ever runs. Deps.GOOS puts the choice back under the
 // injection contract, so the exact command a macOS user is told to run is
 // checked here rather than trusted.
-// Both agent-forward warnings quote a fix command, so both are checked: a
-// remedy that only got the OS right on one of the two branches would still
-// mislead half the macOS users who see it.
+// ALL THREE agent-forward warnings quote a fix command, so all three are
+// checked, the absent-socket branch included: a remedy that only got the OS
+// right on some branches would still mislead the macOS users who land on the
+// others. That branch is not hypothetical — it hardcoded the bare form while
+// its two siblings templated theirs through FixCommand, so on darwin one
+// warning out of three printed a command without `--apple-use-keychain`, in
+// the one place nobody had templated.
 func TestRunNamesTheMacOSRemedyWhenGOOSIsDarwin(t *testing.T) {
-	for name, state := range map[string]sshagent.State{
-		"empty":       sshagent.StateEmpty,
-		"unreachable": sshagent.StateUnreachable,
-	} {
+	for name, branch := range agentForwardWarningBranches {
 		t.Run(name, func(t *testing.T) {
 			d := okDeps()
 			d.GOOS = "darwin"
-			d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: state} }
+			branch(&d)
 
 			c, ok := findExactName(Run(validDenHome(t), d), "ssh.mode")
 			if !ok {
 				t.Fatal("no ssh.mode check")
+			}
+			if c.Level != LevelWarning {
+				t.Fatalf("this branch must warn, otherwise the remedy assertion below "+
+					"stops exercising anything; got %+v", c)
 			}
 			if want := sshagent.FixCommand("darwin"); !strings.Contains(c.Detail, want) {
 				t.Errorf("detail = %q, must name the darwin remedy %q in full", c.Detail, want)
@@ -731,24 +736,81 @@ func TestRunNamesTheMacOSRemedyWhenGOOSIsDarwin(t *testing.T) {
 	}
 }
 
+// Every warning that hands the user a load command must also name what that
+// command does NOT load: `ssh-add` reads the default `~/.ssh/id_*` names only,
+// so on a host whose real keys are named otherwise it exits 0, `ssh-add -l`
+// reports an identity, this check turns green — and `git push` from the sandbox
+// stays denied. Measured on the verification machine, where the only
+// default-named key is an `id_rsa` nothing uses.
+//
+// Asserted against the CONSTANT, never a copy of its wording: a caveat the test
+// spells out itself would keep passing after the message stopped saying it.
+func TestRunNamesTheNonDefaultKeyCaveatWhereverItQuotesAFix(t *testing.T) {
+	for name, branch := range agentForwardWarningBranches {
+		t.Run(name, func(t *testing.T) {
+			d := okDeps()
+			branch(&d)
+
+			c, ok := findExactName(Run(validDenHome(t), d), "ssh.mode")
+			if !ok {
+				t.Fatal("no ssh.mode check")
+			}
+			if !strings.Contains(c.Detail, sshagent.KeyNameCaveat) {
+				t.Errorf("detail = %q, must carry the non-default-key caveat %q: the fix it "+
+					"quotes can succeed and still leave `git push` broken",
+					c.Detail, sshagent.KeyNameCaveat)
+			}
+		})
+	}
+}
+
+// The three machine states in which `den doctor` warns about agent-forward AND
+// quotes a command to run — the population the OS-remedy tests must cover in
+// full. Declared once: the darwin assertion and its Linux counterpart have to
+// range over the SAME set, or a branch added to one is left untested by the
+// other.
+//
+// The absent-socket branch is set up by injecting Getenv, not by unsetting the
+// variable: Run reads the socket through Deps, and this suite owes nothing to
+// the machine it runs on.
+var agentForwardWarningBranches = map[string]func(*Deps){
+	"empty": func(d *Deps) {
+		d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+	},
+	"unreachable": func(d *Deps) {
+		d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateUnreachable} }
+	},
+	"socket absent": func(d *Deps) {
+		d.Getenv = func(string) string { return "" }
+	},
+}
+
 // The counterpart, and what makes the test above more than a tautology: on a
 // non-darwin GOOS the keychain flag must NOT appear. Without it, a FixCommand
 // that returned the macOS form everywhere would satisfy the darwin assertion
 // while telling every Linux user to pass a flag their ssh-add rejects.
+//
+// Over the same three branches, for the reason given on
+// agentForwardWarningBranches: the pair only holds if both sides range over the
+// whole population.
 func TestRunOmitsTheMacOSFlagOnLinux(t *testing.T) {
-	d := okDeps()
-	d.GOOS = "linux"
-	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+	for name, branch := range agentForwardWarningBranches {
+		t.Run(name, func(t *testing.T) {
+			d := okDeps()
+			d.GOOS = "linux"
+			branch(&d)
 
-	c, ok := findExactName(Run(validDenHome(t), d), "ssh.mode")
-	if !ok {
-		t.Fatal("no ssh.mode check")
-	}
-	if strings.Contains(c.Detail, "--apple-use-keychain") {
-		t.Errorf("detail = %q, must not hand a Linux user a macOS-only flag", c.Detail)
-	}
-	if !strings.Contains(c.Detail, "ssh-add") {
-		t.Errorf("detail = %q, must still name a concrete fix command", c.Detail)
+			c, ok := findExactName(Run(validDenHome(t), d), "ssh.mode")
+			if !ok {
+				t.Fatal("no ssh.mode check")
+			}
+			if strings.Contains(c.Detail, "--apple-use-keychain") {
+				t.Errorf("detail = %q, must not hand a Linux user a macOS-only flag", c.Detail)
+			}
+			if !strings.Contains(c.Detail, "ssh-add") {
+				t.Errorf("detail = %q, must still name a concrete fix command", c.Detail)
+			}
+		})
 	}
 }
 

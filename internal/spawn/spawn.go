@@ -471,23 +471,76 @@ func warnEmptySSHAgent(w io.Writer, sshMode, socket string, probe func() sshagen
 				"environment — there is no agent to forward, so this sandbox has no SSH access "+
 				"and `git push` fails from inside it; start an agent on the host "+
 				"(`eval $(ssh-agent)` then `%s`) and relaunch den, which forwards the socket at "+
-				"creation time\n", fix)
+				"creation time — %s\n", fix, sshagent.KeyNameCaveat)
 		return
 	}
-	switch probe().State {
+	res := probe()
+	switch res.State {
 	case sshagent.StateEmpty:
 		fmt.Fprintf(w,
 			"warning: ssh.mode agent-forward, but the forwarded SSH agent holds no identity — "+
 				"this sandbox is denied SSH access (publickey) and `git push` fails from inside it; "+
 				"run `%s` on the host (the forwarded socket is a live proxy, so the key takes effect "+
-				"without respawning den)\n", fix)
+				"without respawning den) — %s\n", fix, sshagent.KeyNameCaveat)
 	case sshagent.StateUnreachable:
 		fmt.Fprintf(w,
 			"warning: ssh.mode agent-forward, but SSH_AUTH_SOCK points at an unreachable agent "+
 				"(dead socket, no agent, or ssh-add absent from PATH) — this sandbox has no SSH access "+
 				"and `git push` fails from inside it; start an agent and run `%s` on the host (the "+
-				"forwarded socket is a live proxy, so it takes effect without respawning den)\n", fix)
+				"forwarded socket is a live proxy, so it takes effect without respawning den) — %s\n",
+			fix, sshagent.KeyNameCaveat)
+	case sshagent.StateKeys:
+		// The healthy case, silent — and it has to be NAMED now, not left to fall
+		// off the end of the switch: with a default arm below, that fall-through
+		// became "unrecognized state", i.e. a warning on every spawn with a
+		// perfectly good agent. Measured, by the two tests that assert this
+		// silence.
+	default:
+		// Without this arm a State this switch doesn't model printed NOTHING: the
+		// spawn went silent about the agent, which reads as "nothing to report",
+		// and the check disappearing is worse than any verdict it could give. Same
+		// arm, same reasoning, as doctor.go's — the two surfaces must not diverge
+		// on a state neither of them understands. The value seen is named, so a
+		// state added to sshagent surfaces here instead of deleting the warning.
+		fmt.Fprintf(w,
+			"warning: ssh.mode agent-forward, but the SSH agent probe returned the unrecognized "+
+				"state %d — den cannot tell whether a key will reach this sandbox; check the agent "+
+				"by hand with `ssh-add -l`\n", int(res.State))
 	}
+}
+
+// WarnEmptySSHAgentOnReentry is warnEmptySSHAgent for a command that only
+// RE-ENTERS a sandbox someone else created — `den sh` (cli/sh.go), whose whole
+// contract is that it reads no den home and creates nothing.
+//
+// It exists because the warning is just as true there: the forwarded socket is
+// a live proxy, so re-entering a sandbox whose agent has since been emptied
+// hits the same `git push` failure, just as silently. Without this the warning
+// covered only the FIRST `den <nest>` of the day, while `den sh` — the cheap
+// re-entry, used far more often — said nothing on any OS.
+//
+// The one divergence is the ABSENT socket, and it is why this is a separate
+// entry point rather than a second call to warnEmptySSHAgent: a live sandbox
+// forwards the socket it inherited at its `sbx create`, from an environment
+// that may no longer exist. A shell with no SSH_AUTH_SOCK therefore says
+// nothing about what the VM actually holds, and the preflight's remedy — start
+// an agent, relaunch den, which forwards the socket at creation time — names a
+// step `den sh` does not have. Silence, before the probe: `ssh-add -l` with no
+// socket answers StateUnreachable, whose message would claim SSH_AUTH_SOCK
+// "points at" a dead socket the user never set.
+//
+// What it does NOT try to be: proof about the agent the VM really received.
+// The probe interrogates the agent of the shell running `den sh`, which is the
+// same one on a stable per-user socket (macOS launchd) and can differ from a
+// per-shell `eval $(ssh-agent)` on Linux. That is the same approximation the
+// attach branch of `den <nest>` already makes, and the trade is deliberate: the
+// cost of being wrong is one advisory line suggesting a harmless `ssh-add`, the
+// cost of staying silent is the publickey failure this package exists to name.
+func WarnEmptySSHAgentOnReentry(w io.Writer, sshMode, socket string, probe func() sshagent.Result, goos string) {
+	if socket == "" {
+		return
+	}
+	warnEmptySSHAgent(w, sshMode, socket, probe, goos)
 }
 
 // reportDrift prints what changed between the mixin a sandbox received at
