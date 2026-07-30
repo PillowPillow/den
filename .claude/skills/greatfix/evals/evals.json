@@ -1,0 +1,29 @@
+{
+  "skill_name": "greatfix",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "ok the greatreview on MR 99 came back with 12 Low findings in src/chat/route.ts. I want to actually fix the cheap safe ones now — the two dead interface fields (input?: unknown and data.state on ToolStreamPart) and the breadcrumb naming bug F1 where the resume turn logs tool:'unknown'. do it TDD where it makes sense, run the tests, and then have agents double-check the fixes are correct and follow our conventions. don't commit, I'll review the diff.",
+      "expected_output": "A plan classifying the 3 findings (F1 tdd, F11/F12 apply), a human trim/approve gate, sequential fixes on the CURRENT branch (no new branch or worktree created — the user did not ask for one) with red→green evidence for F1 and typecheck/lint green for the dead-field removals, then a parallel skeptic review per fix + integration sweep, rendered as a remediation report. No commit. Tree left green, changes uncommitted on the branch already checked out.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "I've got a markdown weakness map at /tmp/claude/review.md with about 8 findings from a code review. Can you remediate them with a workflow — fix each one, reproduce with a failing test first when the bug is behavioral, and fan out a review pass afterwards to confirm each fix is right and compliant with the codebase? Branch only, no push.",
+      "expected_output": "Phase 0 parses the markdown file into normalized findings, records the diff base and any pre-dirty files WITHOUT creating a branch (\"branch only\" means no push/commit, not a request for a new branch), runs the plan stage, gates for approval, then runs the execute stage (sequential TDD/apply fixes + parallel review + integration). Renders the remediation report inline; nothing committed.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Run greatfix on the validated findings greatreview just produced for MR 412 in this session — they already carry Impact×Opportunity scores. Fix the fix-now and any Critical/High ones by default, branch only, no commit.",
+      "expected_output": "Phase 0 reads greatreview's validated[] in-session and TRUSTS the inherited score/band — the plan stage spawns ZERO scorer agents. The gate pre-selects fix-now items plus every Critical/High (severity floor), defer items shown unchecked. Sequential fixes on the current branch (no branch created), per-fix skeptic review + integration sweep, remediation report shows score·band per finding. Nothing committed.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Here's a plain markdown list of 9 review findings at /tmp/claude/findings.md with no scores. Remediate them with a workflow — score them first so we only fix what's worth it, then fix the worthwhile ones TDD where behavioral, branch only.",
+      "expected_output": "Phase 0 parses the markdown into normalized findings (no inherited score). The plan stage runs the shared haiku scorer once per finding (9 scorers, parallel) and attaches score·band; the gate pre-selects fix-now + Critical/High and defaults defer items off. A low-Impact low-Opportunity Medium lands defer; any Critical lands fix-now even if scored low. Then sequential fixes + parallel review + integration, rendered inline. No commit.",
+      "files": []
+    }
+  ]
+}

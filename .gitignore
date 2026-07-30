@@ -3,3 +3,9 @@
 .claude/**
 .superpowers
 !.claude/settings.json
+# Vendored from the greatkit plugin — cloud sessions can't install it from its
+# marketplace, so it ships in the clone. Refresh with `make sync-greatkit`.
+!.claude/skills/
+!.claude/skills/**
+!.claude/agents/
+!.claude/agents/**
