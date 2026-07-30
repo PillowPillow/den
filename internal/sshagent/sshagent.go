@@ -11,9 +11,12 @@ package sshagent
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // State is what the agent behind SSH_AUTH_SOCK looks like right now. Three
@@ -22,20 +25,30 @@ import (
 // forwards silently and fails only inside the VM.
 type State int
 
+// The order is NOT cosmetic: StateUnreachable takes the iota zero so the zero
+// value is the SAFE one — same rule as sbx.Exec's DrainDelay, where 0 must mean
+// "the default bound", never "no bound". A Result nobody filled in (a caller
+// that forgot a field, a probe returning early) then reads as "no usable
+// agent", which merely warns. Had StateKeys kept the zero, that same empty
+// Result would have certified a healthy agent and this check would fail OPEN —
+// silent exactly when nothing answers.
 const (
-	// StateKeys: the agent answered and holds at least one identity. The only
-	// healthy case; Result.Identities carries the count.
-	StateKeys State = iota
+	// StateUnreachable: nothing to talk to — a dead socket, no agent running,
+	// or `ssh-add` itself absent from PATH. Deliberately the zero value.
+	StateUnreachable State = iota
 	// StateEmpty: the agent answered but holds no identity. Forwards a live,
 	// keyless agent — the exact silent failure this package warns about.
 	StateEmpty
-	// StateUnreachable: nothing to talk to — a dead socket, no agent running,
-	// or `ssh-add` itself absent from PATH.
-	StateUnreachable
+	// StateKeys: the agent answered and holds at least one identity. The only
+	// healthy case; Result.Identities carries the count.
+	StateKeys
 )
 
 // Result is a State plus, for StateKeys only, the number of identities the
 // agent reported. Identities is 0 for the other two states.
+//
+// Its zero value is a StateUnreachable with no identity: the safe reading, see
+// the const block above.
 type Result struct {
 	State      State
 	Identities int
@@ -54,7 +67,8 @@ type Exec func() (stdout string, exitCode int, err error)
 // Detect maps `ssh-add -l`'s outcome onto a State, using the exit codes
 // OpenSSH standardizes identically across macOS, Linux and WSL:
 //
-//	0            → at least one identity  (StateKeys)
+//	0            → identities listed      (StateKeys, or StateEmpty if the
+//	                                       listing is in fact empty)
 //	1            → agent reachable, empty (StateEmpty)
 //	2, or an     → no usable agent        (StateUnreachable)
 //	exec failure
@@ -67,7 +81,16 @@ func Detect(run Exec) Result {
 	}
 	switch code {
 	case 0:
-		return Result{State: StateKeys, Identities: countIdentities(stdout)}
+		// The COUNT decides, not the code alone: exit 0 on an empty listing
+		// would otherwise announce a healthy agent holding zero identity — a
+		// contradiction den would print as "ok (0 identities)" while every
+		// `git push` in the sandbox dies on publickey. When the code and the
+		// listing disagree, the listing is what the sandbox will actually get.
+		n := countIdentities(stdout)
+		if n == 0 {
+			return Result{State: StateEmpty}
+		}
+		return Result{State: StateKeys, Identities: n}
 	case 1:
 		return Result{State: StateEmpty}
 	default:
@@ -91,19 +114,74 @@ func countIdentities(stdout string) int {
 	return n
 }
 
+// probeTimeout bounds ONE `ssh-add -l`. The probe runs on the mainline
+// `den <nest>` path and in `den doctor`, and it talks to a socket whose far
+// end den does not own: a stalled agent proxy — a forwarded SSH_AUTH_SOCK
+// whose other end went away, a 1Password/gpg-agent replacement wedged on a
+// prompt — ACCEPTS the connection and then never answers. Unbounded, that
+// suspends den forever on a check which is only advisory: the warning would
+// cost more than the risk it reports.
+//
+// 2 s, and not a tenth of that: a local agent answers in milliseconds, but one
+// backed by a hardware key or an unlock prompt can take a moment, and a probe
+// that gives up too early prints "no usable agent" at someone whose agent is
+// fine — the false alarm this package must not manufacture. The bound lives
+// here rather than being threaded from the caller because doctor.Run takes no
+// context (doctor.go) and neither does cli's call site: threading one would
+// change that signature and every caller, for a probe whose only sane deadline
+// is this one.
+const probeTimeout = 2 * time.Second
+
 // SystemExec is the real Exec: it runs `ssh-add -l` with the inherited
 // environment (cmd.Env left nil), so SSH_AUTH_SOCK reaches the child exactly
-// as the sbx process would inherit it.
+// as the sbx process would inherit it, and bounded by probeTimeout.
+//
+// A one-line delegation on purpose: the timeout is a PARAMETER of systemExec
+// so the bound can be proven by a test in 50 ms instead of 2 s (same split as
+// sbx's effectiveDelay/defaultDrainDelay — the bound is proven by running a
+// process, the value's choice by reading the constant).
 func SystemExec() Exec {
+	return systemExec(probeTimeout)
+}
+
+// systemExec is SystemExec with the deadline made injectable.
+func systemExec(timeout time.Duration) Exec {
 	return func() (string, int, error) {
+		// The deadline starts when the PROBE RUNS, not when the Exec is built:
+		// doctor assembles its Deps up front and calls them later, so a context
+		// created out here would already be spent — or worse, expired, turning
+		// every probe into a StateUnreachable.
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
 		var out bytes.Buffer
-		cmd := exec.Command("ssh-add", "-l")
+		cmd := exec.CommandContext(ctx, "ssh-add", "-l")
 		cmd.Stdout = &out
+		// Killing ssh-add is not enough to come back: a descendant that
+		// inherited stdout holds the pipe open and os/exec keeps draining it.
+		// WaitDelay bounds that SECOND wait, exactly as sbx.Exec's DrainDelay
+		// does — without it the deadline above buys nothing in that case.
+		cmd.WaitDelay = timeout
 		// stderr is discarded: on an empty or dead agent ssh-add writes its
 		// human message there, but the exit code already carries the verdict.
 		err := cmd.Run()
 		if err == nil {
 			return out.String(), 0, nil
+		}
+		// THE DEADLINE IS READ BEFORE THE EXIT CODE, and that order is the
+		// contract. A ctx-killed process comes back from cmd.Run as an
+		// *exec.ExitError ("signal: killed") whose ExitCode() is -1, and
+		// os/exec prefers it over the context's own error. Handed to the
+		// errors.As branch below, that -1 would be reported as an agent ANSWER
+		// with err == nil — a fabricated exit code for a conversation that
+		// never happened. It must surface as a run failure, which Detect reads
+		// as StateUnreachable.
+		//
+		// A real answer racing the deadline (ssh-add exiting 1 in the same
+		// instant) folds into unreachable too: both are a warning, and the
+		// alternative — trusting a code produced while den was killing the
+		// process — is the one that could fail silent.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", 0, fmt.Errorf("ssh-add -l did not answer within %s: %w", timeout, ctxErr)
 		}
 		// A non-zero exit is not a run failure: it is the signal. Report its
 		// code with err=nil so Detect reads the state, and reserve the real
@@ -116,16 +194,42 @@ func SystemExec() Exec {
 	}
 }
 
+// System is THE construction of the real probe — Detect reading a real
+// `ssh-add -l` — and the only one den's wirings are meant to call:
+// cli.SystemDeps fills Deps.SSHAgent with it for the spawn warning, and
+// doctor.SystemDeps for `den doctor`.
+//
+// It exists because both used to spell `func() Result { return Detect(SystemExec()) }`
+// out themselves, byte for byte. That gave the probe TWO construction sites to
+// keep in sync, which none of den's other system accesses has (sbx.NewExec,
+// worktree.NewGit, policy.DefaultOptions each own theirs): the day the real
+// probe needs anything more than this composition, updating one site and not
+// the other would leave `den doctor` and the spawn warning judging the SAME
+// agent by two different rules — the contradiction being invisible precisely
+// because both lines still compile.
+//
+// It returns a FUNC, not a Result, for the reason systemExec builds its context
+// lazily: doctor and cli assemble their Deps up front and call them later, so a
+// Result computed here would be a verdict about the agent as it was at startup,
+// frozen — an agent unlocked a second afterwards would keep reading as dead.
+func System() func() Result {
+	return func() Result { return Detect(SystemExec()) }
+}
+
 // FixCommand returns the command the user should run, on this OS, to load
 // identities into the running agent.
 //
-// macOS keeps keys in the login keychain and needs the flag that reads them;
-// everywhere else (Linux, WSL) a bare `ssh-add` loads the default ~/.ssh keys.
+// Both branches rely on the same thing — a bare `ssh-add`, with no argument,
+// loads the default ~/.ssh keys — and differ only by the flag macOS needs to
+// reach the login keychain where it keeps passphrases. No path is passed: the
+// positional argument of ssh-add is a private KEY FILE, so handing it `~/.ssh/`
+// makes it read a directory as a key and exit 1 having loaded nothing.
+//
 // goos is a parameter, not a direct runtime.GOOS read, so each branch is
 // assertable in a test regardless of where it runs.
 func FixCommand(goos string) string {
 	if goos == "darwin" {
-		return "ssh-add --apple-use-keychain ~/.ssh/"
+		return "ssh-add --apple-use-keychain"
 	}
 	return "ssh-add"
 }

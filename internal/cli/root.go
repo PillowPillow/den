@@ -4,6 +4,7 @@ package cli
 
 import (
 	"fmt"
+	"runtime"
 
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/policy"
@@ -40,7 +41,7 @@ func SystemDeps() Deps {
 		Sbx:      sbx.NewExec(""),
 		Git:      worktree.NewGit(),
 		Policy:   policy.DefaultOptions(),
-		SSHAgent: func() sshagent.Result { return sshagent.Detect(sshagent.SystemExec()) },
+		SSHAgent: sshagent.System(),
 	}
 }
 
@@ -97,6 +98,10 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 		Git:      deps.Git,
 		Policy:   deps.Policy,
 		SSHAgent: deps.SSHAgent,
+		// The real OS, named at the wiring site like every other system access:
+		// spawn has no SystemDeps constructor to hold it (see spawn.Deps), and a
+		// field left implicit here is a dependency the reader has to hunt for.
+		GOOS: runtime.GOOS,
 	})
 	return root
 }

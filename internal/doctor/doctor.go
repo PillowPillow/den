@@ -56,6 +56,24 @@ type Deps struct {
 	// like the rest so the socket-present cases (empty, dead, has keys) are
 	// reproducible without a real agent on the machine running the suite.
 	SSHAgent func() sshagent.Result
+	// GOOS names the operating system whose ssh-agent remedy the warnings should
+	// quote; empty means runtime.GOOS. A parameter for the same reason
+	// sshagent.FixCommand takes one: read directly, the darwin branch — the only
+	// one that carries `--apple-use-keychain` — would be unassertable on the
+	// Linux CI where this suite runs, so the message shipped to macOS users would
+	// be the one no test ever exercises.
+	GOOS string
+}
+
+// goos is Deps.GOOS with its documented default applied. Empty falls back to
+// runtime.GOOS rather than to a hard-coded OS: a Deps built by hand must keep
+// describing the machine it runs on, so only a test that OPTS IN gets another
+// OS's remedy.
+func (d Deps) goos() string {
+	if d.GOOS == "" {
+		return runtime.GOOS
+	}
+	return d.GOOS
 }
 
 // SystemDeps returns the real dependencies.
@@ -65,7 +83,11 @@ func SystemDeps() Deps {
 		Stat:       os.Stat,
 		GitVersion: systemGitVersion,
 		Getenv:     os.Getenv,
-		SSHAgent:   func() sshagent.Result { return sshagent.Detect(sshagent.SystemExec()) },
+		SSHAgent:   sshagent.System(),
+		// Named here rather than left to the fallback: SystemDeps is where every
+		// real system access is spelled out, and a field silently defaulted is a
+		// dependency the reader has to go looking for.
+		GOOS: runtime.GOOS,
 	}
 }
 
@@ -290,14 +312,26 @@ func Run(denHome string, d Deps) []Check {
 					"agent-forward, but the agent at SSH_AUTH_SOCK=%s holds no identity: sandboxes "+
 						"inherit an empty agent and are denied SSH access (publickey), so `git push` "+
 						"fails from the VM far from the cause — load a key with `%s`",
-					socket, sshagent.FixCommand(runtime.GOOS))
+					socket, sshagent.FixCommand(d.goos()))
 			case sshagent.StateUnreachable:
 				warn("ssh.mode",
 					"agent-forward, but SSH_AUTH_SOCK=%s points at an unreachable agent (dead socket, "+
 						"no agent running, or ssh-add absent from PATH): sandboxes will have no SSH "+
 						"access and `git push` fails from the VM — start an agent and load a key with "+
 						"`%s`, or set `ssh.mode` to \"mount\" in %s",
-					socket, sshagent.FixCommand(runtime.GOOS), config.GlobalPath(denHome))
+					socket, sshagent.FixCommand(d.goos()), config.GlobalPath(denHome))
+			default:
+				// Without this arm, a State this switch doesn't model emitted NO
+				// ssh.mode line at all: `den doctor` stayed silent about the agent,
+				// which reads as "nothing to report" — the check disappearing is
+				// worse than any verdict it could give. Warn instead, naming the
+				// value seen, so a state added to sshagent surfaces here rather
+				// than deleting the diagnostic.
+				warn("ssh.mode",
+					"agent-forward, SSH_AUTH_SOCK=%s, but the agent probe returned the unrecognized "+
+						"state %d: den cannot tell whether a key will reach the sandbox — check the "+
+						"agent by hand with `ssh-add -l`",
+					socket, int(res.State))
 			}
 		}
 	}
