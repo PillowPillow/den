@@ -8,14 +8,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newDoctorCmd prend ses accès système en paramètre plutôt que de câbler
-// doctor.DepsSysteme() en dur : c'est ce qui permet au test d'exercer les deux
-// branches du contrat de sortie sans dépendre de la machine qui l'exécute.
+// newDoctorCmd takes its system accesses as a parameter rather than hard-wiring
+// doctor.SystemDeps(): that is what lets a test exercise both branches of the
+// exit contract without depending on the machine it runs on.
 func newDoctorCmd(denHome *string, deps doctor.Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
-		Short: "Diagnostique la configuration den et l'environnement",
-		Args:  aucunArgument,
+		Short: "Diagnose den's configuration and environment",
+		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {
@@ -26,45 +26,39 @@ func newDoctorCmd(denHome *string, deps doctor.Deps) *cobra.Command {
 			fmt.Fprintf(out, "den home: %s\n\n", home)
 
 			checks := doctor.Run(home, deps)
-			echecs, avertissements := 0, 0
+			failures, warnings := 0, 0
 			for _, c := range checks {
-				marque := "ok  "
-				// Bloquant() et non une comparaison recopiée ici : c'est
-				// doctor qui décide de ce qui pèse sur le code de sortie, et
-				// il n'y a qu'un seul endroit où cette décision se prend.
+				mark := "ok  "
+				// Blocking() rather than a comparison copied here: doctor owns
+				// the decision of what weighs on the exit code.
 				switch {
-				case c.Bloquant():
-					marque = "FAIL"
-					echecs++
-				case c.Niveau == doctor.NiveauAvertissement:
-					marque = "warn"
-					avertissements++
+				case c.Blocking():
+					mark = "FAIL"
+					failures++
+				case c.Level == doctor.LevelWarning:
+					mark = "warn"
+					warnings++
 				}
-				fmt.Fprintf(out, "[%s] %-16s %s\n", marque, c.Nom, c.Detail)
+				fmt.Fprintf(out, "[%s] %-16s %s\n", mark, c.Name, c.Detail)
 			}
 
-			// L'ORDRE de ces deux blocs porte le contrat de sortie, et il n'est
-			// pas interchangeable : les deux se terminent par un `return`, donc
-			// celui qui passe en premier décide. Intervertis, un diagnostic en
-			// échec accompagné d'un simple avertissement rendrait nil — soit
-			// `den doctor` à 0 sur une installation cassée, sous une sortie
-			// auto-contradictoire annonçant « aucun échec » juste après une
-			// ligne [FAIL]. Mesuré, et tenu par
-			// TestDoctorEchoueMemeAvecUnAvertissement, qui est le seul test à
-			// produire les deux à la fois.
-			if echecs > 0 {
-				return fmt.Errorf("%d diagnostic(s) en échec", echecs)
+			// The ORDER of these two blocks carries the exit contract and is not
+			// interchangeable: both end in a return, so whichever comes first
+			// decides. Swapped, a failing check accompanied by a mere warning
+			// would return nil — `den doctor` at 0 on a broken install, under
+			// self-contradicting output.
+			if failures > 0 {
+				return fmt.Errorf("%d failing check(s)", failures)
 			}
-			// Un avertissement ne change PAS le code de sortie — c'est tout son
-			// intérêt — mais « tout est en ordre » sous une ligne [warn] se
-			// lirait comme une contradiction, et l'utilisateur croirait à un
-			// affichage résiduel plutôt qu'à un message pour lui.
-			if avertissements > 0 {
-				fmt.Fprintf(out, "\naucun échec, mais %d avertissement(s) : relis les lignes [warn]\n",
-					avertissements)
+			// A warning does NOT change the exit code — that is its whole point
+			// — but "all good" under a [warn] line would read as a
+			// contradiction.
+			if warnings > 0 {
+				fmt.Fprintf(out, "\nno failure, but %d warning(s): review the [warn] lines\n",
+					warnings)
 				return nil
 			}
-			fmt.Fprintln(out, "\ntout est en ordre")
+			fmt.Fprintln(out, "\nall good")
 			return nil
 		},
 	}

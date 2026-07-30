@@ -12,52 +12,45 @@ import (
 	"time"
 )
 
-// Runner est le SEUL point de contact de den avec la CLI sbx. Tout passe par
-// là, ce qui rend l'intégralité du reste testable sans microVM — sbx n'est même
-// pas installé sur la machine de développement.
+// Runner is den's ONLY point of contact with the sbx CLI. Everything goes
+// through it, which makes the rest of den testable without a microVM — sbx
+// isn't even installed on the development machine.
 //
-// Deux méthodes, parce que les deux usages sont irréconciliables :
-//   - Run capture stdout pour le parser (`ls --json`, `policy check --json`).
-//   - Attach branche les tty du processus courant pour rendre un shell
-//     interactif à l'utilisateur (`exec -it … bash -l`) ; il n'y a rien à
-//     capturer, et capturer casserait l'interactivité.
+// Two methods, because the two uses are irreconcilable:
+//   - Run captures stdout to parse it (`ls --json`, `policy check --json`).
+//   - Attach wires the current process's ttys to give the user an
+//     interactive shell (`exec -it ... bash -l`); there's nothing to capture,
+//     and capturing would break interactivity.
 type Runner interface {
 	Run(ctx context.Context, args ...string) ([]byte, error)
 	Attach(ctx context.Context, args ...string) error
 }
 
-// Exec est l'implémentation réelle, adossée au binaire sbx du PATH.
+// Exec is the real implementation, backed by the sbx binary from the PATH.
 //
-// ENVIRONNEMENT : cmd.Env est laissé nil dans Run comme dans Attach, et c'est
-// une décision, pas un oubli. nil ⇒ le process hérite de l'environnement de
-// den, et c'est le SEUL support de `ssh.mode: agent-forward` — le défaut de la
-// configuration (internal/config/config.go), qui n'ajoute ni argument à l'argv
-// de `sbx create` ni entrée au mixin, et repose entièrement sur le fait que
-// SSH_AUTH_SOCK atteigne le process sbx.
+// ENVIRONMENT: cmd.Env is left nil in both Run and Attach, and that's a
+// decision, not an oversight. nil ⇒ the process inherits den's environment,
+// which is the ONLY support for `ssh.mode: agent-forward` — the config
+// default (internal/config/config.go), which adds neither an argv argument to
+// `sbx create` nor a mixin entry, and relies entirely on SSH_AUTH_SOCK
+// reaching the sbx process.
 //
-// Renseigner cmd.Env ici, pour n'importe quelle raison, couperait donc l'accès
-// SSH de TOUTES les sandboxes. Les deux tests
-// TestExec{Run,Attach}TransmetLEnvironnementDeDen sont ce qui l'interdit —
-// mesuré avant de les écrire, un `cmd.Env = []string{"PATH=…"}` posé sur Run
-// laissait la suite ENTIÈRE verte. Le précédent existe dans le projet :
-// internal/worktree pose bien un cmd.Env, pour neutraliser la configuration git.
+// Setting cmd.Env here, for any reason, would cut off SSH access for EVERY
+// sandbox. TestExec{Run,Attach}TransmitsDenEnvironment are what forbid it.
 //
-// Ce qui est prouvé s'arrête au process : que sbx propage ensuite ce socket
-// DANS la microVM n'est pas vérifiable sans sbx, et reste une hypothèse du spec.
+// What's proven stops at the process boundary: whether sbx then propagates
+// this socket INTO the microVM isn't verifiable without sbx, and remains a
+// spec assumption.
 type Exec struct {
 	Bin string
-	// DelaiDeDrainage borne le temps laissé aux tubes pour finir de se vider,
-	// une fois le process sorti OU le contexte annulé. Zéro ⇒
-	// delaiDrainageDefaut. Réglable pour que les tests de la borne durent des
-	// millisecondes plutôt que des secondes.
-	//
-	// Nommé d'après ce qu'il borne, et non « DelaiApresAnnulation » comme dans
-	// une première version : ce nom-là affirmait que seule l'annulation armait
-	// la borne, ce qui est mesuré faux et a masqué une régression.
-	DelaiDeDrainage time.Duration
+	// DrainDelay bounds how long pipes are given to finish draining, once the
+	// process has exited OR the context has been canceled. Zero ⇒
+	// defaultDrainDelay. Adjustable so bound tests take milliseconds rather
+	// than seconds.
+	DrainDelay time.Duration
 }
 
-// NewExec construit un Runner réel. bin vide ⇒ « sbx » (résolu via le PATH).
+// NewExec builds a real Runner. Empty bin ⇒ "sbx" (resolved via the PATH).
 func NewExec(bin string) Runner {
 	if bin == "" {
 		bin = "sbx"
@@ -65,257 +58,234 @@ func NewExec(bin string) Runner {
 	return &Exec{Bin: bin}
 }
 
-// ErreurExec est l'erreur renvoyée par Run en cas d'échec. Exportée (et pas un
-// simple message formaté) parce que policy et spawn ont besoin d'inspecter le
-// résultat, pas seulement de l'afficher. Les trois propriétés ci-dessous sont
-// tenues par un test chacune dans runner_test.go — aucune n'est déduite de la
-// documentation d'os/exec :
-//   - errors.As pour retrouver le *exec.ExitError sous-jacent et son code de
-//     sortie (create échoué, il faut dire pourquoi) ;
-//   - errors.Is(err, exec.ErrNotFound) pour distinguer « sbx absent du PATH »
-//     d'un échec applicatif quelconque (doctor.go fait déjà cette distinction
-//     via LookPath ; le runner doit pouvoir la faire aussi) ;
-//   - errors.Is(err, context.Canceled) — et de même DeadlineExceeded — pour
-//     reconnaître un Ctrl-C, que le contexte soit annulé AVANT le démarrage du
-//     process ou PENDANT son exécution.
+// ExecError is the error Run returns on failure. Exported (not a plain
+// formatted message) because policy and spawn need to inspect the result, not
+// just display it. The three properties below are each held by a test in
+// runner_test.go:
+//   - errors.As to retrieve the underlying *exec.ExitError and its exit code
+//     (create failed, we need to say why);
+//   - errors.Is(err, exec.ErrNotFound) to distinguish "sbx missing from the
+//     PATH" from any application failure (doctor.go already makes this
+//     distinction via LookPath; the runner must be able to make it too);
+//   - errors.Is(err, context.Canceled) — and likewise DeadlineExceeded — to
+//     recognize a Ctrl-C, whether the context was canceled BEFORE the process
+//     started or DURING its execution.
 //
-// Cette troisième propriété ne s'obtient PAS toute seule, et le champ
-// Annulation est ce qui la porte. Mesuré (trois fois, dont ici en Go 1.26) :
-// quand le contexte est annulé pendant l'exécution, os/exec tue le process et
-// `Cmd.Wait` PRÉFÈRE l'erreur du process à celle du contexte — cmd.Run rend un
-// *exec.ExitError « signal: killed » qui n'enveloppe ni Canceled ni
-// DeadlineExceeded. Seule l'annulation survenue avant le démarrage remonte
-// telle quelle (Cmd.Start rend ctx.Err() sans lancer le process). Run relève
-// donc ctx.Err() lui-même et le joint à la chaîne.
+// This third property does NOT come for free, and the Cancellation field is
+// what carries it. When the context is canceled during execution, os/exec
+// kills the process and `Cmd.Wait` PREFERS the process's error to the
+// context's — cmd.Run returns an *exec.ExitError ("signal: killed") that
+// wraps neither Canceled nor DeadlineExceeded. Only a cancellation that
+// happened before the process started comes through as-is (Cmd.Start returns
+// ctx.Err() without launching the process). Run therefore reads ctx.Err()
+// itself and joins it to the chain.
 //
-// D'où Unwrap : la chaîne d'erreurs de cmd.Run() doit survivre intacte — les
-// deux premières propriétés en dépendent — en plus du motif d'annulation et du
-// message qui, lui, intègre stderr pour rester lisible par un humain.
-type ErreurExec struct {
+// Hence Unwrap: cmd.Run()'s error chain must survive intact — the first two
+// properties depend on it — alongside the cancellation reason and the
+// message, which folds in stderr to stay readable by a human.
+type ExecError struct {
 	Bin    string
 	Args   []string
 	Stderr string
 	Err    error
-	// Annulation porte le ctx.Err() observé au retour de cmd.Run, nil si le
-	// contexte n'y est pour rien. C'est la SEULE source de Canceled /
-	// DeadlineExceeded dans la chaîne quand le process a été tué.
-	Annulation error
+	// Cancellation carries the ctx.Err() observed when cmd.Run returns, nil if
+	// the context had nothing to do with it. It's the ONLY source of
+	// Canceled/DeadlineExceeded in the chain when the process was killed.
+	Cancellation error
 }
 
-// messageBinaireIntrouvable rend, en français et avec un remède, le seul échec
-// d'exécution que l'utilisateur puisse réparer lui-même : le binaire n'est pas
-// installé.
+// missingBinaryMessage renders, with a remedy, the one execution failure the
+// user can fix themselves: the binary isn't installed.
 //
-// C'est l'échec de PREMIER CONTACT — sbx pas encore posé sur la machine — et il
-// frappe les quatre commandes qui touchent sbx (`den ls`, `den <nest>`,
-// `den sh`, `den rm`), toutes passant par Ls avant quoi que ce soit d'autre.
-// Sans ce traitement, la première ligne qu'un nouvel utilisateur voit est celle
-// d'os/exec : « exec: "sbx": executable file not found in $PATH » — en anglais,
-// et sans dire quoi faire.
+// It's the FIRST-CONTACT failure — sbx not yet set up on the machine — and it
+// hits all four commands that touch sbx (`den ls`, `den <nest>`, `den sh`,
+// `den rm`), all of which go through Ls before anything else. Without this
+// handling, the first line a new user sees is os/exec's:
+// `exec: "sbx": executable file not found in $PATH` — with no remedy.
 //
-// `den doctor` est nommé parce qu'il diagnostique EXACTEMENT ce cas
-// (doctor.go, étape 1, via exec.LookPath) et qu'il dira du même coup si le
-// reste de l'installation tient. L'argv n'est PAS rendu : quand le binaire
-// manque, aucun argument n'aurait changé quoi que ce soit, et le citer noierait
-// le seul fait qui compte.
-func messageBinaireIntrouvable(bin string) string {
+// `den doctor` is named because it diagnoses EXACTLY this case (doctor.go,
+// step 1, via exec.LookPath) and will say in the same breath whether the rest
+// of the install holds up. The argv is NOT rendered: when the binary is
+// missing, no argument would have changed anything, and citing it would drown
+// the one fact that matters.
+func missingBinaryMessage(bin string) string {
 	return fmt.Sprintf(
-		"« %s » est introuvable dans le PATH — installe-le, puis vérifie ton installation avec `den doctor`",
-		bin)
+		"%q not found in the PATH — install it, then check your setup with `den doctor`", bin)
 }
 
-func (e *ErreurExec) Error() string {
-	// AVANT le motif d'annulation : un contexte annulé sur un binaire absent
-	// reste, pour l'utilisateur, un binaire absent — et c'est l'annulation qui
-	// serait la conséquence, jamais la cause.
+func (e *ExecError) Error() string {
+	// BEFORE the cancellation reason: a canceled context on a missing binary
+	// is still, for the user, a missing binary — the cancellation would be the
+	// consequence, never the cause.
 	if errors.Is(e.Err, exec.ErrNotFound) {
-		return messageBinaireIntrouvable(e.Bin)
+		return missingBinaryMessage(e.Bin)
 	}
 	detail := e.Stderr
 	if detail == "" && e.Err != nil {
 		detail = e.Err.Error()
 	}
-	if e.Annulation != nil {
-		// Le motif d'annulation passe AVANT le détail, et ne le remplace pas :
-		// « signal: killed » seul se lit comme un crash de sbx, mais le jeter
-		// perdrait le stderr que sbx a eu le temps d'écrire.
-		return fmt.Sprintf("%s %s : %s : %s",
-			e.Bin, strings.Join(e.Args, " "), motifAnnulation(e.Annulation), detail)
+	if e.Cancellation != nil {
+		// The cancellation reason comes BEFORE the detail, and doesn't replace
+		// it: "signal: killed" alone reads like sbx crashing, but dropping it
+		// would lose whatever stderr sbx had time to write.
+		return fmt.Sprintf("%s %s: %s: %s",
+			e.Bin, strings.Join(e.Args, " "), cancellationReason(e.Cancellation), detail)
 	}
-	return fmt.Sprintf("%s %s : %s", e.Bin, strings.Join(e.Args, " "), detail)
+	return fmt.Sprintf("%s %s: %s", e.Bin, strings.Join(e.Args, " "), detail)
 }
 
-// motifAnnulation traduit les deux motifs d'annulation de la stdlib. Le défaut
-// rend l'erreur telle quelle : un contexte peut porter une cause applicative
-// (context.WithCancelCause), et l'inventer en français la perdrait.
-func motifAnnulation(err error) string {
+// cancellationReason renders the stdlib's two cancellation reasons in
+// English. The default returns the error as-is: a context can carry an
+// application cause (context.WithCancelCause), and inventing one would lose
+// it.
+func cancellationReason(err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return "interrompu (délai dépassé)"
+		return "interrupted (deadline exceeded)"
 	case errors.Is(err, context.Canceled):
-		return "interrompu (annulé)"
+		return "interrupted (canceled)"
 	default:
-		return fmt.Sprintf("interrompu (%v)", err)
+		return fmt.Sprintf("interrupted (%v)", err)
 	}
 }
 
-// Unwrap rend une SLICE (et non l'unique Err d'avant) : errors.Is doit trouver
-// le motif d'annulation ET errors.As le *exec.ExitError, qui sont deux erreurs
-// distinctes. La slice ne contient jamais de nil, ce que le contrat d'errors
-// interdit.
-func (e *ErreurExec) Unwrap() []error {
-	var chaine []error
+// Unwrap returns a SLICE: errors.Is must find the cancellation reason AND
+// errors.As the *exec.ExitError, two distinct errors. The slice never holds
+// nil, which errors' contract forbids.
+func (e *ExecError) Unwrap() []error {
+	var chain []error
 	if e.Err != nil {
-		chaine = append(chaine, e.Err)
+		chain = append(chain, e.Err)
 	}
-	if e.Annulation != nil {
-		chaine = append(chaine, e.Annulation)
+	if e.Cancellation != nil {
+		chain = append(chain, e.Cancellation)
 	}
-	return chaine
+	return chain
 }
 
-// delaiDrainageDefaut borne le temps laissé aux tubes pour finir de se vider.
+// defaultDrainDelay bounds how long pipes are given to finish draining.
 //
-// PORTÉE EXACTE, corrigée après avoir été écrite fausse : le minuteur de
-// WaitDelay démarre quand le contexte est annulé **OU dès que Wait constate la
-// sortie du process**, au premier des deux. Il ne se déclenche donc PAS
-// « seulement après une annulation ». Ce qu'il borne, c'est l'attente d'un
-// descendant qui a hérité des tubes et les tient ouverts après la sortie du
-// process — pas la durée du process lui-même.
-//
-// Mesuré, contexte jamais annulé, `&Exec{Bin: "sh"}` :
-//
-//	"sleep 4; echo fini"          → 4,01 s, nil        (un `create` lent n'est PAS borné)
-//	"echo demarree; sleep 30 &"   → borné, succès      (descendant qui survit)
-//	"echo x; sleep 30 & exit 3"   → borné, exit 3      (l'échec réel remonte tout de suite)
-//
-// La première ligne est la garantie qui compte : tant que sbx n'est pas sorti,
-// rien ne le borne. Voir Run pour le traitement d'ErrWaitDelay.
-const delaiDrainageDefaut = 2 * time.Second
+// WaitDelay's timer starts when the context is canceled OR as soon as Wait
+// observes the process exit, whichever comes first — it does NOT trigger
+// "only after a cancellation". What it bounds is waiting on a descendant that
+// inherited the pipes and keeps them open after the process exits, not the
+// process's own runtime: as long as sbx itself hasn't exited, nothing bounds
+// it (a slow `create` is not cut short). See Run for how ErrWaitDelay is
+// handled.
+const defaultDrainDelay = 2 * time.Second
 
-// delaiEffectif applique le défaut. Fonction séparée pour que « la valeur nulle
-// d'Exec est la valeur SÛRE » soit vérifiable sans faire dormir la suite : la
-// borne elle-même se prouve en exécutant un process, le choix du défaut non.
-func delaiEffectif(d time.Duration) time.Duration {
+// effectiveDelay applies the default. A separate function so that "Exec's
+// zero value is the SAFE value" is verifiable without sleeping through the
+// suite: the bound itself is proven by running a process, the default's
+// choice is not.
+func effectiveDelay(d time.Duration) time.Duration {
 	if d <= 0 {
-		return delaiDrainageDefaut
+		return defaultDrainDelay
 	}
 	return d
 }
 
-// drainageEcourteSurSucces dit si l'erreur rendue par cmd.Run n'est QUE le
-// drainage écourté d'un process qui a par ailleurs réussi.
+// drainCutShortOnSuccess reports whether the error cmd.Run returned is ONLY
+// the drain being cut short on a process that otherwise succeeded.
 //
-// Fonction séparée parce que deux de ses trois conditions portent sur des états
-// qu'on ne sait pas provoquer à la demande depuis un test de bout en bout —
-// os/exec ne rend ErrWaitDelay que sur un statut de succès, et une annulation
-// concomitante d'un succès est une course. Les exercer ici sur des valeurs
-// fabriquées est la seule façon de ne pas les laisser sans preuve.
+// Separate function because two of its three conditions cover states we can't
+// provoke on demand from an end-to-end test — os/exec only returns
+// ErrWaitDelay on a success status, and a cancellation concurrent with a
+// success is a race. Exercising them here on fabricated values is the only
+// way to leave them with any proof.
 //
-// Chaque condition, et ce qu'elle protège :
-//   - le motif EST le drainage : un exit non nul, un exec.ErrNotFound ou une
-//     erreur de copie restent des échecs de sbx et doivent remonter ;
-//   - le contexte n'y est pour rien : une annulation ne doit jamais être
-//     silencieusement convertie en succès ;
-//   - le process est sorti avec un statut de SUCCÈS : c'est LUI qui atteste que
-//     sbx a fait son travail, le reste n'étant que de la plomberie de tubes.
-//
-// Les deux dernières sont redondantes avec la première tant qu'os/exec tient son
-// contrat documenté (ErrWaitDelay implique un statut de succès). Elles sont
-// gardées parce que le prix d'un contrat qui changerait est ici de transformer
-// un échec en succès — et cette redondance-là, on la paie volontiers.
-func drainageEcourteSurSucces(err, errCtx error, etat *os.ProcessState) bool {
+// Each condition, and what it protects:
+//   - the reason IS the drain: a nonzero exit, an exec.ErrNotFound or a copy
+//     error remain sbx failures and must propagate;
+//   - the context had nothing to do with it: a cancellation must never be
+//     silently turned into a success;
+//   - the process exited with a SUCCESS status: that's what attests sbx did
+//     its job, the rest being pipe plumbing.
+func drainCutShortOnSuccess(err, ctxErr error, state *os.ProcessState) bool {
 	return errors.Is(err, exec.ErrWaitDelay) &&
-		errCtx == nil &&
-		etat != nil && etat.Success()
+		ctxErr == nil &&
+		state != nil && state.Success()
 }
 
-// Run exécute sbx et renvoie stdout. En cas d'échec, stderr est INTÉGRÉ au
-// message : sbx y met le diagnostic utile, et une erreur « exit status 1 » nue
-// est inexploitable pour l'utilisateur comme pour le mainteneur. L'erreur
-// d'origine (code de sortie, exec.ErrNotFound) et le motif d'annulation
-// éventuel restent accessibles via errors.As/errors.Is grâce à
-// ErreurExec.Unwrap — voir son commentaire.
+// Run executes sbx and returns stdout. On failure, stderr is FOLDED into the
+// message: sbx puts the useful diagnostic there, and a bare "exit status 1"
+// is useless to the user and the maintainer alike. The original error (exit
+// code, exec.ErrNotFound) and any cancellation reason stay reachable via
+// errors.As/errors.Is thanks to ExecError.Unwrap — see its comment.
 func (e *Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, e.Bin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	// Zéro ⇒ défaut, jamais « pas de borne » : la valeur nulle d'Exec (celle
-	// que construisent les tests, `&Exec{Bin: "sh"}`) doit être la valeur SÛRE.
-	// C'est toute la raison de delaiEffectif : passé tel quel à WaitDelay, 0
-	// signifie précisément « attendre indéfiniment ».
-	cmd.WaitDelay = delaiEffectif(e.DelaiDeDrainage)
+	// Zero ⇒ default, never "no bound": Exec's zero value (the one tests
+	// construct, `&Exec{Bin: "sh"}`) must be the SAFE value. That's the whole
+	// point of effectiveDelay: passed through as-is to WaitDelay, 0 means
+	// "wait forever".
+	cmd.WaitDelay = effectiveDelay(e.DrainDelay)
 	if err := cmd.Run(); err != nil {
-		// Un drainage écourté sur un process qui a RÉUSSI n'est pas un échec de
-		// sbx, et le rapporter comme tel a coûté une régression : `sbx create`
-		// laissant derrière lui un superviseur qui hérite du tube faisait rendre
-		// ErrWaitDelay À LA PLACE de nil — den annonçait « impossible de créer
-		// la sandbox » alors qu'elle EXISTE, puis abandonnait la séquence, avec
-		// en prime un message anglais interne à os/exec.
+		// A drain cut short on a process that SUCCEEDED is not an sbx failure,
+		// and reporting it as one cost a regression: `sbx create` leaving
+		// behind a supervisor that inherits the pipe made ErrWaitDelay surface
+		// INSTEAD of nil — den announced "couldn't create the sandbox" while it
+		// EXISTS, then abandoned the sequence. See drainCutShortOnSuccess for
+		// the three conditions that guard against silencing a real failure.
 		//
-		// Les trois conditions sont nécessaires : le seul motif est le drainage
-		// (un exit non nul ou un ErrNotFound reste un échec), le contexte n'y est
-		// pour rien (une annulation doit rester visible), et le process est sorti
-		// avec un statut de SUCCÈS (c'est lui qui dit que sbx a fait son travail).
-		//
-		// La sortie collectée est complète, et pour une raison précise : le
-		// copieur d'os/exec draine le tube EN CONTINU, donc tout ce que le fils
-		// direct a écrit avant de sortir est déjà pris. Vérifié sur 240 Kio, très
-		// au-delà du tampon d'un tube. Ce qu'un DESCENDANT écrirait après la
-		// fermeture est perdu — c'est le comportement voulu, ce n'est pas la
-		// sortie de sbx.
-		if drainageEcourteSurSucces(err, ctx.Err(), cmd.ProcessState) {
+		// The collected output is complete, for a precise reason: os/exec's
+		// copier drains the pipe CONTINUOUSLY, so whatever the direct child
+		// wrote before exiting is already captured. Verified at 240 KiB, well
+		// beyond a pipe's buffer. Whatever a DESCENDANT would write after the
+		// close is lost — that's the intended behavior, not sbx's output.
+		if drainCutShortOnSuccess(err, ctx.Err(), cmd.ProcessState) {
 			return stdout.Bytes(), nil
 		}
-		return stdout.Bytes(), &ErreurExec{
+		return stdout.Bytes(), &ExecError{
 			Bin:    e.Bin,
 			Args:   slices.Clone(args),
 			Stderr: strings.TrimSpace(stderr.String()),
 			Err:    err,
-			// ctx.Err() est relevé ICI, au retour de cmd.Run : c'est le seul
-			// endroit où l'on sait que l'échec et l'annulation sont concomitants.
-			Annulation: ctx.Err(),
+			// ctx.Err() is read HERE, when cmd.Run returns: it's the only place
+			// where we know the failure and the cancellation are concurrent.
+			Cancellation: ctx.Err(),
 		}
 	}
 	return stdout.Bytes(), nil
 }
 
-// Attach donne la main à sbx sur les tty du processus courant.
+// Attach hands control to sbx over the current process's ttys.
 func (e *Exec) Attach(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, e.Bin, args...)
-	// Attach est la SEULE méthode de ce fichier où l'annulation du contexte ne
-	// doit RIEN faire. Le comportement par défaut de CommandContext est un
-	// SIGKILL du process (cmd.Cancel = Process.Kill) : sur un shell interactif,
-	// ça laisse le terminal en mode raw, sans flush, sans `exit` propre. Un
-	// Ctrl-C tapé DANS le shell de la sandbox est de toute façon délivré par le
-	// driver tty au groupe de processus au premier plan, pas relayé via ce
-	// contexte — den n'a donc rien à faire quand ce contexte se termine ici.
+	// Attach is the ONLY method in this file where context cancellation must
+	// do NOTHING. CommandContext's default behavior is to SIGKILL the process
+	// (cmd.Cancel = Process.Kill): on an interactive shell, that leaves the
+	// terminal in raw mode, unflushed, without a clean `exit`. A Ctrl-C typed
+	// INSIDE the sandbox's shell is delivered by the tty driver to the
+	// foreground process group anyway, not relayed through this context — den
+	// has nothing to do when this context ends here.
 	//
-	// cmd.Cancel = func() error { return nil } NE SUFFIT PAS : dans watchCtx
-	// (os/exec), un Cancel qui renvoie nil sans être os.ErrProcessDone déclenche
-	// quand même `err = ctx.Err()` après coup, même si le process se termine
-	// ensuite avec succès (vérifié empiriquement, pas seulement lu dans la
-	// doc). Renvoyer os.ErrProcessDone depuis Cancel obtiendrait le même effet
-	// que ci-dessous ; Cancel = nil est retenu parce qu'il l'exprime plus
-	// directement, pas parce que ce serait la seule forme qui marche.
+	// cmd.Cancel = func() error { return nil } is NOT ENOUGH: in os/exec's
+	// watchCtx, a Cancel that returns nil without being os.ErrProcessDone still
+	// triggers `err = ctx.Err()` afterward, even if the process then exits
+	// successfully (verified empirically, not just read in the docs).
+	// Returning os.ErrProcessDone from Cancel would get the same effect as
+	// below; cmd.Cancel = nil is used because it says so more directly, not
+	// because it's the only form that works.
 	cmd.Cancel = nil
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		// *ErreurExec et non un fmt.Errorf : le message rendu est le MÊME
-		// (Stderr vide ⇒ ErreurExec.Error retombe sur e.Err, donc
-		// « sbx exec -it … : exit status 1 », mot pour mot ce que produisait le
-		// fmt.Errorf d'avant), mais le traitement du binaire absent est partagé
-		// avec Run plutôt que dupliqué — et la chaîne d'erreurs gagne l'Unwrap
-		// d'ErreurExec.
+		// *ExecError, not a fmt.Errorf: the rendered message is the SAME
+		// (empty Stderr ⇒ ExecError.Error falls back to e.Err, so
+		// "sbx exec -it ... : exit status 1", word for word what the previous
+		// fmt.Errorf produced), but the missing-binary handling is shared with
+		// Run instead of duplicated — and the error chain gains ExecError's
+		// Unwrap.
 		//
-		// Annulation reste NIL, délibérément : Attach est la seule méthode où
-		// l'annulation du contexte ne doit rien faire (voir cmd.Cancel
-		// ci-dessus), et la relever ici afficherait « interrompu » sur un shell
-		// que den a justement laissé finir.
-		return &ErreurExec{Bin: e.Bin, Args: slices.Clone(args), Err: err}
+		// Cancellation stays NIL, deliberately: Attach is the one method where
+		// context cancellation must do nothing (see cmd.Cancel above), and
+		// setting it here would show "interrupted" on a shell den deliberately
+		// let finish.
+		return &ExecError{Bin: e.Bin, Args: slices.Clone(args), Err: err}
 	}
 	return nil
 }

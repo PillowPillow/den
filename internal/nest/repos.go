@@ -2,79 +2,79 @@ package nest
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
-// verifieNomsUniques rejette deux repos de même basename dans un même nest.
-// Le basename EST l'identité d'un repo : --without/--only le désignent par ce
-// nom, et au plan 2 il devient un chemin (worktree_root/<wt>/<repo>) et la
-// position d'un argument de `sbx create`. Deux homonymes rendraient les trois
-// ambigus — et `--without api` en ferait disparaître deux en silence. C'est une
-// configuration qu'on ne peut pas honorer : erreur dure, pas surprise.
-func verifieNomsUniques(repos []Repo) error {
-	vus := make(map[string]string, len(repos))
+// checkUniqueNames rejects two repos sharing a basename within the same nest.
+// The basename IS a repo's identity: --without/--only address it by this
+// name, and it becomes a path (worktree_root/<wt>/<repo>) and the position of
+// a `sbx create` argument. Two homonyms would make all three
+// ambiguous — and `--without api` would silently drop two of them. This is a
+// configuration that cannot be honored: a hard error, not a surprise.
+func checkUniqueNames(repos []Repo) error {
+	seen := make(map[string]string, len(repos))
 	for _, r := range repos {
-		if precedent, ok := vus[r.Name()]; ok {
+		if previous, ok := seen[r.Name()]; ok {
 			return fmt.Errorf(
-				"deux repos portent le même nom court %q (%s et %s) — ce nom sert à --without/--only "+
-					"et au chemin du worktree, il doit être unique dans le nest",
-				r.Name(), precedent, r.Path)
+				"two repos share the short name %q (%s and %s) — this name is used by --without/--only "+
+					"and by the worktree path, it must be unique within the nest",
+				r.Name(), previous, r.Path)
 		}
-		vus[r.Name()] = r.Path
+		seen[r.Name()] = r.Path
 	}
 	return nil
 }
 
-// SelectRepos applique --without / --only à la liste déclarée par le nest.
-// Les repos requis sont toujours retenus : seuls les optionnels se filtrent.
-// L'ordre de déclaration est préservé — il fixe l'ordre des positionnels `sbx create`.
-func SelectRepos(repos []Repo, without, only []string) ([]Repo, error) {
+// selectRepos applies --without / --only to the list declared by the nest.
+// Required repos are always kept: only optional ones get filtered. Declaration
+// order is preserved — it fixes the order of `sbx create` positionals.
+func selectRepos(repos []Repo, without, only []string) ([]Repo, error) {
 	if len(without) > 0 && len(only) > 0 {
-		return nil, fmt.Errorf("--without et --only sont mutuellement exclusifs")
+		return nil, fmt.Errorf("--without and --only are mutually exclusive")
 	}
 
-	connus := make(map[string]Repo, len(repos))
+	known := make(map[string]Repo, len(repos))
 	for _, r := range repos {
-		connus[r.Name()] = r
+		known[r.Name()] = r
 	}
 
-	verifie := func(flag string, valeurs []string) error {
-		for _, v := range valeurs {
-			if _, ok := connus[v]; !ok {
-				return fmt.Errorf("%s : repo %q inconnu dans ce nest (disponibles : %s)",
-					flag, v, strings.Join(nomsTries(repos), ", "))
+	check := func(flag string, values []string) error {
+		for _, v := range values {
+			if _, ok := known[v]; !ok {
+				return fmt.Errorf("%s: repo %q unknown in this nest (available: %s)",
+					flag, v, strings.Join(sortedNames(repos), ", "))
 			}
 		}
 		return nil
 	}
-	if err := verifie("--without", without); err != nil {
+	if err := check("--without", without); err != nil {
 		return nil, err
 	}
-	if err := verifie("--only", only); err != nil {
+	if err := check("--only", only); err != nil {
 		return nil, err
 	}
 
-	exclus := make(map[string]bool, len(without))
+	excluded := make(map[string]bool, len(without))
 	for _, v := range without {
-		if !connus[v].Optional {
-			return nil, fmt.Errorf("--without : %q est un repo requis de ce nest, il ne peut pas être retiré", v)
+		if !known[v].Optional {
+			return nil, fmt.Errorf("--without: %q is a required repo of this nest, it cannot be removed", v)
 		}
-		exclus[v] = true
+		excluded[v] = true
 	}
 
-	garde := make(map[string]bool, len(only))
+	keep := make(map[string]bool, len(only))
 	for _, v := range only {
-		garde[v] = true
+		keep[v] = true
 	}
 
 	out := make([]Repo, 0, len(repos))
 	for _, r := range repos {
 		switch {
-		case !r.Optional: // requis : toujours
-		case exclus[r.Name()]:
+		case !r.Optional: // required: always kept
+		case excluded[r.Name()]:
 			continue
-		case len(only) > 0 && !garde[r.Name()]:
+		case len(only) > 0 && !keep[r.Name()]:
 			continue
 		}
 		out = append(out, r)
@@ -82,11 +82,11 @@ func SelectRepos(repos []Repo, without, only []string) ([]Repo, error) {
 	return out, nil
 }
 
-func nomsTries(repos []Repo) []string {
+func sortedNames(repos []Repo) []string {
 	out := make([]string, 0, len(repos))
 	for _, r := range repos {
 		out = append(out, r.Name())
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

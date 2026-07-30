@@ -9,215 +9,213 @@ import (
 	"github.com/PillowPillow/den/internal/sbx"
 )
 
-// Le nom scripté "api.feat12" contient déjà les sous-chaînes "api" et
-// "feat12" : une assertion par strings.Contains sur la sortie ENTIÈRE serait
-// donc vraie même si la décomposition NEST/WORKTREE était totalement cassée
-// (la colonne NAME, seule, suffit à la satisfaire). Les assertions portent
-// donc colonne par colonne, sur les champs de chaque ligne.
-func TestLsAfficheLesColonnes(t *testing.T) {
-	denHomeDeTest(t) // nest "api" y est déclaré
+// The scripted name "api.feat12" already contains the substrings "api" and
+// "feat12": a strings.Contains assertion on the WHOLE output would therefore
+// be true even if the NEST/WORKTREE split were completely broken (the NAME
+// column alone would satisfy it). Assertions are therefore made column by
+// column, on the fields of each line.
+func TestLsPrintsTheColumns(t *testing.T) {
+	testDenHome(t) // nest "api" is declared there
 
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api.feat12","agent":"shell","status":"running","workspaces":["/w/api","/p"]}]}`)},
 	}}
 
-	sortie, err := executeCmdAvecSbx(t, f, "ls")
+	out, err := executeCmdWithSbx(t, f, "ls")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	lignes := strings.Split(strings.TrimRight(sortie, "\n"), "\n")
-	if len(lignes) < 2 {
-		t.Fatalf("attendu un en-tête et une ligne de données ; obtenu :\n%s", sortie)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected a header and a data line; got:\n%s", out)
 	}
 
-	entete := strings.Fields(lignes[0])
-	attenduEntete := []string{"NAME", "NEST", "WORKTREE", "STATUS", "WORKSPACES"}
-	if len(entete) != len(attenduEntete) {
-		t.Fatalf("en-tête = %v, attendu %v", entete, attenduEntete)
+	header := strings.Fields(lines[0])
+	expectedHeader := []string{"NAME", "NEST", "WORKTREE", "STATUS", "WORKSPACES"}
+	if len(header) != len(expectedHeader) {
+		t.Fatalf("header = %v, expected %v", header, expectedHeader)
 	}
-	for i, col := range attenduEntete {
-		if entete[i] != col {
-			t.Errorf("en-tête colonne %d = %q, attendu %q ; en-tête complet : %v", i, entete[i], col, entete)
+	for i, col := range expectedHeader {
+		if header[i] != col {
+			t.Errorf("header column %d = %q, expected %q; full header: %v", i, header[i], col, header)
 		}
 	}
 
-	champs := strings.Fields(lignes[1])
-	// NAME reste le nom complet ; NEST et WORKTREE sont les morceaux
-	// DÉCOMPOSÉS par sbx.Sandbox.Nest()/Worktree(), pas retrouvés par
-	// accident dans NAME.
-	attenduLigne := []string{"api.feat12", "api", "feat12", "running"}
-	if len(champs) < len(attenduLigne) {
-		t.Fatalf("ligne de données = %v, attendu au moins %v", champs, attenduLigne)
+	fields := strings.Fields(lines[1])
+	// NAME stays the full name; NEST and WORKTREE are the pieces SPLIT by
+	// sbx.Sandbox.Nest()/Worktree(), not found by accident inside NAME.
+	expectedLine := []string{"api.feat12", "api", "feat12", "running"}
+	if len(fields) < len(expectedLine) {
+		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
 	}
-	for i, val := range attenduLigne {
-		if champs[i] != val {
-			t.Errorf("colonne %d = %q, attendu %q ; ligne complète : %v", i, champs[i], val, champs)
+	for i, val := range expectedLine {
+		if fields[i] != val {
+			t.Errorf("column %d = %q, expected %q; full line: %v", i, fields[i], val, fields)
 		}
 	}
 
-	// L'âge n'existe pas dans sbx ls --json : ne jamais prétendre le connaître.
-	if strings.Contains(strings.ToUpper(sortie), "AGE") {
-		t.Errorf("aucune colonne d'âge ne doit exister ; obtenu :\n%s", sortie)
+	// Age does not exist in sbx ls --json: never claim to know it.
+	if strings.Contains(strings.ToUpper(out), "AGE") {
+		t.Errorf("no age column must exist; got:\n%s", out)
 	}
 }
 
-// Une sandbox dont le nest n'est pas déclaré reste visible, mais marquée : la
-// masquer ferait disparaître de la vue une VM bel et bien vivante sur la
-// machine. Une sandbox dont le nest EST déclaré, elle, ne doit porter aucune
-// marque — sinon la marque ne prouverait rien.
-func TestLsMarqueLesSandboxesNonDeclarees(t *testing.T) {
-	denHomeDeTest(t) // nest "api" y est déclaré, "inconnue" non
+// A sandbox whose nest is not declared stays visible, but marked: hiding it
+// would make a genuinely live VM disappear from view. A sandbox whose nest IS
+// declared, on the other hand, must carry no mark — otherwise the mark would
+// prove nothing.
+func TestLsMarksUndeclaredSandboxes(t *testing.T) {
+	testDenHome(t) // nest "api" is declared there, "unknown" is not
 
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(
-			`{"sandboxes":[{"name":"api","status":"running"},{"name":"inconnue","status":"running"}]}`)},
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running"},{"name":"unknown","status":"running"}]}`)},
 	}}
 
-	sortie, err := executeCmdAvecSbx(t, f, "ls")
+	out, err := executeCmdWithSbx(t, f, "ls")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(sortie, "inconnue") {
-		t.Errorf("une sandbox non déclarée doit rester visible ; obtenu :\n%s", sortie)
+	if !strings.Contains(out, "unknown") {
+		t.Errorf("an undeclared sandbox must stay visible; got:\n%s", out)
 	}
 
-	var ligneApi, ligneInconnue string
-	for _, ligne := range strings.Split(sortie, "\n") {
-		champs := strings.Fields(ligne)
-		if len(champs) == 0 {
+	var lineAPI, lineUnknown string
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
 			continue
 		}
-		switch champs[0] {
+		switch fields[0] {
 		case "api":
-			ligneApi = ligne
-		case "inconnue":
-			ligneInconnue = ligne
+			lineAPI = line
+		case "unknown":
+			lineUnknown = line
 		}
 	}
-	if ligneApi == "" || ligneInconnue == "" {
-		t.Fatalf("les deux sandboxes doivent apparaître chacune sur une ligne ; obtenu :\n%s", sortie)
+	if lineAPI == "" || lineUnknown == "" {
+		t.Fatalf("both sandboxes must each appear on a line; got:\n%s", out)
 	}
-	if strings.Contains(ligneApi, "?") {
-		t.Errorf("le nest déclaré ne doit porter aucune marque ; ligne : %q", ligneApi)
+	if strings.Contains(lineAPI, "?") {
+		t.Errorf("the declared nest must carry no mark; line: %q", lineAPI)
 	}
-	if !strings.Contains(ligneInconnue, "?") {
-		t.Errorf("le nest non déclaré doit être marqué ; ligne : %q", ligneInconnue)
+	if !strings.Contains(lineUnknown, "?") {
+		t.Errorf("the undeclared nest must be marked; line: %q", lineUnknown)
 	}
 }
 
-// `den ls` ne doit ni échouer ni masquer une VM vivante à cause d'un nest
-// cassé, mais il doit AVERTIR sur stderr en le nommant — c'est la dette
-// relevée à la relecture de T13 : sans ça, un seul nest cassé fait marquer
-// "?" sur toutes les sandboxes, y compris celles dont le nest est valide,
-// sans le moindre signal. Le test vérifie les deux sens : le nom du nest
-// cassé est sur stderr et PAS sur stdout ; la sandbox dont le nest est sain
-// sort bien sur stdout, sans le marqueur "?".
-func TestLsSignaleUnNestCasseSurStderrSansMasquerLesSains(t *testing.T) {
-	dir := denHomeDeTest(t) // nest "api" y est déclaré, DEN_HOME pointé dessus
-	if err := os.WriteFile(filepath.Join(dir, "nests", "casse.yaml"), []byte("egres: [x]\n"), 0o644); err != nil {
+// `den ls` must neither fail nor hide a live VM because of a broken nest, but
+// it must WARN on stderr, naming it — the debt found while reviewing T13:
+// without this, a single broken nest marks "?" on every sandbox, including
+// those with a valid nest, with no signal at all. The test checks both
+// directions: the broken nest's name is on stderr and NOT on stdout; the
+// sandbox whose nest is healthy does appear on stdout, without the "?" mark.
+func TestLsReportsABrokenNestOnStderrWithoutHidingHealthyOnes(t *testing.T) {
+	dir := testDenHome(t) // nest "api" is declared there, DEN_HOME points at it
+	if err := os.WriteFile(filepath.Join(dir, "nests", "broken.yaml"), []byte("egres: [x]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running"}]}`)},
 	}}
 
-	stdout, stderr, err := executeCmdAvecSbxFluxSepares(t, f, "ls")
+	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "ls")
 	if err != nil {
-		t.Fatalf("den ls ne doit jamais retourner d'erreur pour un nest cassé : %v", err)
+		t.Fatalf("den ls must never return an error for a broken nest: %v", err)
 	}
-	// Chaîne exacte, pas juste "casse" : LoadNest lui-même nomme déjà le
-	// fichier dans son erreur de décodage (.../nests/casse.yaml), ce qui
-	// rendrait Contains(stderr, "casse") vrai même si den ls omettait c.Nom.
-	if !strings.Contains(stderr, "nest casse illisible :") {
-		t.Errorf("le nest cassé doit être nommé sur stderr ; obtenu :\n%s", stderr)
+	// Exact string, not just "broken": LoadNest itself already names the file
+	// in its decode error (.../nests/broken.yaml), which would make
+	// Contains(stderr, "broken") true even if den ls omitted bn.Name.
+	if !strings.Contains(stderr, "nest broken unreadable:") {
+		t.Errorf("the broken nest must be named on stderr; got:\n%s", stderr)
 	}
-	if strings.Contains(stdout, "casse") {
-		t.Errorf("le nom du nest cassé ne doit pas apparaître sur stdout ; obtenu :\n%s", stdout)
+	if strings.Contains(stdout, "broken") {
+		t.Errorf("the broken nest's name must not appear on stdout; got:\n%s", stdout)
 	}
 
-	var ligneApi string
-	for _, ligne := range strings.Split(stdout, "\n") {
-		champs := strings.Fields(ligne)
-		if len(champs) > 0 && champs[0] == "api" {
-			ligneApi = ligne
+	var lineAPI string
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "api" {
+			lineAPI = line
 		}
 	}
-	if ligneApi == "" {
-		t.Fatalf("la sandbox 'api', dont le nest est sain, doit apparaître sur stdout ; obtenu :\n%s", stdout)
+	if lineAPI == "" {
+		t.Fatalf("sandbox 'api', whose nest is healthy, must appear on stdout; got:\n%s", stdout)
 	}
-	if strings.Contains(ligneApi, "?") {
-		t.Errorf("le nest sain 'api' ne doit porter aucun marqueur '?' à cause du voisin cassé ; ligne : %q", ligneApi)
+	if strings.Contains(lineAPI, "?") {
+		t.Errorf("healthy nest 'api' must carry no '?' mark because of its broken neighbor; line: %q", lineAPI)
 	}
 }
 
-// den ls doit avertir sur stderr quand le dossier nests/ lui-même est
-// illisible (échec STRUCTUREL, 3e valeur de retour de ListNests) : c'est
-// l'unique signal qui distingue « ces sandboxes ne sont pas déclarées » de
-// « je n'ai pas pu lire le dossier » — sans lui, toutes les sandboxes
-// vivantes se retrouvent marquées "?" sans la moindre explication.
-func TestLsSignaleUneRacineNestsIllisible(t *testing.T) {
+// den ls must warn on stderr when the nests/ directory itself is unreadable
+// (a STRUCTURAL failure, ListNests' 3rd return value): it is the only signal
+// that distinguishes "these sandboxes are not declared" from "I could not
+// read the directory" — without it, every live sandbox ends up marked "?"
+// with no explanation at all.
+func TestLsReportsAnUnreadableNestsRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("test non fiable en root : les permissions sont ignorées")
+		t.Skip("unreliable as root: permissions are ignored")
 	}
-	dir := denHomeDeTest(t) // nest "api" y est déclaré ; nests/ existe déjà
-	racine := filepath.Join(dir, "nests")
-	if err := os.Chmod(racine, 0o000); err != nil {
+	dir := testDenHome(t) // nest "api" is declared there; nests/ already exists
+	root := filepath.Join(dir, "nests")
+	if err := os.Chmod(root, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	// Vérification EMPIRIQUE, sur le modèle de TestListNestsRacineIllisible :
-	// un chmod 0o000 ne suffit pas partout (root, conteneurs, CFS
-	// particuliers qui ignorent aussi les permissions).
-	if _, err := os.ReadDir(racine); err == nil {
-		if err := os.Chmod(racine, 0o755); err != nil {
+	// EMPIRICAL check, following TestListNestsUnreadableRoot's model: a chmod
+	// 0o000 is not enough everywhere (root, containers, some CFS setups also
+	// ignore permissions).
+	if _, err := os.ReadDir(root); err == nil {
+		if err := os.Chmod(root, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		t.Skip("la lecture d'un dossier 0o000 réussit sur cet environnement : test non fiable ici")
+		t.Skip("reading a 0o000 directory succeeds on this environment: unreliable here")
 	}
 	t.Cleanup(func() {
-		// t.TempDir() doit pouvoir nettoyer derrière nous.
-		if err := os.Chmod(racine, 0o755); err != nil {
+		// t.TempDir() must be able to clean up behind us.
+		if err := os.Chmod(root, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	})
 
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running"}]}`)},
 	}}
 
-	stdout, stderr, err := executeCmdAvecSbxFluxSepares(t, f, "ls")
+	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "ls")
 	if err != nil {
-		t.Fatalf("den ls ne doit jamais retourner d'erreur pour une racine nests/ illisible : %v", err)
+		t.Fatalf("den ls must never return an error for an unreadable nests/ root: %v", err)
 	}
-	if !strings.Contains(stderr, "liste des nests") {
-		t.Errorf("l'échec structurel doit être signalé sur stderr ; obtenu :\n%s", stderr)
+	if !strings.Contains(stderr, "listing nests") {
+		t.Errorf("the structural failure must be reported on stderr; got:\n%s", stderr)
 	}
-	if strings.Contains(stdout, "liste des nests") {
-		t.Errorf("l'avertissement ne doit pas apparaître sur stdout ; obtenu :\n%s", stdout)
+	if strings.Contains(stdout, "listing nests") {
+		t.Errorf("the warning must not appear on stdout; got:\n%s", stdout)
 	}
 }
 
-func TestLsAucuneSandbox(t *testing.T) {
-	denHomeDeTest(t)
+func TestLsNoSandbox(t *testing.T) {
+	testDenHome(t)
 
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		"ls --json": {Sortie: []byte(`{"sandboxes":[]}`)},
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
 	}}
 
-	sortie, err := executeCmdAvecSbx(t, f, "ls")
+	out, err := executeCmdWithSbx(t, f, "ls")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(sortie, "aucune sandbox") {
-		t.Errorf("obtenu :\n%s", sortie)
+	if !strings.Contains(out, "no live sandbox") {
+		t.Errorf("got:\n%s", out)
 	}
-	// Aucun tableau vide : le message d'absence remplace l'en-tête, il ne
-	// s'ajoute pas au-dessus d'un tableau à zéro ligne.
-	if strings.Contains(sortie, "NAME") {
-		t.Errorf("aucun en-tête de tableau ne doit apparaître quand la liste est vide ; obtenu :\n%s", sortie)
+	// No empty table: the absence message replaces the header, it is not added
+	// above a zero-row table.
+	if strings.Contains(out, "NAME") {
+		t.Errorf("no table header must appear when the list is empty; got:\n%s", out)
 	}
 }

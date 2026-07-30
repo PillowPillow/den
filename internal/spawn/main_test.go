@@ -7,18 +7,16 @@ import (
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
-// TestMain neutralise l'environnement git de la machine pour tout le paquet,
-// via worktree.NeutraliseEnvironnementGit (voir sa godoc pour le pourquoi et
-// l'incident qui l'a fait naître).
+// TestMain neutralizes the machine's git environment for the whole package
+// (see worktree.NeutralizeGitEnvironment's godoc for why).
 //
-// denTestSSH lance du git RÉEL (`git init`/`config`/`commit`, spawn_test.go)
-// pour préparer un dépôt de test : sans cette neutralisation, sous GIT_DIR +
-// GIT_WORK_TREE désignant un dépôt tiers, mesuré, un
-// `go test ./internal/spawn/...` a réellement ajouté 32 commits dans CE dépôt
-// au lieu des t.TempDir() des tests — la même classe d'incident que
-// internal/worktree et internal/cli avaient déjà fermée chacun pour
-// eux-mêmes, rouverte ici avant cette correction.
+// denTestSSH runs REAL git (`git init`/`config`/`commit`, spawn_test.go) to
+// prepare a test repo: without this neutralization, under a GIT_DIR +
+// GIT_WORK_TREE pointing at a third-party repo, `go test ./internal/spawn/...`
+// has actually added commits to THAT repo instead of the tests' t.TempDir() —
+// the same class of incident internal/worktree and internal/cli each already
+// closed for themselves.
 func TestMain(m *testing.M) {
-	worktree.NeutraliseEnvironnementGit()
+	worktree.NeutralizeGitEnvironment()
 	os.Exit(m.Run())
 }

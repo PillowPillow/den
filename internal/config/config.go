@@ -8,30 +8,30 @@ import (
 	"strings"
 )
 
-// Agent décrit une entrée du registre d'agents (spec §4.1 et §9).
+// Agent describes an entry in the agent registry (spec §4.1 and §9).
 type Agent struct {
 	ConfigDir string            `yaml:"config_dir"`
 	Env       map[string]string `yaml:"env"`
-	// BinDirs : chemins IN-VM ajoutés au PATH avant la commande de fraîcheur (spec §9.1).
-	// Jamais expansés côté hôte.
+	// BinDirs: IN-VM paths added to PATH before the freshness command (spec §9.1).
+	// Never expanded on the host side.
 	BinDirs []string `yaml:"bin_dirs"`
-	// Update : commande de mise à jour de l'agent, jouée au boot de la VM.
+	// Update: the agent's update command, run at VM boot.
 	Update string `yaml:"update"`
 }
 
-// Defaults porte les choix par défaut quand ni le nest ni les flags ne tranchent.
+// Defaults carries the default choices used when neither the nest nor the flags decide.
 type Defaults struct {
 	Agent string `yaml:"agent"`
 	Stack string `yaml:"stack"`
 }
 
-// SSH décrit le mode d'accès SSH dans la VM (spec §10).
+// SSH describes the SSH access mode inside the VM (spec §10).
 type SSH struct {
 	Mode string `yaml:"mode"` // agent-forward | mount | none
-	Dir  string `yaml:"dir"`  // utilisé si mode=mount
+	Dir  string `yaml:"dir"`  // used when mode=mount
 }
 
-// Global est le contenu de ~/.den/config.yaml, défauts appliqués et chemins expansés.
+// Global is the content of ~/.den/config.yaml, with defaults applied and paths expanded.
 type Global struct {
 	Agents         map[string]Agent `yaml:"agents"`
 	Defaults       Defaults         `yaml:"defaults"`
@@ -41,26 +41,26 @@ type Global struct {
 	Egress         []string         `yaml:"egress"`
 }
 
-// LoadGlobalSansValider lit <denHome>/config.yaml, applique les défauts et
-// expanse les chemins hôte, SANS contrôler la cohérence du résultat.
+// LoadGlobalUnvalidated reads <denHome>/config.yaml, applies defaults and
+// expands host paths, WITHOUT checking the result's consistency.
 //
-// Réservé à `den doctor`, qui doit cumuler et afficher TOUTES les incohérences
-// d'un coup (doctor.go) : s'il chargeait par LoadGlobal, il s'arrêterait à
-// l'erreur de chargement et n'atteindrait plus jamais sa propre validation.
-// Tout autre appelant doit passer par LoadGlobal — la validation n'est pas
-// facultative sur le chemin qui construit une microVM.
-func LoadGlobalSansValider(denHome string) (*Global, error) {
-	chemin := filepath.Join(denHome, "config.yaml")
-	brut, err := os.ReadFile(chemin)
+// Reserved for `den doctor`, which needs to accumulate and display ALL
+// inconsistencies at once (doctor.go): loading through LoadGlobal would stop
+// at the first load error and never reach its own validation. Every other
+// caller must go through LoadGlobal instead — validation is not optional on
+// the path that builds a microVM.
+func LoadGlobalUnvalidated(denHome string) (*Global, error) {
+	path := GlobalPath(denHome)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		// ErreurFichier, et non l'erreur nue : celle-ci est un *fs.PathError qui
-		// répète le chemin qu'on vient de nommer, et dont le motif est en
-		// anglais. %w reste indispensable — la chaîne doit survivre.
-		return nil, fmt.Errorf("lecture de %s : %w", chemin, &ErreurFichier{Err: err})
+		// FileError, not the raw error: the raw one is a *fs.PathError that
+		// repeats the path we just named. %w stays mandatory — the chain must
+		// survive.
+		return nil, fmt.Errorf("reading %s: %w", path, &FileError{Err: err})
 	}
 
 	var g Global
-	if err := DecodeYAMLStrict(chemin, brut, &g); err != nil {
+	if err := DecodeYAMLStrict(path, raw, &g); err != nil {
 		return nil, err
 	}
 
@@ -80,45 +80,36 @@ func LoadGlobalSansValider(denHome string) (*Global, error) {
 	if g.SSH.Dir, err = ExpandPath(g.SSH.Dir); err != nil {
 		return nil, err
 	}
-	for nom, a := range g.Agents {
+	for name, a := range g.Agents {
 		if a.ConfigDir, err = ExpandPath(a.ConfigDir); err != nil {
-			return nil, fmt.Errorf("agent %s : %w", nom, err)
+			return nil, fmt.Errorf("agent %s: %w", name, err)
 		}
-		g.Agents[nom] = a // les valeurs de map ne sont pas adressables
+		g.Agents[name] = a // map values are not addressable
 	}
 	return &g, nil
 }
 
-// LoadGlobal charge <denHome>/config.yaml et REFUSE une configuration
-// incohérente.
-//
-// Avant D1, Validate() n'avait qu'un appelant — `den doctor` — et toute config
-// invalide traversait `den <nest>`, `den ls`, `den sh` et `den rm` sans être
-// vue : un `worktree_layout: centrl` retombait silencieusement sur `central`,
-// un `config_dir` vide atteignait la microVM. Valider ici plutôt que chez
-// chaque appelant fait que le nom le plus court est le nom sûr : rester aveugle
-// demande désormais d'écrire explicitement LoadGlobalSansValider.
+// LoadGlobal loads <denHome>/config.yaml and REJECTS an inconsistent configuration.
 func LoadGlobal(denHome string) (*Global, error) {
-	g, err := LoadGlobalSansValider(denHome)
+	g, err := LoadGlobalUnvalidated(denHome)
 	if err != nil {
 		return nil, err
 	}
 	if errs := g.Validate(); len(errs) > 0 {
-		return nil, ErreurConfig(denHome, errs)
+		return nil, ConfigError(denHome, errs)
 	}
 	return g, nil
 }
 
-// ErreurConfig assemble une liste d'erreurs de validation en une seule erreur
-// nommant le fichier à corriger.
+// ConfigError assembles a list of validation errors into a single error naming
+// the file to fix.
 //
-// Toutes les fautes, jamais la première seule : un aller-retour par faute est
-// exactement ce que Validate() a été écrit pour éviter. Partagé entre
-// LoadGlobal et les commandes qui ne valident qu'une PARTIE de la config
-// (internal/cli/rm.go), pour que l'utilisateur lise toujours la même forme.
-func ErreurConfig(denHome string, errs []error) error {
+// All faults, never just the first: shared between LoadGlobal and commands
+// that validate only PART of the config (internal/cli/rm.go), so the user
+// always reads the same shape of message.
+func ConfigError(denHome string, errs []error) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "configuration invalide dans %s :", filepath.Join(denHome, "config.yaml"))
+	fmt.Fprintf(&b, "invalid configuration in %s:", GlobalPath(denHome))
 	for _, e := range errs {
 		fmt.Fprintf(&b, "\n  - %v", e)
 	}

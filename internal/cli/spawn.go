@@ -11,30 +11,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// configureSpawn fait de la racine elle-même la commande de spawn : `den <nest>`
-// n'est pas une sous-commande, c'est l'argument par défaut. cobra retombe sur le
-// RunE de la racine quand args[0] ne correspond à aucune sous-commande.
+// configureSpawn turns the root itself into the spawn command: `den <nest>` is
+// not a subcommand, it is the default argument. cobra falls back on the root's
+// RunE when args[0] matches no subcommand.
 //
-// À appeler APRÈS les root.AddCommand : poser Args sur la racine désactive le
-// legacyArgs de cobra (« unknown command »), et c'est cette bascule qui rend un
-// nom de nest recevable en première position.
+// Call it AFTER the root.AddCommand calls: setting Args on the root disables
+// cobra's legacyArgs ("unknown command"), and that switch is what makes a nest
+// name acceptable in first position.
 //
-// deps est pris en paramètre plutôt que construit ici, comme newDoctorCmd :
-// c'est ce qui rend vérifiable le branchement des flags sur spawn.Options — un
-// flag débranché est silencieux — sans qu'un test tente d'exécuter le vrai `sbx`.
+// deps is a parameter rather than built here, like newDoctorCmd: that is what
+// makes the flag-to-spawn.Options wiring checkable — an unwired flag is silent
+// — without a test having to run the real `sbx`.
 func configureSpawn(root *cobra.Command, denHome *string, deps spawn.Deps) {
 	var o spawn.Options
 
-	// Sans « [flags] » : la mention est ajoutée en français par le gabarit
-	// d'usage, et DisableFlagsInUseLine empêche cobra d'y remettre le sien.
 	root.Use = "den <nest>"
-	root.Args = auPlusUnArgument
-	// Explicite, parce que cobra ne l'applique PAS sur ce chemin : le défaut de
-	// 2 est posé dans findSuggestions(), qui sert la branche « unknown command »
-	// — celle que den ne prend jamais, la racine ayant un RunE. Appelé
-	// directement, SuggestionsFor lit ce champ tel quel : laissé à 0, il ne
-	// retiendrait que les noms exacts et les préfixes, et `den doctr` ne
-	// suggérerait rien (mesuré). La valeur est celle de cobra, pas une nôtre.
+	root.Args = atMostOneArg
+	// Explicit, because cobra does NOT apply it on this path: its default of 2
+	// is set in findSuggestions(), which serves the "unknown command" branch den
+	// never takes (the root has a RunE). Called directly, SuggestionsFor reads
+	// this field as-is, and at 0 `den doctr` would suggest nothing.
 	root.SuggestionsMinimumDistance = 2
 	root.RunE = func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
@@ -45,60 +41,56 @@ func configureSpawn(root *cobra.Command, denHome *string, deps spawn.Deps) {
 		if err != nil {
 			return err
 		}
-		// Copie locale : seule la Sortie est décidée ici, à l'exécution, parce
-		// qu'elle seule dépend de la commande (et donc du SetOut des tests).
+		// Local copy: only Out is decided here, at run time, because it alone
+		// depends on the command (and hence on a test's SetOut).
 		d := deps
-		d.Sortie = cmd.OutOrStdout()
-		return avecSuggestion(root, o.Nest, spawn.Spawn(cmd.Context(), home, o, d))
+		d.Out = cmd.OutOrStdout()
+		return withSuggestion(root, o.Nest, spawn.Spawn(cmd.Context(), home, o, d))
 	}
 
-	root.Flags().StringVarP(&o.Worktree, "worktree", "w", "", "worktree à propager sur tous les repos")
-	root.Flags().StringVar(&o.Agent, "agent", "", "agent à utiliser (défaut : defaults.agent)")
-	root.Flags().StringSliceVar(&o.Without, "without", nil, "exclure ces repos optionnels")
-	root.Flags().StringSliceVar(&o.Only, "only", nil, "ne garder que ces repos optionnels")
-	root.Flags().BoolVar(&o.Detach, "detach", false, "ne pas attacher de shell après le spawn")
+	root.Flags().StringVarP(&o.Worktree, "worktree", "w", "", "worktree to propagate across all repos")
+	root.Flags().StringVar(&o.Agent, "agent", "", "agent to use (default: defaults.agent)")
+	root.Flags().StringSliceVar(&o.Without, "without", nil, "exclude these optional repos")
+	root.Flags().StringSliceVar(&o.Only, "only", nil, "keep only these optional repos")
+	root.Flags().BoolVar(&o.Detach, "detach", false, "do not attach a shell after the spawn")
 }
 
-// avecSuggestion ajoute « vouliez-vous dire … ? » à l'échec d'un spawn quand le
-// nom demandé n'existe pas comme nest ET ressemble à une sous-commande.
-// `den doctr` (faute de frappe pour `doctor`) part en spawn d'un nest « doctr »
-// : c'est la contrepartie assumée du choix « la racine EST la commande de
-// spawn » (spec §11), et l'erreur seule ne dit rien de la faute de frappe.
+// withSuggestion appends "did you mean ...?" to a failed spawn when the
+// requested name is not a nest AND looks like a subcommand. `den doctr` spawns
+// a nest named "doctr": that is the price of "the root IS the spawn command"
+// (spec §11), and the bare error says nothing about the typo.
 //
-// La suggestion s'ajoute à l'ÉCHEC DE RÉSOLUTION, et uniquement là. Refuser en
-// amont tout argument proche d'une sous-commande — la solution évidente —
-// casserait un nest légitimement nommé « doctr » : den le listerait dans
-// `den nest ls` puis refuserait de l'adresser, le défaut trouvé en T3 avec
-// `-api`. Ici, un nest qui EXISTE ne rencontre jamais ce code.
+// The suggestion is attached to the RESOLUTION FAILURE, and only there:
+// rejecting up front any argument close to a subcommand would break a nest
+// legitimately named "doctr". A nest that EXISTS never reaches this code.
 //
-// nest.ErreurNestIntrouvable, et non errors.Is(err, fs.ErrNotExist) : dans un
-// den home vide, l'absence de config.yaml est elle aussi un fs.ErrNotExist, et
-// l'on collerait une suggestion sur une erreur qui ne parle pas du nest.
+// nest.NestNotFoundError rather than errors.Is(err, fs.ErrNotExist): in an
+// empty den home a missing config.yaml is also fs.ErrNotExist, and we would
+// pin a suggestion on an error that says nothing about the nest.
 //
-// Les noms proposés viennent de root.Commands(), via le SuggestionsFor de cobra
-// (distance de Levenshtein ≤ SuggestionsMinimumDistance, plus les préfixes) :
-// aucune liste en dur, qui divergerait au prochain root.AddCommand.
-func avecSuggestion(root *cobra.Command, nom string, err error) error {
-	var introuvable *nest.ErreurNestIntrouvable
-	if !errors.As(err, &introuvable) {
+// The candidate names come from root.Commands() through cobra's SuggestionsFor,
+// never from a hardcoded list that would drift at the next root.AddCommand.
+func withSuggestion(root *cobra.Command, name string, err error) error {
+	var notFound *nest.NestNotFoundError
+	if !errors.As(err, &notFound) {
 		return err
 	}
-	// Le nom rapporté doit être celui que l'utilisateur a tapé : si un jour la
-	// séquence de spawn chargeait un AUTRE nest, son absence à lui ne dirait
-	// rien d'une faute de frappe sur la ligne de commande.
-	if introuvable.Nom != nom {
+	// The reported name must be the one the user typed: if the spawn sequence
+	// ever loaded ANOTHER nest, its absence would say nothing about a typo on
+	// the command line.
+	if notFound.Name != name {
 		return err
 	}
-	proches := root.SuggestionsFor(nom)
-	if len(proches) == 0 {
+	candidates := root.SuggestionsFor(name)
+	if len(candidates) == 0 {
 		return err
 	}
-	citees := make([]string, len(proches))
-	for i, p := range proches {
-		citees[i] = fmt.Sprintf("`den %s`", p)
+	quoted := make([]string, len(candidates))
+	for i, c := range candidates {
+		quoted[i] = fmt.Sprintf("`den %s`", c)
 	}
-	// Sur une ligne à part : le message d'échec du nest reste lisible tel quel,
-	// et la suggestion ne se fait pas passer pour la cause de l'erreur.
-	return fmt.Errorf("%w\nvouliez-vous dire %s ? (un premier argument inconnu est lu "+
-		"comme un nom de nest, jamais comme une commande)", err, strings.Join(citees, " ou "))
+	// On its own line: the nest failure stays readable as-is, and the
+	// suggestion does not pass itself off as the cause of the error.
+	return fmt.Errorf("%w\ndid you mean %s? (an unknown first argument is read "+
+		"as a nest name, never as a command)", err, strings.Join(quoted, " or "))
 }

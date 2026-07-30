@@ -1,6 +1,6 @@
-// Package worktree propage un worktree git sur les repos d'un nest. C'est le
-// seul module de den qui pilote git ; comme sbx, il le fait derrière une
-// interface pour rester substituable.
+// Package worktree propagates a git worktree across the repos of a nest. It is
+// the only den module that drives git; like sbx, it does so behind an interface
+// to stay substitutable.
 package worktree
 
 import (
@@ -21,34 +21,30 @@ import (
 	"time"
 )
 
-// Git est l'accès à la CLI git, injecté pour rester substituable.
+// Git is access to the git CLI, injected to stay substitutable.
 type Git interface {
 	Run(ctx context.Context, dir string, args ...string) ([]byte, error)
-	// RunAvecEntree alimente en plus l'entrée standard de git. Elle existe pour
-	// les sous-commandes qui n'acceptent une liste de chemins SANS CITATION que
-	// par `--stdin` : `check-ignore -z` répond pour mille dossiers en un fork
-	// là où l'argv en exigeait mille, et git refuse `-z` hors de `--stdin`.
-	RunAvecEntree(ctx context.Context, dir string, entree []byte, args ...string) ([]byte, error)
+	// RunWithInput additionally feeds git's standard input. It exists for the
+	// subcommands that only accept an UNQUOTED path list through `--stdin`:
+	// `check-ignore -z` answers for a thousand directories in one fork, and git
+	// refuses `-z` outside of `--stdin`.
+	RunWithInput(ctx context.Context, dir string, input []byte, args ...string) ([]byte, error)
 }
 
 type gitExec struct{}
 
-// NewGit renvoie l'accès réel au git du PATH.
+// NewGit returns real access to the git found on PATH.
 func NewGit() Git { return gitExec{} }
 
-// VariablesRedirigeantes sont les variables d'environnement qui désignent le
-// dépôt cible et qui sont PRIORITAIRES sur le répertoire courant : tant qu'elles
-// sont posées, cmd.Dir n'isole rien. den est fait pour tourner sous des agents
-// et depuis des hooks git, où elles sont couramment exportées ; sans ce
-// filtrage, fichiersSales déciderait d'une suppression d'après l'état d'un autre
-// dépôt. On les RETIRE de l'environnement : les poser à vide ne les neutralise
-// pas — git échoue alors sur un `not a git repository` pour chaque commande.
+// RedirectingVars are the environment variables that designate the target
+// repository and TAKE PRECEDENCE over the current directory: while they are
+// set, cmd.Dir isolates nothing and dirtyFiles would judge a deletion from
+// another repository's state. They are REMOVED, not blanked — an empty value
+// makes git fail with `not a git repository` on every command.
 //
-// Exportée : les paquets dont les tests lancent du git réel (internal/cli en
-// particulier) doivent neutraliser le MÊME jeu de variables que le code de
-// production, sous peine d'écrire dans un dépôt tiers désigné par
-// l'environnement — voir le TestMain de ce paquet, et celui d'internal/cli.
-var VariablesRedirigeantes = []string{
+// Exported so that packages whose tests run real git (internal/cli in
+// particular) neutralize the SAME set as production code.
+var RedirectingVars = []string{
 	"GIT_DIR",
 	"GIT_COMMON_DIR",
 	"GIT_WORK_TREE",
@@ -58,472 +54,434 @@ var VariablesRedirigeantes = []string{
 	"GIT_NAMESPACE",
 }
 
-// NeutraliseEnvironnementGit rend l'environnement du PROCESSUS DE TEST
-// hermétique à la configuration git de la machine et aux variables qui
-// redirigent git vers un autre dépôt (VariablesRedirigeantes) — à appeler
-// depuis le TestMain de tout paquet dont les tests lancent du git réel, que ce
-// soit via ce paquet ou en direct (exec.Command("git", …)).
+// NeutralizeGitEnvironment makes the TEST PROCESS environment hermetic to the
+// machine's git configuration and to the variables that redirect git to another
+// repository (RedirectingVars).
 //
-// Vit dans un fichier de PRODUCTION, pas dans un _test.go, à dessein : un
-// TestMain d'un autre paquet (internal/cli, internal/spawn) l'importe comme
-// n'importe quelle dépendance normale — les symboles d'un _test.go ne sont
-// visibles que dans leur propre paquet. Même raison que sbx.Fake vit dans le
-// paquet de production (voir son commentaire).
-//
-// Née d'un défaut apparu DEUX FOIS après sa première fermeture : ce paquet
-// avait fermé le trou pour lui-même (voir son propre TestMain), puis
-// internal/cli l'a rouvert sans le savoir, puis internal/spawn — mesuré : un
-// `go test ./internal/spawn/...` lancé sous GIT_DIR/GIT_WORK_TREE désignant un
-// dépôt tiers y a ajouté 32 commits. Centraliser la neutralisation ici ne
-// l'IMPOSE à aucun paquet ; TestExigeNeutraliseEnvironnementGitSiGitEstLanceEnClair,
-// dans hermetisme_test.go, ferme structurellement le trou plutôt que de
-// compter sur la mémoire d'un futur auteur de test.
-//
-// RÉSERVÉE À UN TestMain (aucun garde-fou qui l'empêche d'être appelée
-// ailleurs, ni depuis du code de production den lui-même) : elle modifie
-// l'environnement du PROCESSUS ENTIER, pas celui d'un test isolé. L'appeler
-// hors d'un TestMain, ou plusieurs fois, ne casse rien en soi (chaque appel
-// est idempotent — Setenv/Unsetenv sur les mêmes clés), mais poser ces
-// variables pour tout le reste du processus (y compris un binaire den réel
-// qui importerait ce paquet) serait un effet de bord que rien ne justifie.
-func NeutraliseEnvironnementGit() {
+// TestMain ONLY: it mutates the whole process environment, not one test's. It
+// lives in a production file, not a _test.go, so that another package's
+// TestMain can import it — _test.go symbols are only visible in their own
+// package. Same reason sbx.Fake lives in its production package.
+func NeutralizeGitEnvironment() {
 	os.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	os.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
-	// Neutraliser les deux fichiers ne suffit pas : git accepte aussi de la
-	// configuration par l'environnement.
+	// Neutralizing both files is not enough: git also accepts configuration
+	// through the environment.
 	os.Unsetenv("GIT_CONFIG_COUNT")
 	os.Unsetenv("GIT_CONFIG_PARAMETERS")
-	for _, v := range VariablesRedirigeantes {
+	for _, v := range RedirectingVars {
 		os.Unsetenv(v)
 	}
 }
 
-// environnementNeutre rend l'environnement courant privé des variables qui
-// détourneraient git vers un autre dépôt que celui demandé.
-func environnementNeutre() []string {
-	brut := os.Environ()
-	propre := make([]string, 0, len(brut))
-	for _, v := range brut {
-		nom, _, _ := strings.Cut(v, "=")
-		if slices.Contains(VariablesRedirigeantes, nom) {
+// neutralEnvironment returns the current environment stripped of the variables
+// that would divert git to a repository other than the requested one.
+func neutralEnvironment() []string {
+	raw := os.Environ()
+	clean := make([]string, 0, len(raw))
+	for _, v := range raw {
+		name, _, _ := strings.Cut(v, "=")
+		if slices.Contains(RedirectingVars, name) {
 			continue
 		}
-		propre = append(propre, v)
+		clean = append(clean, v)
 	}
-	return propre
+	return clean
 }
 
 func (g gitExec) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	return g.RunAvecEntree(ctx, dir, nil, args...)
+	return g.RunWithInput(ctx, dir, nil, args...)
 }
 
-func (gitExec) RunAvecEntree(ctx context.Context, dir string, entree []byte, args ...string) ([]byte, error) {
+func (gitExec) RunWithInput(ctx context.Context, dir string, input []byte, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = environnementNeutre()
-	// Stdin laissé nil (donc /dev/null) quand il n'y a rien à écrire : une
-	// sous-commande qui lirait l'entrée standard bloquerait sinon sans borne.
-	if entree != nil {
-		cmd.Stdin = bytes.NewReader(entree)
+	cmd.Env = neutralEnvironment()
+	// Stdin left nil (hence /dev/null) when there is nothing to write: a
+	// subcommand reading standard input would otherwise block forever.
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		// Le CONTEXTE est en français, le DÉTAIL reste celui de git, donc en
-		// anglais : « … : fatal: … ». C'est une décision de projet, tenue par
-		// tout le module. Traduire supposerait de reconnaître les messages de
-		// git — un jeu ouvert, qui change à chaque version — et un message
-		// approximatif vaut moins que le message exact, cherchable tel quel.
-		// Là où l'anglais de git serait la SEULE chose que l'utilisateur lise,
-		// den nomme lui-même la sortie (voir Assure et Retire).
+		// The CONTEXT is den's, the DETAIL stays git's, verbatim: translating
+		// would mean recognizing git's messages — an open set that changes every
+		// release — and an approximate message is worth less than the exact one,
+		// searchable as is. Where git's wording would be the ONLY thing the user
+		// reads, den names the outcome itself (see Ensure and Remove).
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = err.Error()
 		}
-		return stdout.Bytes(), fmt.Errorf("git %s (dans %s) : %s", strings.Join(args, " "), dir, detail)
+		return stdout.Bytes(), fmt.Errorf("git %s (in %s): %s", strings.Join(args, " "), dir, detail)
 	}
 	return stdout.Bytes(), nil
 }
 
-// Chemin calcule où vit le worktree wt du repo, selon le layout (spec §13.5).
+// Path computes where the worktree wt of a repo lives, per the layout
+// (spec §13.5).
 //
-//	central  : <root>/<wt>/<repo>     — défaut, tous les worktrees d'un même
-//	                                    wt voisins, ce qui rend le co-montage
-//	                                    multi-repo lisible
-//	per-repo : <repo>/.den/<wt>       — pour qui préfère garder ses worktrees
-//	                                    près de leur dépôt
-func Chemin(layout, root, wt, cheminRepo string) string {
+//	central  : <root>/<wt>/<repo>     — default; all worktrees of one wt sit
+//	                                    side by side, which makes multi-repo
+//	                                    co-mounting readable
+//	per-repo : <repo>/.den/<wt>       — for those who prefer worktrees next to
+//	                                    their repository
+func Path(layout, root, wt, repoPath string) string {
 	if layout == "per-repo" {
-		return filepath.Join(cheminRepo, ".den", wt)
+		return filepath.Join(repoPath, ".den", wt)
 	}
-	return filepath.Join(root, wt, filepath.Base(cheminRepo))
+	return filepath.Join(root, wt, filepath.Base(repoPath))
 }
 
-// Nom porte les DEUX noms d'un worktree, qui ne coïncident pas toujours.
+// Name carries the TWO names of a worktree, which do not always coincide.
 //
-// Dossier est le composant aplati (config.AplatitComposantSandbox) : il nomme
-// le dossier du worktree ET le suffixe du nom de sandbox. Il DOIT rester un
-// composant de chemin plat — den n'a pas d'autre état que le nom de sandbox, et
-// `den rm` retrouve le dossier à partir de ce seul nom, par Chemin. Un
-// « feature/123 » en dossier creuserait un sous-dossier introuvable par ce
-// chemin-là.
+// Dir is the flattened component (config.FlattenSandboxComponent): it names the
+// worktree directory AND the sandbox name suffix. It MUST stay a flat path
+// component — den keeps no state beyond the sandbox name, and `den rm` recovers
+// the directory from that name alone, through Path.
 //
-// Branche est le nom réel de la branche git, tel que l'utilisateur l'a tapé.
-// C'est le nom qu'il verra dans son `git log`, dans sa forge et dans sa PR :
-// l'aplatir serait renommer son travail.
-type Nom struct {
-	Dossier string
-	Branche string
+// Branch is the real git branch name, as the user typed it: it is what shows up
+// in `git log`, in the forge and in the PR, so flattening it would rename their
+// work.
+type Name struct {
+	Dir    string
+	Branch string
 }
 
-// Assure garantit l'existence du worktree wt pour ce repo et renvoie son
-// chemin. Idempotent : si le worktree existe déjà SUR LA BONNE BRANCHE et
-// APPARTIENT BIEN À CE REPO, il est laissé tel quel.
+// Ensure guarantees the existence of worktree wt for this repo and returns its
+// path. Idempotent: an existing worktree ON THE RIGHT BRANCH and BELONGING TO
+// THIS REPO is left alone.
 //
-// Un worktree existant sur une AUTRE branche est une erreur, jamais un checkout
-// silencieux : basculer la branche d'un worktree où l'utilisateur travaille
-// déplacerait son travail sans qu'il l'ait demandé. Ce contrôle porte AUSSI la
-// collision d'aplatissement : « feat/essai » et « feat-essai » visent le même
-// dossier, et c'est la comparaison de branches qui les distingue.
-func Assure(ctx context.Context, g Git, layout, root string, wt Nom, cheminRepo string) (string, error) {
-	if err := verifieRepo(cheminRepo); err != nil {
+// An existing worktree on ANOTHER branch is an error, never a silent checkout:
+// switching the branch of a worktree the user is working in would move their
+// work unasked. That check also covers the flattening collision: "feat/try" and
+// "feat-try" aim at the same directory, and only the branch comparison tells
+// them apart.
+func Ensure(ctx context.Context, g Git, layout, root string, wt Name, repoPath string) (string, error) {
+	if err := checkRepo(repoPath); err != nil {
 		return "", err
 	}
 
-	chemin := Chemin(layout, root, wt.Dossier, cheminRepo)
+	worktreePath := Path(layout, root, wt.Dir, repoPath)
 
-	// En per-repo, le worktree naît À L'INTÉRIEUR du dépôt : sans exclusion, il
-	// laisse un « ?? .den/ » à demeure dans le git status de l'utilisateur.
+	// In per-repo the worktree is born INSIDE the repository: without an
+	// exclusion it leaves a permanent "?? .den/" in the user's git status.
 	if layout == "per-repo" {
-		if err := excludeDossierDen(ctx, g, cheminRepo); err != nil {
+		if err := excludeDenDir(ctx, g, repoPath); err != nil {
 			return "", err
 		}
 	}
 
-	if _, err := os.Stat(chemin); err == nil {
-		if err := verifieAppartenance(ctx, g, chemin, cheminRepo); err != nil {
+	if _, err := os.Stat(worktreePath); err == nil {
+		if err := checkOwnership(ctx, g, worktreePath, repoPath); err != nil {
 			return "", err
 		}
-		actuelle, err := brancheCourante(ctx, g, chemin)
+		current, err := currentBranch(ctx, g, worktreePath)
 		if err != nil {
 			return "", fmt.Errorf(
-				"%s existe déjà mais n'est pas un worktree git exploitable : %w", chemin, err)
+				"%s already exists but is not a usable git worktree: %w", worktreePath, err)
 		}
-		if actuelle != wt.Branche {
+		if current != wt.Branch {
 			return "", fmt.Errorf(
-				"le worktree %s est sur la branche %q, pas %q — choisis un autre nom de worktree "+
-					"ou bascule ce dossier sur %q à la main", chemin, actuelle, wt.Branche, wt.Branche)
+				"worktree %s is on branch %q, not %q — pick another worktree name "+
+					"or switch that directory to %q by hand", worktreePath, current, wt.Branch, wt.Branch)
 		}
-		return chemin, nil // déjà en place : idempotent
+		return worktreePath, nil // already in place: idempotent
 	}
 
-	// Dossier absent mais enregistrement toujours vivant : git refuserait avec
-	// un « fatal: … missing but already registered worktree » anglais, et rien
-	// dans den n'en sortirait. On nomme la sortie.
-	enregistre, err := estEnregistre(ctx, g, cheminRepo, chemin)
+	// Directory gone but the registration still alive: git would refuse with a
+	// "fatal: ... missing but already registered worktree" and nothing of den
+	// would come out of it. We name the outcome ourselves.
+	registered, _, err := worktreeEntry(ctx, g, repoPath, worktreePath)
 	if err != nil {
 		return "", err
 	}
-	if enregistre {
+	if registered {
 		return "", fmt.Errorf(
-			"le worktree %s est encore enregistré dans %s alors que son dossier a disparu — "+
-				"lance `den rm` sur ce nest pour effacer l'enregistrement, puis re-spawne",
-			chemin, cheminRepo)
+			"worktree %s is still registered in %s but its directory is gone — "+
+				"run `den rm` on this nest to clear the registration, then spawn again",
+			worktreePath, repoPath)
 	}
 
-	// `git worktree add <chemin> <branche>` si la branche existe déjà,
-	// `-b <branche>` sinon : git refuse de recréer une branche existante.
-	args := []string{"worktree", "add", chemin, wt.Branche}
-	if !brancheExiste(ctx, g, cheminRepo, wt.Branche) {
-		// Un HEAD qui ne se résout pas ne donne aucun point de départ à la
-		// nouvelle branche. Le contrôle vit ICI et pas plus haut parce que c'est
-		// la seule branche qu'un tel dépôt peut atteindre — la branche demandée
-		// ne peut pas exister dans cet état, donc brancheExiste est forcément
-		// faux — et que le placer en tête ferait payer un `rev-parse` au chemin
-		// idempotent, où le worktree est déjà en place.
+	// `git worktree add <path> <branch>` if the branch already exists,
+	// `-b <branch>` otherwise: git refuses to recreate an existing branch.
+	args := []string{"worktree", "add", worktreePath, wt.Branch}
+	if !branchExists(ctx, g, repoPath, wt.Branch) {
+		// A HEAD that does not resolve gives the new branch no start point. The
+		// check lives HERE and not higher up because it is the only branch such a
+		// repository can reach — the requested branch cannot exist in that state,
+		// so branchExists is necessarily false — and putting it up front would
+		// charge a `rev-parse` to the idempotent path.
 		//
-		// Sans lui, git rend un message exact de son point de vue et
-		// inactionnable du nôtre, mesuré sur un dépôt vierge :
+		// Without it git answers exactly from its point of view and unactionably
+		// from ours, on a virgin repository:
 		//
 		//	No possible source branch, inferring '--orphan'
 		//	fatal: options '--orphan' and '--track' cannot be used together
 		//
-		// L'utilisateur n'a écrit ni --orphan ni --track : le premier vient de
-		// l'inférence de git, le second de ce que git range --no-track dans la
-		// famille --track.
-		//
-		// Le message énonce ce que la sonde MESURE — HEAD ne se résout pas — et
-		// non ce qu'on aimerait en déduire. Une version antérieure affirmait
-		// « le dépôt n'a aucun commit » : vrai sur un `git init` vierge, FAUX
-		// sur une branche orpheline, où le dépôt a des commits (mesuré :
-		// `rev-list --all --count` rend 1) et où seul HEAD est en cause. Les
-		// deux causes possibles sont donc nommées, sans trancher entre elles.
-		if !headResolvable(ctx, g, cheminRepo) {
+		// The message states what the probe MEASURES — HEAD does not resolve —
+		// and not what we would like to infer: "the repository has no commit" is
+		// false on an orphan branch, where commits exist and only HEAD is at
+		// fault. Both possible causes are named, without picking one.
+		if !headResolvable(ctx, g, repoPath) {
 			return "", fmt.Errorf(
-				"création du worktree %q : HEAD de %s ne pointe sur aucun commit (dépôt vierge, "+
-					"ou branche orpheline non encore commitée) — git n'a aucun point de départ "+
-					"à donner à la nouvelle branche ; commite d'abord sur ce dépôt, puis relance",
-				wt.Branche, cheminRepo)
+				"creating worktree %q: HEAD of %s points at no commit (empty repository, "+
+					"or an orphan branch with nothing committed yet) — git has no start point "+
+					"to give the new branch; commit on this repository first, then retry",
+				wt.Branch, repoPath)
 		}
-		// --no-track : le point de départ est une ref de suivi, et sans lui git
-		// ferait suivre origin/<défaut> à la branche de travail — `git push`
-		// échouerait ensuite en proposant de pousser sur la branche par défaut.
-		args = []string{"worktree", "add", "--no-track", "-b", wt.Branche, chemin}
-		// Spec §13.4-3 : la branche part de la branche par défaut du repo. Repli
-		// sur le HEAD courant si le dépôt n'a pas d'origin/HEAD — un dépôt
-		// purement local est parfaitement légitime, et c'est le seul point de
-		// départ qu'on puisse alors nommer.
-		if depart, ok := brancheParDefaut(ctx, g, cheminRepo); ok {
-			args = append(args, depart)
+		// --no-track: the start point is a tracking ref, and without it git would
+		// make the work branch track origin/<default> — `git push` would then fail
+		// by offering to push onto the default branch.
+		args = []string{"worktree", "add", "--no-track", "-b", wt.Branch, worktreePath}
+		// Spec §13.4-3: the branch starts from the repo's default branch. Fall
+		// back to the current HEAD when the repository has no origin/HEAD — a
+		// purely local repository is perfectly legitimate, and that is then the
+		// only start point we can name.
+		if startPoint, ok := defaultBranch(ctx, g, repoPath); ok {
+			args = append(args, startPoint)
 		}
 	}
-	if _, err := g.Run(ctx, cheminRepo, args...); err != nil {
-		return "", fmt.Errorf("création du worktree %q de %s : %w", wt.Branche, cheminRepo, err)
+	if _, err := g.Run(ctx, repoPath, args...); err != nil {
+		return "", fmt.Errorf("creating worktree %q of %s: %w", wt.Branch, repoPath, err)
 	}
-	return chemin, nil
+	return worktreePath, nil
 }
 
-// Cible désigne le worktree à retirer. Retire en DÉRIVE le chemin par Chemin
-// plutôt que de le recevoir : la garde « ce dossier appartient-il bien à ce
-// repo ? » reposait sinon entièrement sur l'appelant, et den n'a aucune raison
-// de retirer un dossier qu'il n'aurait pas lui-même placé.
-type Cible struct {
-	DenHome string // racine de den ; la corbeille vit sous <DenHome>/trash
-	Layout  string // « central » ou « per-repo » (spec §13.5)
+// Target designates the worktree to remove. Remove DERIVES the path through
+// Path rather than receiving it: the "does this directory really belong to this
+// repo?" guard would otherwise rest entirely on the caller, and den has no
+// reason to remove a directory it did not place itself.
+type Target struct {
+	DenHome string // den root; the trash lives under <DenHome>/trash
+	Layout  string // "central" or "per-repo" (spec §13.5)
 	Root    string // worktree_root
-	Nest    string // identité lisible du nest (« api », « api.feat12 ») : nomme l'entrée de corbeille
-	// Worktree est le nom de DOSSIER du worktree (Nom.Dossier), et non celui de
-	// sa branche : `den rm` ne dispose que du nom de sandbox, d'où il ne peut
-	// tirer que le composant aplati. La branche n'est pas nécessaire ici — den
-	// ne la supprime jamais, elle survit dans le dépôt.
-	Worktree   string
-	CheminRepo string
-	Force      bool
+	Nest    string // readable nest identity ("api", "api.feat12"): names the trash entry
+	// Worktree is the worktree's DIRECTORY name (Name.Dir), not its branch:
+	// `den rm` only has the sandbox name, from which it can only derive the
+	// flattened component. The branch is not needed here — den never deletes it,
+	// it survives in the repository.
+	Worktree string
+	RepoPath string
+	Force    bool
 }
 
-// Retire met le worktree à la corbeille et rend le chemin de l'entrée créée —
-// ou « » si le dossier avait déjà disparu. Refuse si l'arbre est sale et que
-// Force est faux (spec §14).
+// Remove moves the worktree to the trash and returns the path of the entry it
+// created — or "" if the directory was already gone. Refuses if the tree is
+// dirty and Force is false (spec §14).
 //
-// den ne SUPPRIME jamais, il déplace. Ce n'est pas de la prudence
-// d'implémentation, c'est le résultat d'une mesure : cinq tours de relecture
-// ont établi que l'énumération des façons dont `git status` cache du travail
-// NE CONVERGE PAS — git ajoute un mécanisme de cache par version (untracked
-// cache en 2.8, fsmonitor par hook en 2.16, `core.fsmonitor=true` en 2.37) — et
-// que le filet de `git worktree remove` tombe AVEC celui de `status`, parce que
-// c'est le même code. Il n'y a pas de second filet.
+// den never DELETES, it moves. The enumeration of the ways `git status` hides
+// work does not converge — git adds a cache mechanism per release (untracked
+// cache in 2.8, fsmonitor hook in 2.16, `core.fsmonitor=true` in 2.37) — and
+// the `git worktree remove` safety net falls WITH `status`, since it is the
+// same code. There is no second net.
 //
-// La corbeille change donc la NATURE du problème plutôt que d'en fermer un
-// membre de plus : tout ce que le verdict rate — les mécanismes de cache à
-// venir, et l'angle mort assumé des règles d'ignorance (voir fichiersSales) —
-// passe de « perte de données » à « un dossier que l'utilisateur remonte d'un
-// `mv` ». fichiersSales subsiste, mais comme ERGONOMIE : prévenir avant
-// d'agir, plus protéger.
+// The trash therefore changes the NATURE of the problem: whatever the verdict
+// misses — future cache mechanisms, and the accepted blind spot of ignore rules
+// (see dirtyFiles) — goes from "data loss" to "a directory the user brings back
+// with one `mv`". dirtyFiles survives as ERGONOMICS: warn before acting, no
+// longer protect.
 //
-// Ce que la corbeille ne rend PAS : le worktree déplacé garde un fichier `.git`
-// qui pointe vers un enregistrement désormais élagué. On récupère des FICHIERS,
-// pas un worktree opérationnel. Les commits, eux, n'ont jamais été en jeu — la
-// branche survit dans le dépôt.
-func Retire(ctx context.Context, g Git, c Cible) (string, error) {
-	cheminRepo, cheminWorktree, force := c.CheminRepo, Chemin(c.Layout, c.Root, c.Worktree, c.CheminRepo), c.Force
+// What the trash does NOT give back: the moved worktree keeps a `.git` file
+// pointing at a now-pruned registration. Files are recovered, not a working
+// worktree. Commits were never at stake — the branch survives in the repository.
+func Remove(ctx context.Context, g Git, c Target) (string, error) {
+	repoPath, worktreePath, force := c.RepoPath, Path(c.Layout, c.Root, c.Worktree, c.RepoPath), c.Force
 
-	// AVANT tout le reste : sans emplacement où poser le dossier, den ne fait
-	// rien du tout. Plus bas, ce refus arrivait APRÈS le contrôle de saleté, qui
-	// invitait alors l'utilisateur à « envoyer à la corbeille trash » — un chemin
-	// relatif qui ne désigne rien.
+	// BEFORE anything else: with nowhere to put the directory, den does nothing
+	// at all. An earlier version refused only after the dirtiness check, and then
+	// pointed the user at a relative path that designates nothing.
 	if c.DenHome == "" {
 		return "", fmt.Errorf(
-			"retrait du worktree %s : aucun den_home fourni — den ne supprime pas les worktrees, "+
-				"il les déplace, et il lui faut donc un emplacement où les poser", cheminWorktree)
+			"removing worktree %s: no den_home given — den does not delete worktrees, "+
+				"it moves them, so it needs somewhere to put them", worktreePath)
 	}
 
-	if _, err := os.Stat(cheminWorktree); os.IsNotExist(err) {
-		// Le dossier est parti (rm -rf de l'utilisateur, `add` interrompu) mais
-		// l'enregistrement git lui survit et bloquerait tout Assure ultérieur.
-		// Rendre nil sans rien faire, c'était prétendre avoir nettoyé.
-		if _, err := g.Run(ctx, cheminRepo, "worktree", "prune"); err != nil {
-			return "", fmt.Errorf("nettoyage des enregistrements de worktree de %s : %w", cheminRepo, err)
+	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+		// The directory is gone (user's rm -rf, interrupted `add`) but the git
+		// registration outlives it and would block any later Ensure. Returning nil
+		// without doing anything would be pretending we cleaned up.
+		if _, err := g.Run(ctx, repoPath, "worktree", "prune"); err != nil {
+			return "", fmt.Errorf("pruning worktree registrations of %s: %w", repoPath, err)
 		}
-		// `prune` saute SILENCIEUSEMENT les worktrees verrouillés (rc=0, aucune
-		// sortie) — et `git worktree lock` existe précisément pour les volumes
-		// amovibles et les montages réseau, donc pour le cas où le dossier
-		// disparaît légitimement. Sans cette revérification, den rendrait nil en
-		// prétendant avoir nettoyé, et Assure renverrait ensuite l'utilisateur
-		// vers `den rm` — la commande qui vient de lui dire qu'elle a réussi.
-		enregistre, err := estEnregistre(ctx, g, cheminRepo, cheminWorktree)
+		// `prune` SILENTLY skips locked worktrees (rc=0, no output) — and `git
+		// worktree lock` exists precisely for removable volumes and network
+		// mounts, hence for the case where the directory legitimately disappears.
+		// Without this re-check den would return nil claiming to have cleaned up,
+		// and Ensure would later send the user back to `den rm` — the command that
+		// just told them it succeeded.
+		registered, _, err := worktreeEntry(ctx, g, repoPath, worktreePath)
 		if err != nil {
 			return "", err
 		}
-		if enregistre {
+		if registered {
 			return "", fmt.Errorf(
-				"l'enregistrement du worktree %s survit dans %s alors que son dossier a disparu — "+
-					"il est probablement verrouillé : lance `git worktree unlock %s` dans %s, puis relance",
-				cheminWorktree, cheminRepo, cheminWorktree, cheminRepo)
+				"the registration of worktree %s survives in %s while its directory is gone — "+
+					"it is probably locked: run `git worktree unlock %s` in %s, then retry",
+				worktreePath, repoPath, worktreePath, repoPath)
 		}
-		efaceDossierPorteur(c, cheminWorktree)
+		removeParentDir(c, worktreePath)
 		return "", nil
 	}
 
-	if err := verifieAppartenance(ctx, g, cheminWorktree, cheminRepo); err != nil {
+	if err := checkOwnership(ctx, g, worktreePath, repoPath); err != nil {
 		return "", err
 	}
 
-	// Le verrou se contrôle AVANT de déplacer. `git worktree lock` existe pour
-	// les volumes amovibles et les montages réseau, et `prune` saute
-	// SILENCIEUSEMENT les worktrees verrouillés (rc=0, aucune sortie) : déplacer
-	// d'abord laisserait un dossier en corbeille ET un enregistrement vivant qui
-	// bloque tout Assure ultérieur, sans que rien ne le dise.
-	verrouille, err := estVerrouille(ctx, g, cheminRepo, cheminWorktree)
+	// The lock is checked BEFORE moving. `git worktree lock` exists for removable
+	// volumes and network mounts, and `prune` SILENTLY skips locked worktrees
+	// (rc=0, no output): moving first would leave both a directory in the trash
+	// AND a live registration blocking every later Ensure, with nothing saying so.
+	_, locked, err := worktreeEntry(ctx, g, repoPath, worktreePath)
 	if err != nil {
 		return "", err
 	}
-	if verrouille {
+	if locked {
 		return "", fmt.Errorf(
-			"le worktree %s est verrouillé dans %s — lance `git worktree unlock %s` dans %s, puis relance",
-			cheminWorktree, cheminRepo, cheminWorktree, cheminRepo)
+			"worktree %s is locked in %s — run `git worktree unlock %s` in %s, then retry",
+			worktreePath, repoPath, worktreePath, repoPath)
 	}
 
 	if !force {
-		sales, err := fichiersSales(ctx, g, cheminWorktree)
+		dirty, err := dirtyFiles(ctx, g, worktreePath)
 		if err != nil {
 			return "", err
 		}
-		if len(sales) > 0 {
+		if len(dirty) > 0 {
 			return "", fmt.Errorf(
-				"le worktree %s contient des modifications non commitées (%s) — commite-les, ou "+
-					"relance avec --force pour l'envoyer à la corbeille %s, ou avec --keep-worktrees "+
-					"pour garder le dossier en place",
-				cheminWorktree, listeCourte(sales), corbeillePrincipale(c))
+				"worktree %s holds uncommitted changes (%s) — commit them, or retry "+
+					"with --force to send it to the trash %s, or with --keep-worktrees "+
+					"to leave the directory in place",
+				worktreePath, shortList(dirty), primaryTrash(c))
 		}
 	}
 
-	dest, err := metALaCorbeille(c, cheminWorktree)
+	dest, err := moveToTrash(c, worktreePath)
 	if err != nil {
 		return "", err
 	}
 
-	// Le dossier a bougé, donc l'enregistrement est devenu élaguable. Sans ce
-	// prune, Assure refuserait pour toujours de recréer ce worktree.
+	// The directory moved, so the registration became prunable. Without this
+	// prune, Ensure would forever refuse to recreate this worktree.
 	//
-	// `prune` est GLOBAL au dépôt : il efface aussi les enregistrements
-	// orphelins d'autres nests visant le même repo. Cas dégénéré assumé — ce
-	// qu'il efface est par définition un enregistrement dont le dossier a déjà
-	// disparu, donc aucun travail n'est en jeu ; et l'autre nest se
-	// re-spawnerait de toute façon. git n'offre pas d'élagage ciblé.
-	if _, err := g.Run(ctx, cheminRepo, "worktree", "prune"); err != nil {
-		// Le déplacement, lui, a bien eu lieu : le taire enverrait l'utilisateur
-		// chercher son travail là où il n'est plus.
+	// `prune` is repository-GLOBAL: it also clears stale registrations of other
+	// nests targeting the same repo. Accepted degenerate case — what it clears is
+	// by definition a registration whose directory is already gone, so no work is
+	// at stake, and the other nest would re-spawn anyway. git offers no targeted
+	// pruning.
+	if _, err := g.Run(ctx, repoPath, "worktree", "prune"); err != nil {
+		// The move itself did happen: staying silent would send the user looking
+		// for their work where it no longer is.
 		return dest, fmt.Errorf(
-			"le worktree %s est à la corbeille (%s) mais son enregistrement n'a pas pu être "+
-				"élagué dans %s : %w", cheminWorktree, dest, cheminRepo, err)
+			"worktree %s is in the trash (%s) but its registration could not be "+
+				"pruned in %s: %w", worktreePath, dest, repoPath, err)
 	}
 
-	efaceDossierPorteur(c, cheminWorktree)
-	purgeCorbeille(filepath.Dir(dest), time.Now())
+	removeParentDir(c, worktreePath)
+	purgeTrash(filepath.Dir(dest), time.Now())
 	return dest, nil
 }
 
-// efaceDossierPorteur retire le dossier qui PORTAIT le worktree, s'il est
-// devenu vide :
+// removeParentDir removes the directory that CARRIED the worktree, if it became
+// empty:
 //
-//	central  : <root>/<wt>     — partagé par tous les repos du nest
+//	central  : <root>/<wt>     — shared by all repos of the nest
 //	per-repo : <repo>/.den
 //
-// os.Remove et non un RemoveAll : le refus ENOTEMPTY est le mécanisme, pas un
-// accident à contourner. Il garde le dossier tant qu'un autre repo du même nest
-// y a encore son worktree — les Retire d'un `den rm` défilent repo par repo, et
-// seul le dernier trouve le dossier vide — et il garde aussi ce que den n'a pas
-// posé : un fichier de l'utilisateur, ou la corbeille de repli `<repo>/.den/
-// .trash` quand le rename inter-systèmes de fichiers a dû s'y replier.
+// os.Remove and not RemoveAll: the ENOTEMPTY refusal is the mechanism, not an
+// accident to work around. It keeps the directory while another repo of the same
+// nest still has its worktree there, and it also keeps whatever den did not put
+// there: a user file, or the fallback trash `<repo>/.den/.trash` when a
+// cross-filesystem rename had to fall back to it.
 //
-// L'erreur est ignorée, à dessein : le worktree, lui, EST retiré. Faire échouer
-// `den rm` sur un dossier vide qui résiste ferait passer un détail cosmétique
-// pour un échec de suppression.
+// The error is ignored on purpose: the worktree IS removed, and failing
+// `den rm` over a stubborn empty directory would pass a cosmetic detail off as a
+// deletion failure.
 //
-// Le refus sur Worktree vide n'est pas de la superstition : Retire est
-// exportée, et Chemin("central", root, "", repo) rend `<root>/<repo>`, dont le
-// dossier porteur est worktree_root LUI-MÊME. Un appel sans nom de worktree
-// effacerait donc la racine de l'utilisateur si elle se trouvait vide.
-func efaceDossierPorteur(c Cible, cheminWorktree string) {
+// The refusal on an empty Worktree is not superstition: Remove is exported, and
+// Path("central", root, "", repo) yields `<root>/<repo>`, whose parent directory
+// is worktree_root ITSELF — a call without a worktree name would erase the
+// user's root if it happened to be empty.
+func removeParentDir(c Target, worktreePath string) {
 	if c.Worktree == "" {
 		return
 	}
-	_ = os.Remove(filepath.Dir(cheminWorktree))
+	_ = os.Remove(filepath.Dir(worktreePath))
 }
 
-// corbeillePrincipale est l'emplacement nominal de la corbeille.
-func corbeillePrincipale(c Cible) string { return filepath.Join(c.DenHome, "trash") }
+// primaryTrash is the nominal trash location.
+func primaryTrash(c Target) string { return filepath.Join(c.DenHome, "trash") }
 
-// corbeilleDeRepli désigne un emplacement qui partage FORCÉMENT le système de
-// fichiers du worktree, puisque c'est le dossier qui le porte :
+// fallbackTrash designates a location that NECESSARILY shares the worktree's
+// filesystem, since it is the directory carrying it:
 //
 //	central  : <worktree_root>/.trash
-//	per-repo : <repo>/.den/.trash    — déjà exclu par excludeDossierDen
+//	per-repo : <repo>/.den/.trash    — already excluded by excludeDenDir
 //
-// Le point initial n'est pas cosmétique. Sans lui, `<worktree_root>/trash`
-// entrerait en collision avec le worktree d'un nest lancé avec `-w trash` ; git
-// refuse en revanche tout composant de ref commençant par un point, si bien
-// que « .trash » ne peut pas être un nom de worktree.
-func corbeilleDeRepli(c Cible) string {
+// The leading dot is not cosmetic: without it `<worktree_root>/trash` would
+// collide with the worktree of a nest spawned with `-w trash`, whereas git
+// refuses any ref component starting with a dot, so ".trash" cannot be a
+// worktree name.
+func fallbackTrash(c Target) string {
 	if c.Layout == "per-repo" {
-		return filepath.Join(c.CheminRepo, ".den", ".trash")
+		return filepath.Join(c.RepoPath, ".den", ".trash")
 	}
 	return filepath.Join(c.Root, ".trash")
 }
 
-// metALaCorbeille déplace le worktree et rend le chemin de l'entrée créée.
+// moveToTrash moves the worktree and returns the path of the entry created.
 //
-// Le repli sur EXDEV n'est pas une commodité : den_home et worktree_root sont
-// deux réglages indépendants, et rien n'oblige un worktree_root posé sur un
-// disque rapide à partager le système de fichiers de ~/.den. Recopier octet à
-// octet pour contourner serait long sur un gros worktree, et interruptible — au
-// milieu, l'utilisateur aurait deux demi-copies. Le repli, lui, reste un
-// rename : atomique ou rien.
-func metALaCorbeille(c Cible, cheminWorktree string) (string, error) {
-	base := nomEntreeCorbeille(time.Now(), c.Nest, c.CheminRepo)
+// The EXDEV fallback is not a convenience: den_home and worktree_root are two
+// independent settings, and nothing forces a worktree_root on a fast disk to
+// share ~/.den's filesystem. Copying byte by byte would be slow on a large
+// worktree and interruptible — mid-way the user would hold two half-copies. The
+// fallback stays a rename: atomic or nothing.
+func moveToTrash(c Target, worktreePath string) (string, error) {
+	base := trashEntryName(time.Now(), c.Nest, c.RepoPath)
 
-	dest, err := deplaceVers(corbeillePrincipale(c), base, cheminWorktree)
+	dest, err := moveTo(primaryTrash(c), base, worktreePath)
 	if err == nil {
 		return dest, nil
 	}
 	if !errors.Is(err, syscall.EXDEV) {
 		return "", err
 	}
-	repli, errRepli := deplaceVers(corbeilleDeRepli(c), base, cheminWorktree)
-	if errRepli != nil {
-		return "", fmt.Errorf("%w ; le repli sous %s a échoué lui aussi : %v",
-			err, corbeilleDeRepli(c), errRepli)
+	fallback, fallbackErr := moveTo(fallbackTrash(c), base, worktreePath)
+	if fallbackErr != nil {
+		return "", fmt.Errorf("%w; the fallback under %s failed too: %v",
+			err, fallbackTrash(c), fallbackErr)
 	}
-	return repli, nil
+	return fallback, nil
 }
 
-func deplaceVers(dirCorbeille, base, src string) (string, error) {
-	if err := os.MkdirAll(dirCorbeille, 0o755); err != nil {
-		return "", fmt.Errorf("création de la corbeille %s : %w", dirCorbeille, err)
+func moveTo(trashDir, base, src string) (string, error) {
+	if err := os.MkdirAll(trashDir, 0o755); err != nil {
+		return "", fmt.Errorf("creating trash %s: %w", trashDir, err)
 	}
-	dest, err := entreeLibre(dirCorbeille, base)
+	dest, err := freeEntry(trashDir, base)
 	if err != nil {
 		return "", err
 	}
 	if err := os.Rename(src, dest); err != nil {
-		return "", fmt.Errorf("déplacement de %s vers %s : %w", src, dest, err)
+		return "", fmt.Errorf("moving %s to %s: %w", src, dest, err)
 	}
 	return dest, nil
 }
 
-// nomEntreeCorbeille nomme une entrée « <horodatage>-<nest>-<repo> » : sans le
-// nest ni le repo, une corbeille de plusieurs entrées est un tas anonyme dans
-// lequel l'utilisateur ne retrouve pas SON dossier.
-func nomEntreeCorbeille(quand time.Time, nest, cheminRepo string) string {
+// trashEntryName names an entry "<timestamp>-<nest>-<repo>": without the nest
+// and the repo, a trash holding several entries is an anonymous pile in which
+// the user cannot find THEIR directory.
+func trashEntryName(when time.Time, nest, repoPath string) string {
 	return fmt.Sprintf("%s-%s-%s",
-		quand.Format(formatHorodatage), composantSur(nest), composantSur(filepath.Base(cheminRepo)))
+		when.Format(timestampFormat), safeComponent(nest), safeComponent(filepath.Base(repoPath)))
 }
 
-// composantSur rend une chaîne utilisable comme composant de nom de dossier.
-// Le nom du nest est validé ailleurs, mais le basename du repo vient d'un
-// chemin de configuration : « .. » y désignerait le parent de la corbeille.
-func composantSur(s string) string {
+// safeComponent returns a string usable as a directory-name component. The nest
+// name is validated elsewhere, but the repo basename comes from a configuration
+// path, where ".." would designate the trash's parent.
+func safeComponent(s string) string {
 	s = strings.Map(func(r rune) rune {
 		if r == '/' || r == filepath.Separator || r < ' ' {
 			return '_'
@@ -536,180 +494,170 @@ func composantSur(s string) string {
 	return s
 }
 
-// formatHorodatage préfixe les entrées de corbeille. Trié lexicalement il est
-// trié chronologiquement, ce qui rend un `ls` de la corbeille lisible.
-const formatHorodatage = "20060102-150405"
+// timestampFormat prefixes trash entries. Sorted lexically it is sorted
+// chronologically, which makes an `ls` of the trash readable.
+const timestampFormat = "20060102-150405"
 
-// retentionCorbeille est le délai au-delà duquel une entrée est purgée.
+// trashRetention is the age beyond which an entry is purged.
 //
-// Trente jours, et la purge se déclenche à chaque mise à la corbeille réussie
-// plutôt que depuis une commande dédiée. Le raisonnement : une corbeille que
-// personne ne vide est une fuite de disque silencieuse, et une commande `den
-// gc` qu'il faut penser à lancer ne serait lancée que par ceux qui n'en ont pas
-// besoin. Trente jours couvrent largement le délai réel entre « j'ai lancé
-// `den rm` » et « il me manque quelque chose » ; en deçà, un mois de vacances
-// suffirait à perdre le fichier que la corbeille existe pour garder.
-//
-// Conséquence assumée : qui ne relance jamais `den rm` ne purge jamais. C'est
-// le bon sens du compromis — den ne tourne pas en tâche de fond, et une purge
-// qui s'exécuterait sans qu'on ait rien demandé serait une suppression
-// spontanée, exactement ce que la corbeille existe pour supprimer.
-const retentionCorbeille = 30 * 24 * time.Hour
+// Thirty days, and the purge runs on every successful move to the trash rather
+// than from a dedicated command: a trash nobody empties is a silent disk leak,
+// and a `den gc` one must remember to run would only be run by those who do not
+// need it. A purge that ran unasked would itself be a spontaneous deletion —
+// exactly what the trash exists to remove. Accepted consequence: whoever never
+// runs `den rm` again never purges.
+const trashRetention = 30 * 24 * time.Hour
 
-// entreeLibre rend un chemin d'entrée non occupé sous dirCorbeille : deux
-// worktrees du même nest et du même repo mis à la corbeille dans la MÊME
-// SECONDE portent sinon le même nom, et os.Rename écraserait ou échouerait.
+// freeEntry returns an unoccupied entry path under trashDir: two worktrees of
+// the same nest and the same repo trashed in the SAME SECOND would otherwise
+// carry the same name, and os.Rename would overwrite or fail.
 //
-// TOCTOU CONNU, non fermé : entre ce contrôle et le os.Rename de l'appelant, un
-// tiers peut créer l'entrée. `rename(2)` écrase alors SILENCIEUSEMENT une
-// destination qui serait un dossier VIDE. Le fermer demanderait
-// `renameat2(RENAME_NOREPLACE)`, absent de la stdlib et de macOS ; la fenêtre
-// est de l'ordre de la microseconde et n'a d'autre acteur possible qu'un second
-// den lancé sur le même nest à la même seconde.
-func entreeLibre(dirCorbeille, base string) (string, error) {
-	const maxTentatives = 1000
-	for i := 0; i < maxTentatives; i++ {
-		candidat := filepath.Join(dirCorbeille, base)
+// KNOWN TOCTOU, not closed: between this check and the caller's os.Rename a
+// third party can create the entry, and `rename(2)` then SILENTLY overwrites a
+// destination that is an EMPTY directory. Closing it would need
+// `renameat2(RENAME_NOREPLACE)`, absent from the stdlib and from macOS; the
+// window is microseconds wide and its only possible actor is a second den run on
+// the same nest in the same second.
+func freeEntry(trashDir, base string) (string, error) {
+	const maxAttempts = 1000
+	for i := 0; i < maxAttempts; i++ {
+		candidate := filepath.Join(trashDir, base)
 		if i > 0 {
-			candidat = filepath.Join(dirCorbeille, fmt.Sprintf("%s-%d", base, i+1))
+			candidate = filepath.Join(trashDir, fmt.Sprintf("%s-%d", base, i+1))
 		}
-		// Lstat et non Stat : une entrée de corbeille qui serait un lien
-		// symbolique cassé occupe le nom tout autant.
-		_, err := os.Lstat(candidat)
+		// Lstat and not Stat: a trash entry that is a broken symlink occupies the
+		// name just as much.
+		_, err := os.Lstat(candidate)
 		if os.IsNotExist(err) {
-			return candidat, nil
+			return candidate, nil
 		}
 		if err != nil {
-			return "", fmt.Errorf("inspection de l'entrée de corbeille %s : %w", candidat, err)
+			return "", fmt.Errorf("inspecting trash entry %s: %w", candidate, err)
 		}
 	}
 	return "", fmt.Errorf(
-		"corbeille %s : %d entrées portent déjà le nom %q", dirCorbeille, maxTentatives, base)
+		"trash %s: %d entries already carry the name %q", trashDir, maxAttempts, base)
 }
 
-// purgeCorbeille efface les entrées dont la rétention est dépassée.
+// purgeTrash deletes the entries whose retention has expired.
 //
-// La date lue est celle du NOM, posée par den au moment du déplacement, et non
-// la mtime du dossier : un worktree dont les fichiers datent de six mois serait
-// purgé le jour même de sa mise à la corbeille. Une entrée dont le nom ne porte
-// pas d'horodatage lisible n'est JAMAIS effacée — l'utilisateur a le droit de
-// ranger quelque chose là, et une purge est elle-même une suppression.
+// The date read is the one in the NAME, written by den when it moved the
+// directory, and not the directory's mtime: a worktree whose files are six
+// months old would otherwise be purged the very day it was trashed. An entry
+// whose name carries no readable timestamp is NEVER deleted — the user is
+// allowed to store something there, and a purge is itself a deletion.
 //
-// Les erreurs sont ignorées, entrée par entrée : le worktree est déjà à
-// l'abri à ce stade, et échouer sur le ménage donnerait à l'appelant une erreur
-// pour une opération qui a réussi. Une entrée qui résiste sera réexaminée à la
-// prochaine mise à la corbeille.
-func purgeCorbeille(dirCorbeille string, maintenant time.Time) {
-	entrees, err := os.ReadDir(dirCorbeille)
+// Errors are ignored entry by entry: the worktree is already safe at this point,
+// and failing on housekeeping would hand the caller an error for an operation
+// that succeeded.
+func purgeTrash(trashDir string, now time.Time) {
+	entries, err := os.ReadDir(trashDir)
 	if err != nil {
 		return
 	}
-	for _, e := range entrees {
+	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		nom := e.Name()
-		if len(nom) <= len(formatHorodatage) || nom[len(formatHorodatage)] != '-' {
+		name := e.Name()
+		if len(name) <= len(timestampFormat) || name[len(timestampFormat)] != '-' {
 			continue
 		}
-		quand, err := time.ParseInLocation(formatHorodatage, nom[:len(formatHorodatage)], time.Local)
+		when, err := time.ParseInLocation(timestampFormat, name[:len(timestampFormat)], time.Local)
 		if err != nil {
 			continue
 		}
-		if maintenant.Sub(quand) <= retentionCorbeille {
+		if now.Sub(when) <= trashRetention {
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(dirCorbeille, nom))
+		_ = os.RemoveAll(filepath.Join(trashDir, name))
 	}
 }
 
-// verifieRepo distingue l'absence du refus d'accès : diagnostiquer
-// « introuvable » sur un EACCES enverrait l'utilisateur chercher le mauvais
-// problème.
-func verifieRepo(cheminRepo string) error {
-	if _, err := os.Stat(cheminRepo); err != nil {
+// checkRepo distinguishes absence from denied access: diagnosing "not found" on
+// an EACCES would send the user chasing the wrong problem.
+func checkRepo(repoPath string) error {
+	if _, err := os.Stat(repoPath); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("repo introuvable : %s : %w", cheminRepo, err)
+			return fmt.Errorf("repo not found: %s: %w", repoPath, err)
 		}
-		return fmt.Errorf("repo inaccessible : %s : %w", cheminRepo, err)
+		return fmt.Errorf("repo not accessible: %s: %w", repoPath, err)
 	}
 	return nil
 }
 
-// verifieAppartenance répond à la seule question qui compte avant de faire
-// confiance à un dossier : « est-ce bien la racine d'un worktree DE CE repo ? ».
+// checkOwnership answers the only question that matters before trusting a
+// directory: "is this really the root of a worktree OF THIS repo?".
 //
-// Deux pièges qu'elle ferme d'un coup :
-//   - git répond pour le premier dépôt trouvé EN REMONTANT ; un dossier vide
-//     sous un dépôt (le cas systématique du layout per-repo) passerait donc pour
-//     un worktree valide ;
-//   - worktree_root est global et Chemin ne retient que le basename du repo :
-//     deux nests visant des repos homonymes tombent sur le même dossier, et le
-//     second repartirait avec le worktree du premier.
+// Two traps it closes at once:
+//   - git answers for the first repository found WALKING UP, so an empty
+//     directory under a repository (the systematic per-repo layout case) would
+//     pass for a valid worktree;
+//   - worktree_root is global and Path only keeps the repo basename, so two
+//     nests targeting same-named repos land on the same directory and the second
+//     would walk away with the first one's worktree.
 //
-// Elle ne ferme pas — et ne PEUT pas fermer — le cas de deux repos homonymes
-// qui sont le MÊME dépôt (un clone et l'un de ses worktrees, deux chemins vers
-// un même `--git-common-dir`) : le discriminant EST le dossier git commun, donc
-// il les déclare identiques, à raison. Cas dégénéré assumé ; l'utilisateur y
-// obtient bien le worktree du dépôt qu'il a nommé, seul le chemin par lequel il
-// l'a nommé diffère.
-func verifieAppartenance(ctx context.Context, g Git, chemin, cheminRepo string) error {
-	racine, commun, err := identifie(ctx, g, chemin)
+// It does not — and CANNOT — close the case of two same-named repos that are the
+// SAME repository (a clone and one of its worktrees, two paths to one
+// `--git-common-dir`): the discriminator IS the common git directory, so it
+// rightly declares them identical.
+func checkOwnership(ctx context.Context, g Git, worktreePath, repoPath string) error {
+	root, common, err := identify(ctx, g, worktreePath)
 	if err != nil {
-		return fmt.Errorf("%s existe déjà mais n'est pas un worktree git exploitable : %w", chemin, err)
+		return fmt.Errorf("%s already exists but is not a usable git worktree: %w", worktreePath, err)
 	}
-	if !memeChemin(racine, chemin) {
+	if !samePath(root, worktreePath) {
 		return fmt.Errorf(
-			"%s existe déjà mais n'est pas la racine d'un worktree git — git répond pour %s ; "+
-				"choisis un autre nom de worktree ou retire ce dossier", chemin, racine)
+			"%s already exists but is not the root of a git worktree — git answers for %s; "+
+				"pick another worktree name or remove that directory", worktreePath, root)
 	}
-	communRepo, err := communDe(ctx, g, cheminRepo)
+	repoCommon, err := commonDirOf(ctx, g, repoPath)
 	if err != nil {
-		return fmt.Errorf("identification du dépôt %s : %w", cheminRepo, err)
+		return fmt.Errorf("identifying repository %s: %w", repoPath, err)
 	}
-	if !memeChemin(commun, communRepo) {
+	if !samePath(common, repoCommon) {
 		return fmt.Errorf(
-			"le worktree %s appartient au dépôt %s, pas à %s — deux nests visent probablement le "+
-				"même worktree_root avec des repos de même nom ; choisis un autre nom de worktree "+
-				"ou un worktree_root distinct", chemin, dossierDuDepot(commun), cheminRepo)
+			"worktree %s belongs to repository %s, not to %s — two nests probably target the "+
+				"same worktree_root with repos of the same name; pick another worktree name "+
+				"or a distinct worktree_root", worktreePath, repoDir(common), repoPath)
 	}
 	return nil
 }
 
-// identifie rend la racine du worktree contenant chemin et le dossier git commun
-// du dépôt auquel il appartient.
-func identifie(ctx context.Context, g Git, chemin string) (racine, commun string, err error) {
-	out, err := g.Run(ctx, chemin, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
+// identify returns the root of the worktree containing worktreePath and the
+// common git directory of the repository it belongs to.
+func identify(ctx context.Context, g Git, worktreePath string) (root, common string, err error) {
+	out, err := g.Run(ctx, worktreePath, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
 	if err != nil {
 		return "", "", err
 	}
-	lignes := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lignes) < 2 {
-		return "", "", fmt.Errorf("réponse inattendue de git rev-parse : %q", string(out))
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 2 {
+		return "", "", fmt.Errorf("unexpected answer from git rev-parse: %q", string(out))
 	}
-	return strings.TrimSpace(lignes[0]), strings.TrimSpace(lignes[1]), nil
+	return strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1]), nil
 }
 
-// DossierGitCommun rend le dossier git commun d'un dépôt — son `.git`, celui
-// qui porte l'admin dir, les objets et les refs.
+// CommonGitDir returns a repository's common git directory — its `.git`, the one
+// holding the admin dir, the objects and the refs.
 //
-// C'est ce que `den <nest> -w` monte dans la microVM À CÔTÉ du worktree : le
-// `.git` d'un worktree lié n'est qu'un fichier « gitdir: <repo>/.git/worktrees/
-// <nom> », et sans ce dossier-là monté, toute commande git de la VM répond
-// « fatal: not a git repository » (mesuré, smoke du 2026-07-29).
+// That is what `den <nest> -w` mounts in the microVM NEXT TO the worktree: a
+// linked worktree's `.git` is only a file "gitdir: <repo>/.git/worktrees/<name>",
+// and without that directory mounted every git command in the VM answers
+// "fatal: not a git repository".
 //
-// La question passe par git et non par un `filepath.Join(repo, ".git")` parce
-// que le repo d'un nest peut lui-même être un worktree lié : le join rendrait
-// alors le fichier de renvoi, qui ne porte ni objets ni refs.
-func DossierGitCommun(ctx context.Context, g Git, cheminRepo string) (string, error) {
-	commun, err := communDe(ctx, g, cheminRepo)
+// The question goes through git rather than a `filepath.Join(repo, ".git")`
+// because a nest's repo may itself be a linked worktree, where the join would
+// yield the pointer file, which carries neither objects nor refs.
+func CommonGitDir(ctx context.Context, g Git, repoPath string) (string, error) {
+	common, err := commonDirOf(ctx, g, repoPath)
 	if err != nil {
-		return "", fmt.Errorf("identification du dossier git de %s : %w", cheminRepo, err)
+		return "", fmt.Errorf("identifying the git directory of %s: %w", repoPath, err)
 	}
-	return commun, nil
+	return common, nil
 }
 
-func communDe(ctx context.Context, g Git, dir string) (string, error) {
+func commonDirOf(ctx context.Context, g Git, dir string) (string, error) {
 	out, err := g.Run(ctx, dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return "", err
@@ -717,146 +665,132 @@ func communDe(ctx context.Context, g Git, dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// dossierDuDepot remonte du dossier git commun (<repo>/.git) au dépôt lui-même,
-// pour nommer dans les messages ce que l'utilisateur reconnaît.
-func dossierDuDepot(commun string) string {
-	if filepath.Base(commun) == ".git" {
-		return filepath.Dir(commun)
+// repoDir walks up from the common git directory (<repo>/.git) to the repository
+// itself, so messages name what the user recognizes.
+func repoDir(common string) string {
+	if filepath.Base(common) == ".git" {
+		return filepath.Dir(common)
 	}
-	return commun
+	return common
 }
 
-// memeChemin compare deux chemins en résolvant les liens symboliques quand
-// c'est possible : git rend le chemin résolu là où den manipule celui qu'on lui
-// a donné.
-func memeChemin(a, b string) bool {
-	return resout(a) == resout(b)
+// samePath compares two paths, resolving symlinks when possible: git returns the
+// resolved path where den handles the one it was given.
+func samePath(a, b string) bool {
+	return resolvePath(a) == resolvePath(b)
 }
 
-// resout rend la forme canonique d'un chemin, y compris quand il N'EXISTE PLUS.
+// resolvePath returns the canonical form of a path, including when it NO LONGER
+// EXISTS.
 //
-// C'est le cas déterminant, pas un cas limite : les gardes du cul-de-sac
-// (enregistrement orphelin, worktree verrouillé) ne s'exécutent QUE lorsque le
-// dossier a disparu. EvalSymlinks échoue alors des deux côtés de la comparaison,
-// qui retombait sur deux chaînes brutes — celle que den manipule, passée par un
-// lien, et celle que git a enregistrée, résolue. La résolution était donc
-// structurellement absente là où on en avait besoin, et toute la mitigation
-// restait Linux-seulement : sur macOS, $TMPDIR et worktree_root vivent sous
-// /var → private/var.
+// That is the deciding case, not an edge one: the dead-end guards (stale
+// registration, locked worktree) only run once the directory is gone.
+// EvalSymlinks then fails on both sides of the comparison, which would fall back
+// to two raw strings — the one den handles, reached through a symlink, and the
+// one git recorded, resolved. On macOS $TMPDIR and worktree_root live under
+// /var → private/var, so this is not Linux-only trivia.
 //
-// On résout donc le plus long ancêtre qui existe encore, et on lui rattache le
-// reste du chemin.
-func resout(chemin string) string {
-	chemin = filepath.Clean(chemin)
-	if reel, err := filepath.EvalSymlinks(chemin); err == nil {
-		return filepath.Clean(reel)
+// So we resolve the longest ancestor that still exists and reattach the rest of
+// the path to it.
+func resolvePath(p string) string {
+	p = filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return filepath.Clean(resolved)
 	}
-	reste := ""
-	for courant := chemin; ; {
-		parent := filepath.Dir(courant)
-		if parent == courant {
-			return chemin // remonté jusqu'à la racine sans rien pouvoir résoudre
+	rest := ""
+	for current := p; ; {
+		parent := filepath.Dir(current)
+		if parent == current {
+			return p // walked up to the root without resolving anything
 		}
-		reste = filepath.Join(filepath.Base(courant), reste)
-		if reel, err := filepath.EvalSymlinks(parent); err == nil {
-			return filepath.Clean(filepath.Join(reel, reste))
+		rest = filepath.Join(filepath.Base(current), rest)
+		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+			return filepath.Clean(filepath.Join(resolved, rest))
 		}
-		courant = parent
+		current = parent
 	}
 }
 
-// estEnregistre dit si git connaît encore un worktree à ce chemin, que son
-// dossier existe ou non.
+// worktreeEntry says what git knows about the worktree registered at this path:
+// whether it is still registered (whether or not its directory exists) and
+// whether it is locked.
 //
-// L'erreur remonte, comme dans estVerrouille. Elle était avalée : sous un git
-// défaillant sur `worktree list`, Retire rendait alors nil sur un dossier
-// disparu — il prétendait avoir nettoyé sans avoir rien pu vérifier, ce que la
-// revérification voisine existe précisément pour empêcher. Deux gardes du même
-// paragraphe ne peuvent pas avoir deux disciplines opposées.
-func estEnregistre(ctx context.Context, g Git, cheminRepo, chemin string) (bool, error) {
-	out, err := g.Run(ctx, cheminRepo, "worktree", "list", "--porcelain")
+// One question, one listing. `worktree list --porcelain` emits one block per
+// worktree, terminated by a blank line; "locked" (alone, or followed by the
+// reason) belongs to the block opened by the preceding "worktree <path>" line,
+// hence the inBlock latch.
+//
+// The error propagates in both directions, and that is the point:
+//   - swallowing it would make Remove return nil on a vanished directory under a
+//     git failing on `worktree list` — claiming to have cleaned up without being
+//     able to check anything, which is exactly what the neighbouring re-check
+//     exists to prevent;
+//   - not knowing whether the worktree is locked means not knowing whether
+//     `prune` will do its job, and the only safe direction before a move is
+//     abstention.
+func worktreeEntry(ctx context.Context, g Git, repoPath, worktreePath string) (registered, locked bool, err error) {
+	out, err := g.Run(ctx, repoPath, "worktree", "list", "--porcelain")
 	if err != nil {
-		return false, fmt.Errorf("inventaire des worktrees de %s : %w", cheminRepo, err)
+		return false, false, fmt.Errorf("listing worktrees of %s: %w", repoPath, err)
 	}
-	for _, ligne := range strings.Split(string(out), "\n") {
-		enregistre, ok := strings.CutPrefix(strings.TrimSpace(ligne), "worktree ")
-		if ok && memeChemin(enregistre, chemin) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// estVerrouille dit si git a verrouillé ce worktree.
-//
-// `worktree list --porcelain` émet un bloc par worktree, terminé par une ligne
-// vide ; « locked » (seul, ou suivi de la raison) y appartient au bloc ouvert
-// par la ligne « worktree <chemin> » qui le précède.
-//
-// En cas de panne de git, l'erreur remonte et Retire refuse : ne pas savoir si
-// le worktree est verrouillé, c'est ne pas savoir si `prune` va faire son
-// travail — et le seul sens sûr avant un déplacement est l'abstention.
-func estVerrouille(ctx context.Context, g Git, cheminRepo, chemin string) (bool, error) {
-	out, err := g.Run(ctx, cheminRepo, "worktree", "list", "--porcelain")
-	if err != nil {
-		return false, fmt.Errorf("inventaire des worktrees de %s : %w", cheminRepo, err)
-	}
-	dansLeBloc := false
-	for _, ligne := range strings.Split(string(out), "\n") {
-		ligne = strings.TrimSpace(ligne)
-		if enregistre, ok := strings.CutPrefix(ligne, "worktree "); ok {
-			dansLeBloc = memeChemin(enregistre, chemin)
+	inBlock := false
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if path, ok := strings.CutPrefix(line, "worktree "); ok {
+			inBlock = samePath(path, worktreePath)
+			registered = registered || inBlock
 			continue
 		}
-		if dansLeBloc && (ligne == "locked" || strings.HasPrefix(ligne, "locked ")) {
-			return true, nil
+		if inBlock && (line == "locked" || strings.HasPrefix(line, "locked ")) {
+			locked = true
 		}
 	}
-	return false, nil
+	return registered, locked, nil
 }
 
-// ligneExclusionDen est ce qu'on ajoute à .git/info/exclude en layout per-repo.
-const ligneExclusionDen = ".den/"
+// denExcludeLine is what gets appended to .git/info/exclude in the per-repo
+// layout.
+const denExcludeLine = ".den/"
 
-// excludeDossierDen empêche le worktree per-repo de salir durablement le dépôt
-// de l'utilisateur. Idempotent : la ligne n'est ajoutée qu'une fois, et le
-// contenu existant du fichier est préservé.
-func excludeDossierDen(ctx context.Context, g Git, cheminRepo string) error {
-	commun, err := communDe(ctx, g, cheminRepo)
+// excludeDenDir keeps the per-repo worktree from durably dirtying the user's
+// repository. Idempotent: the line is added only once, and existing content is
+// preserved.
+func excludeDenDir(ctx context.Context, g Git, repoPath string) error {
+	common, err := commonDirOf(ctx, g, repoPath)
 	if err != nil {
-		return fmt.Errorf("identification du dépôt %s : %w", cheminRepo, err)
+		return fmt.Errorf("identifying repository %s: %w", repoPath, err)
 	}
-	fichier := filepath.Join(commun, "info", "exclude")
+	file := filepath.Join(common, "info", "exclude")
 
-	contenu, err := os.ReadFile(fichier)
+	content, err := os.ReadFile(file)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("lecture de %s : %w", fichier, err)
+		return fmt.Errorf("reading %s: %w", file, err)
 	}
-	for _, ligne := range strings.Split(string(contenu), "\n") {
-		if strings.TrimSpace(ligne) == ligneExclusionDen {
-			return nil // déjà exclu
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.TrimSpace(line) == denExcludeLine {
+			return nil // already excluded
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(fichier), 0o755); err != nil {
-		return fmt.Errorf("création de %s : %w", filepath.Dir(fichier), err)
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", filepath.Dir(file), err)
 	}
-	ajout := ligneExclusionDen + "\n"
-	if len(contenu) > 0 && !bytes.HasSuffix(contenu, []byte("\n")) {
-		ajout = "\n" + ajout
+	addition := denExcludeLine + "\n"
+	if len(content) > 0 && !bytes.HasSuffix(content, []byte("\n")) {
+		addition = "\n" + addition
 	}
-	f, err := os.OpenFile(fichier, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return fmt.Errorf("ouverture de %s : %w", fichier, err)
+		return fmt.Errorf("opening %s: %w", file, err)
 	}
 	defer f.Close()
-	if _, err := f.WriteString(ajout); err != nil {
-		return fmt.Errorf("écriture de %s : %w", fichier, err)
+	if _, err := f.WriteString(addition); err != nil {
+		return fmt.Errorf("writing %s: %w", file, err)
 	}
 	return nil
 }
 
-func brancheCourante(ctx context.Context, g Git, dir string) (string, error) {
+func currentBranch(ctx context.Context, g Git, dir string) (string, error) {
 	out, err := g.Run(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return "", err
@@ -864,36 +798,31 @@ func brancheCourante(ctx context.Context, g Git, dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func brancheExiste(ctx context.Context, g Git, cheminRepo, branche string) bool {
-	_, err := g.Run(ctx, cheminRepo, "show-ref", "--verify", "--quiet", "refs/heads/"+branche)
+func branchExists(ctx context.Context, g Git, repoPath, branch string) bool {
+	_, err := g.Run(ctx, repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	return err == nil
 }
 
-// headResolvable dit si HEAD du dépôt désigne un commit existant.
+// headResolvable says whether the repository's HEAD designates an existing
+// commit.
 //
-// Deux configurations distinctes rendent false, et le message d'erreur qui
-// s'appuie dessus doit les couvrir TOUTES LES DEUX (mesuré) :
-//   - un `git init` vierge : HEAD pointe sur une branche jamais commitée ;
-//   - une branche ORPHELINE (`git checkout --orphan`) dans un dépôt qui a par
-//     ailleurs des commits — le dépôt n'est pas vide, c'est HEAD qui ne se
-//     résout pas.
+// Two distinct setups make it false, and the error message resting on it must
+// cover BOTH: a virgin `git init`, where HEAD points at a never-committed
+// branch; and an ORPHAN branch (`git checkout --orphan`) in a repository that
+// does have commits elsewhere. It is named after what it measures — HEAD
+// resolution — and not after a property of the repository it does not test.
 //
-// Nommée d'après ce qu'elle mesure — la résolution de HEAD — et non
-// « aAuMoinsUnCommit » comme dans une première version : ce nom-là affirmait
-// sur le DÉPÔT une propriété que la sonde ne teste pas, et c'est exactement
-// l'erreur qu'il a induite dans le message rendu à l'utilisateur.
-//
-// --quiet pour que l'échec attendu ne pollue pas stderr, --verify pour que git
-// sorte non-zéro au lieu de rendre la chaîne telle quelle.
-func headResolvable(ctx context.Context, g Git, cheminRepo string) bool {
-	_, err := g.Run(ctx, cheminRepo, "rev-parse", "--verify", "--quiet", "HEAD")
+// --quiet so the expected failure does not pollute stderr, --verify so git exits
+// non-zero instead of echoing the string back.
+func headResolvable(ctx context.Context, g Git, repoPath string) bool {
+	_, err := g.Run(ctx, repoPath, "rev-parse", "--verify", "--quiet", "HEAD")
 	return err == nil
 }
 
-// brancheParDefaut rend la ref de suivi de la branche par défaut du dépôt
-// (« origin/main »), et false si le dépôt n'a pas d'origin/HEAD.
-func brancheParDefaut(ctx context.Context, g Git, cheminRepo string) (string, bool) {
-	out, err := g.Run(ctx, cheminRepo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+// defaultBranch returns the tracking ref of the repository's default branch
+// ("origin/main"), and false when the repository has no origin/HEAD.
+func defaultBranch(ctx context.Context, g Git, repoPath string) (string, bool) {
+	out, err := g.Run(ctx, repoPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	if err != nil {
 		return "", false
 	}
@@ -901,479 +830,455 @@ func brancheParDefaut(ctx context.Context, g Git, cheminRepo string) (string, bo
 	return ref, ref != ""
 }
 
-// fichiersSales rend les chemins qui rendent le worktree sale.
+// dirtyFiles returns the paths that make the worktree dirty.
 //
-// --ignored=traditional est indispensable : un .env ou une base sqlite locale
-// sont ignorés par git, donc invisibles pour `status --porcelain` ET pour le
-// filet de `git worktree remove` — ce sont pourtant exactement les fichiers
-// qu'on ne commite pas ET qu'on ne retrouve pas.
+// --ignored=traditional is essential: a .env or a local sqlite database is
+// ignored by git, hence invisible to `status --porcelain` AND to the
+// `git worktree remove` safety net — yet those are exactly the files one does
+// not commit AND cannot get back.
 //
-// Parmi les entrées ignorées, on écarte les DOSSIERS RÉELLEMENT IGNORÉS :
-// git réduit un dossier entièrement ignoré à une seule entrée (node_modules/,
-// target/), qui est du cache régénérable ; refuser dessus rendrait `den rm`
-// inutilisable sur tout projet JS ou Python. Le suffixe « / » ne suffit PAS à
-// les reconnaître — git collapse de la même façon un dossier que l'utilisateur
-// n'a jamais ignoré mais dont tout le contenu l'est (`.gitignore` = `*.env`,
-// la façon la plus répandue d'ignorer des secrets, et `conf/prod.env` sort en
-// `!! conf/`). D'où la question posée à git pour chaque entrée : le dossier
-// LUI-MÊME est-il ignoré ?
+// Among ignored entries we set aside the DIRECTORIES THAT ARE THEMSELVES
+// IGNORED: git collapses a fully ignored directory to a single entry
+// (node_modules/, target/), which is regenerable cache; refusing on those would
+// make `den rm` unusable on any JS or Python project. The trailing "/" is NOT
+// enough to recognize them — git collapses the same way a directory the user
+// never ignored but whose entire content is (`.gitignore` = `*.env`, the most
+// common way to ignore secrets, makes `conf/prod.env` come out as `!! conf/`).
+// Hence the question asked of git for each entry: is the directory ITSELF
+// ignored?
 //
-// -z plutôt que `-c core.quotePath=false` : par défaut git cite et échappe les
-// chemins « spéciaux », si bien qu'un cache nommé `données/` ou `mon cache/`
-// ressort en `"donn\303\251es/"` — sans le « / » final, donc jugé sale, et
-// affiché à l'utilisateur en octal. quotePath=false ne lève que l'échappement
-// non-ASCII : les espaces, guillemets et retours à la ligne restent cités. La
-// sortie NUL-séparée, elle, n'est jamais citée — le problème est fermé à la
-// source plutôt que contourné.
+// -z rather than `-c core.quotePath=false`: by default git quotes and escapes
+// "special" paths, so a cache named `café/` comes out as `"caf\303\251/"`
+// — without its trailing "/", hence judged dirty, and shown to the user in
+// octal. quotePath=false only lifts non-ASCII escaping; NUL-separated output is
+// never quoted.
 //
-// ANGLE MORT ASSUMÉ (S3) : un secret placé dans un dossier lui-même ignoré en
-// bloc (`config/` ignoré, `config/.env` dedans) reste invisible, git ne
-// l'énumérant pas séparément. Un `core.excludesFile` hostile — ou seulement
-// malformé — étend le trou à volonté, puisqu'il décide de ce que « réellement
-// ignoré » veut dire.
+// ACCEPTED BLIND SPOT (S3): a secret placed inside a wholesale-ignored directory
+// (`config/` ignored, `config/.env` inside) stays invisible, git not enumerating
+// it separately. A hostile — or merely malformed — `core.excludesFile` widens
+// the hole at will, since it decides what "really ignored" means.
 //
-// C'est un arbitrage explicite, pas un oubli : le fermer voudrait dire refuser
-// sur tout `node_modules/`, c'est-à-dire rendre `den rm` inutilisable. Le prix
-// est payé une fois et pour de bon depuis que Retire déplace au lieu de
-// supprimer : ce que ce verdict rate finit dans la corbeille, pas au néant.
-func fichiersSales(ctx context.Context, g Git, dir string) ([]string, error) {
-	// --untracked-files=normal est passé EXPLICITEMENT : den lit git sous la
-	// config de l'utilisateur, et `status.showUntrackedFiles = no` — réglage de
-	// performance répandu sur les gros dépôts — vide sinon la sortie de tout
-	// travail non suivi, désarmant la garde entière du spec §14.
+// That is an explicit trade-off, not an oversight: closing it would mean
+// refusing on every `node_modules/`, i.e. making `den rm` unusable. The price is
+// paid once and for good now that Remove moves instead of deleting: what this
+// verdict misses ends up in the trash, not in the void.
+func dirtyFiles(ctx context.Context, g Git, dir string) ([]string, error) {
+	// --untracked-files=normal is passed EXPLICITLY: den reads git under the
+	// user's config, and `status.showUntrackedFiles = no` — a performance setting
+	// common on large repositories — would otherwise empty the output of all
+	// untracked work, disarming the whole spec §14 guard.
 	//
-	// core.fsmonitor est neutralisé pour la même raison, en pire : il délègue à un
-	// démon la question « qu'est-ce qui a changé ». Un Watchman qui a perdu son
-	// état, un démon redémarré ou un montage où inotify rate des événements
-	// répondent « rien », et git les croit — le fichier modifié devient invisible
-	// sans qu'aucun drapeau d'index ne le trahisse. Pire, l'appel de den amorçait
-	// lui-même ce cache et aveuglait ensuite le filet de `git worktree remove`.
+	// core.fsmonitor is neutralized for the same reason, only worse: it delegates
+	// "what changed" to a daemon. A Watchman that lost its state, a restarted
+	// daemon or a mount where inotify drops events all answer "nothing", and git
+	// believes them — the modified file becomes invisible with no index flag
+	// betraying it. Worse, den's own call primed that cache and then blinded the
+	// `git worktree remove` safety net.
 	out, err := g.Run(ctx, dir, "-c", "core.fsmonitor=", "status", "--porcelain",
 		"--ignored=traditional", "--untracked-files=normal", "-z")
 	if err != nil {
-		return nil, fmt.Errorf("état de %s : %w", dir, err)
+		return nil, fmt.Errorf("status of %s: %w", dir, err)
 	}
-	// Deux passes : on lit d'abord tous les enregistrements, puis on pose à git
-	// UNE seule question pour tous les dossiers candidats. Décider entrée par
-	// entrée coûtait un fork par entrée (voir dossiersIgnores).
-	type enregistrement struct{ etat, chemin string }
-	var lus []enregistrement
-	enregistrements := strings.Split(string(out), "\x00")
-	for i := 0; i < len(enregistrements); i++ {
-		e := enregistrements[i]
-		// La sortie -z se termine par un NUL : le dernier morceau du découpage
-		// est vide, et c'est le seul enregistrement vide légitime.
+	// Two passes: read every record first, then ask git ONE single question for
+	// all candidate directories. Deciding entry by entry cost one fork per entry
+	// (see ignoredDirs).
+	type record struct{ status, path string }
+	var records []record
+	entries := strings.Split(string(out), "\x00")
+	for i := 0; i < len(entries); i++ {
+		e := entries[i]
+		// -z output ends with a NUL: the last chunk of the split is empty, and it
+		// is the only legitimate empty record.
 		if e == "" {
 			continue
 		}
-		// SAUTER un enregistrement illisible, c'est perdre une entrée sale sans
-		// le dire — la direction fail-open exacte que tout le reste du module
-		// refuse. Un format que den ne sait pas lire est un doute, donc un refus.
+		// SKIPPING an unreadable record would lose a dirty entry silently — the
+		// exact fail-open direction the rest of this module refuses. A format den
+		// cannot read is a doubt, hence a refusal.
 		if len(e) < 4 || e[2] != ' ' {
 			return nil, fmt.Errorf(
-				"état de %s : enregistrement illisible dans la sortie de git status : %q", dir, e)
+				"status of %s: unreadable record in git status output: %q", dir, e)
 		}
-		etat, chemin := e[:2], e[3:]
-		// En -z, un renommage ou une copie occupe DEUX enregistrements : le
-		// second porte le chemin source, sans préfixe d'état. On le consomme
-		// pour ne pas le relire comme une entrée à part entière.
+		status, entryPath := e[:2], e[3:]
+		// Under -z a rename or a copy takes TWO records: the second carries the
+		// source path, with no status prefix. We consume it so it is not read back
+		// as an entry of its own.
 		//
-		// La détection a lieu dans l'INDEX (colonne X, ce que produit `git mv`)
-		// OU dans l'ARBRE DE TRAVAIL (colonne Y : « ␣R », « DR », « ␣C », que
-		// produit un `mv` suivi d'un `git add -N`). Ne regarder que X faisait
-		// relire « ab cd.txt » comme un enregistrement d'état « ab » et de chemin
-		// « cd.txt » : den nommait à l'utilisateur un fichier qui n'existe pas.
-		// La direction restait sûre — une entrée de plus, jamais de moins ; c'est
-		// le message qui mentait.
-		if etat[0] == 'R' || etat[0] == 'C' || etat[1] == 'R' || etat[1] == 'C' {
+		// Detection must look at BOTH columns: the INDEX (column X, what `git mv`
+		// produces) and the WORKING TREE (column Y: " R", "DR", " C", produced by
+		// an `mv` followed by `git add -N`). Reading X alone makes the source path
+		// of a working-tree rename be parsed as a record of its own, and den then
+		// names a file that does not exist.
+		if status[0] == 'R' || status[0] == 'C' || status[1] == 'R' || status[1] == 'C' {
 			i++
 		}
-		lus = append(lus, enregistrement{etat, chemin})
+		records = append(records, record{status, entryPath})
 	}
 
-	var candidats []string
-	for _, e := range lus {
-		if estDossierIgnorable(e.etat, e.chemin) {
-			candidats = append(candidats, strings.TrimSuffix(e.chemin, "/"))
+	var candidates []string
+	for _, e := range records {
+		if isCollapsedIgnoredDir(e.status, e.path) {
+			candidates = append(candidates, strings.TrimSuffix(e.path, "/"))
 		}
 	}
-	ignores := map[string]bool{}
-	if len(candidats) > 0 {
-		ignores = dossiersIgnores(ctx, g, dir, candidats)
+	ignored := map[string]bool{}
+	if len(candidates) > 0 {
+		ignored = ignoredDirs(ctx, g, dir, candidates)
 	}
 
-	var sales []string
-	for _, e := range lus {
-		if estDossierIgnorable(e.etat, e.chemin) && ignores[strings.TrimSuffix(e.chemin, "/")] {
+	var dirty []string
+	for _, e := range records {
+		if isCollapsedIgnoredDir(e.status, e.path) && ignored[strings.TrimSuffix(e.path, "/")] {
 			continue
 		}
-		sales = append(sales, e.chemin)
+		dirty = append(dirty, e.path)
 	}
 
-	marques, err := fichiersMarques(ctx, g, dir)
+	marked, err := markedFiles(ctx, g, dir)
 	if err != nil {
 		return nil, err
 	}
-	for _, m := range marques {
-		if !slices.Contains(sales, m) {
-			sales = append(sales, m)
+	for _, m := range marked {
+		if !slices.Contains(dirty, m) {
+			dirty = append(dirty, m)
 		}
 	}
-	return sales, nil
+	return dirty, nil
 }
 
-// estDossierIgnorable dit si l'enregistrement est un dossier ignoré collapsé,
-// donc un candidat à la question posée par dossiersIgnores.
-func estDossierIgnorable(etat, chemin string) bool {
-	return etat == "!!" && strings.HasSuffix(chemin, "/")
+// isCollapsedIgnoredDir says whether the record is a collapsed ignored
+// directory, hence a candidate for the question ignoredDirs asks.
+func isCollapsedIgnoredDir(status, entryPath string) bool {
+	return status == "!!" && strings.HasSuffix(entryPath, "/")
 }
 
-// dossiersIgnores rend, parmi les dossiers donnés, ceux qui sont couverts
-// EUX-MÊMES par une règle d'ignorance — par opposition à un dossier simplement
-// non suivi dont le contenu se trouve ignoré.
-//
-// Le « / » final est retiré par l'appelant, et ce n'est pas cosmétique : dans le
-// wildmatch de git, `*` et `**` matchent la chaîne vide, et git applique le
-// `.gitignore` du dossier lui-même au composant vide qui suit le « / ».
-// Demander `conf/` répond donc « ignoré » dès que le .gitignore porte `conf/*`,
-// `conf/**`, ou un `.gitignore` imbriqué valant `*` — trois idiomes courants —
-// alors que l'utilisateur n'a jamais rendu `conf/` jetable.
-//
-// UN SEUL appel pour tout le lot. Un fork par entrée coûtait 183 ms pour
-// 300 dossiers et 545 ms pour 1 000, croissance linéaire sans borne — le motif
-// « un fork par entrée » qu'un correctif précédent venait de retirer ailleurs.
-// `-z` est imposé par la citation (sans lui, `données/` ressort en octal et den
-// ne le reconnaît plus), et `--stdin` est imposé par `-z`, que git refuse sur un
-// argv (« fatal: -z only makes sense with --stdin », mesuré).
-//
-// En cas de doute, la table est vide et toutes les entrées restent sales : la
-// mise à la corbeille est refusée. Le rc=1 de « aucun ne matche » tombe dans la
-// même branche, et rend la même réponse — aucune des deux ne désigne un dossier
-// jetable. C'est déjà le sens que la sonde par entrée appliquait.
-func dossiersIgnores(ctx context.Context, g Git, dir string, chemins []string) map[string]bool {
-	var entree strings.Builder
-	for _, c := range chemins {
-		entree.WriteString(c)
-		entree.WriteByte(0)
+// nulRecords splits the NUL-separated output of a `-z` git command into its
+// records. Empty chunks are dropped: `-z` output ENDS with a NUL, so the last
+// chunk of the split is always empty and is the only legitimate empty record.
+func nulRecords(out []byte) []string {
+	var records []string
+	for _, e := range strings.Split(string(out), "\x00") {
+		if e != "" {
+			records = append(records, e)
+		}
 	}
-	ignores := map[string]bool{}
-	out, err := g.RunAvecEntree(ctx, dir, []byte(entree.String()), "check-ignore", "-z", "--stdin")
+	return records
+}
+
+// ignoredDirs returns, among the given directories, those covered THEMSELVES by
+// an ignore rule — as opposed to a merely untracked directory whose content
+// happens to be ignored.
+//
+// The caller strips the trailing "/", and that is not cosmetic: in git's
+// wildmatch `*` and `**` match the empty string, and git applies the directory's
+// own `.gitignore` to the empty component following the "/". Asking for `conf/`
+// would therefore answer "ignored" as soon as the .gitignore holds `conf/*`,
+// `conf/**`, or a nested `.gitignore` of `*` — three common idioms — while the
+// user never made `conf/` disposable.
+//
+// ONE single call for the whole batch: deciding entry by entry costs one fork
+// per entry, linear in the number of directories and unbounded. `-z` is forced
+// by quoting (without it `café/` comes out in octal and den no longer recognizes
+// it), and `--stdin` is forced by `-z`, which git refuses on an argv.
+//
+// On doubt the table is empty and every entry stays dirty, so the move to the
+// trash is refused. The rc=1 of "none matched" falls in the same branch and
+// gives the same answer — neither designates a disposable directory.
+func ignoredDirs(ctx context.Context, g Git, dir string, paths []string) map[string]bool {
+	var input strings.Builder
+	for _, p := range paths {
+		input.WriteString(p)
+		input.WriteByte(0)
+	}
+	ignored := map[string]bool{}
+	out, err := g.RunWithInput(ctx, dir, []byte(input.String()), "check-ignore", "-z", "--stdin")
 	if err != nil {
-		return ignores
+		return ignored
 	}
-	for _, c := range strings.Split(string(out), "\x00") {
-		if c != "" {
-			ignores[c] = true
-		}
+	for _, p := range nulRecords(out) {
+		ignored[p] = true
 	}
-	return ignores
+	return ignored
 }
 
-// fichiersMarques rend les fichiers suivis que l'index marque « ne regarde
-// pas » : skip-worktree (drapeau `S`) et assume-unchanged (drapeau en
-// minuscule). git ne rapporte alors AUCUNE modification les concernant — ni dans
-// `status`, ni dans le filet de `git worktree remove`, mesuré : les deux
-// laissent détruire le fichier sans un mot.
+// markedFiles returns the tracked files the index marks as "do not look":
+// skip-worktree (flag `S`) and assume-unchanged (lowercase flag). git then
+// reports NO modification about them — neither in `status` nor in the
+// `git worktree remove` safety net: both let the file be destroyed silently.
 //
-// Or ces bits existent précisément pour porter des modifications locales qu'on
-// ne veut pas commiter. Mais leur seule présence ne suffit pas à conclure :
-// `core.ignoreStat` les pose sur TOUT le dépôt, et le sparse-checkout sur tout
-// ce qui est hors du cône. On ne retient donc que les fichiers dont le contenu
-// diffère réellement de l'index — voir cheminsModifies.
-func fichiersMarques(ctx context.Context, g Git, dir string) ([]string, error) {
+// Those bits exist precisely to carry local modifications one does not want to
+// commit. But their presence alone does not conclude: `core.ignoreStat` sets
+// them on the WHOLE repository, and sparse-checkout on everything outside the
+// cone. So only files whose content really differs from the index are kept —
+// see modifiedPaths.
+func markedFiles(ctx context.Context, g Git, dir string) ([]string, error) {
 	out, err := g.Run(ctx, dir, "ls-files", "-v", "-z")
 	if err != nil {
-		return nil, fmt.Errorf("drapeaux d'index de %s : %w", dir, err)
+		return nil, fmt.Errorf("index flags of %s: %w", dir, err)
 	}
-	var sales, reguliers, liens []string
-	for _, e := range strings.Split(string(out), "\x00") {
-		if e == "" {
-			continue // dernier morceau du découpage : la sortie -z finit par un NUL
-		}
+	var dirty, regulars, symlinks []string
+	for _, e := range nulRecords(out) {
 		if len(e) < 3 || e[1] != ' ' {
 			return nil, fmt.Errorf(
-				"drapeaux d'index de %s : enregistrement illisible dans la sortie de git ls-files : %q", dir, e)
+				"index flags of %s: unreadable record in git ls-files output: %q", dir, e)
 		}
-		drapeau, chemin := e[0], e[2:]
-		if drapeau != 'S' && (drapeau < 'a' || drapeau > 'z') {
+		flag, entryPath := e[0], e[2:]
+		if flag != 'S' && (flag < 'a' || flag > 'z') {
 			continue
 		}
-		// Lstat et non Stat : Stat suit les liens, et un fichier suivi remplacé
-		// par un lien symbolique cassé s'évanouissait ainsi du discriminant.
-		infos, err := os.Lstat(filepath.Join(dir, chemin))
+		// Lstat and not Stat: Stat follows symlinks, and a tracked file replaced by
+		// a broken symlink would vanish from the discriminator.
+		info, err := os.Lstat(filepath.Join(dir, entryPath))
 		if err != nil {
-			// Absent du disque : hors du cône d'un sparse-checkout, qui pose les
-			// mêmes bits. Il n'y a rien là à protéger.
+			// Absent from disk: outside a sparse-checkout cone, which sets the same
+			// bits. There is nothing to protect there.
 			continue
 		}
 		switch {
-		case infos.Mode()&os.ModeSymlink != 0:
-			liens = append(liens, chemin)
-		case infos.Mode().IsRegular():
-			reguliers = append(reguliers, chemin)
+		case info.Mode()&os.ModeSymlink != 0:
+			symlinks = append(symlinks, entryPath)
+		case info.Mode().IsRegular():
+			regulars = append(regulars, entryPath)
 		default:
-			// Fifo, dossier, socket, périphérique : `git hash-object` ne doit
-			// JAMAIS les voir. Sur un fifo il se bloque sans borne (mesuré : il ne
-			// rend jamais la main, il n'échoue pas), sur un dossier il sort en
-			// `fatal:` anglais. Le verdict reste donc celui de den.
+			// Fifo, directory, socket, device: `git hash-object` must NEVER see
+			// them. On a fifo it blocks forever (it never returns, it does not
+			// fail), on a directory it exits with a `fatal:`. So the verdict stays
+			// den's.
 			//
-			// Un SOUS-MODULE tombe ici : son gitlink est un dossier sur le disque.
-			// Marqué, il est donc refusé alors que `git status` ne rapporte rien
-			// (mesuré sur git 2.53 : `update-index --skip-worktree sm` puis
-			// `status --porcelain` vide, et den rend « sm »). C'est un faux
-			// positif assumé, pas corrigé, et deux mesures encadrent le coût :
-			//   - `git worktree remove --force` NE refuse PAS un worktree à
-			//     sous-module sur git 2.53 (rc=0, vérifié) : contrairement à ce
-			//     qu'on a longtemps cru, il n'y avait pas là de filet équivalent —
-			//     et den ne l'appelle de toute façon plus ;
-			//   - le refus se lève par --force, qui déplace au lieu de détruire.
-			//     Le sous-module déplacé garde tous ses fichiers ; son `.git`
-			//     porte en revanche un chemin RELATIF (mesuré :
-			//     « gitdir: ../../parent/.git/worktrees/wt/modules/sm »), donc il
-			//     n'est plus un dépôt exploitable depuis la corbeille. On récupère
-			//     des fichiers, ce qui est exactement le contrat de la corbeille.
-			sales = append(sales, chemin)
+			// A SUBMODULE lands here: its gitlink is a directory on disk. Marked, it
+			// is therefore refused while `git status` reports nothing. Accepted false
+			// positive: `git worktree remove --force` does NOT refuse a worktree with
+			// a submodule anyway, and the refusal lifts with --force, which moves
+			// instead of destroying. The moved submodule keeps all its files; its
+			// `.git` carries a RELATIVE path, so it is no longer a usable repository
+			// from the trash. Files are recovered, which is exactly the trash's
+			// contract.
+			dirty = append(dirty, entryPath)
 		}
 	}
-	if len(reguliers)+len(liens) == 0 {
-		return sales, nil
+	if len(regulars)+len(symlinks) == 0 {
+		return dirty, nil
 	}
 
-	index, err := empreintesIndex(ctx, g, dir)
+	index, err := indexHashes(ctx, g, dir)
 	if err != nil {
 		return nil, err
 	}
-	modifies, err := cheminsModifies(ctx, g, dir, index, reguliers)
+	modified, err := modifiedPaths(ctx, g, dir, index, regulars)
 	if err != nil {
 		return nil, err
 	}
-	sales = append(sales, modifies...)
-	modifies, err = liensModifies(ctx, g, dir, index, liens)
+	dirty = append(dirty, modified...)
+	modified, err = modifiedLinks(dir, index, symlinks)
 	if err != nil {
 		return nil, err
 	}
-	return append(sales, modifies...), nil
+	return append(dirty, modified...), nil
 }
 
-// entreeIndex est ce que l'index retient d'un chemin.
-type entreeIndex struct {
-	mode      string
-	empreinte string
+// indexEntry is what the index holds about a path.
+type indexEntry struct {
+	mode string
+	hash string
 }
 
-// modeLien est le mode git d'un lien symbolique.
-const modeLien = "120000"
+// symlinkMode is git's mode for a symbolic link.
+const symlinkMode = "120000"
 
-// modeRegulier dit si le mode d'index est celui d'un fichier régulier.
+// isRegularMode says whether the index mode is that of a regular file.
 //
-// C'est le pendant du contrôle que liensModifies fait sur modeLien, et son
-// absence était un FAUX NÉGATIF, pas un faux positif : un lien suivi (120000)
-// remplacé sur le disque par un fichier régulier dont le contenu vaut le texte
-// du lien produit deux empreintes IDENTIQUES — git hache le texte du lien comme
-// contenu du blob. Le fichier passait donc pour propre et était détruit.
+// It is the counterpart of the modifiedLinks check on symlinkMode, and the mode
+// must be compared or the hash alone lies: a tracked symlink (120000) replaced
+// on disk by a regular file whose content equals the link text produces two
+// IDENTICAL hashes — git hashes the link text as the blob content — so the file
+// would pass for clean.
 //
-// 100644 et 100755 sont volontairement confondus : un `chmod +x` seul sur un
-// fichier marqué reste invisible à den. C'est une perte de bit de permission,
-// pas de contenu, et la distinguer coûterait un stat par fichier pour rendre
-// « sale » un worktree dont pas un octet n'a bougé. Le mode réel, lui, vit dans
-// l'index et survit à la mise à la corbeille.
-func modeRegulier(mode string) bool { return mode == "100644" || mode == "100755" }
+// 100644 and 100755 are deliberately conflated: a bare `chmod +x` on a marked
+// file stays invisible to den. That is a permission bit lost, not content, and
+// telling them apart would cost one stat per file to call a worktree dirty when
+// not a byte moved. The real mode lives in the index and survives the trash.
+func isRegularMode(mode string) bool { return mode == "100644" || mode == "100755" }
 
-// liensModifies compare un lien symbolique sur son TEXTE.
+// modifiedLinks compares a symbolic link on its TEXT.
 //
-// git stocke le texte du lien comme contenu de l'objet (mode 120000), alors que
-// `hash-object` SUIT le lien et hacherait le contenu de la cible : les deux ne
-// coïncident jamais. Sans cette distinction, un dépôt parfaitement propre
-// portant un seul lien suivi était refusé à perpétuité dès qu'un bit d'index le
-// marquait — le symptôme exact que la comparaison d'empreintes devait fermer.
-func liensModifies(ctx context.Context, g Git, dir string, index map[string]entreeIndex, liens []string) ([]string, error) {
-	var modifies []string
-	for _, chemin := range liens {
-		complet := filepath.Join(dir, chemin)
-		entree, ok := index[chemin]
-		if !ok || entree.mode != modeLien {
-			// L'index n'attend pas un lien ici : un fichier suivi a été remplacé
-			// par un lien, ce qui est bien une modification.
-			modifies = append(modifies, chemin)
+// git stores the link text as the object content (mode 120000), whereas
+// `hash-object` FOLLOWS the link and would hash the target's content: the two
+// never coincide. Without that distinction a marked symlink is dirty forever,
+// however clean the repository.
+func modifiedLinks(dir string, index map[string]indexEntry, symlinks []string) ([]string, error) {
+	var modified []string
+	for _, entryPath := range symlinks {
+		fullPath := filepath.Join(dir, entryPath)
+		entry, ok := index[entryPath]
+		if !ok || entry.mode != symlinkMode {
+			// The index does not expect a symlink here: a tracked file was replaced
+			// by a symlink, which is indeed a modification.
+			modified = append(modified, entryPath)
 			continue
 		}
-		// Readlink vient après un Lstat réussi sur le MÊME chemin : seul un
-		// remplacement concurrent peut le faire échouer, et cette fenêtre n'est
-		// pas reproductible en test. L'erreur remonte quand même — ne pas avoir
-		// pu lire le lien n'autorise pas à le déclarer propre.
-		cible, err := os.Readlink(complet)
+		// Readlink comes after a successful Lstat on the SAME path: only a
+		// concurrent replacement can make it fail, and that window is not
+		// reproducible in a test. The error propagates anyway — not having been
+		// able to read the link does not license declaring it clean.
+		target, err := os.Readlink(fullPath)
 		if err != nil {
-			return nil, fmt.Errorf("lecture du lien %s : %w", complet, err)
+			return nil, fmt.Errorf("reading symlink %s: %w", fullPath, err)
 		}
-		attendu, err := empreinteBlob(cible, len(entree.empreinte))
+		expected, err := blobHash(target, len(entry.hash))
 		if err != nil {
-			return nil, fmt.Errorf("empreinte du lien %s : %w", complet, err)
+			return nil, fmt.Errorf("hashing symlink %s: %w", fullPath, err)
 		}
-		if attendu != entree.empreinte {
-			modifies = append(modifies, chemin)
+		if expected != entry.hash {
+			modified = append(modified, entryPath)
 		}
 	}
-	return modifies, nil
+	return modified, nil
 }
 
-// empreinteBlob calcule l'empreinte que git donne au blob dont le contenu est
-// exactement ce texte : hash("blob <n>\x00<texte>").
+// blobHash computes the hash git gives to the blob whose content is exactly this
+// text: hash("blob <n>\x00<text>").
 //
-// Elle sert au TEXTE D'UN LIEN, que git stocke tel quel comme contenu de
-// l'objet — aucun filtre de .gitattributes ne s'applique à un lien symbolique,
-// et c'est ce qui rend le calcul local légitime là où il ne le serait pas pour
-// un fichier régulier (voir cheminsModifies).
+// It serves the TEXT OF A SYMLINK, which git stores as is: no .gitattributes
+// filter applies to a symbolic link, and that is what makes the local
+// computation legitimate here where it would not be for a regular file (see
+// modifiedPaths). It replaces one `cat-file blob` fork per marked link and drops
+// the dependency on the object store — a link whose blob is missing (partial
+// clone, unfetched promised object) would otherwise fail den forever.
 //
-// Ce calcul remplace un fork `cat-file blob` PAR LIEN MARQUÉ, mesuré à 3,83 s
-// pour 8 000 liens. Il supprime en prime la dépendance à l'object store : un
-// lien dont le blob manque — clone partiel, objet promis non rapatrié — faisait
-// échouer den à perpétuité.
-//
-// L'algorithme se déduit de la LONGUEUR de l'empreinte que porte l'index (40
-// caractères hexadécimaux pour SHA-1, 64 pour SHA-256), ce qui évite un
-// `git rev-parse --show-object-format` — indisponible avant git 2.29 — et toute
-// hypothèse sur le format d'objets du dépôt. Une longueur inconnue est une
-// erreur, pas un pari : comparer contre le mauvais algorithme rendrait
-// « modifié » pour toujours.
-func empreinteBlob(texte string, longueurEmpreinte int) (string, error) {
+// The algorithm is deduced from the LENGTH of the hash the index carries (40 hex
+// characters for SHA-1, 64 for SHA-256), which avoids a
+// `git rev-parse --show-object-format` — unavailable before git 2.29 — and any
+// assumption about the repository's object format. An unknown length is an
+// error, not a bet: comparing against the wrong algorithm would report "modified"
+// forever.
+func blobHash(text string, hashLength int) (string, error) {
 	var h hash.Hash
-	switch longueurEmpreinte {
+	switch hashLength {
 	case 2 * sha1.Size:
-		// SHA-1 est ici le format d'objets de git, pas un choix cryptographique.
+		// SHA-1 is git's object format here, not a cryptographic choice.
 		h = sha1.New()
 	case 2 * sha256.Size:
 		h = sha256.New()
 	default:
 		return "", fmt.Errorf(
-			"format d'objets git inconnu : l'index porte une empreinte de %d caractères hexadécimaux",
-			longueurEmpreinte)
+			"unknown git object format: the index carries a hash of %d hex characters",
+			hashLength)
 	}
-	fmt.Fprintf(h, "blob %d\x00%s", len(texte), texte)
+	fmt.Fprintf(h, "blob %d\x00%s", len(text), text)
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// tailleLot borne la longueur de l'argv des sondes d'empreinte.
-const tailleLot = 256
+// batchSize bounds the argv length of the hash probes.
+const batchSize = 256
 
-// cheminsModifies rend, parmi les fichiers que l'index déclare « ne regarde
-// pas », ceux dont le contenu du disque diffère RÉELLEMENT de l'index.
+// modifiedPaths returns, among the files the index declares "do not look", those
+// whose on-disk content REALLY differs from the index.
 //
-// Sans cette comparaison la garde était inutilisable : `core.ignoreStat = true`
-// pose le bit assume-unchanged sur tout le dépôt, et ces bits SURVIVENT au
-// retrait du réglage — un worktree parfaitement propre devenait donc
-// définitivement non supprimable sans --force. Lire `core.ignoreStat` n'y
-// suffirait pas, puisque le blocage persiste précisément quand le réglage a
-// disparu.
+// Without that comparison the guard is unusable: `core.ignoreStat = true` sets
+// the assume-unchanged bit on the whole repository, and those bits SURVIVE the
+// removal of the setting — a perfectly clean worktree would be permanently
+// unremovable without --force. Reading `core.ignoreStat` would not help, since
+// the block persists precisely once the setting is gone.
 //
-// Aucune commande git ne réexamine ces entrées : `diff-files`, `diff-index` et
-// `ls-files -m` sont tous aveugles dessus (mesuré). Il faut donc comparer les
-// empreintes soi-même. `hash-object` applique les filtres de `.gitattributes`,
-// si bien qu'un filtre `clean` ou `core.autocrlf` ne fabrique pas de fausse
-// modification (mesuré). Deux contreparties, toutes deux assumées :
+// No git command re-examines those entries: `diff-files`, `diff-index` and
+// `ls-files -m` are all blind to them, so the hashes must be compared here.
+// `hash-object` applies `.gitattributes` filters, so a `clean` filter or
+// `core.autocrlf` does not fabricate a fake modification. Two accepted
+// trade-offs:
 //
-//   - un filtre `clean` qui MASQUE un secret rend les deux empreintes
-//     identiques : le fichier passe pour propre, et il part. C'est exactement
-//     le cas que la corbeille rend réversible — il part dans un dossier, pas
-//     dans le néant (voir Retire) ;
-//   - un filtre `clean` NON DÉTERMINISTE (qui injecte un horodatage, un
-//     compteur, un aléa) rend une empreinte différente à chaque appel : le
-//     fichier est alors sale à perpétuité et `den rm` exige `--force` pour
-//     toujours. Faux positif, donc direction sûre, et git se comporte
-//     identiquement hors marquage — un tel dépôt n'a jamais un `git status`
-//     vide.
+//   - a `clean` filter that MASKS a secret makes both hashes identical: the file
+//     passes for clean and goes. That is exactly the case the trash makes
+//     reversible — it goes into a directory, not into the void (see Remove);
+//   - a NON-DETERMINISTIC `clean` filter (injecting a timestamp, a counter,
+//     randomness) yields a different hash on every call: the file is then dirty
+//     forever and `den rm` demands `--force` for good. False positive, hence a
+//     safe direction, and git behaves identically without the marking — such a
+//     repository never has an empty `git status`.
 //
-// En cas de panne d'une sonde, l'erreur remonte : une sonde muette ne doit
-// jamais autoriser une destruction.
-func cheminsModifies(ctx context.Context, g Git, dir string, index map[string]entreeIndex, chemins []string) ([]string, error) {
-	var modifies []string
-	for lot := range slices.Chunk(chemins, tailleLot) {
-		disque, err := empreintesDisque(ctx, g, dir, lot)
+// If a probe fails the error propagates: a mute probe must never authorize a
+// destruction.
+func modifiedPaths(ctx context.Context, g Git, dir string, index map[string]indexEntry, paths []string) ([]string, error) {
+	var modified []string
+	for batch := range slices.Chunk(paths, batchSize) {
+		onDisk, err := diskHashes(ctx, g, dir, batch)
 		if err != nil {
 			return nil, err
 		}
-		if len(disque) != len(lot) {
-			return nil, fmt.Errorf("empreintes de %s : %d valeurs rendues pour %d fichiers",
-				dir, len(disque), len(lot))
+		if len(onDisk) != len(batch) {
+			return nil, fmt.Errorf("hashes of %s: %d values returned for %d files",
+				dir, len(onDisk), len(batch))
 		}
-		for i, chemin := range lot {
-			// Pas de branche pour « absent de l'index » : la valeur zéro rendue
-			// par la table porte un mode vide, que modeRegulier refuse. Un chemin
-			// inconnu de l'index compte donc pour modifié par le même contrôle —
-			// une condition de moins, et la même direction.
-			attendu := index[chemin]
-			if !modeRegulier(attendu.mode) || attendu.empreinte != disque[i] {
-				modifies = append(modifies, chemin)
+		for i, entryPath := range batch {
+			// No branch for "absent from the index": the zero value the map returns
+			// carries an empty mode, which isRegularMode refuses. A path unknown to
+			// the index therefore counts as modified through the same check.
+			expected := index[entryPath]
+			if !isRegularMode(expected.mode) || expected.hash != onDisk[i] {
+				modified = append(modified, entryPath)
 			}
 		}
 	}
-	return modifies, nil
+	return modified, nil
 }
 
-// empreintesIndex lit TOUT l'index en un seul appel.
+// indexHashes reads the WHOLE index in a single call.
 //
-// Interroger `ls-files -s` avec les chemins d'un lot rebalayait l'index entier à
-// chaque lot : coût par appel linéaire en taille d'index, nombre d'appels
-// linéaire en fichiers marqués — donc quadratique (mesuré : 1 915 ms de
-// pathspecs sur 20 000 fichiers marqués, contre 6 ms pour cet appel unique).
+// Querying `ls-files -s` with a batch's paths rescans the entire index for every
+// batch: cost per call linear in index size, number of calls linear in marked
+// files — hence quadratic.
 //
-// L'appel unique supprime en prime un faux positif : `ls-files` traite ses
-// arguments comme des PATHSPECS et non comme des chemins littéraux, si bien
-// qu'un fichier suivi nommé « :x.txt » manquait à la table et passait pour
-// modifié sur un worktree propre.
-func empreintesIndex(ctx context.Context, g Git, dir string) (map[string]entreeIndex, error) {
+// The single call also removes a false positive: `ls-files` treats its arguments
+// as PATHSPECS and not as literal paths, so a tracked file named ":x.txt" was
+// missing from the table and passed for modified on a clean worktree.
+func indexHashes(ctx context.Context, g Git, dir string) (map[string]indexEntry, error) {
 	out, err := g.Run(ctx, dir, "ls-files", "-s", "-z")
 	if err != nil {
-		return nil, fmt.Errorf("empreintes d'index de %s : %w", dir, err)
+		return nil, fmt.Errorf("index hashes of %s: %w", dir, err)
 	}
-	index := map[string]entreeIndex{}
-	for _, e := range strings.Split(string(out), "\x00") {
-		if e == "" {
-			continue // dernier morceau du découpage : la sortie -z finit par un NUL
-		}
-		// « <mode> <empreinte> <étape>\t<chemin> »
-		entete, chemin, ok := strings.Cut(e, "\t")
-		champs := strings.Fields(entete)
-		if !ok || len(champs) < 2 {
+	index := map[string]indexEntry{}
+	for _, e := range nulRecords(out) {
+		// "<mode> <hash> <stage>\t<path>"
+		header, entryPath, ok := strings.Cut(e, "\t")
+		fields := strings.Fields(header)
+		if !ok || len(fields) < 2 {
 			return nil, fmt.Errorf(
-				"empreintes d'index de %s : enregistrement illisible dans la sortie de git ls-files : %q", dir, e)
+				"index hashes of %s: unreadable record in git ls-files output: %q", dir, e)
 		}
-		index[chemin] = entreeIndex{mode: champs[0], empreinte: champs[1]}
+		index[entryPath] = indexEntry{mode: fields[0], hash: fields[1]}
 	}
 	return index, nil
 }
 
-// empreintesDisque calcule l'empreinte du contenu réellement présent, dans
-// l'ordre des chemins demandés.
+// diskHashes computes the hash of the content actually present, in the order of
+// the requested paths.
 //
-// `hash-object` LIT LE CONTENU INTÉGRAL de chaque fichier, et rien ne le borne :
-// mesuré à 499 ms pour 4 fichiers de 64 Mio marqués, soit le débit du disque.
-// C'est assumé, faute de meilleure question à poser :
-//   - le calcul ne peut pas migrer en Go comme celui du texte des liens, parce
-//     que `hash-object` applique les filtres de .gitattributes — sans quoi un
-//     dépôt en autocrlf verrait toutes ses lignes changer (voir cheminsModifies) ;
-//   - comparer d'abord les TAILLES ne conclurait rien : un filtre `clean` ou
-//     `core.autocrlf` fait légitimement différer la taille du blob de celle du
-//     disque, donc une taille différente ne prouve pas la modification, et une
-//     taille égale ne prouve pas la propreté ;
-//   - la mémoire, elle, reste bornée : git streame, et den ne reçoit que des
-//     empreintes.
+// `hash-object` READS THE WHOLE CONTENT of each file, and nothing bounds it: the
+// cost is the disk's throughput on large files. That is accepted, for want of a
+// better question to ask:
+//   - the computation cannot move to Go the way the link text one did, because
+//     `hash-object` applies .gitattributes filters — without which an autocrlf
+//     repository would see all its lines change (see modifiedPaths);
+//   - comparing SIZES first would conclude nothing: a `clean` filter or
+//     `core.autocrlf` legitimately makes the blob size differ from the disk's, so
+//     a different size does not prove modification and an equal one does not
+//     prove cleanliness;
+//   - memory stays bounded: git streams, and den only receives hashes.
 //
-// L'ensemble concerné est celui des fichiers MARQUÉS, vide sur un dépôt
-// ordinaire. Le cas coûteux est `core.ignoreStat = true`, qui marque tout le
-// dépôt — 20 000 petits fichiers y coûtent 70 ms au total, mesuré.
-func empreintesDisque(ctx context.Context, g Git, dir string, chemins []string) ([]string, error) {
-	out, err := g.Run(ctx, dir, append([]string{"hash-object", "--"}, chemins...)...)
+// The set concerned is the MARKED files, empty on an ordinary repository. The
+// expensive case is `core.ignoreStat = true`, which marks the whole repository.
+func diskHashes(ctx context.Context, g Git, dir string, paths []string) ([]string, error) {
+	out, err := g.Run(ctx, dir, append([]string{"hash-object", "--"}, paths...)...)
 	if err != nil {
-		return nil, fmt.Errorf("empreintes du disque de %s : %w", dir, err)
+		return nil, fmt.Errorf("disk hashes of %s: %w", dir, err)
 	}
 	return strings.Fields(string(out)), nil
 }
 
-// listeCourte nomme les fichiers en cause sans noyer le message.
-func listeCourte(chemins []string) string {
+// shortList names the offending files without drowning the message.
+func shortList(paths []string) string {
 	const max = 5
-	if len(chemins) <= max {
-		return strings.Join(chemins, ", ")
+	if len(paths) <= max {
+		return strings.Join(paths, ", ")
 	}
-	return fmt.Sprintf("%s et %d autres", strings.Join(chemins[:max], ", "), len(chemins)-max)
+	return fmt.Sprintf("%s and %d more", strings.Join(paths[:max], ", "), len(paths)-max)
 }

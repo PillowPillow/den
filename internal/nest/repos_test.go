@@ -1,19 +1,20 @@
 package nest
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
 
 func repos() []Repo {
 	return []Repo{
-		{Path: "/dev/api"},                    // requis
-		{Path: "/dev/front", Optional: true},  // optionnel
-		{Path: "/dev/worker", Optional: true}, // optionnel
+		{Path: "/dev/api"},                    // required
+		{Path: "/dev/front", Optional: true},  // optional
+		{Path: "/dev/worker", Optional: true}, // optional
 	}
 }
 
-func noms(rs []Repo) []string {
+func names(rs []Repo) []string {
 	out := make([]string, 0, len(rs))
 	for _, r := range rs {
 		out = append(out, r.Name())
@@ -21,75 +22,63 @@ func noms(rs []Repo) []string {
 	return out
 }
 
-func egal(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func TestSelectReposCasNominaux(t *testing.T) {
-	cas := []struct {
-		nom     string
-		without []string
-		only    []string
-		attendu []string
+func TestSelectReposNominalCases(t *testing.T) {
+	cases := []struct {
+		name     string
+		without  []string
+		only     []string
+		expected []string
 	}{
-		{"sans filtre : tout", nil, nil, []string{"api", "front", "worker"}},
-		{"without un optionnel", []string{"front"}, nil, []string{"api", "worker"}},
-		{"without plusieurs", []string{"front", "worker"}, nil, []string{"api"}},
-		{"only un optionnel : les requis restent", nil, []string{"front"}, []string{"api", "front"}},
-		{"only un requis : les optionnels tombent", nil, []string{"api"}, []string{"api"}},
+		{"no filter: everything", nil, nil, []string{"api", "front", "worker"}},
+		{"without one optional", []string{"front"}, nil, []string{"api", "worker"}},
+		{"without several", []string{"front", "worker"}, nil, []string{"api"}},
+		{"only one optional: required ones stay", nil, []string{"front"}, []string{"api", "front"}},
+		{"only one required: optional ones drop", nil, []string{"api"}, []string{"api"}},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			got, err := SelectRepos(repos(), c.without, c.only)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := selectRepos(repos(), c.without, c.only)
 			if err != nil {
-				t.Fatalf("erreur inattendue : %v", err)
+				t.Fatalf("unexpected error: %v", err)
 			}
-			if !egal(noms(got), c.attendu) {
-				t.Errorf("SelectRepos = %v, attendu %v", noms(got), c.attendu)
+			if !slices.Equal(names(got), c.expected) {
+				t.Errorf("SelectRepos = %v, expected %v", names(got), c.expected)
 			}
 		})
 	}
 }
 
-func TestSelectReposErreurs(t *testing.T) {
-	cas := []struct {
-		nom     string
-		without []string
-		only    []string
-		attendu string
+func TestSelectReposErrors(t *testing.T) {
+	cases := []struct {
+		name     string
+		without  []string
+		only     []string
+		expected string
 	}{
-		{"without et only ensemble", []string{"front"}, []string{"worker"}, "mutuellement exclusifs"},
-		{"without un repo requis", []string{"api"}, nil, "requis"},
-		{"without un repo inconnu", []string{"fantome"}, nil, "fantome"},
-		{"only un repo inconnu", nil, []string{"fantome"}, "fantome"},
+		{"without and only together", []string{"front"}, []string{"worker"}, "mutually exclusive"},
+		{"without a required repo", []string{"api"}, nil, "required"},
+		{"without an unknown repo", []string{"ghost"}, nil, "ghost"},
+		{"only an unknown repo", nil, []string{"ghost"}, "ghost"},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			_, err := SelectRepos(repos(), c.without, c.only)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := selectRepos(repos(), c.without, c.only)
 			if err == nil {
-				t.Fatalf("attendu une erreur mentionnant %q", c.attendu)
+				t.Fatalf("expected an error mentioning %q", c.expected)
 			}
-			if !strings.Contains(err.Error(), c.attendu) {
-				t.Errorf("erreur = %q, attendu une mention de %q", err.Error(), c.attendu)
+			if !strings.Contains(err.Error(), c.expected) {
+				t.Errorf("error = %q, expected a mention of %q", err.Error(), c.expected)
 			}
 		})
 	}
 }
 
-func TestSelectReposNeMutePasLEntree(t *testing.T) {
+func TestSelectReposDoesNotMutateInput(t *testing.T) {
 	in := repos()
-	if _, err := SelectRepos(in, []string{"front"}, nil); err != nil {
+	if _, err := selectRepos(in, []string{"front"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(in) != 3 {
-		t.Errorf("l'entrée a été mutée : %d repos au lieu de 3", len(in))
+		t.Errorf("the input was mutated: %d repos instead of 3", len(in))
 	}
 }

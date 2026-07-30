@@ -8,54 +8,54 @@ import (
 	"testing"
 )
 
-func createComplet() Create {
+func completeCreate() Create {
 	return Create{
-		Nom:       "api.feat12",
+		Name:      "api.feat12",
 		Image:     "docker.io/library/dgdevx:v1",
-		KitsStack: []string{"/den/kits/ssh-known-hosts", "/den/stacks/dgdevx/kit"},
-		KitMixin:  "/den/cache/mixins/api.feat12",
+		StackKits: []string{"/den/kits/ssh-known-hosts", "/den/stacks/dgdevx/kit"},
+		MixinKit:  "/den/cache/mixins/api.feat12",
 		Workspaces: []string{
 			"/den/worktrees/feat12/api",
 			"/den/worktrees/feat12/front",
-			"/home/moi/.den/agents/claude",
-			"/home/moi/.ssh_sbx",
+			"/home/me/.den/agents/claude",
+			"/home/me/.ssh_sbx",
 		},
 	}
 }
 
-func TestArgvCreateStructure(t *testing.T) {
-	argv, err := ArgvCreate(createComplet())
+func TestCreateArgvStructure(t *testing.T) {
+	argv, err := CreateArgv(completeCreate())
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if argv[0] != "create" {
-		t.Errorf("argv[0] = %q, attendu create", argv[0])
+		t.Errorf("argv[0] = %q, want create", argv[0])
 	}
-	// `sbx create [flags] AGENT PATH [PATH...]` : l'agent positionnel est
-	// OBLIGATOIRE. L'omettre produit « unknown agent ».
-	iAgent := slices.Index(argv, AgentPositionnel)
+	// `sbx create [flags] AGENT PATH [PATH...]`: the positional agent is
+	// MANDATORY. Omitting it produces "unknown agent".
+	iAgent := slices.Index(argv, PositionalAgent)
 	if iAgent < 0 {
-		t.Fatalf("l'agent positionnel %q est absent : %v", AgentPositionnel, argv)
+		t.Fatalf("the positional agent %q is missing: %v", PositionalAgent, argv)
 	}
-	// Tout ce qui suit l'agent est un chemin, rien d'autre.
+	// Everything after the agent is a path, nothing else.
 	for _, a := range argv[iAgent+1:] {
 		if strings.HasPrefix(a, "-") {
-			t.Errorf("un flag (%q) traîne après l'agent positionnel : %v", a, argv)
+			t.Errorf("a flag (%q) trails after the positional agent: %v", a, argv)
 		}
 	}
-	if !slices.Equal(argv[iAgent+1:], createComplet().Workspaces) {
-		t.Errorf("positionnels = %v, attendu les workspaces dans l'ordre", argv[iAgent+1:])
+	if !slices.Equal(argv[iAgent+1:], completeCreate().Workspaces) {
+		t.Errorf("positionals = %v, want the workspaces in order", argv[iAgent+1:])
 	}
 }
 
-// L'invariant le plus coûteux du plan : le mixin est fail-closed et le
-// dispatcher sbx sort au premier échec, privant les kits SUIVANTS de leurs
-// startup commands. Il doit donc être le DERNIER --kit.
-func TestArgvCreateMixinEnDernierKit(t *testing.T) {
-	argv, err := ArgvCreate(createComplet())
+// The most expensive invariant of the plan: the mixin is fail-closed and the
+// sbx dispatcher exits on the first failure, depriving LATER kits of their
+// startup commands. It must therefore be the LAST --kit.
+func TestCreateArgvMixinIsLastKit(t *testing.T) {
+	argv, err := CreateArgv(completeCreate())
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	var kits []string
@@ -65,28 +65,28 @@ func TestArgvCreateMixinEnDernierKit(t *testing.T) {
 		}
 	}
 	if len(kits) != 3 {
-		t.Fatalf("kits = %v, attendu 3", kits)
+		t.Fatalf("kits = %v, want 3", kits)
 	}
 	if kits[len(kits)-1] != "/den/cache/mixins/api.feat12" {
-		t.Errorf("le mixin doit être le DERNIER --kit ; kits = %v", kits)
+		t.Errorf("the mixin must be the LAST --kit; kits = %v", kits)
 	}
-	// Et l'ordre des kits de stack est préservé : c'est un ordre de layering.
+	// And the order of stack kits is preserved: it's a layering order.
 	if kits[0] != "/den/kits/ssh-known-hosts" || kits[1] != "/den/stacks/dgdevx/kit" {
-		t.Errorf("ordre des kits de stack non préservé : %v", kits)
+		t.Errorf("order of stack kits not preserved: %v", kits)
 	}
 }
 
-// Le chargement de `Stack.Kits` conserve les entrées vides (une puce YAML
-// malformée donne une chaîne vide dans la liste). Rien en amont ne les filtre :
-// c'est ici que la neutralisation a lieu, et un `--kit ""` ferait échouer le
-// dispatcher de kits — donc le boot entier, mixin compris.
-func TestArgvCreateIgnoreLesKitsVides(t *testing.T) {
-	c := createComplet()
-	c.KitsStack = []string{"/den/kits/ssh-known-hosts", "", "/den/stacks/dgdevx/kit"}
+// Loading `Stack.Kits` keeps empty entries (a malformed YAML bullet gives an
+// empty string in the list). Nothing upstream filters them: this is where the
+// neutralization happens, and a `--kit ""` would make the kit dispatcher fail
+// — so the whole boot, mixin included.
+func TestCreateArgvIgnoresEmptyKits(t *testing.T) {
+	c := completeCreate()
+	c.StackKits = []string{"/den/kits/ssh-known-hosts", "", "/den/stacks/dgdevx/kit"}
 
-	argv, err := ArgvCreate(c)
+	argv, err := CreateArgv(c)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	var kits []string
@@ -96,170 +96,171 @@ func TestArgvCreateIgnoreLesKitsVides(t *testing.T) {
 		}
 	}
 	if slices.Contains(kits, "") {
-		t.Errorf("un kit vide a été émis ; kits = %v ; argv = %v", kits, argv)
+		t.Errorf("an empty kit was emitted; kits = %v; argv = %v", kits, argv)
 	}
-	// Et l'entrée vide est bien tombée, pas seulement décalée.
-	attendu := []string{
+	// And the empty entry actually dropped out, not merely shifted.
+	want := []string{
 		"/den/kits/ssh-known-hosts",
 		"/den/stacks/dgdevx/kit",
 		"/den/cache/mixins/api.feat12",
 	}
-	if !slices.Equal(kits, attendu) {
-		t.Errorf("kits = %v, attendu %v", kits, attendu)
+	if !slices.Equal(kits, want) {
+		t.Errorf("kits = %v, want %v", kits, want)
 	}
 }
 
-func TestArgvCreateNomEtTemplate(t *testing.T) {
-	argv, err := ArgvCreate(createComplet())
+func TestCreateArgvNameAndTemplate(t *testing.T) {
+	argv, err := CreateArgv(completeCreate())
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if i := slices.Index(argv, "--name"); i < 0 || argv[i+1] != "api.feat12" {
-		t.Errorf("--name absent ou faux : %v", argv)
+		t.Errorf("--name missing or wrong: %v", argv)
 	}
-	// L'image part VERBATIM : c'est l'utilisateur qui décide si elle porte un
-	// registre (docker.io/library/…) ou non. den ne préfixe rien.
+	// The image travels VERBATIM: it's the user who decides whether it carries
+	// a registry (docker.io/library/...) or not. den prefixes nothing.
 	if i := slices.Index(argv, "--template"); i < 0 || argv[i+1] != "docker.io/library/dgdevx:v1" {
-		t.Errorf("--template absent ou faux : %v", argv)
+		t.Errorf("--template missing or wrong: %v", argv)
 	}
 }
 
-// Aucun --label : sbx n'en a pas (vérifié le 2026-07-28). Ce test est le
-// garde-fou contre une réintroduction depuis le spec d'origine.
-func TestArgvCreateNEmetJamaisDeLabel(t *testing.T) {
-	argv, err := ArgvCreate(createComplet())
+// No --label: sbx has none (verified 2026-07-28). This test is the guard
+// against reintroducing one from the original spec.
+func TestCreateArgvNeverEmitsLabel(t *testing.T) {
+	argv, err := CreateArgv(completeCreate())
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if slices.Contains(argv, "--label") {
-		t.Errorf("sbx create n'a pas de --label ; argv = %v", argv)
+		t.Errorf("sbx create has no --label; argv = %v", argv)
 	}
 }
 
-func TestArgvCreateRefuseLesEntreesIncompletes(t *testing.T) {
-	cas := map[string]func(c *Create){
-		"nom vide":            func(c *Create) { c.Nom = "" },
-		"nom non sandboxable": func(c *Create) { c.Nom = "mon_api" },
-		"image vide":          func(c *Create) { c.Image = "" },
-		"mixin absent":        func(c *Create) { c.KitMixin = "" },
-		"aucun workspace":     func(c *Create) { c.Workspaces = nil },
+func TestCreateArgvRejectsIncompleteEntries(t *testing.T) {
+	cases := map[string]func(c *Create){
+		"empty name":           func(c *Create) { c.Name = "" },
+		"non-sandboxable name": func(c *Create) { c.Name = "my_api" },
+		"empty image":          func(c *Create) { c.Image = "" },
+		"missing mixin":        func(c *Create) { c.MixinKit = "" },
+		"no workspace":         func(c *Create) { c.Workspaces = nil },
 	}
-	for nom, casse := range cas {
-		c := createComplet()
-		casse(&c)
-		if _, err := ArgvCreate(c); err == nil {
-			t.Errorf("%s : doit être refusé", nom)
+	for name, mutate := range cases {
+		c := completeCreate()
+		mutate(&c)
+		if _, err := CreateArgv(c); err == nil {
+			t.Errorf("%s: must be rejected", name)
 		}
 	}
 }
 
-// Le contenu des workspaces est gardé ICI, et pas chez l'appelant : c'est
-// `ArgvCreate` qui transforme ces valeurs en ligne de commande, et « l'appelant
-// garantit que les chemins sont absolus » est un contrat écrit nulle part.
-// `config.ExpandPath` n'expanse qu'un « ~ » en tête : un `worktree_root:
-// mes-worktrees` dans config.yaml arriverait relatif jusqu'ici.
-func TestArgvCreateRefuseLesWorkspacesDouteux(t *testing.T) {
-	cas := []struct {
-		nom        string
+// The content of the workspaces is guarded HERE, not by the caller: it's
+// `CreateArgv` that turns these values into a command line, and "the caller
+// guarantees the paths are absolute" is a contract written nowhere.
+// `config.ExpandPath` only expands a leading "~": a `worktree_root:
+// my-worktrees` in config.yaml would arrive relative here.
+func TestCreateArgvRejectsDodgyWorkspaces(t *testing.T) {
+	cases := []struct {
+		name       string
 		workspaces []string
-		position   string // la position doit figurer dans l'erreur
-		fautif     string // le chemin fautif aussi
+		position   string // the position must appear in the error
+		culprit    string // and the offending path too
 	}{
-		{"entrée vide", []string{"/dev/api", ""}, "n°2", ""},
-		{"chemin relatif", []string{"/dev/api", "mes-worktrees/api"}, "n°2", "mes-worktrees/api"},
-		{"chemin lu comme un flag", []string{"/dev/api", "-api"}, "n°2", "-api"},
-		{"le repo lui-même relatif", []string{"mes-worktrees/api"}, "n°1", "mes-worktrees/api"},
-		{"suffixe :ro sans chemin", []string{"/dev/api", ":ro"}, "n°2", ":ro"},
+		{"empty entry", []string{"/dev/api", ""}, "#2", ""},
+		{"relative path", []string{"/dev/api", "my-worktrees/api"}, "#2", "my-worktrees/api"},
+		{"path read as a flag", []string{"/dev/api", "-api"}, "#2", "-api"},
+		{"the repo itself is relative", []string{"my-worktrees/api"}, "#1", "my-worktrees/api"},
+		{":ro suffix without a path", []string{"/dev/api", ":ro"}, "#2", ":ro"},
 	}
-	for _, cas := range cas {
-		c := createComplet()
-		c.Workspaces = cas.workspaces
-		_, err := ArgvCreate(c)
+	for _, cs := range cases {
+		c := completeCreate()
+		c.Workspaces = cs.workspaces
+		_, err := CreateArgv(c)
 		if err == nil {
-			t.Errorf("%s : doit être refusé", cas.nom)
+			t.Errorf("%s: must be rejected", cs.name)
 			continue
 		}
-		// Une garde qui dit « un workspace est invalide » sans dire lequel
-		// laisse l'utilisateur chercher dans une liste qu'il n'a pas écrite.
-		if !strings.Contains(err.Error(), cas.position) {
-			t.Errorf("%s : l'erreur ne situe pas le workspace (%s) : %v", cas.nom, cas.position, err)
+		// A guard that says "a workspace is invalid" without saying which one
+		// leaves the user searching a list they didn't write.
+		if !strings.Contains(err.Error(), cs.position) {
+			t.Errorf("%s: the error doesn't locate the workspace (%s): %v", cs.name, cs.position, err)
 		}
-		if cas.fautif != "" && !strings.Contains(err.Error(), cas.fautif) {
-			t.Errorf("%s : l'erreur ne nomme pas le chemin fautif %q : %v", cas.nom, cas.fautif, err)
+		if cs.culprit != "" && !strings.Contains(err.Error(), cs.culprit) {
+			t.Errorf("%s: the error doesn't name the offending path %q: %v", cs.name, cs.culprit, err)
 		}
 	}
 }
 
-// Le « :ro » est une option de montage, pas une partie du chemin : la garde
-// doit le retirer avant de juger l'absoluité. Sans ce test, un resserrement
-// casserait le montage en lecture seule sans que rien ne le signale.
-func TestArgvCreateAccepteLeSuffixeRO(t *testing.T) {
-	c := createComplet()
-	c.Workspaces = []string{"/dev/api", "/home/moi/.ssh_sbx:ro"}
+// The ":ro" suffix is a mount option, not part of the path: the guard must
+// strip it before judging absoluteness. Without this test, a tightening would
+// break read-only mounts without anything flagging it.
+func TestCreateArgvAcceptsROSuffix(t *testing.T) {
+	c := completeCreate()
+	c.Workspaces = []string{"/dev/api", "/home/me/.ssh_sbx:ro"}
 
-	argv, err := ArgvCreate(c)
+	argv, err := CreateArgv(c)
 	if err != nil {
-		t.Fatalf("le suffixe :ro doit rester accepté : %v", err)
+		t.Fatalf("the :ro suffix must remain accepted: %v", err)
 	}
-	// Et il part VERBATIM : c'est sbx qui l'interprète, pas den.
-	if !slices.Contains(argv, "/home/moi/.ssh_sbx:ro") {
-		t.Errorf("le suffixe :ro doit traverser intact : %v", argv)
+	// And it travels VERBATIM: it's sbx that interprets it, not den.
+	if !slices.Contains(argv, "/home/me/.ssh_sbx:ro") {
+		t.Errorf("the :ro suffix must pass through intact: %v", argv)
 	}
 }
 
-// Le nom composé porte un point : la validation doit accepter le séparateur
-// tout en refusant les caractères que `sbx create --name` rejette.
-func TestArgvCreateAccepteLeNomCompose(t *testing.T) {
-	for _, nom := range []string{"api", "api.feat12", "mon-api.feat-2"} {
-		c := createComplet()
-		c.Nom = nom
-		if _, err := ArgvCreate(c); err != nil {
-			t.Errorf("%q doit être accepté : %v", nom, err)
+// A compound name carries a dot: validation must accept the separator while
+// still rejecting the characters `sbx create --name` rejects.
+func TestCreateArgvAcceptsCompoundName(t *testing.T) {
+	for _, name := range []string{"api", "api.feat12", "my-api.feat-2"} {
+		c := completeCreate()
+		c.Name = name
+		if _, err := CreateArgv(c); err != nil {
+			t.Errorf("%q must be accepted: %v", name, err)
 		}
 	}
 }
 
-func TestArgvCreateGolden(t *testing.T) {
-	cas := []struct {
-		fichier string
-		c       Create
+func TestCreateArgvGolden(t *testing.T) {
+	cases := []struct {
+		file string
+		c    Create
 	}{
 		{"create-minimal.golden", Create{
-			Nom:        "api",
+			Name:       "api",
 			Image:      "devx:v1",
-			KitMixin:   "/den/cache/mixins/api",
-			Workspaces: []string{"/dev/api", "/home/moi/.den/agents/claude"},
+			MixinKit:   "/den/cache/mixins/api",
+			Workspaces: []string{"/dev/api", "/home/me/.den/agents/claude"},
 		}},
-		{"create-complet.golden", createComplet()},
+		{"create-complete.golden", completeCreate()},
 	}
-	for _, c := range cas {
-		argv, err := ArgvCreate(c.c)
+	for _, c := range cases {
+		argv, err := CreateArgv(c.c)
 		if err != nil {
-			t.Fatalf("%s : %v", c.fichier, err)
+			t.Fatalf("%s: %v", c.file, err)
 		}
-		chemin := filepath.Join("testdata", c.fichier)
-		attendu, err := os.ReadFile(chemin)
+		path := filepath.Join("testdata", c.file)
+		want, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("lecture de %s : %v", chemin, err)
+			t.Fatalf("reading %s: %v", path, err)
 		}
 		got := strings.Join(argv, "\n") + "\n"
-		if got != string(attendu) {
-			t.Errorf("%s\n--- obtenu ---\n%s\n--- attendu ---\n%s", chemin, got, attendu)
+		if got != string(want) {
+			t.Errorf("%s\n--- got ---\n%s\n--- want ---\n%s", path, got, want)
 		}
 	}
 }
 
-// Un nom terminé par le séparateur passait la validation composant par
-// composant : « api. » se décompose en « api » + worktree vide, deux composants
-// valides. sbx accepte le point, donc la sandbox « api. » serait RÉELLEMENT
-// créée, puis `sbx ls` la redécomposerait en nest « api » — indiscernable de la
-// sandbox « api ». C'est le risque de duplication acté par le commit 3b2b42d.
-func TestArgvCreateRefuseLeNomNonCanonique(t *testing.T) {
-	for _, nom := range []string{"api.", "api.feat12.", ".feat12", "api..feat"} {
-		c := createComplet()
-		c.Nom = nom
-		if _, err := ArgvCreate(c); err == nil {
-			t.Errorf("%q doit être refusé : il désignerait une sandbox déjà nommable autrement", nom)
+// A name ending in the separator used to pass component-by-component
+// validation: "api." splits into "api" + an empty worktree, two valid
+// components. sbx accepts the dot, so the sandbox "api." would be REALLY
+// created, then `sbx ls` would split it back into nest "api" —
+// indistinguishable from the sandbox "api". This is the duplication risk
+// recorded by commit 3b2b42d.
+func TestCreateArgvRejectsNonCanonicalName(t *testing.T) {
+	for _, name := range []string{"api.", "api.feat12.", ".feat12", "api..feat"} {
+		c := completeCreate()
+		c.Name = name
+		if _, err := CreateArgv(c); err == nil {
+			t.Errorf("%q must be rejected: it would designate a sandbox already nameable otherwise", name)
 		}
 	}
 }

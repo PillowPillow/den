@@ -6,110 +6,108 @@ import (
 	"strings"
 )
 
-// AgentPositionnel est l'agent passé à `sbx create`.
+// PositionalAgent is the agent passed to `sbx create`.
 //
-// « shell » et non « claude » : `sbx create [flags] AGENT PATH [PATH...]` exige
-// un agent positionnel (l'omettre donne « unknown agent »), mais la commande
-// réellement attachée est décidée par le FLAVOR de l'image, pas par cet
-// argument — une image snapshotée depuis la base claude lance `claude` quoi
-// qu'on écrive ici. den attache de toute façon par `sbx exec … bash -l`, donc
-// « shell » est le choix honnête : il ne promet rien qu'il ne tienne.
-const AgentPositionnel = "shell"
+// "shell" and not "claude": `sbx create [flags] AGENT PATH [PATH...]` requires
+// a positional agent (omitting it gives "unknown agent"), but the command
+// actually attached is decided by the image's FLAVOR, not by this argument —
+// an image snapshotted from the claude base launches `claude` regardless of
+// what's written here. den attaches via `sbx exec ... bash -l` anyway, so
+// "shell" is the honest choice: it promises nothing it doesn't keep.
+const PositionalAgent = "shell"
 
-// Create décrit un `sbx create` à assembler.
+// Create describes an `sbx create` to assemble.
 //
-// KitMixin est un champ SÉPARÉ de KitsStack, et non le dernier élément d'une
-// liste unique : le mixin est fail-closed et le dispatcher sbx fait `exit $rc`
-// au premier échec, ce qui prive les kits suivants de leurs startup commands.
-// Il DOIT être layeré en dernier. Deux champs rendent l'inversion impossible ;
-// une liste unique ne ferait que la rendre improbable.
+// MixinKit is a field SEPARATE from StackKits, not the last element of a
+// single list: the mixin is fail-closed and the sbx dispatcher does `exit $rc`
+// on the first failure, which deprives later kits of their startup commands.
+// It MUST be layered last. Two fields make the inversion impossible; a single
+// list would only make it unlikely.
 type Create struct {
-	Nom       string   // nom de sandbox, cf. NomSandbox
-	Image     string   // passée verbatim à --template
-	KitsStack []string // kits transverses puis kit de la stack, ordre de layering
-	KitMixin  string   // dossier du mixin généré — TOUJOURS le dernier --kit
-	// Workspaces : chemins hôte montés, dans l'ordre. Le PREMIER doit être le
-	// repo (ou son worktree) : Sandbox.Workdir en dépend pour l'attache.
-	// Suffixe « :ro » accepté par sbx.
+	Name      string   // sandbox name, see SandboxName
+	Image     string   // passed verbatim to --template
+	StackKits []string // cross-cutting kits then the stack kit, layering order
+	MixinKit  string   // generated mixin directory — ALWAYS the last --kit
+	// Workspaces: host paths mounted, in order. The FIRST one must be the repo
+	// (or its worktree): Sandbox.Workdir depends on it for the attach.
+	// The ":ro" suffix is accepted by sbx.
 	Workspaces []string
 }
 
-// ArgvCreate assemble l'argv complet de `sbx create`, sans le nom du binaire.
-func ArgvCreate(c Create) ([]string, error) {
-	// Source unique du verdict, partagée avec internal/agent : valider ici
-	// composant par composant laissait passer « api. », que sbx créerait
-	// vraiment et que `sbx ls` redécomposerait en « api ».
-	if err := ValiderNomSandbox(c.Nom); err != nil {
+// CreateArgv assembles the full argv of `sbx create`, without the binary name.
+func CreateArgv(c Create) ([]string, error) {
+	// Single source of truth, shared with internal/agent: validating
+	// component-by-component here let "api." through, which sbx would really
+	// create and `sbx ls` would split back into "api".
+	if err := ValidateSandboxName(c.Name); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(c.Image) == "" {
 		return nil, fmt.Errorf(
-			"sandbox %q : aucune image — la stack doit déclarer `image:` dans stack.yaml", c.Nom)
+			"sandbox %q: no image — the stack must declare `image:` in stack.yaml", c.Name)
 	}
-	if strings.TrimSpace(c.KitMixin) == "" {
+	if strings.TrimSpace(c.MixinKit) == "" {
 		return nil, fmt.Errorf(
-			"sandbox %q : mixin généré manquant — il porte l'egress, l'env et la commande "+
-				"de fraîcheur, un create sans lui produirait une VM muette", c.Nom)
+			"sandbox %q: missing generated mixin — it carries the egress, env and freshness "+
+				"command, a create without it would produce a mute VM", c.Name)
 	}
 	if len(c.Workspaces) == 0 {
 		return nil, fmt.Errorf(
-			"sandbox %q : aucun workspace à monter — `sbx create` exige au moins un chemin", c.Nom)
+			"sandbox %q: no workspace to mount — `sbx create` requires at least one path", c.Name)
 	}
 	for i, w := range c.Workspaces {
-		if err := valideWorkspace(c.Nom, i, w); err != nil {
+		if err := checkWorkspace(c.Name, i, w); err != nil {
 			return nil, err
 		}
 	}
 
-	argv := []string{"create", "--name", c.Nom, "--template", c.Image}
-	// Garde de FRONTIÈRE, pas doublon de config.Stack.KitsDeclares — qui filtre
-	// déjà les entrées vides chez l'unique appelant de production.
+	argv := []string{"create", "--name", c.Name, "--template", c.Image}
+	// BOUNDARY guard, not a duplicate of config.Stack.DeclaredKits — which
+	// already filters empty entries at production's one caller.
 	//
-	// ArgvCreate est exportée et reçoit une struct que n'importe qui peut
-	// remplir : elle garde son entrée elle-même, comme valideWorkspace juste en
-	// dessous et pour la même raison (doctrine retenue en T7 pour EcrisMixin et
-	// en T9 pour ValiderNomSandbox). Un `--kit ""` atteindrait sbx, qui n'a
-	// aucune raison de le refuser proprement.
+	// CreateArgv is exported and takes a struct anyone can fill: it guards its
+	// own input, like checkWorkspace right below and for the same reason (the
+	// doctrine kept for WriteMixin and for ValidateSandboxName). A `--kit ""`
+	// would reach sbx, which has no reason to reject it cleanly.
 	//
-	// La retirer rendrait ArgvCreate correcte SEULEMENT tant que tous ses
-	// appelants filtrent — une propriété qu'aucun test de ce paquet ne peut
-	// vérifier, puisqu'elle porte sur du code d'un autre paquet.
-	for _, k := range c.KitsStack {
+	// Removing it would make CreateArgv correct ONLY as long as every caller
+	// filters — a property no test in this package can verify, since it's
+	// about code in another package.
+	for _, k := range c.StackKits {
 		if k == "" {
 			continue
 		}
 		argv = append(argv, "--kit", k)
 	}
-	argv = append(argv, "--kit", c.KitMixin) // toujours en dernier, cf. doc du type
-	argv = append(argv, AgentPositionnel)
+	argv = append(argv, "--kit", c.MixinKit) // always last, see the type's doc
+	argv = append(argv, PositionalAgent)
 	argv = append(argv, c.Workspaces...)
 	return argv, nil
 }
 
-// valideWorkspace garde une entrée de Workspaces, désignée par sa position
-// (indice 0) dans la liste.
+// checkWorkspace guards one entry of Workspaces, identified by its position
+// (index 0) in the list.
 //
-// La garde est ici et non chez l'appelant parce que c'est ArgvCreate qui
-// transforme ces valeurs en ligne de commande : un chemin relatif se
-// résoudrait contre un répertoire courant que rien ne garantit au moment où
-// sbx l'utilise, et un chemin commençant par « - » serait lu comme un flag —
-// la même classe de panne que le charset des noms de sandbox referme un cran
-// plus tôt dans l'argv.
-func valideWorkspace(nomSandbox string, i int, w string) error {
+// The guard lives here and not with the caller because it's CreateArgv that
+// turns these values into a command line: a relative path would resolve
+// against a working directory nothing guarantees at the moment sbx uses it,
+// and a path starting with "-" would be read as a flag — the same class of
+// failure the sandbox name charset closes off one step earlier in the argv.
+func checkWorkspace(sandboxName string, i int, w string) error {
 	if strings.TrimSpace(w) == "" {
 		return fmt.Errorf(
-			"sandbox %q : workspace n°%d vide — `sbx create` recevrait un argument "+
-				"positionnel vide, qui ne monte rien", nomSandbox, i+1)
+			"sandbox %q: workspace #%d empty — `sbx create` would receive an empty positional "+
+				"argument, which mounts nothing", sandboxName, i+1)
 	}
-	// Le « :ro » est une option de montage de sbx, pas une partie du chemin :
-	// on le retire pour juger, et il repart verbatim dans l'argv.
-	chemin := strings.TrimSuffix(w, ":ro")
-	if !filepath.IsAbs(chemin) {
+	// ":ro" is an sbx mount option, not part of the path: strip it to judge,
+	// and it travels back verbatim in the argv.
+	path := strings.TrimSuffix(w, ":ro")
+	if !filepath.IsAbs(path) {
 		return fmt.Errorf(
-			"sandbox %q : workspace n°%d (%q) n'est pas un chemin absolu — un chemin relatif "+
-				"se résoudrait contre un répertoire courant qui n'est plus garanti au moment "+
-				"où sbx l'utilise, et un chemin commençant par « - » serait lu comme un flag",
-			nomSandbox, i+1, w)
+			"sandbox %q: workspace #%d (%q) is not an absolute path — a relative path would "+
+				"resolve against a working directory no longer guaranteed at the moment sbx uses "+
+				"it, and a path starting with \"-\" would be read as a flag",
+			sandboxName, i+1, w)
 	}
 	return nil
 }

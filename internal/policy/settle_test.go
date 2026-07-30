@@ -10,998 +10,1003 @@ import (
 	"github.com/PillowPillow/den/internal/sbx"
 )
 
-// optionsTest : horloge et sommeil injectés, pour que la suite reste instantanée.
-func optionsTest(t *testing.T) (Options, *int) {
+// testOptions: injected clock and sleep, so the suite stays instant.
+func testOptions(t *testing.T) (Options, *int) {
 	t.Helper()
-	dormi := 0
-	faux := time.Unix(0, 0)
+	slept := 0
+	fake := time.Unix(0, 0)
 	return Options{
-		Timeout:    60 * time.Second,
-		Intervalle: 2 * time.Second,
-		Sommeil: func(d time.Duration) {
-			dormi++
-			faux = faux.Add(d)
+		Timeout:  60 * time.Second,
+		Interval: 2 * time.Second,
+		Sleep: func(d time.Duration) {
+			slept++
+			fake = fake.Add(d)
 		},
-		Maintenant: func() time.Time { return faux },
-	}, &dormi
+		Now: func() time.Time { return fake },
+	}, &slept
 }
 
-func autorise(sandbox string, hotes ...string) map[string]sbx.Reponse {
-	m := make(map[string]sbx.Reponse, len(hotes))
-	for _, h := range hotes {
-		cle := strings.Join([]string{"policy", "check", "network", "--sandbox", sandbox, "--json", h}, " ")
-		m[cle] = sbx.Reponse{Sortie: []byte(`{"allowed": true}`)}
+func allowed(sandbox string, hosts ...string) map[string]sbx.Response {
+	m := make(map[string]sbx.Response, len(hosts))
+	for _, h := range hosts {
+		key := strings.Join([]string{"policy", "check", "network", "--sandbox", sandbox, "--json", h}, " ")
+		m[key] = sbx.Response{Output: []byte(`{"allowed": true}`)}
 	}
 	return m
 }
 
-func TestSettlePasseQuandToutEstAutorise(t *testing.T) {
-	o, dormi := optionsTest(t)
-	f := &sbx.Fake{Reponses: autorise("api", "github.com", "api.anthropic.com")}
+func TestSettlePassesWhenEverythingIsAllowed(t *testing.T) {
+	o, slept := testOptions(t)
+	f := &sbx.Fake{Responses: allowed("api", "github.com", "api.anthropic.com")}
 
 	err := Settle(context.Background(), f, "api", []string{"github.com", "api.anthropic.com"}, o)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if *dormi != 0 {
-		t.Errorf("aucun sommeil ne doit être nécessaire quand tout passe du premier coup (%d)", *dormi)
+	if *slept != 0 {
+		t.Errorf("no sleep should be needed when everything passes on the first try (%d)", *slept)
 	}
 }
 
-// L'argv exact importe : --sandbox scope l'évaluation à la policy de CETTE
-// sandbox. Sans lui, on validerait la policy globale — un vert qui ne prouve
-// rien sur ce qu'on vient de poser.
-func TestSettleInterrogeLaPolicyScopee(t *testing.T) {
-	o, _ := optionsTest(t)
-	f := &sbx.Fake{Reponses: autorise("api", "github.com")}
+// The exact argv matters: --sandbox scopes the evaluation to THIS sandbox's
+// policy. Without it, we'd be validating the global policy — a green that
+// proves nothing about what was just set.
+func TestSettleQueriesTheScopedPolicy(t *testing.T) {
+	o, _ := testOptions(t)
+	f := &sbx.Fake{Responses: allowed("api", "github.com")}
 
 	if err := Settle(context.Background(), f, "api", []string{"github.com"}, o); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.AAppele("policy", "check", "network", "--sandbox", "api", "--json", "github.com") {
-		t.Errorf("argv attendu avec --sandbox ; appels : %v", f.Appels)
+	if !f.HasCalled("policy", "check", "network", "--sandbox", "api", "--json", "github.com") {
+		t.Errorf("expected argv with --sandbox; calls: %v", f.Calls)
 	}
 }
 
-// Fail-closed : un hôte qui ne passe jamais doit sortir en erreur, en NOMMANT
-// les hôtes bloqués — c'est tout ce que l'utilisateur aura pour diagnostiquer.
-func TestSettleEchoueEnNommantLesHotesBloques(t *testing.T) {
-	o, _ := optionsTest(t)
-	reponses := autorise("api", "github.com")
+// Fail-closed: a host that never passes must exit in error, NAMING the
+// blocked hosts — that's all the user gets to diagnose it.
+func TestSettleFailsNamingTheBlockedHosts(t *testing.T) {
+	o, _ := testOptions(t)
+	responses := allowed("api", "github.com")
 	f := &sbx.Fake{
-		Reponses: reponses,
-		Defaut:   sbx.Reponse{Sortie: []byte(`{"allowed": false}`)},
+		Responses: responses,
+		Default:   sbx.Response{Output: []byte(`{"allowed": false}`)},
 	}
 
-	err := Settle(context.Background(), f, "api", []string{"github.com", "bloque.exemple.test"}, o)
+	err := Settle(context.Background(), f, "api", []string{"github.com", "blocked.example.test"}, o)
 	if err == nil {
-		t.Fatal("un hôte durablement bloqué doit produire une erreur (fail-closed)")
+		t.Fatal("a durably blocked host must produce an error (fail-closed)")
 	}
-	if !strings.Contains(err.Error(), "bloque.exemple.test") {
-		t.Errorf("le message doit nommer l'hôte bloqué ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "blocked.example.test") {
+		t.Errorf("the message must name the blocked host; got: %v", err)
 	}
 	if strings.Contains(err.Error(), "github.com") {
-		t.Errorf("le message ne doit PAS lister les hôtes déjà passés ; obtenu : %v", err)
+		t.Errorf("the message must NOT list already-passed hosts; got: %v", err)
 	}
 }
 
-// La propagation n'étant pas instantanée, un hôte d'abord refusé puis autorisé
-// doit finir par passer — c'est la raison d'être de la boucle.
-func TestSettleAttendLaPropagation(t *testing.T) {
-	o, dormi := optionsTest(t)
-	f := &fakeProgressif{autoriseApres: 3}
+// Since propagation isn't instant, a host first denied then allowed must
+// eventually pass — that's the whole reason for the loop.
+func TestSettleWaitsForPropagation(t *testing.T) {
+	o, slept := testOptions(t)
+	f := &fakeProgressive{allowedAfter: 3}
 
-	if err := Settle(context.Background(), f, "api", []string{"lent.exemple.test"}, o); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+	if err := Settle(context.Background(), f, "api", []string{"slow.example.test"}, o); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if *dormi == 0 {
-		t.Error("la boucle doit avoir dormi au moins une fois")
+	if *slept == 0 {
+		t.Error("the loop must have slept at least once")
 	}
-	if f.appels < 3 {
-		t.Errorf("appels = %d, attendu au moins 3", f.appels)
+	if f.calls < 3 {
+		t.Errorf("calls = %d, want at least 3", f.calls)
 	}
 }
 
-// Un champ `allowed` absent = changement de schéma sbx. Le lire comme false
-// ferait tourner la boucle jusqu'au timeout en accusant le réseau.
-func TestSettleRefuseUneSortieSansChampAllowed(t *testing.T) {
-	o, _ := optionsTest(t)
-	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"autre": "chose"}`)}}
+// A missing `allowed` field means an sbx schema change. Reading it as false
+// would run the loop to the timeout blaming the network.
+func TestSettleRefusesOutputWithoutAnAllowedField(t *testing.T) {
+	o, _ := testOptions(t)
+	f := &sbx.Fake{Default: sbx.Response{Output: []byte(`{"other": "thing"}`)}}
 
 	err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
 	if err == nil {
-		t.Fatal("une sortie sans champ allowed doit échouer immédiatement")
+		t.Fatal("output without an allowed field must fail immediately")
 	}
-	if !strings.Contains(err.Error(), "allowed") || !strings.Contains(err.Error(), `{"autre": "chose"}`) {
-		t.Errorf("le message doit nommer le champ manquant et montrer la sortie brute ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "allowed") || !strings.Contains(err.Error(), `{"other": "thing"}`) {
+		t.Errorf("the message must name the missing field and show the raw output; got: %v", err)
 	}
 }
 
-func TestSettleSansHote(t *testing.T) {
-	o, _ := optionsTest(t)
-	f := &sbx.Fake{Defaut: sbx.Reponse{Err: errors.New("ne doit pas être appelé")}}
+func TestSettleWithoutHosts(t *testing.T) {
+	o, _ := testOptions(t)
+	f := &sbx.Fake{Default: sbx.Response{Err: errors.New("must not be called")}}
 
 	if err := Settle(context.Background(), f, "api", nil, o); err != nil {
-		t.Errorf("une allowlist vide n'est pas une erreur : %v", err)
+		t.Errorf("an empty allowlist is not an error: %v", err)
 	}
-	if len(f.Appels) != 0 {
-		t.Errorf("aucun appel ne doit être fait ; appels : %v", f.Appels)
+	if len(f.Calls) != 0 {
+		t.Errorf("no call should be made; calls: %v", f.Calls)
 	}
 }
 
-func TestSettleRespecteLAnnulationDuContexte(t *testing.T) {
-	o, _ := optionsTest(t)
-	ctx, annule := context.WithCancel(context.Background())
-	annule()
+func TestSettleRespectsContextCancellation(t *testing.T) {
+	o, _ := testOptions(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": false}`)}}
+	f := &sbx.Fake{Default: sbx.Response{Output: []byte(`{"allowed": false}`)}}
 	err := Settle(ctx, f, "api", []string{"github.com"}, o)
 	if err == nil {
-		t.Fatal("un contexte annulé doit interrompre la boucle")
+		t.Fatal("a canceled context must interrupt the loop")
 	}
-	// « err != nil » seul ne prouverait rien : l'horloge injectée finit par
-	// atteindre le timeout, et une boucle qui IGNORE le contexte renverrait elle
-	// aussi une erreur — celle du fail-closed. Ce qu'on vérifie, c'est que
-	// l'interruption vient bien de l'annulation, et qu'aucun appel n'a été tenté
-	// sur un contexte déjà mort.
+	// "err != nil" alone would prove nothing: the injected clock eventually
+	// reaches the timeout, and a loop that IGNORES the context would also
+	// return an error — the fail-closed one. What's checked here is that the
+	// interruption really comes from the cancellation, and that no call was
+	// attempted on an already-dead context.
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("l'erreur doit envelopper context.Canceled ; obtenu : %v", err)
+		t.Errorf("the error must wrap context.Canceled; got: %v", err)
 	}
-	if len(f.Appels) != 0 {
-		t.Errorf("aucun appel sbx sur un contexte annulé ; appels : %v", f.Appels)
-	}
-}
-
-// Un hôte déjà autorisé n'est plus réinterrogé : chaque tour ne sonde QUE les
-// hôtes encore bloqués. Sans ça, une allowlist de vingt hôtes dont un seul est
-// lent multiplierait par vingt les appels à sbx à chaque tour, et le message de
-// timeout pourrait se remettre à citer des hôtes qui, eux, passent.
-func TestSettleNeReinterrogePasLesHotesDejaPasses(t *testing.T) {
-	o, _ := optionsTest(t)
-	f := &fakeParHote{autoriseApres: map[string]int{"lent.exemple.test": 3}}
-
-	if err := Settle(context.Background(), f, "api", []string{"rapide.exemple.test", "lent.exemple.test"}, o); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
-	}
-	if n := f.appels["rapide.exemple.test"]; n != 1 {
-		t.Errorf("l'hôte autorisé du premier coup a été interrogé %d fois, attendu 1 ; appels : %v", n, f.appels)
-	}
-	if n := f.appels["lent.exemple.test"]; n != 3 {
-		t.Errorf("l'hôte lent a été interrogé %d fois, attendu 3 ; appels : %v", n, f.appels)
+	if len(f.Calls) != 0 {
+		t.Errorf("no sbx call on a canceled context; calls: %v", f.Calls)
 	}
 }
 
-// Rien n'oblige un appelant à passer par OptionsDefaut() : les Options se
-// construisent aussi à la main. Des champs laissés à zéro doivent produire une
-// erreur nommant les fautifs — jamais une panique de nil sur Sommeil ou
-// Maintenant, et surtout jamais un settle-loop silencieusement désarmé (un
-// Timeout à zéro rend la boucle sans patience, un Intervalle à zéro la fait
-// marteler sbx sans répit). Deviner à la place de l'appelant ferait de la seule
-// garde réseau de den une garde qui ne garde rien, sans le dire.
-func TestSettleRefuseDesOptionsIncompletes(t *testing.T) {
-	completes := func() Options {
+// An already-allowed host is not reprobed: each round only probes hosts still
+// blocked. Without this, a twenty-host allowlist with one slow host would
+// multiply calls to sbx by twenty each round, and the timeout message might
+// start citing hosts that actually pass.
+func TestSettleDoesNotReprobeHostsAlreadyPassed(t *testing.T) {
+	o, _ := testOptions(t)
+	f := &fakePerHost{allowedAfter: map[string]int{"slow.example.test": 3}}
+
+	if err := Settle(context.Background(), f, "api", []string{"fast.example.test", "slow.example.test"}, o); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n := f.calls["fast.example.test"]; n != 1 {
+		t.Errorf("the immediately-allowed host was queried %d times, want 1; calls: %v", n, f.calls)
+	}
+	if n := f.calls["slow.example.test"]; n != 3 {
+		t.Errorf("the slow host was queried %d times, want 3; calls: %v", n, f.calls)
+	}
+}
+
+// Nothing forces a caller through DefaultOptions(): Options can also be built
+// by hand. Fields left at zero must produce an error naming the offenders —
+// never a nil panic on Sleep or Now, and especially never a silently
+// disarmed settle-loop (a zero Timeout leaves the loop with no patience, a
+// zero Interval makes it hammer sbx nonstop). Guessing on the caller's behalf
+// would turn den's only network guard into a guard that guards nothing,
+// without saying so.
+func TestSettleRefusesIncompleteOptions(t *testing.T) {
+	complete := func() Options {
 		return Options{
-			Timeout:    30 * time.Second,
-			Intervalle: time.Second,
-			Sommeil:    func(time.Duration) {},
-			Maintenant: time.Now,
+			Timeout:  30 * time.Second,
+			Interval: time.Second,
+			Sleep:    func(time.Duration) {},
+			Now:      time.Now,
 		}
 	}
-	sansTimeout := completes()
-	sansTimeout.Timeout = 0
-	sansIntervalle := completes()
-	sansIntervalle.Intervalle = 0
-	sansSommeil := completes()
-	sansSommeil.Sommeil = nil
-	sansMaintenant := completes()
-	sansMaintenant.Maintenant = nil
-	// Une RELATION absurde, que l'inspection champ par champ ne voit pas :
-	// 30 s de sommeil réel pour un timeout annoncé à 1 s.
-	intervalleTropGrand := completes()
-	intervalleTropGrand.Timeout = time.Second
-	intervalleTropGrand.Intervalle = 30 * time.Second
+	noTimeout := complete()
+	noTimeout.Timeout = 0
+	noInterval := complete()
+	noInterval.Interval = 0
+	noSleep := complete()
+	noSleep.Sleep = nil
+	noNow := complete()
+	noNow.Now = nil
+	// An ABSURD relation, which field-by-field inspection doesn't see: 30s of
+	// real sleep for a timeout announced at 1s.
+	intervalTooBig := complete()
+	intervalTooBig.Timeout = time.Second
+	intervalTooBig.Interval = 30 * time.Second
 
-	cas := []struct {
-		nom     string
+	cases := []struct {
+		name    string
 		options Options
-		champ   string
-		// sortie : ce que renvoie sbx. Choisie pour que la SUPPRESSION de la
-		// validation fasse échouer le cas vite (erreur nil ou panique), au lieu
-		// de le laisser boucler.
-		sortie string
+		field   string
+		// output: what sbx returns. Chosen so that REMOVING the validation
+		// makes the case fail fast (nil error or panic), instead of letting
+		// it loop.
+		output string
 	}{
-		{"tout à zéro", Options{}, "Timeout", `{"allowed": true}`},
-		{"sans Timeout", sansTimeout, "Timeout", `{"allowed": true}`},
-		{"sans Intervalle", sansIntervalle, "Intervalle", `{"allowed": true}`},
-		{"sans Sommeil", sansSommeil, "Sommeil", `{"allowed": false}`},
-		{"sans Maintenant", sansMaintenant, "Maintenant", `{"allowed": false}`},
-		{"Intervalle plus grand que Timeout", intervalleTropGrand, "Intervalle", `{"allowed": true}`},
+		{"everything zero", Options{}, "Timeout", `{"allowed": true}`},
+		{"no Timeout", noTimeout, "Timeout", `{"allowed": true}`},
+		{"no Interval", noInterval, "Interval", `{"allowed": true}`},
+		{"no Sleep", noSleep, "Sleep", `{"allowed": false}`},
+		{"no Now", noNow, "Now", `{"allowed": false}`},
+		{"Interval bigger than Timeout", intervalTooBig, "Interval", `{"allowed": true}`},
 	}
 
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(c.sortie)}}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := &sbx.Fake{Default: sbx.Response{Output: []byte(c.output)}}
 
 			err := Settle(context.Background(), f, "api", []string{"github.com"}, c.options)
 			if err == nil {
-				t.Fatal("des Options incomplètes doivent être refusées")
+				t.Fatal("incomplete Options must be refused")
 			}
-			if !strings.Contains(err.Error(), c.champ) {
-				t.Errorf("le message doit nommer le champ %s ; obtenu : %v", c.champ, err)
+			if !strings.Contains(err.Error(), c.field) {
+				t.Errorf("the message must name field %s; got: %v", c.field, err)
 			}
-			if !strings.Contains(err.Error(), "OptionsDefaut") {
-				t.Errorf("le message doit orienter vers OptionsDefaut() ; obtenu : %v", err)
+			if !strings.Contains(err.Error(), "DefaultOptions") {
+				t.Errorf("the message must point to DefaultOptions(); got: %v", err)
 			}
-			if len(f.Appels) != 0 {
-				t.Errorf("des Options invalides ne doivent produire AUCUN appel sbx ; appels : %v", f.Appels)
+			if len(f.Calls) != 0 {
+				t.Errorf("invalid Options must produce NO sbx call; calls: %v", f.Calls)
 			}
 		})
 	}
 }
 
-// OptionsDefaut doit rester acceptable par Settle : c'est le seul constructeur
-// documenté, et le test ci-dessus n'aurait aucune valeur si la validation
-// refusait aussi les options par défaut.
-func TestOptionsDefautEstAcceptee(t *testing.T) {
-	f := &sbx.Fake{Reponses: autorise("api", "github.com")}
+// DefaultOptions must remain acceptable by Settle: it's the only documented
+// constructor, and the test above would be worthless if the validation also
+// refused the default options.
+func TestDefaultOptionsIsAccepted(t *testing.T) {
+	f := &sbx.Fake{Responses: allowed("api", "github.com")}
 
-	if err := Settle(context.Background(), f, "api", []string{"github.com"}, OptionsDefaut()); err != nil {
-		t.Fatalf("OptionsDefaut() doit être utilisable telle quelle : %v", err)
+	if err := Settle(context.Background(), f, "api", []string{"github.com"}, DefaultOptions()); err != nil {
+		t.Fatalf("DefaultOptions() must be usable as-is: %v", err)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Round de correction 1 : les chemins que la première suite n'atteignait pas.
+// Correction round 1: paths the first suite didn't reach.
 // ---------------------------------------------------------------------------
 
-// horloge est l'horloge injectée, mais qui se souvient : elle donne accès au
-// temps ÉCOULÉ, pas seulement au nombre de sommeils. Sans ça, ni la valeur de
-// Timeout ni celle d'Intervalle ne sont observables depuis un test.
-type horloge struct {
-	dormi   int
-	debut   time.Time
-	courant time.Time
+// clock is the injected clock, but one that remembers: it gives access to
+// the ELAPSED time, not just the sleep count. Without it, neither the
+// Timeout nor the Interval value is observable from a test.
+type clock struct {
+	slept   int
+	start   time.Time
+	current time.Time
 }
 
-func nouvelleHorloge() *horloge {
+func newClock() *clock {
 	d := time.Unix(0, 0)
-	return &horloge{debut: d, courant: d}
+	return &clock{start: d, current: d}
 }
 
-func (h *horloge) options(timeout, intervalle time.Duration) Options {
+func (c *clock) options(timeout, interval time.Duration) Options {
 	return Options{
-		Timeout:    timeout,
-		Intervalle: intervalle,
-		Sommeil: func(d time.Duration) {
-			h.dormi++
-			h.courant = h.courant.Add(d)
+		Timeout:  timeout,
+		Interval: interval,
+		Sleep: func(d time.Duration) {
+			c.slept++
+			c.current = c.current.Add(d)
 		},
-		Maintenant: func() time.Time { return h.courant },
+		Now: func() time.Time { return c.current },
 	}
 }
 
-func (h *horloge) ecoule() time.Duration { return h.courant.Sub(h.debut) }
+func (c *clock) elapsed() time.Duration { return c.current.Sub(c.start) }
 
-// C-1 — quand l'invocation de sbx échoue SANS verdict exploitable, den doit
-// échouer. C'est la branche qui décide si den attache un shell alors que la
-// policy n'a jamais pu être vérifiée : un fail-open y serait le « ça marche à
-// moitié » que le §7 interdit.
-func TestSettleEchoueQuandSbxEchoueSansVerdict(t *testing.T) {
-	o, _ := optionsTest(t)
-	f := &sbx.Fake{Defaut: sbx.Reponse{Err: errors.New("boom")}}
+// C-1 — when sbx's invocation fails WITHOUT an exploitable verdict, den must
+// fail. This is the branch that decides whether den attaches a shell when
+// the policy could never be checked: a fail-open here would be exactly the
+// "half-working" state §7 forbids.
+func TestSettleFailsWhenSbxFailsWithoutAVerdict(t *testing.T) {
+	o, _ := testOptions(t)
+	f := &sbx.Fake{Default: sbx.Response{Err: errors.New("boom")}}
 
 	err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
 	if err == nil {
-		t.Fatal("un sbx qui échoue sans rien rendre d'exploitable doit faire échouer Settle")
+		t.Fatal("an sbx that fails without returning anything usable must fail Settle")
 	}
 	if !strings.Contains(err.Error(), "github.com") || !strings.Contains(err.Error(), "boom") {
-		t.Errorf("le message doit nommer l'hôte sondé et l'échec sous-jacent ; obtenu : %v", err)
+		t.Errorf("the message must name the probed host and the underlying failure; got: %v", err)
 	}
 }
 
-// C-1 — le code de sortie de sbx n'est PAS le verdict. Personne ici ne peut
-// confirmer que `sbx policy check` sort en 0 pour un hôte simplement refusé ;
-// den ne doit donc pas en dépendre. Si la sortie porte un `allowed`
-// exploitable, c'est LUI qui tranche, et la boucle continue de boucler.
-func TestSettleUtiliseLeVerdictMemeQuandSbxSortEnErreur(t *testing.T) {
-	t.Run("refus avec code de sortie non nul : on boucle, puis fail-closed", func(t *testing.T) {
-		h := nouvelleHorloge()
-		f := &sbx.Fake{Defaut: sbx.Reponse{
-			Sortie: []byte(`{"allowed": false}`),
+// C-1 — sbx's exit code is NOT the verdict. Nobody here can confirm that
+// `sbx policy check` exits 0 for a simply-denied host; den must not depend
+// on that. If the output carries an exploitable `allowed`, IT decides, and
+// the loop keeps looping.
+func TestSettleUsesTheVerdictEvenWhenSbxExitsInError(t *testing.T) {
+	t.Run("denial with a non-zero exit code: loop, then fail-closed", func(t *testing.T) {
+		h := newClock()
+		f := &sbx.Fake{Default: sbx.Response{
+			Output: []byte(`{"allowed": false}`),
 			Err:    errors.New("exit status 1"),
 		}}
 
 		err := Settle(context.Background(), f, "api", []string{"github.com"}, h.options(60*time.Second, 2*time.Second))
 		if err == nil {
-			t.Fatal("un hôte durablement refusé doit produire une erreur")
+			t.Fatal("a durably denied host must produce an error")
 		}
-		if h.dormi == 0 {
-			t.Errorf("le refus doit être traité comme un VERDICT, donc réessayé : %d sommeil(s)", h.dormi)
+		if h.slept == 0 {
+			t.Errorf("the denial must be treated as a VERDICT, hence retried: %d sleep(s)", h.slept)
 		}
 		if !strings.Contains(err.Error(), "fail-closed") {
-			t.Errorf("l'échec doit être celui du timeout fail-closed, pas un échec de transport ; obtenu : %v", err)
+			t.Errorf("the failure must be the fail-closed timeout, not a transport failure; got: %v", err)
 		}
-		// Le code de sortie ne doit pas être présenté comme LA cause — mais rien
-		// n'interdit de le MENTIONNER comme indice. Ce qui est interdit, c'est
-		// l'attribution : il ne doit apparaître qu'après le cadrage « Indice ».
+		// The exit code must not be presented as THE cause — but nothing bars
+		// MENTIONING it as a hint. What's forbidden is attribution: it must
+		// only appear after the "Hint" framing.
 		msg := err.Error()
-		if i, j := strings.Index(msg, "Indice"), strings.Index(msg, "exit status 1"); j >= 0 && (i < 0 || j < i) {
-			t.Errorf("l'échec de commande ne doit apparaître que sous le cadrage « Indice » ; obtenu : %v", err)
+		if i, j := strings.Index(msg, "Hint"), strings.Index(msg, "exit status 1"); j >= 0 && (i < 0 || j < i) {
+			t.Errorf("the command failure must only appear under the \"Hint\" framing; got: %v", err)
 		}
 	})
 
-	// L'asymétrie est délibérée : croire un « oui » sorti d'une invocation qui a
-	// échoué (stdout tronqué, flag inconnu, sandbox absente) serait le seul
-	// chemin par lequel ce paquet ouvrirait un shell sur une policy jamais
-	// vérifiée. Un « non » est sûr à croire, un « oui » ne l'est pas.
-	t.Run("autorisation avec code de sortie non nul : refusée quand même", func(t *testing.T) {
-		o, _ := optionsTest(t)
-		f := &sbx.Fake{Defaut: sbx.Reponse{
-			Sortie: []byte(`{"allowed": true}`),
+	// The asymmetry is deliberate: trusting a "yes" from an invocation that
+	// failed (truncated stdout, unknown flag, missing sandbox) would be the
+	// only path by which this package could open a shell on a policy that
+	// was never checked. A "no" is safe to trust, a "yes" is not.
+	t.Run("allowance with a non-zero exit code: refused anyway", func(t *testing.T) {
+		o, _ := testOptions(t)
+		f := &sbx.Fake{Default: sbx.Response{
+			Output: []byte(`{"allowed": true}`),
 			Err:    errors.New("exit status 1"),
 		}}
 
 		err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
 		if err == nil {
-			t.Fatal("un « oui » rendu par une commande qui a échoué ne doit pas suffire à attacher")
+			t.Fatal("a \"yes\" from a failed command must not be enough to attach")
 		}
 		if !strings.Contains(err.Error(), "exit status 1") {
-			t.Errorf("le message doit montrer l'échec de la commande ; obtenu : %v", err)
+			t.Errorf("the message must show the command failure; got: %v", err)
 		}
 	})
 }
 
-// C-1 / I-5 — une sortie qui n'est pas du JSON du tout (usage, message d'aide,
-// erreur en clair) doit échouer, et le message doit MONTRER cette sortie.
-func TestSettleEchoueSurUneSortieIllisible(t *testing.T) {
-	o, _ := optionsTest(t)
-	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte("usage: sbx policy check network [flags]")}}
+// C-1 / I-5 — output that isn't JSON at all (usage, help message, plain-text
+// error) must fail, and the message must SHOW that output.
+func TestSettleFailsOnUnreadableOutput(t *testing.T) {
+	o, _ := testOptions(t)
+	f := &sbx.Fake{Default: sbx.Response{Output: []byte("usage: sbx policy check network [flags]")}}
 
 	err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
 	if err == nil {
-		t.Fatal("une sortie non-JSON doit faire échouer Settle")
+		t.Fatal("non-JSON output must fail Settle")
 	}
-	if !strings.Contains(err.Error(), "illisible") || !strings.Contains(err.Error(), "usage: sbx policy check network") {
-		t.Errorf("le message doit se dire illisible et montrer la sortie ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "unreadable") || !strings.Contains(err.Error(), "usage: sbx policy check network") {
+		t.Errorf("the message must call itself unreadable and show the output; got: %v", err)
 	}
 }
 
-// I-5 — le cas d'un sbx qui écrirait son verdict sur stderr, ou qui
-// refuserait --json : stdout est vide. Le message censé montrer la sortie
-// brute ne doit pas se terminer sur un deux-points et rien.
-func TestSettleNommeUneSortieVide(t *testing.T) {
-	o, _ := optionsTest(t)
-	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte("   \n")}}
+// I-5 — the case of an sbx that writes its verdict to stderr, or refuses
+// --json: stdout is empty. The message meant to show the raw output must
+// not end on a bare colon.
+func TestSettleNamesAnEmptyOutput(t *testing.T) {
+	o, _ := testOptions(t)
+	f := &sbx.Fake{Default: sbx.Response{Output: []byte("   \n")}}
 
 	err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
 	if err == nil {
-		t.Fatal("une sortie vide doit faire échouer Settle")
+		t.Fatal("empty output must fail Settle")
 	}
-	if !strings.Contains(err.Error(), "vide") {
-		t.Errorf("le message doit dire explicitement que la sortie est vide ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("the message must explicitly say the output is empty; got: %v", err)
 	}
 	if strings.HasSuffix(strings.TrimSpace(err.Error()), ":") {
-		t.Errorf("le message ne doit pas se terminer par un deux-points sans rien ; obtenu : %v", err)
+		t.Errorf("the message must not end on a bare colon; got: %v", err)
 	}
 }
 
-// I-5 (suite) — une sortie qui n'est pas du JSON peut contenir n'importe quoi,
-// y compris des séquences d'échappement et des octets nuls. Les recracher tels
-// quels dans un message d'erreur brouille le terminal de celui qui les lit ;
-// c'est ce que le %q évite, et rien ne l'observait depuis que la sortie vide a
-// sa propre branche.
-func TestSettleEchappeUneSortieNonImprimable(t *testing.T) {
-	o, _ := optionsTest(t)
-	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte("\x1b[2Joups\x00")}}
+// I-5 (continued) — non-JSON output can contain anything, including escape
+// sequences and null bytes. Spitting them back verbatim into an error
+// message garbles the reader's terminal; that's what %q prevents, and
+// nothing tested for it since empty output got its own branch.
+func TestSettleEscapesUnprintableOutput(t *testing.T) {
+	o, _ := testOptions(t)
+	f := &sbx.Fake{Default: sbx.Response{Output: []byte("\x1b[2Joops\x00")}}
 
 	err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
 	if err == nil {
-		t.Fatal("une sortie non-JSON doit faire échouer Settle")
+		t.Fatal("non-JSON output must fail Settle")
 	}
 	if strings.ContainsAny(err.Error(), "\x00\x1b") {
-		t.Errorf("le message ne doit pas contenir d'octets de contrôle bruts ; obtenu : %q", err.Error())
+		t.Errorf("the message must not contain raw control bytes; got: %q", err.Error())
 	}
-	if !strings.Contains(err.Error(), "oups") {
-		t.Errorf("le message doit tout de même montrer la sortie ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "oops") {
+		t.Errorf("the message must still show the output; got: %v", err)
 	}
 }
 
-// I-6 — sur un défaut de schéma, la sortie brute est montrée (le brief l'exige)
-// et elle peut contenir des hôtes qui ne sont ni bloqués ni même sondés. Le
-// message doit donc CADRER ce qu'il montre : nommer l'hôte réellement sondé et
-// annoncer que ce qui suit est la sortie de sbx, pas un verdict de den.
-func TestSettleCadreLaSortieBruteSurUnDefautDeSchema(t *testing.T) {
-	o, _ := optionsTest(t)
-	verbeuse := `{"policy":{"allow":["github.com","api.anthropic.com"]},"verdict":"deny"}`
-	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(verbeuse)}}
+// I-6 — on a schema mismatch, the raw output is shown (the brief requires
+// it) and it may contain hosts that are neither blocked nor even probed. The
+// message must therefore FRAME what it shows: name the host actually
+// probed, and announce that what follows is sbx's output, not den's verdict.
+func TestSettleFramesTheRawOutputOnASchemaMismatch(t *testing.T) {
+	o, _ := testOptions(t)
+	verbose := `{"policy":{"allow":["github.com","api.anthropic.com"]},"verdict":"deny"}`
+	f := &sbx.Fake{Default: sbx.Response{Output: []byte(verbose)}}
 
-	err := Settle(context.Background(), f, "api", []string{"bloque.exemple.test"}, o)
+	err := Settle(context.Background(), f, "api", []string{"blocked.example.test"}, o)
 	if err == nil {
-		t.Fatal("une sortie sans champ allowed doit échouer immédiatement")
+		t.Fatal("output without an allowed field must fail immediately")
 	}
-	if !strings.Contains(err.Error(), "bloque.exemple.test") {
-		t.Errorf("le message doit nommer l'hôte réellement sondé ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "blocked.example.test") {
+		t.Errorf("the message must name the host actually probed; got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Sortie brute :") {
-		t.Errorf("le message doit annoncer la sortie brute avant de la montrer ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "Raw output:") {
+		t.Errorf("the message must announce the raw output before showing it; got: %v", err)
 	}
-	if !strings.Contains(err.Error(), verbeuse) {
-		t.Errorf("le message doit montrer la sortie brute ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), verbose) {
+		t.Errorf("the message must show the raw output; got: %v", err)
 	}
 }
 
-// A3 — du bruit APRÈS la valeur JSON (ligne de log, bannière, NDJSON) ne doit
-// pas empêcher den d'attacher : le verdict est dans la première valeur.
-// json.Unmarshal, lui, refuse tout contenu qui suit la valeur.
-func TestSettleTolereDuBruitApresLeJSON(t *testing.T) {
-	o, _ := optionsTest(t)
-	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte("{\"allowed\": true}\n{\"warn\":\"cache miss\"}\n")}}
+// A3 — noise AFTER the JSON value (a log line, a banner, NDJSON) must not
+// prevent den from attaching: the verdict is in the first value.
+// json.Unmarshal, by contrast, refuses any content following the value.
+func TestSettleToleratesNoiseAfterTheJSON(t *testing.T) {
+	o, _ := testOptions(t)
+	f := &sbx.Fake{Default: sbx.Response{Output: []byte("{\"allowed\": true}\n{\"warn\":\"cache miss\"}\n")}}
 
 	if err := Settle(context.Background(), f, "api", []string{"github.com"}, o); err != nil {
-		t.Fatalf("le verdict de la première valeur JSON doit suffire : %v", err)
+		t.Fatalf("the first JSON value's verdict must be enough: %v", err)
 	}
 }
 
-// D4 — l'appariement de champs d'encoding/json est INSENSIBLE À LA CASSE.
-// `{"ALLOWED": true}` est donc un verdict valide et den attache. C'est un choix
-// assumé, pas un oubli (voir le commentaire de litVerdict) : le test est ici
-// pour que le jour où quelqu'un voudra le rendre strict, il le fasse EXPRÈS.
-func TestSettleAccepteUnVerdictSousUneAutreCasse(t *testing.T) {
-	for _, forme := range []string{`{"ALLOWED": true}`, `{"Allowed": true}`, `{"aLLoWeD": true}`} {
-		t.Run(forme, func(t *testing.T) {
-			o, _ := optionsTest(t)
-			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(forme)}}
+// D4 — encoding/json field matching is CASE-INSENSITIVE. `{"ALLOWED": true}`
+// is therefore a valid verdict and den attaches. This is a deliberate
+// choice, not an oversight (see readVerdict's comment): the test is here so
+// that the day someone wants to make it strict, they do it ON PURPOSE.
+func TestSettleAcceptsAVerdictUnderAnotherCasing(t *testing.T) {
+	for _, form := range []string{`{"ALLOWED": true}`, `{"Allowed": true}`, `{"aLLoWeD": true}`} {
+		t.Run(form, func(t *testing.T) {
+			o, _ := testOptions(t)
+			f := &sbx.Fake{Default: sbx.Response{Output: []byte(form)}}
 
 			if err := Settle(context.Background(), f, "api", []string{"github.com"}, o); err != nil {
-				t.Fatalf("%s doit être lu comme un verdict ; obtenu : %v", forme, err)
+				t.Fatalf("%s must be read as a verdict; got: %v", form, err)
 			}
 		})
 	}
 }
 
-// La contrepartie du test précédent, et la seule qui protège vraiment : la
-// tolérance s'arrête EXACTEMENT à la casse. Un champ voisin — préfixe, suffixe,
-// espace parasite — reste un changement de schéma, donc un échec immédiat. Sans
-// ce test, « insensible à la casse » pourrait dériver vers un appariement flou
-// sans que rien ne s'y oppose.
-func TestSettleRefuseUnChampVoisinDAllowed(t *testing.T) {
-	for _, forme := range []string{`{"allowedx": true}`, `{"allow": true}`, `{"allowed ": true}`} {
-		t.Run(forme, func(t *testing.T) {
-			o, _ := optionsTest(t)
-			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(forme)}}
+// The counterpart of the previous test, and the one that really protects: the
+// tolerance stops EXACTLY at casing. A neighboring field — prefix, suffix,
+// stray space — remains a schema change, hence an immediate failure. Without
+// this test, "case-insensitive" could drift toward fuzzy matching with
+// nothing opposing it.
+func TestSettleRefusesAFieldNeighboringAllowed(t *testing.T) {
+	for _, form := range []string{`{"allowedx": true}`, `{"allow": true}`, `{"allowed ": true}`} {
+		t.Run(form, func(t *testing.T) {
+			o, _ := testOptions(t)
+			f := &sbx.Fake{Default: sbx.Response{Output: []byte(form)}}
 
 			err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
 			if err == nil {
-				t.Fatalf("%s n'est pas un champ allowed : le fail-closed doit se déclencher", forme)
+				t.Fatalf("%s is not an allowed field: fail-closed must trigger", form)
 			}
 			if !strings.Contains(err.Error(), "allowed") {
-				t.Errorf("le message doit nommer le champ manquant ; obtenu : %v", err)
+				t.Errorf("the message must name the missing field; got: %v", err)
 			}
 		})
 	}
 }
 
-// Mesuré en 17b, non consigné jusque-là : quand DEUX clés s'apparient au même
-// champ, c'est la DERNIÈRE qui gagne — le décodeur les affecte dans l'ordre du
-// document, l'appariement exact ne l'emporte pas sur l'appariement à la casse
-// près. Le verdict de `{"ALLOWED":false,"allowed":true}` dépend donc de l'ordre
-// d'écriture de sbx.
+// Measured in 17b, undocumented until now: when TWO keys match the same
+// field, the LAST one wins — the decoder assigns them in document order,
+// and exact matching doesn't take precedence over case-insensitive matching.
+// The verdict of `{"ALLOWED":false,"allowed":true}` therefore depends on
+// sbx's key-writing order.
 //
-// Aucune conséquence de sûreté (les deux clés viennent du même producteur), mais
-// c'est la propriété qu'il faut avoir sous les yeux avant de conclure « le champ
-// exact gagne toujours ». Le sens du test est de rendre le jour où ce serait
-// FAUX visible, pas de bénir la situation.
-func TestSettleLaDerniereCleGagneEnCasDeDoublon(t *testing.T) {
-	cas := []struct {
-		nom     string
-		sortie  string
-		attache bool
+// No safety consequence (both keys come from the same producer), but it's
+// the property to have in view before concluding "the exact field always
+// wins". The point of this test is to make the day this becomes FALSE
+// visible, not to bless the situation.
+func TestSettleLastKeyWinsOnDuplicate(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		attach bool
 	}{
-		{"le dernier est false", `{"allowed": true, "ALLOWED": false}`, false},
-		{"le dernier est true", `{"ALLOWED": false, "allowed": true}`, true},
+		{"the last one is false", `{"allowed": true, "ALLOWED": false}`, false},
+		{"the last one is true", `{"ALLOWED": false, "allowed": true}`, true},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			o, _ := optionsTest(t)
-			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(c.sortie)}}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o, _ := testOptions(t)
+			f := &sbx.Fake{Default: sbx.Response{Output: []byte(c.output)}}
 
 			err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
-			if c.attache && err != nil {
-				t.Fatalf("%s : attendu un verdict autorisant ; obtenu : %v", c.sortie, err)
+			if c.attach && err != nil {
+				t.Fatalf("%s: expected an allowing verdict; got: %v", c.output, err)
 			}
-			if !c.attache && err == nil {
-				t.Fatalf("%s : attendu un refus (le dernier verdict est false)", c.sortie)
+			if !c.attach && err == nil {
+				t.Fatalf("%s: expected a refusal (the last verdict is false)", c.output)
 			}
 		})
 	}
 }
 
-// I-3 — en production, l'annulation arrive PENDANT une passe, pas entre deux
-// tours : sbx est tué, le runner renvoie une erreur de transport qui n'enveloppe
-// aucun motif de contexte (mesuré : « signal: killed »). Settle doit reconnaître
-// l'annulation lui-même, et ne pas accuser un hôte d'un Ctrl-C.
-func TestSettleReconnaitLAnnulationPendantUnePasse(t *testing.T) {
-	o, _ := optionsTest(t)
-	ctx, annule := context.WithCancel(context.Background())
-	defer annule()
-	f := &fakeAnnulant{annule: annule}
+// I-3 — in production, cancellation arrives DURING a pass, not between
+// rounds: sbx gets killed, and the runner returns a transport error wrapping
+// no context reason (measured: "signal: killed"). Settle must recognize the
+// cancellation itself, and not blame a host for a Ctrl-C.
+func TestSettleRecognizesCancellationDuringAPass(t *testing.T) {
+	o, _ := testOptions(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := &fakeCanceling{cancel: cancel}
 
 	err := Settle(ctx, f, "api", []string{"github.com"}, o)
 	if err == nil {
-		t.Fatal("une annulation pendant une passe doit interrompre Settle")
+		t.Fatal("a cancellation during a pass must interrupt Settle")
 	}
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("l'erreur doit envelopper context.Canceled ; obtenu : %v", err)
+		t.Errorf("the error must wrap context.Canceled; got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "interrompue") {
-		t.Errorf("le message doit parler d'attente interrompue ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "interrupted") {
+		t.Errorf("the message must speak of interrupted waiting; got: %v", err)
 	}
 	if strings.Contains(err.Error(), "github.com") {
-		t.Errorf("un Ctrl-C n'est pas la faute de l'hôte sondé ; obtenu : %v", err)
+		t.Errorf("a Ctrl-C is not the probed host's fault; got: %v", err)
 	}
 }
 
-// I-4 — le scope --sandbox est ce qui donne sa valeur à toute la vérification.
-// Un nom vide part tel quel dans l'argv et ne prouve plus rien.
-func TestSettleRefuseUnNomDeSandboxInvalide(t *testing.T) {
-	cas := []struct {
-		nom     string
+// I-4 — the --sandbox scope is what gives the whole check its value. An
+// empty name goes straight into the argv unchanged and proves nothing
+// anymore.
+func TestSettleRefusesAnInvalidSandboxName(t *testing.T) {
+	cases := []struct {
+		name    string
 		sandbox string
 	}{
-		{"vide", ""},
-		{"non canonique", "api."},
-		{"caractère interdit", "api/feat"},
+		{"empty", ""},
+		{"non-canonical", "api."},
+		{"forbidden character", "api/feat"},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			o, _ := optionsTest(t)
-			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": true}`)}}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o, _ := testOptions(t)
+			f := &sbx.Fake{Default: sbx.Response{Output: []byte(`{"allowed": true}`)}}
 
 			err := Settle(context.Background(), f, c.sandbox, []string{"github.com"}, o)
 			if err == nil {
-				t.Fatalf("un nom de sandbox %s doit être refusé", c.nom)
+				t.Fatalf("a %s sandbox name must be refused", c.name)
 			}
-			if len(f.Appels) != 0 {
-				t.Errorf("aucune sonde ne doit partir sur un scope invalide ; appels : %v", f.Appels)
+			if len(f.Calls) != 0 {
+				t.Errorf("no probe should go out on an invalid scope; calls: %v", f.Calls)
 			}
 		})
 	}
 }
 
-// Mineur — un « - » égaré dans le YAML d'allowlist produit un hôte vide. Sondé
-// tel quel, il enverrait `--json ""` et Settle pourrait rendre nil. Un hôte fait
-// de blancs vient du même égarement (« -   » ou une valeur quotée vide) et
-// n'est pas plus sondable ; sans le cas ci-dessous, rien ne distinguerait
-// TrimSpace(h) == "" de h == "".
-func TestSettleRefuseUnHoteVide(t *testing.T) {
-	cas := []struct {
-		nom  string
-		hote string
+// Minor — a stray `-` in the allowlist YAML produces an empty host. Probed
+// as-is, it would send `--json ""` and Settle might return nil. A host made
+// of blanks comes from the same kind of slip (`-   ` or an empty quoted
+// value) and isn't any more probeable; without the case below, nothing
+// would distinguish TrimSpace(h) == "" from h == "".
+func TestSettleRefusesAnEmptyHost(t *testing.T) {
+	cases := []struct {
+		name string
+		host string
 	}{
-		{"chaîne vide", ""},
-		{"espaces", "   "},
-		{"tabulation et saut de ligne", "\t\n"},
+		{"empty string", ""},
+		{"spaces", "   "},
+		{"tab and newline", "\t\n"},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			o, _ := optionsTest(t)
-			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": true}`)}}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o, _ := testOptions(t)
+			f := &sbx.Fake{Default: sbx.Response{Output: []byte(`{"allowed": true}`)}}
 
-			err := Settle(context.Background(), f, "api", []string{"github.com", c.hote}, o)
+			err := Settle(context.Background(), f, "api", []string{"github.com", c.host}, o)
 			if err == nil {
-				t.Fatal("un hôte vide dans l'allowlist doit être refusé")
+				t.Fatal("an empty host in the allowlist must be refused")
 			}
-			if !strings.Contains(err.Error(), "vide") {
-				t.Errorf("le message doit dire que l'hôte est vide ; obtenu : %v", err)
+			if !strings.Contains(err.Error(), "empty") {
+				t.Errorf("the message must say the host is empty; got: %v", err)
 			}
-			if len(f.Appels) != 0 {
-				t.Errorf("aucune sonde ne doit partir avec une allowlist invalide ; appels : %v", f.Appels)
+			if len(f.Calls) != 0 {
+				t.Errorf("no probe should go out with an invalid allowlist; calls: %v", f.Calls)
 			}
 		})
 	}
 }
 
-// Mineur — un hôte présent deux fois (nest + stack) ne doit être sondé qu'une
-// fois par tour, et n'apparaître qu'une fois dans le message.
-func TestSettleDedoublonneLAllowlist(t *testing.T) {
-	h := nouvelleHorloge()
-	f := &fakeParHote{autoriseApres: map[string]int{"a.test": 99}}
+// Minor — a host present twice (nest + stack) must only be probed once per
+// round, and only appear once in the message.
+func TestSettleDedupesTheAllowlist(t *testing.T) {
+	h := newClock()
+	f := &fakePerHost{allowedAfter: map[string]int{"a.test": 99}}
 
 	err := Settle(context.Background(), f, "api", []string{"a.test", "a.test"}, h.options(5*time.Second, 2*time.Second))
 	if err == nil {
-		t.Fatal("l'hôte ne passe jamais : erreur attendue")
+		t.Fatal("the host never passes: error expected")
 	}
-	// 3 sommeils ⇒ 4 tours ; un seul hôte à sonder par tour.
-	if n := f.appels["a.test"]; n != 4 {
-		t.Errorf("hôte sondé %d fois, attendu 4 (une seule fois par tour) ; appels : %v", n, f.appels)
+	// 3 sleeps ⇒ 4 rounds; a single host to probe per round.
+	if n := f.calls["a.test"]; n != 4 {
+		t.Errorf("host probed %d times, want 4 (once per round); calls: %v", n, f.calls)
 	}
 	if n := strings.Count(err.Error(), "a.test"); n != 1 {
-		t.Errorf("l'hôte apparaît %d fois dans le message, attendu 1 : %v", n, err)
+		t.Errorf("the host appears %d times in the message, want 1: %v", n, err)
 	}
 }
 
-// I-2 — jusqu'ici seule la PRÉSENCE d'un sommeil était vérifiée, jamais sa
-// durée, et l'existence d'un timeout, jamais sa valeur. Un den qui patiente dix
-// fois trop longtemps, ou qui martèle sbx deux fois plus vite, passait la CI.
-// L'horloge injectée sait pourtant exactement combien de temps a « passé ».
-func TestSettleRespecteTimeoutEtIntervalle(t *testing.T) {
-	cas := []struct {
-		timeout    time.Duration
-		intervalle time.Duration
-		sommeils   int // = ceil(timeout / intervalle)
+// I-2 — until now only the PRESENCE of a sleep was checked, never its
+// duration, and the existence of a timeout, never its value. A den that
+// waits ten times too long, or hammers sbx twice as fast, passed CI. The
+// injected clock knows exactly how much time has "passed".
+func TestSettleRespectsTimeoutAndInterval(t *testing.T) {
+	cases := []struct {
+		timeout  time.Duration
+		interval time.Duration
+		sleeps   int // = ceil(timeout / interval)
 	}{
 		{60 * time.Second, 2 * time.Second, 30},
 		{5 * time.Second, 2 * time.Second, 3},
 		{3 * time.Second, 2 * time.Second, 2},
 		{2 * time.Second, 2 * time.Second, 1},
 	}
-	for _, c := range cas {
-		t.Run(c.timeout.String()+"/"+c.intervalle.String(), func(t *testing.T) {
-			h := nouvelleHorloge()
-			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": false}`)}}
+	for _, c := range cases {
+		t.Run(c.timeout.String()+"/"+c.interval.String(), func(t *testing.T) {
+			h := newClock()
+			f := &sbx.Fake{Default: sbx.Response{Output: []byte(`{"allowed": false}`)}}
 
-			err := Settle(context.Background(), f, "api", []string{"bloque.test"}, h.options(c.timeout, c.intervalle))
+			err := Settle(context.Background(), f, "api", []string{"blocked.test"}, h.options(c.timeout, c.interval))
 			if err == nil {
-				t.Fatal("erreur de timeout attendue")
+				t.Fatal("expected a timeout error")
 			}
 			if !strings.Contains(err.Error(), "fail-closed") {
-				t.Fatalf("c'est le timeout fail-closed qui doit sortir ; obtenu : %v", err)
+				t.Fatalf("the fail-closed timeout must be the one returned; got: %v", err)
 			}
-			if h.dormi != c.sommeils {
-				t.Errorf("dormi %d fois, attendu %d : la durée du sommeil n'est pas Intervalle", h.dormi, c.sommeils)
+			if h.slept != c.sleeps {
+				t.Errorf("slept %d times, want %d: sleep duration isn't Interval", h.slept, c.sleeps)
 			}
-			if attendu := time.Duration(c.sommeils) * c.intervalle; h.ecoule() != attendu {
-				t.Errorf("temps écoulé %s, attendu %s : la limite n'est pas Maintenant()+Timeout", h.ecoule(), attendu)
+			if want := time.Duration(c.sleeps) * c.interval; h.elapsed() != want {
+				t.Errorf("elapsed time %s, want %s: the deadline isn't Now()+Timeout", h.elapsed(), want)
 			}
-			// Une sonde par tour, et un tour de plus que de sommeils.
-			if n := len(f.Appels); n != c.sommeils+1 {
-				t.Errorf("%d sondes, attendu %d", n, c.sommeils+1)
+			// One probe per round, and one round more than sleeps.
+			if n := len(f.Calls); n != c.sleeps+1 {
+				t.Errorf("%d probes, want %d", n, c.sleeps+1)
 			}
 		})
 	}
 }
 
-// I-2 — les valeurs d'OptionsDefaut() sont la patience réelle de la seule garde
-// réseau du projet ; rien ne les verrouillait.
-func TestOptionsDefautValeurs(t *testing.T) {
-	o := OptionsDefaut()
+// I-2 — DefaultOptions()'s values are the real patience of the project's
+// only network guard; nothing locked them down.
+func TestDefaultOptionsValues(t *testing.T) {
+	o := DefaultOptions()
 	if o.Timeout != 60*time.Second {
-		t.Errorf("Timeout = %s, attendu 1m0s", o.Timeout)
+		t.Errorf("Timeout = %s, want 1m0s", o.Timeout)
 	}
-	if o.Intervalle != 2*time.Second {
-		t.Errorf("Intervalle = %s, attendu 2s", o.Intervalle)
+	if o.Interval != 2*time.Second {
+		t.Errorf("Interval = %s, want 2s", o.Interval)
 	}
-	if o.Sommeil == nil || o.Maintenant == nil {
-		t.Error("OptionsDefaut() doit fournir une horloge réelle complète")
+	if o.Sleep == nil || o.Now == nil {
+		t.Error("DefaultOptions() must supply a full real clock")
 	}
 }
 
-// I-1 — une horloge injectée qui n'avance pas passe valide() (qui inspecte des
-// valeurs, pas une relation) et faisait boucler Settle SANS FIN. C'est
-// atteignable avec du code de production correct et des Options légales : un
-// double d'horloge naïf à la tâche 12 bloquerait `go test ./...` du projet
-// entier sans que rien ne désigne policy.
-func TestSettleBorneLeNombreDeTours(t *testing.T) {
-	f := func() *sbx.Fake { return &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": false}`)}} }
+// I-1 — an injected clock that doesn't advance passes validate() (which
+// inspects values, not a relation) and made Settle loop WITHOUT END. This is
+// reachable with correct production code and legal Options: a naive clock
+// double at task 12 would hang the whole project's `go test ./...` with
+// nothing pointing at policy.
+func TestSettleBoundsTheNumberOfRounds(t *testing.T) {
+	f := func() *sbx.Fake { return &sbx.Fake{Default: sbx.Response{Output: []byte(`{"allowed": false}`)}} }
 
-	// Deux causes distinctes tombent dans la même borne, et le message doit les
-	// distinguer : l'horloge figée, et l'horloge qui avance — mais moins vite
-	// qu'un Intervalle par tour, parce que Sommeil ne la fait pas avancer. Le
-	// second profil est le double le plus plausible d'un appelant : « Sommeil
-	// no-op pour ne pas attendre en test » + une horloge réelle.
-	t.Run("horloge figée", func(t *testing.T) {
+	// Two distinct causes fall into the same bound, and the message must
+	// distinguish them: a frozen clock, and a clock that advances — but
+	// slower than one Interval per round, because Sleep doesn't advance it.
+	// The second profile is the most plausible caller double: a "no-op Sleep
+	// so tests don't wait" + a real clock.
+	t.Run("frozen clock", func(t *testing.T) {
 		o := Options{
-			Timeout:    60 * time.Second,
-			Intervalle: 2 * time.Second,
-			Sommeil:    func(time.Duration) {},
-			Maintenant: func() time.Time { return time.Unix(0, 0) },
+			Timeout:  60 * time.Second,
+			Interval: 2 * time.Second,
+			Sleep:    func(time.Duration) {},
+			Now:      func() time.Time { return time.Unix(0, 0) },
 		}
 
-		err := settleBorne(t, o, f())
+		err := boundedSettle(t, o, f())
 		if err == nil {
-			t.Fatal("une horloge figée doit produire une erreur, pas un succès")
+			t.Fatal("a frozen clock must produce an error, not a success")
 		}
 		msg := err.Error()
-		if !strings.Contains(msg, "horloge") || !strings.Contains(msg, "figée") {
-			t.Errorf("le message doit désigner une horloge figée ; obtenu : %v", err)
+		if !strings.Contains(msg, "clock") || !strings.Contains(msg, "frozen") {
+			t.Errorf("the message must point at a frozen clock; got: %v", err)
 		}
-		if !strings.Contains(msg, "fait 31 tours") {
-			t.Errorf("le message doit annoncer le nombre de tours réellement effectués ; obtenu : %v", err)
+		if !strings.Contains(msg, "made 31 rounds") {
+			t.Errorf("the message must announce the number of rounds actually run; got: %v", err)
 		}
 	})
 
-	t.Run("horloge trop lente", func(t *testing.T) {
-		courant := time.Unix(0, 0)
+	t.Run("too-slow clock", func(t *testing.T) {
+		current := time.Unix(0, 0)
 		o := Options{
-			Timeout:    60 * time.Second,
-			Intervalle: 2 * time.Second,
-			Sommeil:    func(time.Duration) {}, // ne fait PAS avancer l'horloge
-			Maintenant: func() time.Time { // ...qui avance quand même, trop peu
-				courant = courant.Add(time.Second)
-				return courant
+			Timeout:  60 * time.Second,
+			Interval: 2 * time.Second,
+			Sleep:    func(time.Duration) {}, // does NOT advance the clock
+			Now: func() time.Time { // ...which advances anyway, too little
+				current = current.Add(time.Second)
+				return current
 			},
 		}
 
-		err := settleBorne(t, o, f())
+		err := boundedSettle(t, o, f())
 		if err == nil {
-			t.Fatal("une horloge trop lente doit produire une erreur, pas un succès")
+			t.Fatal("a too-slow clock must produce an error, not a success")
 		}
 		msg := err.Error()
-		// L'horloge a bel et bien avancé (de plus d'une minute, ici) : la dire
-		// figée serait faux, et enverrait corriger le mauvais champ.
-		if strings.Contains(msg, "figée") {
-			t.Errorf("l'horloge avance : le message ne doit pas la dire figée ; obtenu : %v", err)
+		// The clock did advance (by more than a minute, here): calling it
+		// frozen would be false, and would send the fix to the wrong field.
+		if strings.Contains(msg, "frozen") {
+			t.Errorf("the clock advances: the message must not call it frozen; got: %v", err)
 		}
-		if !strings.Contains(msg, "n'a avancé que de") {
-			t.Errorf("le message doit rapporter l'AVANCÉE de l'horloge ; obtenu : %v", err)
+		if !strings.Contains(msg, "only advanced by") {
+			t.Errorf("the message must report the clock's ADVANCE; got: %v", err)
 		}
-		if !strings.Contains(msg, "Sommeil") {
-			t.Errorf("le message doit désigner Sommeil, qui est le champ à corriger ; obtenu : %v", err)
+		if !strings.Contains(msg, "Sleep") {
+			t.Errorf("the message must name Sleep, the field to fix; got: %v", err)
 		}
-		if !strings.Contains(msg, "fait 31 tours") {
-			t.Errorf("le message doit annoncer le nombre de tours réellement effectués ; obtenu : %v", err)
+		if !strings.Contains(msg, "made 31 rounds") {
+			t.Errorf("the message must announce the number of rounds actually run; got: %v", err)
 		}
 	})
 
-	// Cas dégénéré : Maintenant() est supposée monotone, et une horloge qui
-	// recule n'est le fait d'aucun double plausible. Mais si elle recule, dire
-	// qu'elle « n'a avancé que de -1ms » n'a aucun sens, et la dire figée serait
-	// faux : le seul texte vrai est celui qui nomme le recul.
-	t.Run("horloge qui recule", func(t *testing.T) {
-		courant := time.Unix(0, 0)
+	// Degenerate case: Now() is assumed monotonic, and a clock going backward
+	// is not the behavior of any plausible double. But if it does go
+	// backward, saying it "only advanced by -1ms" makes no sense, and calling
+	// it frozen would be false: the only true wording is the one naming the
+	// regression.
+	t.Run("clock going backward", func(t *testing.T) {
+		current := time.Unix(0, 0)
 		o := Options{
-			Timeout:    60 * time.Second,
-			Intervalle: 2 * time.Second,
-			Sommeil:    func(time.Duration) {},
-			Maintenant: func() time.Time {
-				courant = courant.Add(-time.Millisecond)
-				return courant
+			Timeout:  60 * time.Second,
+			Interval: 2 * time.Second,
+			Sleep:    func(time.Duration) {},
+			Now: func() time.Time {
+				current = current.Add(-time.Millisecond)
+				return current
 			},
 		}
 
-		err := settleBorne(t, o, f())
+		err := boundedSettle(t, o, f())
 		if err == nil {
-			t.Fatal("une horloge qui recule doit produire une erreur, pas un succès")
+			t.Fatal("a clock going backward must produce an error, not a success")
 		}
 		msg := err.Error()
-		if !strings.Contains(msg, "reculé") {
-			t.Errorf("le message doit nommer le recul de l'horloge ; obtenu : %v", err)
+		if !strings.Contains(msg, "backward") {
+			t.Errorf("the message must name the clock's regression; got: %v", err)
 		}
-		if strings.Contains(msg, "figée") || strings.Contains(msg, "n'a avancé que de") {
-			t.Errorf("une horloge qui recule n'est ni figée ni lente ; obtenu : %v", err)
+		if strings.Contains(msg, "frozen") || strings.Contains(msg, "only advanced by") {
+			t.Errorf("a clock going backward is neither frozen nor slow; got: %v", err)
 		}
 	})
 }
 
-// settleBorne lance Settle sous filet : sans borne en nombre de tours, ces cas
-// ne rendraient JAMAIS la main. Seul endroit du paquet où une horloge réelle
-// intervient — et elle ne coûte rien tant que la borne existe.
-func settleBorne(t *testing.T, o Options, r sbx.Runner) error {
+// boundedSettle runs Settle under a safety net: without the round-count
+// bound, these cases would NEVER return. The only place in the package
+// where a real clock is used — and it costs nothing as long as the bound
+// exists.
+func boundedSettle(t *testing.T, o Options, r sbx.Runner) error {
 	t.Helper()
-	fini := make(chan error, 1)
-	go func() { fini <- Settle(context.Background(), r, "api", []string{"github.com"}, o) }()
+	done := make(chan error, 1)
+	go func() { done <- Settle(context.Background(), r, "api", []string{"github.com"}, o) }()
 	select {
-	case err := <-fini:
+	case err := <-done:
 		return err
 	case <-time.After(2 * time.Second):
-		t.Fatal("Settle n'a jamais rendu la main : la boucle n'est pas bornée en nombre de tours")
+		t.Fatal("Settle never returned: the loop is not bounded in number of rounds")
 		return nil
 	}
 }
 
-// Le ruling de la revue (lire le verdict avant de conclure de l'erreur) a un
-// prix : quand sbx échoue POUR UNE AUTRE RAISON tout en rendant un refus, den
-// boucle jusqu'au timeout et rend un message qui envoie vérifier l'allowlist —
-// alors que la vraie cause était sous les yeux à chaque tour. L'erreur ne doit
-// pas devenir LA cause (ce serait revenir en arrière), mais elle doit être
-// jointe comme indice.
-func TestSettleJointLaDerniereErreurRunnerAuTimeout(t *testing.T) {
-	h := nouvelleHorloge()
-	f := &sbx.Fake{Defaut: sbx.Reponse{
-		Sortie: []byte(`{"allowed": false}`),
+// The review's ruling (read the verdict before concluding from the error)
+// has a price: when sbx fails FOR ANOTHER REASON while still returning a
+// refusal, den loops to the timeout and returns a message pointing at the
+// allowlist — when the real cause was in plain sight every round. The error
+// must not become THE cause (that would roll back the ruling), but it must
+// be joined as a hint.
+func TestSettleJoinsTheLastRunnerErrorToTheTimeout(t *testing.T) {
+	h := newClock()
+	f := &sbx.Fake{Default: sbx.Response{
+		Output: []byte(`{"allowed": false}`),
 		Err:    errors.New(`sandbox "api" not found`),
 	}}
 
 	err := Settle(context.Background(), f, "api", []string{"github.com"}, h.options(60*time.Second, 2*time.Second))
 	if err == nil {
-		t.Fatal("erreur de timeout attendue")
+		t.Fatal("expected a timeout error")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "fail-closed") {
-		t.Errorf("le fail-closed reste l'échec principal ; obtenu : %v", err)
+		t.Errorf("the fail-closed timeout remains the main failure; got: %v", err)
 	}
-	i, j := strings.Index(msg, "Indice"), strings.Index(msg, `sandbox "api" not found`)
+	i, j := strings.Index(msg, "Hint"), strings.Index(msg, `sandbox "api" not found`)
 	if i < 0 || j < 0 {
-		t.Fatalf("l'erreur observée à chaque tour doit être jointe sous le cadrage « Indice » ; obtenu : %v", err)
+		t.Fatalf("the error observed every round must be joined under the \"Hint\" framing; got: %v", err)
 	}
 	if j < i {
-		t.Errorf("l'erreur ne doit pas précéder son cadrage : elle serait présentée comme la cause ; obtenu : %v", err)
+		t.Errorf("the error must not precede its framing: it would be presented as the cause; got: %v", err)
 	}
 }
 
-// Un indice qui nomme le mauvais hôte est pire que pas d'indice : il envoie
-// diagnostiquer un hôte qui n'a rien à se reprocher, dans le message même dont
-// on a payé un tour entier pour qu'il diagnostique juste. La paire (hôte,
-// erreur) ne se voit qu'avec AU MOINS DEUX hôtes bloqués portant des erreurs
-// distinctes — avec un seul, n'importe quel appariement est correct.
+// A hint naming the wrong host is worse than no hint: it sends the user to
+// diagnose a host that did nothing wrong, in the very message that cost a
+// whole round to get right. The (host, error) pairing only shows with AT
+// LEAST TWO blocked hosts carrying distinct errors — with a single one, any
+// pairing is correct.
 //
-// Le choix, au passage : un SEUL indice est joint, celui du dernier hôte en
-// échec du dernier tour. Les empiler alourdirait le message pour un gain
-// douteux (les échecs de transport sont massivement corrélés), et surtout un
-// indice n'a de valeur que s'il est encore vrai au moment où il est affiché.
-func TestSettleAppareLIndiceAvecSonHote(t *testing.T) {
-	h := nouvelleHorloge()
-	cle := func(hote string) string { return "policy check network --sandbox api --json " + hote }
-	f := &sbx.Fake{Reponses: map[string]sbx.Reponse{
-		cle("a.test"): {Sortie: []byte(`{"allowed": false}`), Err: errors.New("panne du premier")},
-		cle("b.test"): {Sortie: []byte(`{"allowed": false}`), Err: errors.New("panne du second")},
+// The choice, along the way: only ONE hint is joined, that of the last host
+// that failed on the last round. Stacking them would bloat the message for
+// dubious gain (transport failures are heavily correlated), and above all a
+// hint is only worth showing if it's still true at the moment it's
+// displayed.
+func TestSettlePairsTheHintWithItsHost(t *testing.T) {
+	h := newClock()
+	key := func(host string) string { return "policy check network --sandbox api --json " + host }
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		key("a.test"): {Output: []byte(`{"allowed": false}`), Err: errors.New("first one down")},
+		key("b.test"): {Output: []byte(`{"allowed": false}`), Err: errors.New("second one down")},
 	}}
 
 	err := Settle(context.Background(), f, "api", []string{"a.test", "b.test"}, h.options(60*time.Second, 2*time.Second))
 	if err == nil {
-		t.Fatal("erreur de timeout attendue")
+		t.Fatal("expected a timeout error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "vérification de b.test (panne du second)") {
-		t.Errorf("l'indice doit apparier l'erreur avec l'hôte dont elle provient ; obtenu : %v", err)
+	if !strings.Contains(msg, "check of b.test (second one down)") {
+		t.Errorf("the hint must pair the error with the host it comes from; got: %v", err)
 	}
-	if strings.Contains(msg, "panne du premier") {
-		t.Errorf("un seul indice est joint, le dernier ; obtenu : %v", err)
+	if strings.Contains(msg, "first one down") {
+		t.Errorf("only one hint is joined, the last one; got: %v", err)
 	}
-	// Les deux restent bloqués : ils doivent tous deux être listés.
+	// Both remain blocked: both must be listed.
 	if !strings.Contains(msg, "a.test") || !strings.Contains(msg, "b.test") {
-		t.Errorf("les deux hôtes bloqués doivent être listés ; obtenu : %v", err)
+		t.Errorf("both blocked hosts must be listed; got: %v", err)
 	}
 }
 
-// Symétrique du précédent : sans échec d'invocation, il n'y a pas d'indice à
-// donner, et en inventer un enverrait sur une fausse piste.
-func TestSettleSansIndiceQuandLInvocationReussit(t *testing.T) {
-	h := nouvelleHorloge()
-	f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(`{"allowed": false}`)}}
+// Symmetric to the previous test: without an invocation failure, there's no
+// hint to give, and inventing one would send a false lead.
+func TestSettleHasNoHintWhenTheInvocationSucceeds(t *testing.T) {
+	h := newClock()
+	f := &sbx.Fake{Default: sbx.Response{Output: []byte(`{"allowed": false}`)}}
 
 	err := Settle(context.Background(), f, "api", []string{"github.com"}, h.options(60*time.Second, 2*time.Second))
 	if err == nil {
-		t.Fatal("erreur de timeout attendue")
+		t.Fatal("expected a timeout error")
 	}
-	if strings.Contains(err.Error(), "Indice") {
-		t.Errorf("aucune invocation n'a échoué : pas d'indice à joindre ; obtenu : %v", err)
+	if strings.Contains(err.Error(), "Hint") {
+		t.Errorf("no invocation failed: no hint to join; got: %v", err)
 	}
 }
 
-// L'indice ne doit pas rouvrir la porte que la propriété du brief ferme : une
-// erreur observée sur un hôte qui a FINI par passer ne doit pas revenir dans le
-// message de timeout, ni sous forme d'hôte ni sous forme de diagnostic.
-func TestSettleNeJointPasLIndiceDUnHoteDejaPasse(t *testing.T) {
-	h := nouvelleHorloge()
-	f := &fakeIndicePassager{}
+// The hint must not reopen the door the brief's property closes: an error
+// observed on a host that DID end up passing must not come back in the
+// timeout message, neither as a host nor as a diagnostic.
+func TestSettleDoesNotJoinTheHintOfAnAlreadyPassedHost(t *testing.T) {
+	h := newClock()
+	f := &fakeFleetingHint{}
 
 	err := Settle(context.Background(), f, "api",
-		[]string{"passe.test", "bloque.test"}, h.options(60*time.Second, 2*time.Second))
+		[]string{"passes.test", "blocked.test"}, h.options(60*time.Second, 2*time.Second))
 	if err == nil {
-		t.Fatal("erreur de timeout attendue")
+		t.Fatal("expected a timeout error")
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "passe.test") {
-		t.Errorf("l'hôte finalement autorisé ne doit pas revenir dans le message ; obtenu : %v", err)
+	if strings.Contains(msg, "passes.test") {
+		t.Errorf("the eventually-allowed host must not come back in the message; got: %v", err)
 	}
-	if strings.Contains(msg, "panne passagère") {
-		t.Errorf("l'indice d'un hôte qui est passé ne doit pas survivre ; obtenu : %v", err)
+	if strings.Contains(msg, "fleeting glitch") {
+		t.Errorf("the hint of a host that passed must not survive; got: %v", err)
 	}
-	if !strings.Contains(msg, "bloque.test") {
-		t.Errorf("l'hôte réellement bloqué doit être nommé ; obtenu : %v", err)
+	if !strings.Contains(msg, "blocked.test") {
+		t.Errorf("the actually blocked host must be named; got: %v", err)
 	}
 }
 
-// La sortie de sbx atterrit dans un message d'erreur, qui atterrit dans un
-// terminal. Une sortie de plusieurs kilo-octets recrachée telle quelle noie le
-// diagnostic qu'elle est censée porter.
-func TestSettleTronqueUneSortieEnorme(t *testing.T) {
-	gros := strings.Repeat("x", 4096)
-	cas := []struct {
-		nom    string
-		sortie string
+// sbx's output lands in an error message, which lands in a terminal. A
+// multi-kilobyte output spat back verbatim drowns the diagnostic it's
+// supposed to carry.
+func TestSettleTruncatesAHugeOutput(t *testing.T) {
+	big := strings.Repeat("x", 4096)
+	cases := []struct {
+		name   string
+		output string
 	}{
-		{"sortie illisible", gros},
-		{"sortie sans champ allowed", `{"note":"` + gros + `"}`},
-		// La coupe tombe ici au MILIEU d'un « é » (le préfixe fait exactement 511
-		// octets). Couper là produirait un U+FFFD dans le message, donnant à
-		// croire que sbx a émis des octets invalides. Le cas passe par la branche
-		// « schéma », en %s : la branche illisible, elle, est en %q, qui échappe
-		// l'octet orphelin et masquerait le défaut.
-		{"coupe au milieu d'une rune", `{"note":"` + strings.Repeat("x", 502) + strings.Repeat("é", 2000) + `"}`},
+		{"unreadable output", big},
+		{"output without an allowed field", `{"note":"` + big + `"}`},
+		// The cut lands here in the MIDDLE of an "é" (the prefix is exactly
+		// 511 bytes). Cutting there would produce a U+FFFD in the message,
+		// wrongly suggesting sbx emitted invalid bytes. This case goes
+		// through the "schema" branch, in %s: the unreadable branch, by
+		// contrast, is in %q, which escapes the orphan byte and would mask
+		// the defect.
+		{"cut in the middle of a rune", `{"note":"` + strings.Repeat("x", 502) + strings.Repeat("é", 2000) + `"}`},
 	}
-	for _, c := range cas {
-		t.Run(c.nom, func(t *testing.T) {
-			o, _ := optionsTest(t)
-			f := &sbx.Fake{Defaut: sbx.Reponse{Sortie: []byte(c.sortie)}}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o, _ := testOptions(t)
+			f := &sbx.Fake{Default: sbx.Response{Output: []byte(c.output)}}
 
 			err := Settle(context.Background(), f, "api", []string{"github.com"}, o)
 			if err == nil {
-				t.Fatal("erreur attendue")
+				t.Fatal("expected an error")
 			}
 			if n := len(err.Error()); n > 1024 {
-				t.Errorf("message de %d octets : la sortie brute doit être bornée", n)
+				t.Errorf("message of %d bytes: the raw output must be bounded", n)
 			}
-			if !strings.Contains(err.Error(), "tronquée") {
-				t.Errorf("une sortie tronquée doit être annoncée comme telle ; obtenu (%d octets) : %.200v", len(err.Error()), err)
+			if !strings.Contains(err.Error(), "truncated") {
+				t.Errorf("truncated output must be announced as such; got (%d bytes): %.200v", len(err.Error()), err)
 			}
 			if strings.ContainsRune(err.Error(), '�') {
-				t.Errorf("la coupe doit tomber sur une frontière de rune ; obtenu : %.200v", err)
+				t.Errorf("the cut must land on a rune boundary; got: %.200v", err)
 			}
 		})
 	}
 }
 
-// fakeIndicePassager : « passe.test » échoue au transport tout en rendant un
-// refus, puis passe ; « bloque.test » reste refusé sans jamais d'erreur.
-type fakeIndicePassager struct{ appels int }
+// fakeFleetingHint: "passes.test" fails at the transport level while
+// returning a refusal, then passes; "blocked.test" stays refused, never
+// erroring.
+type fakeFleetingHint struct{ calls int }
 
-func (f *fakeIndicePassager) Run(_ context.Context, args ...string) ([]byte, error) {
-	if args[len(args)-1] != "passe.test" {
+func (f *fakeFleetingHint) Run(_ context.Context, args ...string) ([]byte, error) {
+	if args[len(args)-1] != "passes.test" {
 		return []byte(`{"allowed": false}`), nil
 	}
-	f.appels++
-	if f.appels == 1 {
-		return []byte(`{"allowed": false}`), errors.New("panne passagère de passe.test")
+	f.calls++
+	if f.calls == 1 {
+		return []byte(`{"allowed": false}`), errors.New("fleeting glitch on passes.test")
 	}
 	return []byte(`{"allowed": true}`), nil
 }
 
-func (f *fakeIndicePassager) Attach(_ context.Context, _ ...string) error { return nil }
+func (f *fakeFleetingHint) Attach(_ context.Context, _ ...string) error { return nil }
 
-// fakeAnnulant annule le contexte PENDANT la passe, puis échoue comme le ferait
-// un sbx tué : une erreur de transport qui n'enveloppe aucun motif de contexte.
-type fakeAnnulant struct {
-	annule context.CancelFunc
-	appels int
+// fakeCanceling cancels the context DURING the pass, then fails as a killed
+// sbx would: a transport error wrapping no context reason.
+type fakeCanceling struct {
+	cancel context.CancelFunc
+	calls  int
 }
 
-func (f *fakeAnnulant) Run(_ context.Context, _ ...string) ([]byte, error) {
-	f.appels++
-	f.annule()
+func (f *fakeCanceling) Run(_ context.Context, _ ...string) ([]byte, error) {
+	f.calls++
+	f.cancel()
 	return nil, errors.New("signal: killed")
 }
 
-func (f *fakeAnnulant) Attach(_ context.Context, _ ...string) error { return nil }
+func (f *fakeCanceling) Attach(_ context.Context, _ ...string) error { return nil }
 
-// fakeProgressif autorise l'hôte à partir du n-ième appel.
-type fakeProgressif struct {
-	appels        int
-	autoriseApres int
+// fakeProgressive allows the host starting from the n-th call.
+type fakeProgressive struct {
+	calls        int
+	allowedAfter int
 }
 
-func (f *fakeProgressif) Run(_ context.Context, _ ...string) ([]byte, error) {
-	f.appels++
-	if f.appels >= f.autoriseApres {
+func (f *fakeProgressive) Run(_ context.Context, _ ...string) ([]byte, error) {
+	f.calls++
+	if f.calls >= f.allowedAfter {
 		return []byte(`{"allowed": true}`), nil
 	}
 	return []byte(`{"allowed": false}`), nil
 }
 
-func (f *fakeProgressif) Attach(_ context.Context, _ ...string) error { return nil }
+func (f *fakeProgressive) Attach(_ context.Context, _ ...string) error { return nil }
 
-// fakeParHote compte les interrogations hôte par hôte (l'hôte est le dernier
-// argument de l'argv) et n'autorise chacun qu'à partir du n-ième appel LE
-// CONCERNANT. Un hôte absent d'autoriseApres passe du premier coup.
-type fakeParHote struct {
-	appels        map[string]int
-	autoriseApres map[string]int
+// fakePerHost counts checks per host (the host is the argv's last argument)
+// and only allows each one starting from the n-th call CONCERNING IT. A host
+// absent from allowedAfter passes on the first try.
+type fakePerHost struct {
+	calls        map[string]int
+	allowedAfter map[string]int
 }
 
-func (f *fakeParHote) Run(_ context.Context, args ...string) ([]byte, error) {
+func (f *fakePerHost) Run(_ context.Context, args ...string) ([]byte, error) {
 	if len(args) == 0 {
-		return nil, errors.New("argv vide")
+		return nil, errors.New("empty argv")
 	}
-	hote := args[len(args)-1]
-	if f.appels == nil {
-		f.appels = make(map[string]int)
+	host := args[len(args)-1]
+	if f.calls == nil {
+		f.calls = make(map[string]int)
 	}
-	f.appels[hote]++
-	if f.appels[hote] >= f.autoriseApres[hote] {
+	f.calls[host]++
+	if f.calls[host] >= f.allowedAfter[host] {
 		return []byte(`{"allowed": true}`), nil
 	}
 	return []byte(`{"allowed": false}`), nil
 }
 
-func (f *fakeParHote) Attach(_ context.Context, _ ...string) error { return nil }
+func (f *fakePerHost) Attach(_ context.Context, _ ...string) error { return nil }

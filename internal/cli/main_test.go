@@ -7,15 +7,14 @@ import (
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
-// TestMain neutralise l'environnement git de la machine pour tout le paquet,
-// via worktree.NeutraliseEnvironnementGit (voir sa godoc pour le pourquoi et
-// l'incident qui l'a fait naître).
+// TestMain neutralizes the machine's git environment for the whole package,
+// via worktree.NeutralizeGitEnvironment (see its godoc for why).
 //
-// den rm exerce du git RÉEL (TestRmNeDetruitPasLaSandboxSiUnWorktreeEstSale et
-// consorts) : sans cette neutralisation, sous GIT_DIR + GIT_WORK_TREE
-// désignant un dépôt tiers, mesuré, un `go test ./internal/cli/ -run TestRm` a
-// réellement ajouté un commit dans CE dépôt au lieu de son t.TempDir().
+// `den rm` runs REAL git (TestRmDoesNotDestroyTheSandboxWhenAWorktreeIsDirty
+// and friends): without this neutralization, under a GIT_DIR + GIT_WORK_TREE
+// pointing at a third-party repo, `go test ./internal/cli/ -run TestRm` has
+// actually added a commit to THAT repo instead of its t.TempDir().
 func TestMain(m *testing.M) {
-	worktree.NeutraliseEnvironnementGit()
+	worktree.NeutralizeGitEnvironment()
 	os.Exit(m.Run())
 }

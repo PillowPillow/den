@@ -8,56 +8,56 @@ import (
 	"github.com/PillowPillow/den/internal/nest"
 )
 
-// L'exemple livré dans examples/den-home doit charger et valider sans erreur :
-// c'est le point de départ que l'utilisateur recopie dans ~/.den.
-func TestExempleDenHomeEstValide(t *testing.T) {
-	// Resolve exige un denHome absolu (les chemins dérivés partent vers `git
-	// worktree` et `sbx create`) : filepath.Abs plutôt qu'un Join relatif.
+// The example shipped in examples/den-home must load and validate without
+// error: it's the starting point users copy into ~/.den.
+func TestExampleDenHomeIsValid(t *testing.T) {
+	// Resolve requires an absolute denHome (derived paths go to `git worktree`
+	// and `sbx create`): filepath.Abs rather than a relative Join.
 	home, err := filepath.Abs(filepath.Join("..", "..", "examples", "den-home"))
 	if err != nil {
-		t.Fatalf("résolution du chemin de l'exemple : %v", err)
+		t.Fatalf("resolving the example's path: %v", err)
 	}
 
 	g, err := config.LoadGlobal(home)
 	if err != nil {
-		t.Fatalf("chargement de l'exemple : %v", err)
+		t.Fatalf("loading the example: %v", err)
 	}
 	if errs := g.Validate(); len(errs) != 0 {
-		t.Fatalf("l'exemple ne valide pas : %v", errs)
+		t.Fatalf("the example does not validate: %v", errs)
 	}
 
 	stacks, err := config.LoadStacks(home)
 	if err != nil {
-		t.Fatalf("chargement des stacks de l'exemple : %v", err)
+		t.Fatalf("loading the example's stacks: %v", err)
 	}
-	// L'exemple livré doit être irréprochable : aucune stack cassée, et la stack
-	// par défaut résolue par la source unique du verdict.
-	if len(stacks.Cassees) != 0 {
-		t.Fatalf("l'exemple livré doit être irréprochable, %d stack(s) cassée(s) : %+v",
-			len(stacks.Cassees), stacks.Cassees)
+	// The shipped example must be flawless: no broken stack, and the default
+	// stack resolves through the sole source of truth.
+	if len(stacks.Broken) != 0 {
+		t.Fatalf("the shipped example must be flawless, %d broken stack(s): %+v",
+			len(stacks.Broken), stacks.Broken)
 	}
 	if _, err := stacks.Get(g.Defaults.Stack); err != nil {
-		t.Errorf("defaults.stack = %q absent des stacks de l'exemple : %v", g.Defaults.Stack, err)
+		t.Errorf("defaults.stack = %q missing from the example's stacks: %v", g.Defaults.Stack, err)
 	}
 
-	nests, casses, err := nest.ListNests(home)
+	nests, broken, err := nest.ListNests(home)
 	if err != nil {
-		t.Fatalf("chargement des nests de l'exemple : %v", err)
+		t.Fatalf("loading the example's nests: %v", err)
 	}
-	if len(casses) != 0 {
-		var noms []string
-		for _, c := range casses {
-			noms = append(noms, c.Nom)
+	if len(broken) != 0 {
+		var names []string
+		for _, c := range broken {
+			names = append(names, c.Name)
 		}
-		t.Fatalf("l'exemple livré doit être irréprochable, %d nest(s) cassé(s) : %v (détail : %+v)",
-			len(casses), noms, casses)
+		t.Fatalf("the shipped example must be flawless, %d broken nest(s): %v (detail: %+v)",
+			len(broken), names, broken)
 	}
 	if len(nests) == 0 {
-		t.Fatal("l'exemple ne déclare aucun nest")
+		t.Fatal("the example declares no nest")
 	}
 	for _, n := range nests {
 		if _, err := nest.Resolve(home, g, stacks, n, nest.Options{}); err != nil {
-			t.Errorf("nest %q de l'exemple ne se résout pas : %v", n.Name, err)
+			t.Errorf("nest %q from the example does not resolve: %v", n.Name, err)
 		}
 	}
 }

@@ -7,22 +7,12 @@ import (
 	"testing"
 )
 
-// denHomeDeTest fabrique un ~/.den complet et pointe DEN_HOME dessus.
-func denHomeDeTest(t *testing.T) string {
+// testDenHome builds a complete ~/.den and points DEN_HOME at it.
+func testDenHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 
-	ecris := func(rel, contenu string) {
-		p := filepath.Join(dir, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(contenu), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	ecris("config.yaml", `
+	writeUnder(t, dir, "config.yaml", `
 agents:
   claude:
     config_dir: /tmp/den-agents/claude
@@ -35,10 +25,10 @@ defaults:
 egress:
   - api.anthropic.com
 `)
-	ecris("stacks/devx/stack.yaml", "image: devx:v1\n")
-	ecris("stacks/dgdevx/stack.yaml", "image: dgdevx:v1\nparent: devx\negress: [gitlab.digitaleo.com]\n")
-	ecris("nests/api.yaml", "stack: devx\nrepos:\n  - { path: /dev/api }\n")
-	ecris("nests/fullstack.yaml", `
+	writeUnder(t, dir, "stacks/devx/stack.yaml", "image: devx:v1\n")
+	writeUnder(t, dir, "stacks/dgdevx/stack.yaml", "image: dgdevx:v1\nparent: devx\negress: [gitlab.digitaleo.com]\n")
+	writeUnder(t, dir, "nests/api.yaml", "stack: devx\nrepos:\n  - { path: /dev/api }\n")
+	writeUnder(t, dir, "nests/fullstack.yaml", `
 stack: dgdevx
 egress: ["10.22.11.54:27017"]
 repos:
@@ -50,187 +40,186 @@ repos:
 	return dir
 }
 
-func TestNestLsListeLesNests(t *testing.T) {
-	denHomeDeTest(t)
+func TestNestLsListsNests(t *testing.T) {
+	testDenHome(t)
 	out, err := run(t, "nest", "ls")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, attendu := range []string{"api", "fullstack", "devx", "dgdevx"} {
-		if !strings.Contains(out, attendu) {
-			t.Errorf("sortie = %q, attendu contenant %q", out, attendu)
+	for _, expected := range []string{"api", "fullstack", "devx", "dgdevx"} {
+		if !strings.Contains(out, expected) {
+			t.Errorf("output = %q, expected containing %q", out, expected)
 		}
 	}
-	// tri : api avant fullstack
+	// sorted: api before fullstack
 	if strings.Index(out, "api") > strings.Index(out, "fullstack") {
-		t.Errorf("sortie non triée : %q", out)
+		t.Errorf("output not sorted: %q", out)
 	}
 }
 
-// `den nest ls` affiche les nests sains ET signale les cassés nommément, mais
-// retourne quand même une erreur (code de sortie non nul) : la liste est
-// consultable, mais il reste quelque chose à réparer.
-func TestNestLsSignaleLesCassesEtRetourneUneErreur(t *testing.T) {
-	dir := denHomeAvecNest(t, "api")
-	if err := os.WriteFile(filepath.Join(dir, "nests", "casse.yaml"), []byte("egres: [x]\n"), 0o644); err != nil {
+// `den nest ls` prints the healthy nests AND reports the broken ones by name,
+// but still returns an error (non-zero exit code): the list is browsable, but
+// something is still left to fix.
+func TestNestLsReportsBrokenOnesAndReturnsAnError(t *testing.T) {
+	dir := testDenHomeWithNest(t, "api")
+	if err := os.WriteFile(filepath.Join(dir, "nests", "broken.yaml"), []byte("egres: [x]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	out, err := run(t, "nest", "ls", "--den-home", dir)
 	if err == nil {
-		t.Fatal("attendu une erreur : un nest est cassé")
+		t.Fatal("expected an error: a nest is broken")
 	}
 	if !strings.Contains(out, "api") {
-		t.Errorf("le nest sain doit rester listé ; obtenu :\n%s", out)
+		t.Errorf("the healthy nest must stay listed; got:\n%s", out)
 	}
-	// Chaîne exacte, pas juste "casse" : LoadNest nomme déjà le fichier dans
-	// son erreur de décodage, ce qui rendrait Contains(out, "casse") vrai même
-	// si `den nest ls` omettait c.Nom.
-	if !strings.Contains(out, "! casse :") {
-		t.Errorf("le nest cassé doit être signalé nommément ; obtenu :\n%s", out)
+	// Exact string, not just "broken": LoadNest already names the file in its
+	// decode error, which would make Contains(out, "broken") true even if
+	// `den nest ls` omitted bn.Name.
+	if !strings.Contains(out, "! broken:") {
+		t.Errorf("the broken nest must be reported by name; got:\n%s", out)
 	}
 }
 
-// Un ~/.den/nests ne contenant QUE des nests cassés ne doit pas afficher
-// « aucun nest déclaré » : l'utilisateur a des nests, ils sont juste tous
-// illisibles — un message d'absence serait un mensonge doublé d'un faux
-// succès (code de sortie 0 alors qu'il y a quelque chose à réparer).
-func TestNestLsNAffichePasAucunNestDeclareSiTousCasses(t *testing.T) {
+// A ~/.den/nests holding ONLY broken nests must not print "no nest declared":
+// the user has nests, they are just all unreadable — an absence message would
+// be a lie on top of a false success (exit code 0 while there is something to
+// fix).
+func TestNestLsDoesNotPrintNoNestDeclaredWhenAllAreBroken(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "nests"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "nests", "casse.yaml"), []byte("egres: [x]\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "nests", "broken.yaml"), []byte("egres: [x]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	out, err := run(t, "nest", "ls", "--den-home", dir)
 	if err == nil {
-		t.Fatal("attendu une erreur : le seul nest présent est cassé")
+		t.Fatal("expected an error: the only nest present is broken")
 	}
-	if strings.Contains(out, "aucun nest déclaré") {
-		t.Errorf("un nest cassé n'est pas une absence de nest ; obtenu :\n%s", out)
+	if strings.Contains(out, "no nest declared") {
+		t.Errorf("a broken nest is not an absence of nest; got:\n%s", out)
 	}
 }
 
-func TestNestShowAfficheLaResolution(t *testing.T) {
-	denHomeDeTest(t)
+func TestNestShowPrintsTheResolution(t *testing.T) {
+	testDenHome(t)
 	out, err := run(t, "nest", "show", "fullstack")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	attendus := []string{
+	expected := []string{
 		"fullstack",
-		"dgdevx:v1",              // image de la stack
-		"claude",                 // agent résolu
-		"/tmp/den-agents/claude", // config_dir résolu
-		"10.22.11.54:27017",      // egress du nest
-		"api.anthropic.com",      // egress baseline
-		"gitlab.digitaleo.com",   // egress de la stack
-		"/dev/front",             // repo optionnel listé
+		"dgdevx:v1",              // stack's image
+		"claude",                 // resolved agent
+		"/tmp/den-agents/claude", // resolved config_dir
+		"10.22.11.54:27017",      // nest's egress
+		"api.anthropic.com",      // baseline egress
+		"gitlab.digitaleo.com",   // stack's egress
+		"/dev/front",             // optional repo listed
 	}
-	for _, a := range attendus {
-		if !strings.Contains(out, a) {
-			t.Errorf("sortie = %q, attendu contenant %q", out, a)
+	for _, e := range expected {
+		if !strings.Contains(out, e) {
+			t.Errorf("output = %q, expected containing %q", out, e)
 		}
 	}
 }
 
-func TestNestShowNestInconnu(t *testing.T) {
-	denHomeDeTest(t)
-	if _, err := run(t, "nest", "show", "fantome"); err == nil {
-		t.Fatal("attendu une erreur pour un nest inconnu")
+func TestNestShowUnknownNest(t *testing.T) {
+	testDenHome(t)
+	if _, err := run(t, "nest", "show", "ghost"); err == nil {
+		t.Fatal("expected an error for an unknown nest")
 	}
 }
 
-func TestNestShowAfficheLEnvSubstitue(t *testing.T) {
-	denHomeDeTest(t)
+func TestNestShowPrintsSubstitutedEnv(t *testing.T) {
+	testDenHome(t)
 	out, err := run(t, "nest", "show", "api")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out, "CLAUDE_CONFIG_DIR=/tmp/den-agents/claude") {
-		t.Errorf("l'env affiché doit être substitué ; obtenu :\n%s", out)
+		t.Errorf("the printed env must be substituted; got:\n%s", out)
 	}
 	if strings.Contains(out, "{config_dir}") {
-		t.Errorf("le jeton {config_dir} ne doit jamais s'afficher ; obtenu :\n%s", out)
+		t.Errorf("the {config_dir} token must never be printed; got:\n%s", out)
 	}
 }
 
-func TestNestShowRespecteLesFlagsDeSelection(t *testing.T) {
-	denHomeDeTest(t)
+func TestNestShowRespectsSelectionFlags(t *testing.T) {
+	testDenHome(t)
 	out, err := run(t, "nest", "show", "fullstack", "--without", "front")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if strings.Contains(out, "/dev/front") {
-		t.Errorf("le repo exclu apparaît encore : %q", out)
+		t.Errorf("the excluded repo still appears: %q", out)
 	}
 	if !strings.Contains(out, "/dev/api") {
-		t.Errorf("le repo requis a disparu : %q", out)
+		t.Errorf("the required repo disappeared: %q", out)
 	}
 }
 
-// M-1 — un nest qui porte le nom d'une sous-commande est listé par `den nest ls`
-// et résolu par `den nest show`, mais `den <nom>` lancera TOUJOURS la
-// sous-commande : il n'est jamais spawnable. C'est le défaut trouvé en T3 avec
-// `-api` — den nomme un objet qu'il refuse ensuite d'adresser — et la
-// contrepartie exacte de la suggestion de D1, qui ne le tient que dans l'autre
-// sens.
+// M-1 — a nest carrying a subcommand's name is listed by `den nest ls` and
+// resolved by `den nest show`, but `den <name>` will ALWAYS run the
+// subcommand: it is never spawnable. This is the defect found in T3 with
+// `-api` — den names an object it then refuses to address — and exactly the
+// counterpart of D1's suggestion, which only holds in the other direction.
 //
-// L'avertissement part sur STDERR : la liste doit rester tuyautable sans qu'un
-// avertissement s'y glisse, et c'est exactement ce qu'executeCmd (qui fusionne
-// les deux flux) ne peut pas distinguer.
-func TestNestLsAvertitDesNestsMasquesParUneSousCommande(t *testing.T) {
+// The warning goes on STDERR: the list must stay pipeable without a warning
+// slipping in, and that is exactly what executeCmd (which merges both
+// streams) cannot distinguish.
+func TestNestLsWarnsAboutNestsShadowedByASubcommand(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "nests"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, nom := range []string{"api", "ls", "version"} {
-		if err := os.WriteFile(filepath.Join(dir, "nests", nom+".yaml"),
+	for _, name := range []string{"api", "ls", "version"} {
+		if err := os.WriteFile(filepath.Join(dir, "nests", name+".yaml"),
 			[]byte("stack: devx\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	stdout, stderr, err := executeCmdFluxSepares(t, NewRootCmd(), "nest", "ls", "--den-home", dir)
+	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmd(), "nest", "ls", "--den-home", dir)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	// La liste elle-même ne change pas : les nests masqués EXISTENT.
-	for _, nom := range []string{"api", "ls", "version"} {
-		if !strings.Contains(stdout, nom) {
-			t.Errorf("le nest %q doit rester listé ; stdout = %q", nom, stdout)
+	// The list itself does not change: the shadowed nests EXIST.
+	for _, name := range []string{"api", "ls", "version"} {
+		if !strings.Contains(stdout, name) {
+			t.Errorf("nest %q must stay listed; stdout = %q", name, stdout)
 		}
 	}
-	for _, masque := range []string{"ls", "version"} {
-		if !strings.Contains(stderr, masque) {
-			t.Errorf("le nest masqué %q doit être signalé ; stderr = %q", masque, stderr)
+	for _, shadowed := range []string{"ls", "version"} {
+		if !strings.Contains(stderr, shadowed) {
+			t.Errorf("shadowed nest %q must be reported; stderr = %q", shadowed, stderr)
 		}
 	}
-	// Et surtout PAS de faux positif : « api » n'est masqué par rien.
+	// And especially no false positive: "api" is shadowed by nothing.
 	if strings.Contains(stderr, "api") {
-		t.Errorf("« api » n'est masqué par aucune sous-commande ; stderr = %q", stderr)
+		t.Errorf("\"api\" is shadowed by no subcommand; stderr = %q", stderr)
 	}
-	// L'avertissement ne doit pas polluer la sortie tuyautable.
-	if strings.Contains(stdout, "masqué") || strings.Contains(stdout, "avertissement") {
-		t.Errorf("l'avertissement doit partir sur stderr, pas sur stdout ; stdout = %q", stdout)
+	// The warning must not pollute the pipeable output.
+	if strings.Contains(stdout, "shadowed") || strings.Contains(stdout, "warning") {
+		t.Errorf("the warning must go on stderr, not stdout; stdout = %q", stdout)
 	}
 }
 
-// Sans nest masqué, stderr doit rester VIDE : un avertissement permanent est un
-// avertissement qu'on n'écoute plus.
-func TestNestLsNAvertitDeRienSansCollision(t *testing.T) {
-	dir := denHomeAvecNest(t, "api")
+// Without a shadowed nest, stderr must stay EMPTY: a permanent warning is a
+// warning nobody reads anymore.
+func TestNestLsWarnsAboutNothingWithoutACollision(t *testing.T) {
+	dir := testDenHomeWithNest(t, "api")
 
-	stdout, stderr, err := executeCmdFluxSepares(t, NewRootCmd(), "nest", "ls", "--den-home", dir)
+	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmd(), "nest", "ls", "--den-home", dir)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(stdout, "api") {
-		t.Errorf("stdout = %q, attendu le nest listé", stdout)
+		t.Errorf("stdout = %q, expected the nest listed", stdout)
 	}
 	if stderr != "" {
-		t.Errorf("stderr = %q, attendu vide : aucun nest n'est masqué", stderr)
+		t.Errorf("stderr = %q, expected empty: no nest is shadowed", stderr)
 	}
 }

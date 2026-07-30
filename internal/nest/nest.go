@@ -1,5 +1,5 @@
-// Package nest charge les nests (objets spawnables) et calcule les dérivations
-// pures qui en découlent : sélection de repos, union d'egress, résolution d'agent.
+// Package nest loads nests (spawnable objects) and computes the pure
+// derivations that follow: repo selection, egress union, agent resolution.
 package nest
 
 import (
@@ -8,22 +8,22 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
 )
 
-// Repo est un dépôt co-monté dans la sandbox.
+// Repo is a repository co-mounted in the sandbox.
 type Repo struct {
 	Path     string `yaml:"path"`
 	Optional bool   `yaml:"optional"`
 }
 
-// Name est le nom court du repo (basename), utilisé par --without/--only.
+// Name is the repo's short name (basename), used by --without/--only.
 func (r Repo) Name() string { return filepath.Base(r.Path) }
 
-// PortDecl est un port déclaré par le nest (spec §8).
+// PortDecl is a port declared by the nest (spec §8).
 type PortDecl struct {
 	Name         string `yaml:"name"`
 	Container    int    `yaml:"container"`
@@ -31,171 +31,170 @@ type PortDecl struct {
 	LoopbackLock bool   `yaml:"loopback_lock"`
 }
 
-// Ports porte la fenêtre déclarée. Base == 0 => dérivée du hash du nom (plan Ports).
+// Ports carries the declared port window. Base is declarative only: den does
+// not derive it from anything, it is read as-is (`den nest ls` display).
 type Ports struct {
 	Base    int        `yaml:"base"`
 	Publish []PortDecl `yaml:"publish"`
 }
 
-// Nest est un objet spawnable (spec §4.3).
+// Nest is a spawnable object (spec §4.3).
 type Nest struct {
-	// Name vient du basename du fichier, JAMAIS du contenu : un objet a une
-	// seule identité, non falsifiable (spec §2).
+	// Name comes from the file's basename, NEVER from its content: an object
+	// has a single, non-forgeable identity (spec §2).
 	Name   string            `yaml:"-"`
 	Stack  string            `yaml:"stack"`
 	Env    map[string]string `yaml:"env"`
 	Egress []string          `yaml:"egress"`
 	Repos  []Repo            `yaml:"repos"`
 	Ports  Ports             `yaml:"ports"`
-	Agents map[string]string `yaml:"agents"` // override du config_dir par agent
+	Agents map[string]string `yaml:"agents"` // per-agent config_dir override
 }
 
-// ErreurNestIntrouvable signale le seul échec de LoadNest qui veut dire « cet
-// objet n'existe pas » : le fichier de nest est ABSENT. Type exporté, et pas
-// simple message, parce que la CLI doit distinguer ce cas des autres pour
-// décider si elle propose une sous-commande proche (`den doctr` ⇒ `den doctor`).
+// NestNotFoundError reports the one LoadNest failure that means "this object
+// does not exist": the nest file is ABSENT. Exported as a type, not a plain
+// message, because the CLI must distinguish this case from others to decide
+// whether to suggest a close subcommand (`den doctr` => `den doctor`).
 //
-// La discrimination porte sur fs.ErrNotExist et sur rien d'autre : un fichier
-// présent mais illisible (droits, EISDIR) est un nest qui EXISTE, et suggérer
-// une commande à sa place enverrait l'utilisateur sur une fausse piste alors
-// qu'il a juste un problème de permissions.
-//
-// Le message est identique, au caractère près, à celui de l'échec de lecture
-// générique : ce type change ce que le code peut INSPECTER, pas ce que
-// l'utilisateur lit.
-type ErreurNestIntrouvable struct {
-	Nom    string
-	Chemin string
-	Err    error
+// The discrimination is on fs.ErrNotExist alone: a file that is present but
+// unreadable (permissions, EISDIR) is a nest that EXISTS, and suggesting a
+// command in its place would send the user down the wrong path when they
+// actually have a permissions problem.
+type NestNotFoundError struct {
+	Name string
+	Path string
+	Err  error
 }
 
-func (e *ErreurNestIntrouvable) Error() string {
-	// Le MOTIF seul : e.Err est un *fs.PathError, qui porte déjà le chemin que
-	// cette ligne vient de nommer — et dont le texte est en anglais. Err reste
-	// l'erreur d'origine INTACTE, c'est Unwrap qui la rend.
-	return fmt.Sprintf("nest %q : lecture de %s : %v", e.Nom, e.Chemin, &config.ErreurFichier{Err: e.Err})
+func (e *NestNotFoundError) Error() string {
+	return fmt.Sprintf("nest %q: reading %s: %v", e.Name, e.Path, &config.FileError{Err: e.Err})
 }
 
-func (e *ErreurNestIntrouvable) Unwrap() error { return e.Err }
+func (e *NestNotFoundError) Unwrap() error { return e.Err }
 
-// LoadNest lit <denHome>/nests/<name>.yaml.
+// FilePath is the SOLE definition of where a nest's file lives:
+// <denHome>/nests/<name>.yaml. LoadNest is the only reader; any other
+// caller that needs to NAME the file (to tell the user what to fix) must
+// go through this too, or the two could silently diverge if the layout
+// ever moved.
+func FilePath(denHome, name string) string {
+	return filepath.Join(denHome, "nests", name+".yaml")
+}
+
+// LoadNest reads <denHome>/nests/<name>.yaml.
 func LoadNest(denHome, name string) (*Nest, error) {
-	// ValiderNom AVANT ValiderComposantSandbox, dans cet ordre précis : les deux
-	// se recouvrent (le charset sandbox rejette déjà "/", "." et ".."), mais
-	// ValiderNom rend un message qui nomme l'INTENTION (« c'est un identifiant
-	// dans ~/.den, pas un chemin ») pour ../../etc/passwd. Inverser l'ordre
-	// ferait remonter « le caractère "/" est interdit », vrai mais qui manque
-	// le vrai problème : une tentative de sortir du den home.
-	if err := config.ValiderNom("nest", name); err != nil {
+	// ValidateName BEFORE ValidateSandboxComponent, in this exact order: the
+	// two overlap (the sandbox charset already rejects "/", "." and ".."), but
+	// ValidateName names the INTENT ("this is an identifier in ~/.den, not a
+	// path") for ../../etc/passwd. Swapping the order would surface "the
+	// character '/' is forbidden" instead — true, but missing the real issue:
+	// an attempt to escape the den home.
+	if err := config.ValidateName("nest", name); err != nil {
 		return nil, err
 	}
-	// Le nom d'un nest devient un nom de sandbox (sbx n'a pas de --label) : le
-	// refuser ici plutôt qu'au spawn fait remonter le problème dès `den nest ls`.
-	if err := config.ValiderComposantSandbox("nest", name); err != nil {
+	// A nest's name becomes a sandbox name (sbx has no --label): reject it
+	// here rather than at spawn time so the problem surfaces as early as
+	// `den nest ls`.
+	if err := config.ValidateSandboxComponent("nest", name); err != nil {
 		return nil, err
 	}
-	chemin := filepath.Join(denHome, "nests", name+".yaml")
+	path := FilePath(denHome, name)
 
-	brut, err := os.ReadFile(chemin)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		// ErreurFichier des DEUX côtés : le *fs.PathError de l'OS répète le
-		// chemin qu'on vient de nommer, et son motif est en anglais. Le %w reste
-		// (fs.ErrNotExist doit rester repérable), et ErreurNestIntrouvable garde
-		// dans Err l'erreur d'origine complète — c'est le MESSAGE qui change,
-		// pas ce que le code peut inspecter.
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, &ErreurNestIntrouvable{Nom: name, Chemin: chemin, Err: err}
+			return nil, &NestNotFoundError{Name: name, Path: path, Err: err}
 		}
-		return nil, fmt.Errorf("nest %q : lecture de %s : %w", name, chemin, &config.ErreurFichier{Err: err})
+		return nil, fmt.Errorf("nest %q: reading %s: %w", name, path, &config.FileError{Err: err})
 	}
 
 	var n Nest
-	if err := config.DecodeYAMLStrict(chemin, brut, &n); err != nil {
+	if err := config.DecodeYAMLStrict(path, raw, &n); err != nil {
 		return nil, err
 	}
 
-	n.Name = name // le nom de fichier fait foi, sans condition
+	n.Name = name // the filename is authoritative, unconditionally
 	for i, r := range n.Repos {
 		if n.Repos[i].Path, err = config.ExpandPath(r.Path); err != nil {
-			return nil, fmt.Errorf("nest %q, repo %q : %w", n.Name, r.Path, err)
+			return nil, fmt.Errorf("nest %q, repo %q: %w", n.Name, r.Path, err)
 		}
 	}
-	// Après expansion : deux chemins écrits différemment peuvent converger.
-	if err := verifieNomsUniques(n.Repos); err != nil {
-		return nil, fmt.Errorf("nest %q : %w", n.Name, err)
+	// After expansion: two differently-written paths can converge.
+	if err := checkUniqueNames(n.Repos); err != nil {
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
 	for agent, dir := range n.Agents {
-		expanse, err := config.ExpandPath(dir)
+		expanded, err := config.ExpandPath(dir)
 		if err != nil {
-			return nil, fmt.Errorf("nest %q, agent %q : %w", n.Name, agent, err)
+			return nil, fmt.Errorf("nest %q, agent %q: %w", n.Name, agent, err)
 		}
-		n.Agents[agent] = expanse
+		n.Agents[agent] = expanded
 	}
 	return &n, nil
 }
 
-// NestCasse est un nest présent sur disque mais non chargeable.
-type NestCasse struct {
-	Nom string
-	Err error
+// BrokenNest is a nest present on disk but not loadable.
+type BrokenNest struct {
+	Name string
+	Err  error
 }
 
-// ListNests charge tous les nests déclarés, triés par nom.
+// ListNests loads all declared nests, sorted by name.
 //
-// Un nest illisible ne masque PAS les autres : il est renvoyé à part. Le
-// décodage strict rend un simple `egres:` fatal au chargement, et faire
-// disparaître toute la liste pour une faute de frappe dans un fichier laisserait
-// l'utilisateur sans le moyen de voir lequel — `den nest ls` et `den doctor`
-// sont précisément les outils censés le lui dire.
+// An unreadable nest does NOT hide the others: it is reported separately.
+// Strict decoding makes a typo like `egres:` fatal to loading, and letting
+// that hide the entire list would leave the user with no way to see which
+// file is at fault — which is exactly what `den nest ls` and `den doctor`
+// exist to tell them.
 //
-// L'erreur renvoyée est réservée aux échecs STRUCTURELS (dossier nests/
-// illisible) : là, il n'y a rien à lister du tout.
-func ListNests(denHome string) ([]*Nest, []NestCasse, error) {
-	racine := filepath.Join(denHome, "nests")
-	entrees, err := os.ReadDir(racine)
+// The returned error is reserved for STRUCTURAL failures (an unreadable
+// nests/ directory): in that case there is nothing to list at all.
+func ListNests(denHome string) ([]*Nest, []BrokenNest, error) {
+	root := filepath.Join(denHome, "nests")
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil, nil
 		}
-		return nil, nil, fmt.Errorf("lecture de %s : %w", racine, &config.ErreurFichier{Err: err})
+		return nil, nil, fmt.Errorf("reading %s: %w", root, &config.FileError{Err: err})
 	}
 
-	// candidat porte à la fois le nom tronqué (l'identité, utilisée pour le
-	// tri et pour LoadNest) et le nom de fichier complet (repli d'affichage
-	// pour un fichier ".yaml" dont le nom tronqué est vide, voir plus bas).
-	type candidat struct{ nom, fichier string }
-	var candidats []candidat
-	for _, e := range entrees {
+	// candidate carries both the truncated name (the identity, used for
+	// sorting and for LoadNest) and the full filename (a display fallback for
+	// a ".yaml" file whose truncated name is empty, see below).
+	type candidate struct{ name, file string }
+	var candidates []candidate
+	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
-		candidats = append(candidats, candidat{
-			nom:     strings.TrimSuffix(e.Name(), ".yaml"),
-			fichier: e.Name(),
+		candidates = append(candidates, candidate{
+			name: strings.TrimSuffix(e.Name(), ".yaml"),
+			file: e.Name(),
 		})
 	}
-	// Trier par nom tronqué, PAS par nom de fichier : ils divergent dès que
-	// deux noms partagent un préfixe ('-' précède '.' en ASCII), voir
-	// TestListNestsTriDivergeDeLOrdreFichier.
-	sort.Slice(candidats, func(i, j int) bool { return candidats[i].nom < candidats[j].nom })
+	// Sort by truncated name, NOT by filename: they diverge as soon as two
+	// names share a prefix ('-' precedes '.' in ASCII), see
+	// TestListNestsSortDivergesFromFileOrder.
+	slices.SortFunc(candidates, func(a, b candidate) int { return strings.Compare(a.name, b.name) })
 
-	nests := make([]*Nest, 0, len(candidats))
-	var casses []NestCasse
-	for _, c := range candidats {
-		n, err := LoadNest(denHome, c.nom)
+	nests := make([]*Nest, 0, len(candidates))
+	var broken []BrokenNest
+	for _, c := range candidates {
+		n, err := LoadNest(denHome, c.name)
 		if err != nil {
-			nomAffiche := c.nom
-			if nomAffiche == "" {
-				// Fichier littéralement nommé ".yaml" : le nom tronqué est
-				// vide. Retomber sur le nom de fichier complet pour que
-				// l'avertissement nomme quelque chose — sinon l'utilisateur
-				// n'a aucun moyen de savoir quel fichier supprimer.
-				nomAffiche = c.fichier
+			displayName := c.name
+			if displayName == "" {
+				// A file literally named ".yaml": the truncated name is
+				// empty. Fall back to the full filename so the warning
+				// names something — otherwise the user has no way to know
+				// which file to remove.
+				displayName = c.file
 			}
-			casses = append(casses, NestCasse{Nom: nomAffiche, Err: err})
+			broken = append(broken, BrokenNest{Name: displayName, Err: err})
 			continue
 		}
 		nests = append(nests, n)
 	}
-	return nests, casses, nil
+	return nests, broken, nil
 }

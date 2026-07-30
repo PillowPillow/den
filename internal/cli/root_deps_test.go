@@ -1,40 +1,39 @@
 package cli
 
-// La porte d'injection ajoutée au fix I2 (Git et Policy fournis par
-// l'appelant, pas câblés en dur dans NewRootCmdAvec) n'était verrouillée par
-// AUCUN test au premier fix round : remplacer, dans NewRootCmdAvec,
+// The injection door added by fix I2 (Git and Policy supplied by the caller,
+// not hard-wired into NewRootCmdWith) was locked by NO test at the first fix
+// round: replacing, in NewRootCmdWith,
 //
 //	spawnDeps := deps.Spawn
 //
-// par
+// with
 //
-//	spawnDeps := spawn.DepsSysteme()
+//	spawnDeps := spawn.SystemDeps()
 //
-// laissait toute la suite verte — l'injectabilité était réelle mais rien
-// n'empêchait de la retirer au prochain refactor. Ces deux tests
-// verrouillent respectivement Git et Policy en prouvant, par une erreur
-// reconnaissable SEULEMENT possible si l'accès injecté a servi, qu'ils
-// atteignent bien le spawn quand on passe par NewRootCmdAvec.
+// left the whole suite green — injectability was real but nothing stopped a
+// future refactor from removing it. These two tests lock Git and Policy
+// respectively, by proving, through an error recognizable ONLY IF the
+// injected access was used, that they do reach the spawn when going through
+// NewRootCmdWith.
 //
-// Un second fix round a montré que la même question se posait pour Sbx :
-// tant que cli.Deps embarquait une spawn.Deps entière (avec son propre champ
-// Sbx), NewRootCmdAvec devait ÉCRASER spawnDeps.Sbx = deps.Sbx pour que
-// `den ls` et le spawn restent d'accord — une ligne qu'un refactor pouvait
-// retirer sans qu'aucun test ne le remarque (mesuré). Deps a été restructurée
-// pour ne plus porter qu'un seul Sbx (voir root.go) : la divergence est
-// maintenant impossible plutôt que seulement testée.
-// TestNewRootCmdAvecUnSeulSbxPartageEntreLsEtSpawn reste néanmoins utile : il
-// verrouille que cette structure à Sbx unique est bien celle assemblée par
-// NewRootCmdAvec, pas contournée par un futur câblage qui réintroduirait un
-// second sbx.Runner du côté spawn (sbx.NewExec("") en dur, par exemple).
+// A second fix round showed the same question applied to Sbx: as long as
+// cli.Deps embedded a whole spawn.Deps (with its own Sbx field),
+// NewRootCmdWith had to OVERWRITE spawnDeps.Sbx = deps.Sbx for `den ls` and
+// the spawn to agree — a line a refactor could remove unnoticed by any test
+// (measured). Deps was restructured to carry a single Sbx (see root.go): the
+// divergence is now impossible rather than merely tested.
+// TestNewRootCmdWithSharesOneSbxBetweenLsAndSpawn stays useful nonetheless: it
+// locks that this single-Sbx structure is indeed the one NewRootCmdWith
+// assembles, not bypassed by a future wiring that reintroduced a second
+// sbx.Runner on the spawn side (a hardcoded sbx.NewExec(""), say).
 //
-// NOTE : `spawn.DepsSysteme()`, citée ci-dessus comme LA forme du refactor à
-// empêcher, N'EXISTE PLUS — elle était morte en production (mesuré :
-// `go build ./cmd/den` réussissait sans elle) et n'était plus qu'un
-// constructeur tout prêt pour ce câblage-là, avec une godoc qui l'encourageait.
-// Le paragraphe est gardé au passé parce qu'il documente ce que ces tests
-// verrouillent ; c'est maintenant `sbx.NewExec("")` écrit à la main qui est la
-// forme à surveiller.
+// NOTE: `spawn.SystemDeps()`, cited above as THE refactor shape to prevent,
+// NO LONGER EXISTS — it was dead in production (measured: `go build
+// ./cmd/den` succeeded without it) and was nothing more than a ready-made
+// constructor for exactly that wiring, with a godoc that encouraged it. The
+// paragraph is kept in the past tense because it documents what these tests
+// lock; it is now a handwritten `sbx.NewExec("")` that is the shape to watch
+// for.
 
 import (
 	"context"
@@ -48,124 +47,122 @@ import (
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
-// gitFactice est un double minimal de worktree.Git : il enregistre ses appels
-// et refuse SYSTÉMATIQUEMENT avec un message reconnaissable. Sa seule utilité
-// est de prouver, par cette signature d'erreur, qu'il a bien été sollicité —
-// et donc qu'aucun git réel n'a été atteint par ce chemin.
+// fakeGit is a minimal double of worktree.Git: it records its calls and
+// refuses SYSTEMATICALLY with a recognizable message. Its only purpose is to
+// prove, through that error signature, that it was indeed used — and
+// therefore that no real git was reached through this path.
 //
-// echeances enregistre en plus l'échéance du contexte de chaque appel, quand
-// il en porte une (rien n'est ajouté sinon) — den rm (rm_test.go) le
-// réutilise pour vérifier que les sondes git sont bornées, plutôt que de
-// dupliquer ce double.
-type gitFactice struct {
-	appels    [][]string
-	echeances []time.Time
+// deadlines additionally records each call's context deadline, when it
+// carries one (nothing is added otherwise) — den rm (rm_test.go) reuses it to
+// check that git probes are bounded, rather than duplicating this double.
+type fakeGit struct {
+	calls     [][]string
+	deadlines []time.Time
 }
 
-func (g *gitFactice) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	return g.RunAvecEntree(ctx, dir, nil, args...)
+func (g *fakeGit) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return g.RunWithInput(ctx, dir, nil, args...)
 }
 
-func (g *gitFactice) RunAvecEntree(ctx context.Context, _ string, _ []byte, args ...string) ([]byte, error) {
-	g.appels = append(g.appels, args)
+func (g *fakeGit) RunWithInput(ctx context.Context, _ string, _ []byte, args ...string) ([]byte, error) {
+	g.calls = append(g.calls, args)
 	if d, ok := ctx.Deadline(); ok {
-		g.echeances = append(g.echeances, d)
+		g.deadlines = append(g.deadlines, d)
 	}
-	return nil, fmt.Errorf("git factice : appel refusé pour %v", args)
+	return nil, fmt.Errorf("fake git: call refused for %v", args)
 }
 
-var _ worktree.Git = (*gitFactice)(nil)
+var _ worktree.Git = (*fakeGit)(nil)
 
-// TestNewRootCmdAvecPropageGit vérifie que deps.Git fourni à NewRootCmdAvec
-// est bien celui qui sert au spawn de bout en bout, pas un git recâblé en
-// interne.
-func TestNewRootCmdAvecPropageGit(t *testing.T) {
+// TestNewRootCmdWithPropagatesGit checks that deps.Git handed to
+// NewRootCmdWith is indeed the one the spawn uses end to end, not a git
+// rewired internally.
+func TestNewRootCmdWithPropagatesGit(t *testing.T) {
 	home := denHomeSpawnable(t)
-	_, spawnDeps := depsSpawnFactices()
-	git := &gitFactice{}
+	_, spawnDeps := fakeSpawnDeps()
+	git := &fakeGit{}
 
 	deps := Deps{
-		Doctor: doctor.DepsSysteme(),
+		Doctor: doctor.SystemDeps(),
 		Sbx:    spawnDeps.Sbx,
 		Git:    git,
 		Policy: spawnDeps.Policy,
 	}
-	root := NewRootCmdAvec(deps)
+	root := NewRootCmdWith(deps)
 
-	// -w déclenche worktree.Assure, seul point du spawn qui consulte Git.
+	// -w triggers worktree.Ensure, the spawn's only point that consults Git.
 	_, err := executeCmd(t, root, "--den-home", home, "api", "-w", "feat")
 	if err == nil {
-		t.Fatal("attendu une erreur : le Git factice refuse systématiquement")
+		t.Fatal("expected an error: the fake Git refuses systematically")
 	}
-	if !strings.Contains(err.Error(), "git factice") {
-		t.Errorf("l'erreur ne vient pas du Git INJECTÉ ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "fake git") {
+		t.Errorf("the error does not come from the INJECTED Git; got: %v", err)
 	}
-	if len(git.appels) == 0 {
-		t.Error("deps.Git n'a reçu aucun appel : l'injection n'atteint pas le spawn")
+	if len(git.calls) == 0 {
+		t.Error("deps.Git received no call: the injection does not reach the spawn")
 	}
 }
 
-// TestNewRootCmdAvecPropagePolicy vérifie que deps.Policy fourni à
-// NewRootCmdAvec est bien celui qui sert au settle-loop. policy.Options.valide
-// est vérifiée INCONDITIONNELLEMENT par Settle, même sans egress déclaré
-// (settle.go:134, avant le raccourci sur allowlist vide) : une Policy
-// délibérément invalide suffit donc à le prouver sans faire tourner la
-// boucle ni dépendre d'un `sbx policy check` scripté.
-func TestNewRootCmdAvecPropagePolicy(t *testing.T) {
+// TestNewRootCmdWithPropagatesPolicy checks that deps.Policy handed to
+// NewRootCmdWith is indeed the one that feeds the settle-loop.
+// policy.Options.validate is checked UNCONDITIONALLY by Settle, even without
+// a declared egress (settle.go:134, before the empty-allowlist shortcut): a
+// deliberately invalid Policy is therefore enough to prove it, without
+// running the loop or depending on a scripted `sbx policy check`.
+func TestNewRootCmdWithPropagatesPolicy(t *testing.T) {
 	home := denHomeSpawnable(t)
-	_, spawnDeps := depsSpawnFactices()
+	_, spawnDeps := fakeSpawnDeps()
 
 	deps := Deps{
-		Doctor: doctor.DepsSysteme(),
+		Doctor: doctor.SystemDeps(),
 		Sbx:    spawnDeps.Sbx,
 		Git:    spawnDeps.Git,
-		Policy: policy.Options{}, // Timeout=0 : rejetée par valide()
+		Policy: policy.Options{}, // Timeout=0: rejected by validate()
 	}
-	root := NewRootCmdAvec(deps)
+	root := NewRootCmdWith(deps)
 
 	_, err := executeCmd(t, root, "--den-home", home, "api", "--detach")
 	if err == nil {
-		t.Fatal("attendu une erreur : Policy délibérément invalide")
+		t.Fatal("expected an error: deliberately invalid Policy")
 	}
-	if !strings.Contains(err.Error(), "options de settle inutilisables") {
-		t.Errorf("l'erreur ne vient pas de la Policy INJECTÉE ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "unusable settle options") {
+		t.Errorf("the error does not come from the INJECTED Policy; got: %v", err)
 	}
 }
 
-// TestNewRootCmdAvecUnSeulSbxPartageEntreLsEtSpawn verrouille qu'il n'est pas
-// possible que `den ls` et le spawn parlent à deux sbx.Runner différents.
+// TestNewRootCmdWithSharesOneSbxBetweenLsAndSpawn locks that `den ls` and the
+// spawn can never talk to two different sbx.Runner instances.
 //
-// Le double est partagé (même *sbx.Fake) entre deux arbres de commandes
-// construits depuis LA MÊME Deps.Sbx : si configureSpawn recevait un autre
-// Runner que deps.Sbx (un sbx.NewExec("") recâblé en dur, par exemple), le
-// second appel n'atteindrait jamais ce Fake, et son compteur d'appels
-// n'augmenterait pas — ou pire, tenterait de joindre le vrai `sbx`, absent de
-// cette machine.
-func TestNewRootCmdAvecUnSeulSbxPartageEntreLsEtSpawn(t *testing.T) {
+// The double is shared (same *sbx.Fake) between two command trees built from
+// THE SAME Deps.Sbx: if configureSpawn received a different Runner than
+// deps.Sbx (a hardcoded sbx.NewExec(""), say), the second call would never
+// reach this Fake, and its call counter would not grow — or worse, it would
+// try to reach the real `sbx`, absent from this machine.
+func TestNewRootCmdWithSharesOneSbxBetweenLsAndSpawn(t *testing.T) {
 	home := denHomeSpawnable(t)
-	f, spawnDeps := depsSpawnFactices()
+	f, spawnDeps := fakeSpawnDeps()
 
 	deps := Deps{
-		Doctor: doctor.DepsSysteme(),
+		Doctor: doctor.SystemDeps(),
 		Sbx:    f,
 		Git:    spawnDeps.Git,
 		Policy: spawnDeps.Policy,
 	}
 
-	if _, err := executeCmd(t, NewRootCmdAvec(deps), "--den-home", home, "ls"); err != nil {
-		t.Fatalf("den ls : erreur inattendue : %v", err)
+	if _, err := executeCmd(t, NewRootCmdWith(deps), "--den-home", home, "ls"); err != nil {
+		t.Fatalf("den ls: unexpected error: %v", err)
 	}
-	appelsApresLs := len(f.Appels)
-	if appelsApresLs == 0 {
-		t.Fatal("den ls n'a fait aucun appel au Fake : rien à comparer")
+	callsAfterLs := len(f.Calls)
+	if callsAfterLs == 0 {
+		t.Fatal("den ls made no call to the Fake: nothing to compare")
 	}
 
-	if _, err := executeCmd(t, NewRootCmdAvec(deps), "--den-home", home, "api", "--detach"); err != nil {
-		t.Fatalf("den api --detach : erreur inattendue : %v", err)
+	if _, err := executeCmd(t, NewRootCmdWith(deps), "--den-home", home, "api", "--detach"); err != nil {
+		t.Fatalf("den api --detach: unexpected error: %v", err)
 	}
-	if len(f.Appels) <= appelsApresLs {
-		t.Errorf("le spawn n'a fait aucun nouvel appel au MÊME Fake que `den ls` "+
-			"(%d appels avant, %d après) : Sbx a divergé entre les deux chemins",
-			appelsApresLs, len(f.Appels))
+	if len(f.Calls) <= callsAfterLs {
+		t.Errorf("the spawn made no new call to the SAME Fake as `den ls` "+
+			"(%d calls before, %d after): Sbx diverged between the two paths",
+			callsAfterLs, len(f.Calls))
 	}
 }

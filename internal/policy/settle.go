@@ -1,5 +1,5 @@
-// Package policy attend que la policy réseau d'une sandbox soit effectivement
-// posée, avant que den n'y attache un shell.
+// Package policy waits for a sandbox's network policy to actually be in
+// place, before den attaches a shell to it.
 package policy
 
 import (
@@ -15,411 +15,416 @@ import (
 	"github.com/PillowPillow/den/internal/sbx"
 )
 
-// Options paramètre la boucle. Sommeil et Maintenant sont injectés pour que les
-// tests n'attendent pas réellement.
+// Options parametrizes the loop. Sleep and Now are injected so tests don't
+// actually wait.
 //
-// Aucun champ n'a de valeur par défaut implicite : des Options incomplètes sont
-// refusées par Settle, pas complétées en douce. Voir valide().
+// No field has an implicit default: incomplete Options are refused by
+// Settle, not silently completed. See validate().
 type Options struct {
-	Timeout    time.Duration
-	Intervalle time.Duration
+	Timeout  time.Duration
+	Interval time.Duration
 
-	// Sommeil doit faire progresser Maintenant d'environ Intervalle : c'est le
-	// couple, et non chaque champ pris isolément, qui fait avancer la boucle.
-	// Un Sommeil sans effet posé à côté d'une horloge réelle est le piège
-	// classique — la boucle n'atteint alors jamais sa limite et sort par la
-	// borne en tours.
-	Sommeil func(time.Duration)
+	// Sleep must advance Now by roughly Interval: it's the PAIR, not either
+	// field alone, that makes the loop progress. A no-op Sleep next to a real
+	// clock is the classic trap — the loop never reaches its bound and exits
+	// via the round-count guard instead.
+	Sleep func(time.Duration)
 
-	// Maintenant est supposée MONOTONE non décroissante. C'est une hypothèse,
-	// pas une propriété vérifiée : Settle ne s'en défend pas. Une horloge qui
-	// recule ou qui bondit entre deux appels ne casse pas la boucle (la borne
-	// en tours tient dans tous les cas), mais rend faux le diagnostic qu'elle
-	// produit — il est établi à partir de l'avancée constatée entre le premier
-	// et le dernier appel. time.Now et tout compteur croissant conviennent.
-	Maintenant func() time.Time
+	// Now is assumed to be monotonically non-decreasing. That's an
+	// assumption, not a checked property: Settle doesn't defend against it. A
+	// clock that goes backward or jumps between calls doesn't break the loop
+	// (the round-count guard holds regardless), but it makes the diagnostic
+	// it produces wrong — that diagnostic is built from the elapsed time
+	// between the first and last call. time.Now and any increasing counter
+	// work.
+	Now func() time.Time
 }
 
-// OptionsDefaut : 60 s de patience, un sondage toutes les 2 s. La propagation
-// observée aux spikes se compte en secondes, jamais en minutes ; 60 s laisse une
-// marge large sans transformer un vrai blocage en attente interminable.
-func OptionsDefaut() Options {
+// DefaultOptions returns 60s of patience, polling every 2s. Observed
+// propagation on spikes is measured in seconds, never minutes; 60s leaves a
+// wide margin without turning a real blockage into an endless wait.
+func DefaultOptions() Options {
 	return Options{
-		Timeout:    60 * time.Second,
-		Intervalle: 2 * time.Second,
-		Sommeil:    time.Sleep,
-		Maintenant: time.Now,
+		Timeout:  60 * time.Second,
+		Interval: 2 * time.Second,
+		Sleep:    time.Sleep,
+		Now:      time.Now,
 	}
 }
 
-// valide refuse des Options incomplètes ou incohérentes au lieu d'y suppléer.
+// validate refuses incomplete or inconsistent Options instead of filling
+// gaps.
 //
-// Suppléer serait pire que le refus. Un Sommeil ou un Maintenant nil panique,
-// donc se voit ; mais un Timeout à zéro rendrait la boucle sans aucune
-// patience, et un Intervalle à zéro la ferait marteler sbx sans répit. Dans les
-// deux cas la seule garde réseau de den continuerait de dire oui sans plus rien
-// garder — un « ça marche à moitié » silencieux, exactement ce que Settle
-// existe pour empêcher. Les compléter en secret par les valeurs de
-// OptionsDefaut() masquerait tout autant le bug de l'appelant.
+// Filling gaps would be worse than refusing. A nil Sleep or Now panics, so
+// it's visible; but a zero Timeout would leave the loop with no patience at
+// all, and a zero Interval would make it hammer sbx nonstop. In both cases
+// den's only network guard would keep saying yes without actually guarding
+// anything — a silent "half-working" state, exactly what Settle exists to
+// prevent. Silently filling in DefaultOptions() values would hide the
+// caller's bug just as much.
 //
-// Elle contrôle aussi une RELATION, pas seulement des valeurs : un Intervalle
-// plus grand que le Timeout promet une patience d'une seconde et dort trente.
-// Ce qu'elle ne peut structurellement PAS voir, c'est une horloge qui ment ;
-// c'est la borne en nombre de tours de Settle qui s'en charge.
-func (o Options) valide() error {
-	var fautifs []string
+// It also checks a RELATION, not just values: an Interval larger than the
+// Timeout promises a second of patience and sleeps thirty. What it
+// structurally CANNOT see is a clock that lies; that's what Settle's
+// round-count guard is for.
+func (o Options) validate() error {
+	var invalid []string
 	if o.Timeout <= 0 {
-		fautifs = append(fautifs, fmt.Sprintf("Timeout (%s)", o.Timeout))
+		invalid = append(invalid, fmt.Sprintf("Timeout (%s)", o.Timeout))
 	}
-	if o.Intervalle <= 0 {
-		fautifs = append(fautifs, fmt.Sprintf("Intervalle (%s)", o.Intervalle))
+	if o.Interval <= 0 {
+		invalid = append(invalid, fmt.Sprintf("Interval (%s)", o.Interval))
 	}
-	if o.Sommeil == nil {
-		fautifs = append(fautifs, "Sommeil (nil)")
+	if o.Sleep == nil {
+		invalid = append(invalid, "Sleep (nil)")
 	}
-	if o.Maintenant == nil {
-		fautifs = append(fautifs, "Maintenant (nil)")
+	if o.Now == nil {
+		invalid = append(invalid, "Now (nil)")
 	}
-	if len(fautifs) > 0 {
+	if len(invalid) > 0 {
 		return fmt.Errorf(
-			"options de settle inutilisables : %s — construis-les à partir de "+
-				"policy.OptionsDefaut() et ne surcharge que ce qui doit l'être",
-			strings.Join(fautifs, ", "))
+			"unusable settle options: %s — build them from policy.DefaultOptions() "+
+				"and only override what needs to be",
+			strings.Join(invalid, ", "))
 	}
-	if o.Intervalle > o.Timeout {
+	if o.Interval > o.Timeout {
 		return fmt.Errorf(
-			"options de settle inutilisables : Intervalle (%s) dépasse Timeout (%s) — "+
-				"la boucle dormirait plus longtemps que la patience annoncée ; "+
-				"construis-les à partir de policy.OptionsDefaut()",
-			o.Intervalle, o.Timeout)
+			"unusable settle options: Interval (%s) exceeds Timeout (%s) — "+
+				"the loop would sleep longer than the patience it promises; "+
+				"build them from policy.DefaultOptions()",
+			o.Interval, o.Timeout)
 	}
 	return nil
 }
 
-// toursMax borne le nombre de tours de la boucle.
+// maxRounds bounds the number of loop rounds.
 //
-// C'est une garde ARITHMÉTIQUE, pas temporelle, et c'est tout l'intérêt :
-// l'horloge étant injectée, la seule borne temporelle de la boucle est la bonne
-// foi de l'appelant. Un double d'horloge qui rend toujours la même date —
-// parfaitement accepté par valide(), qui inspecte des valeurs et non un
-// comportement — ferait boucler Settle sans fin, et un `go test ./...` se
-// bloquerait sans que rien ne désigne ce paquet.
+// This is an ARITHMETIC guard, not a temporal one, and that's the whole
+// point: since the clock is injected, the loop's only temporal bound is the
+// caller's good faith. A clock double that always returns the same time —
+// perfectly accepted by validate(), which inspects values, not behavior —
+// would make Settle loop forever, and a `go test ./...` would hang with
+// nothing pointing at this package.
 //
-// La borne est calée EXACTEMENT sur ce qu'une horloge honnête produit :
-// ceil(Timeout/Intervalle) sommeils, donc un tour de plus. Elle ne se déclenche
-// donc jamais avant le timeout normal ; si elle se déclenche, l'horloge ment.
-func (o Options) toursMax() int {
-	tours := o.Timeout / o.Intervalle
-	if o.Timeout%o.Intervalle != 0 {
-		tours++
+// The bound is set to EXACTLY what an honest clock produces:
+// ceil(Timeout/Interval) sleeps, so one extra round. It therefore never
+// triggers before the normal timeout; if it triggers, the clock is lying.
+func (o Options) maxRounds() int {
+	rounds := o.Timeout / o.Interval
+	if o.Timeout%o.Interval != 0 {
+		rounds++
 	}
-	return int(tours) + 1
+	return int(rounds) + 1
 }
 
-// Settle boucle jusqu'à ce que TOUS les hôtes soient autorisés dans le contexte
-// de cette sandbox, ou jusqu'au timeout.
+// Settle loops until ALL hosts are allowed in this sandbox's context, or
+// until the timeout.
 //
-// Fail-closed (spec §7) : si un hôte ne passe pas, den n'attache pas. Une
-// sandbox qui démarre à moitié — agent sans accès à api.anthropic.com, install
-// qui échoue à mi-parcours — coûte plus cher à diagnostiquer qu'un refus net.
+// Fail-closed (spec §7): if a host doesn't pass, den doesn't attach. A
+// sandbox that starts half-way — an agent without access to
+// api.anthropic.com, an install that fails partway through — costs more to
+// diagnose than a clean refusal.
 //
-// Le scope --sandbox est essentiel : l'allowlist est posée en caps.network.allow
-// d'un mixin auto-scopé à la sandbox. Interroger la policy GLOBALE validerait
-// autre chose que ce qu'on vient de poser — d'où la validation du nom, sans
-// laquelle un nom vide partirait tel quel dans l'argv.
-func Settle(ctx context.Context, r sbx.Runner, sandbox string, hotes []string, o Options) error {
-	// Avant le raccourci sur une allowlist vide : des Options cassées le
-	// restent au prochain appel, avec des hôtes cette fois. Mieux vaut que
-	// l'appelant l'apprenne au premier passage.
-	if err := o.valide(); err != nil {
-		return fmt.Errorf("sandbox %s : %w", sandbox, err)
+// The --sandbox scope is essential: the allowlist is set as
+// caps.network.allow of a mixin scoped to this sandbox. Querying the GLOBAL
+// policy would validate something else than what was just set — hence the
+// name validation, without which an empty name would go straight into the
+// argv unchanged.
+func Settle(ctx context.Context, r sbx.Runner, sandbox string, hosts []string, o Options) error {
+	// Before the empty-allowlist shortcut: broken Options stay broken on the
+	// next call, with actual hosts this time. Better that the caller learns
+	// on the first pass.
+	if err := o.validate(); err != nil {
+		return fmt.Errorf("sandbox %s: %w", sandbox, err)
 	}
-	// ValiderNomSandbox est la source unique du verdict sur un nom (tâche 3) ;
-	// redéfinir ici un contrôle « non vide » en ferait une deuxième copie, et
-	// dans ce dépôt deux copies d'une même validation ont déjà divergé.
-	if err := sbx.ValiderNomSandbox(sandbox); err != nil {
-		return fmt.Errorf("attente de la policy réseau : %w", err)
+	// ValidateSandboxName is the single source of truth on a name; redefining
+	// a "non-empty" check here would make a second copy, and in this repo two
+	// copies of the same validation have already diverged.
+	if err := sbx.ValidateSandboxName(sandbox); err != nil {
+		return fmt.Errorf("waiting for network policy: %w", err)
 	}
-	restants, err := allowlistNettoyee(hotes)
+	remaining, err := cleanAllowlist(hosts)
 	if err != nil {
-		return fmt.Errorf("sandbox %s : allowlist : %w", sandbox, err)
+		return fmt.Errorf("sandbox %s: allowlist: %w", sandbox, err)
 	}
-	if len(restants) == 0 {
+	if len(remaining) == 0 {
 		return nil
 	}
 
-	debut := o.Maintenant()
-	limite := debut.Add(o.Timeout)
-	toursMax := o.toursMax()
+	start := o.Now()
+	deadline := start.Add(o.Timeout)
+	maxRounds := o.maxRounds()
 
-	// indice : dernière erreur d'invocation observée SUR UN HÔTE ENCORE BLOQUÉ,
-	// remise à zéro à chaque tour. Elle ne peut donc jamais faire réapparaître
-	// dans le message un hôte qui a fini par passer.
-	var indice error
-	var hoteIndice string
+	// hint: last invocation error observed ON A HOST STILL BLOCKED, reset on
+	// every round. It can therefore never bring back into the message a host
+	// that ended up passing.
+	var hint error
+	var hintHost string
 
-	for tour := 1; ; tour++ {
+	for round := 1; ; round++ {
 		if err := ctx.Err(); err != nil {
-			return interrompue(sandbox, err)
+			return canceled(sandbox, err)
 		}
-		if tour > toursMax {
-			return horlogeIncoherente(sandbox, o, tour-1, o.Maintenant().Sub(debut))
+		if round > maxRounds {
+			return inconsistentClock(sandbox, o, round-1, o.Now().Sub(start))
 		}
 
-		// Seuls les hôtes ENCORE bloqués sont resondés : une allowlist longue
-		// dont un seul hôte traîne ne doit pas rejouer toute la liste à chaque
-		// tour, et un hôte déjà autorisé n'a pas à revenir dans le message.
-		var encoreBloques []string
-		indice, hoteIndice = nil, ""
-		for _, h := range restants {
-			ok, ind, err := hoteAutorise(ctx, r, sandbox, h)
+		// Only hosts STILL blocked are re-probed: a long allowlist with a
+		// single lagging host must not replay the whole list every round, and
+		// a host already allowed has no business coming back in the message.
+		var stillBlocked []string
+		hint, hintHost = nil, ""
+		for _, h := range remaining {
+			ok, hnt, err := hostAllowed(ctx, r, sandbox, h)
 			if err != nil {
-				// Une annulation arrive presque toujours PENDANT une passe, pas
-				// entre deux tours. sbx est alors tué et cmd.Run rend un
-				// « signal: killed » ; depuis la tâche 17b, sbx.Exec.Run y joint
-				// lui-même ctx.Err(), si bien que le motif SERAIT désormais
-				// repérable par errors.Is. La substitution ci-dessous reste, pour
-				// une raison qui n'a jamais été celle-là : un Ctrl-C n'est pas la
-				// faute de l'hôte sondé, et remonter l'erreur du runner
-				// incrusterait son argv complet dans le message. On rend donc le
-				// motif du contexte, sans l'hôte.
+				// A cancellation almost always arrives DURING a pass, not
+				// between rounds. sbx then gets killed and cmd.Run returns
+				// "signal: killed"; sbx.Exec.Run joins ctx.Err() itself, so
+				// the reason IS detectable via errors.Is. The substitution
+				// below stays, but for a reason that was never that one: a
+				// Ctrl-C isn't the probed host's fault, and surfacing the
+				// runner's error would embed its full argv in the message. So
+				// the context's reason is returned, without the host.
 				if errCtx := ctx.Err(); errCtx != nil {
-					return interrompue(sandbox, errCtx)
+					return canceled(sandbox, errCtx)
 				}
 				return err
 			}
 			if !ok {
-				encoreBloques = append(encoreBloques, h)
-				if ind != nil {
-					indice, hoteIndice = ind, h
+				stillBlocked = append(stillBlocked, h)
+				if hnt != nil {
+					hint, hintHost = hnt, h
 				}
 			}
 		}
-		restants = encoreBloques
+		remaining = stillBlocked
 
-		if len(restants) == 0 {
+		if len(remaining) == 0 {
 			return nil
 		}
-		// Le message du timeout est fabriqué ici, à partir des seuls hôtes
-		// restants : un timeout doit parler de TOUT ce qui reste bloqué, pas du
-		// dernier échec rencontré, et jamais des hôtes déjà passés.
-		if !o.Maintenant().Before(limite) {
-			slices.Sort(restants) // déterminisme du message
-			// Quand le verdict a été retenu MALGRÉ une invocation en échec, cette
-			// erreur est la seule chose que den ait vue de la vraie cause : sans
-			// elle, un `sandbox "api" not found` répété trente fois se solde par
-			// « vérifie ton allowlist », qui est une fausse piste. Elle est jointe
-			// comme INDICE, jamais comme cause : la cause reste le fail-closed.
-			detail := ""
-			if indice != nil {
-				detail = fmt.Sprintf(
-					" Indice : `sbx` a AUSSI échoué à la dernière vérification de %s (%v) — "+
-						"la cause est peut-être là, et non dans l'allowlist.", hoteIndice, indice)
-			}
-			return fmt.Errorf(
-				"sandbox %s : la policy réseau n'autorise toujours pas %d hôte(s) après %s — "+
-					"den n'attache pas (fail-closed). Hôtes bloqués : %s.%s "+
-					"Vérifie l'allowlist du nest et de la stack, puis "+
-					"`sbx policy check network --sandbox %s --verbose <hôte>`",
-				sandbox, len(restants), o.Timeout, strings.Join(restants, ", "), detail, sandbox)
+		// The timeout message is built here, from only the remaining hosts: a
+		// timeout must speak of EVERYTHING still blocked, not the last
+		// failure encountered, and never hosts that already passed.
+		if !o.Now().Before(deadline) {
+			return stillBlockedTimeout(sandbox, o, remaining, hint, hintHost)
 		}
-		o.Sommeil(o.Intervalle)
+		o.Sleep(o.Interval)
 	}
 }
 
-// horlogeIncoherente explique le franchissement de la borne en tours.
-//
-// Deux causes distinctes y mènent, et les confondre envoie corriger le mauvais
-// champ : l'horloge peut être FIGÉE, ou simplement avancer de moins d'un
-// Intervalle par tour — typiquement un Sommeil sans effet posé à côté d'une
-// horloge réelle. Le message rapporte donc l'AVANCÉE constatée et non
-// l'horodatage courant : dire « Maintenant() rend toujours 00:01:00 » d'une
-// horloge qui a avancé d'une minute est faux, et se contredit d'autant plus que
-// la date affichée peut être postérieure à la limite du timeout.
-func horlogeIncoherente(sandbox string, o Options, tours int, avance time.Duration) error {
-	entete := fmt.Sprintf(
-		"sandbox %s : l'attente de la policy a fait %d tours (Timeout %s, Intervalle %s) sans "+
-			"jamais atteindre sa limite",
-		sandbox, tours, o.Timeout, o.Intervalle)
-	// Maintenant est supposée monotone (cf. Options) ; si elle ne l'est pas, la
-	// phrase « n'a avancé que de -1ms » n'a aucun sens et « figée » serait faux.
-	// Une ligne pour ne rien affirmer de faux, sans blinder pour autant contre
-	// une horloge adversariale.
-	if avance < 0 {
-		return fmt.Errorf(
-			"%s, et Maintenant() a reculé de %s — l'horloge fournie dans policy.Options "+
-				"n'est pas monotone. C'est un défaut de l'appelant, pas un blocage réseau",
-			entete, -avance)
-	}
-	if avance == 0 {
-		return fmt.Errorf(
-			"%s, sans que Maintenant() avance d'une seule nanoseconde — l'horloge fournie "+
-				"dans policy.Options est figée. C'est un défaut de l'appelant, pas un "+
-				"blocage réseau", entete)
+// stillBlockedTimeout builds the fail-closed timeout error: the loop's
+// normal exit when hosts remain blocked past the deadline.
+func stillBlockedTimeout(sandbox string, o Options, remaining []string, hint error, hintHost string) error {
+	slices.Sort(remaining) // deterministic message
+	// When the verdict was kept DESPITE a failed invocation, this error is
+	// the only thing den saw of the real cause: without it, a `sandbox "api"
+	// not found` repeated thirty times ends up as "check your allowlist",
+	// which is a false lead. It's joined as a HINT, never as the cause: the
+	// cause stays the fail-closed timeout.
+	detail := ""
+	if hint != nil {
+		detail = fmt.Sprintf(
+			" Hint: `sbx` ALSO failed on the last check of %s (%v) — "+
+				"the cause might be there, not in the allowlist.", hintHost, hint)
 	}
 	return fmt.Errorf(
-		"%s : Maintenant() n'a avancé que de %s, là où %d sommeils de %s en promettaient %s — "+
-			"l'horloge avance moins vite que Sommeil ne le prétend (un Sommeil sans effet "+
-			"posé à côté d'une horloge réelle donne exactement ça). C'est un défaut de "+
-			"l'appelant, pas un blocage réseau",
-		entete, avance, tours, o.Intervalle, time.Duration(tours)*o.Intervalle)
+		"sandbox %s: network policy still doesn't allow %d host(s) after %s — "+
+			"den is not attaching (fail-closed). Blocked hosts: %s.%s "+
+			"Check the nest's and stack's allowlist, then "+
+			"`sbx policy check network --sandbox %s --verbose <host>`",
+		sandbox, len(remaining), o.Timeout, strings.Join(remaining, ", "), detail, sandbox)
 }
 
-// interrompue : message unique de l'annulation, d'où qu'elle soit constatée. Il
-// enveloppe le motif du CONTEXTE et non l'erreur du runner, pour qu'un appelant
-// puisse faire errors.Is(err, context.Canceled).
+// inconsistentClock explains crossing the round-count bound.
 //
-// L'erreur du runner le permettrait aussi désormais — depuis la tâche 17b,
-// sbx.Exec.Run joint ctx.Err() à sa chaîne, ce qu'une version antérieure de ce
-// commentaire donnait à tort pour impossible (« un processus tué rend
-// signal: killed »). Ce n'est plus la raison du choix : le motif du contexte est
-// gardé parce qu'il ne traîne NI l'argv complet de sbx, NI le nom d'un hôte qui
-// n'y est pour rien.
-func interrompue(sandbox string, err error) error {
-	return fmt.Errorf("sandbox %s : attente de la policy interrompue : %w", sandbox, err)
+// Two distinct causes lead here, and conflating them sends the fix to the
+// wrong field: the clock can be FROZEN, or simply advancing by less than one
+// Interval per round — typically a no-op Sleep next to a real clock. The
+// message therefore reports the observed ADVANCE, not the current
+// timestamp: saying "Now() always returns 00:01:00" of a clock that advanced
+// by a minute is false, and contradicts itself further since the displayed
+// time can be past the timeout deadline.
+func inconsistentClock(sandbox string, o Options, rounds int, advanced time.Duration) error {
+	header := fmt.Sprintf(
+		"sandbox %s: waiting for the policy made %d rounds (Timeout %s, Interval %s) without "+
+			"ever reaching its limit",
+		sandbox, rounds, o.Timeout, o.Interval)
+	// Now is assumed monotonic (see Options); if it isn't, "advanced by only
+	// -1ms" makes no sense and "frozen" would be false. One branch to avoid
+	// asserting something false, without otherwise guarding against an
+	// adversarial clock.
+	if advanced < 0 {
+		return fmt.Errorf(
+			"%s, and Now() went backward by %s — the clock supplied in policy.Options "+
+				"isn't monotonic. That's a caller bug, not a network blockage",
+			header, -advanced)
+	}
+	if advanced == 0 {
+		return fmt.Errorf(
+			"%s, without Now() advancing by a single nanosecond — the clock supplied "+
+				"in policy.Options is frozen. That's a caller bug, not a "+
+				"network blockage", header)
+	}
+	return fmt.Errorf(
+		"%s: Now() only advanced by %s, where %d sleeps of %s promised %s — "+
+			"the clock advances slower than Sleep claims (a no-op Sleep next to a "+
+			"real clock produces exactly that). That's a caller bug, not a "+
+			"network blockage",
+		header, advanced, rounds, o.Interval, time.Duration(rounds)*o.Interval)
 }
 
-// allowlistNettoyee valide et dédoublonne l'allowlist AVANT la boucle.
+// canceled: the single cancellation message, wherever it's observed. It
+// wraps the CONTEXT's reason, not the runner's error, so a caller can do
+// errors.Is(err, context.Canceled). sbx.Exec.Run's error would now support
+// that too, but the context's reason is kept anyway: it drags along NEITHER
+// sbx's full argv NOR the name of a host that had nothing to do with it.
+func canceled(sandbox string, err error) error {
+	return fmt.Errorf("sandbox %s: waiting for network policy interrupted: %w", sandbox, err)
+}
+
+// cleanAllowlist validates and deduplicates the allowlist BEFORE the loop.
 //
-// Un hôte vide (un « - » sans valeur dans un YAML d'allowlist suffit à le
-// produire) partirait en `--json ""` et den pourrait en conclure que tout va
-// bien. Un doublon (le même hôte dans le nest et dans la stack) serait sondé
-// deux fois par tour et listé deux fois dans le message d'échec.
-func allowlistNettoyee(hotes []string) ([]string, error) {
-	vus := make(map[string]bool, len(hotes))
-	propre := make([]string, 0, len(hotes))
-	for i, h := range hotes {
+// An empty host (a `-` with no value in an allowlist YAML is enough to
+// produce one) would go out as `--json ""` and den might conclude everything
+// is fine. A duplicate (the same host in the nest and the stack) would be
+// probed twice per round and listed twice in the failure message.
+func cleanAllowlist(hosts []string) ([]string, error) {
+	seen := make(map[string]bool, len(hosts))
+	clean := make([]string, 0, len(hosts))
+	for i, h := range hosts {
 		if strings.TrimSpace(h) == "" {
 			return nil, fmt.Errorf(
-				"hôte vide en position %d sur %d — un « - » sans valeur dans un YAML "+
-					"d'allowlist suffit à le produire", i+1, len(hotes))
+				"empty host at position %d of %d — a `-` with no value in an allowlist "+
+					"YAML is enough to produce this", i+1, len(hosts))
 		}
-		if vus[h] {
+		if seen[h] {
 			continue
 		}
-		vus[h] = true
-		propre = append(propre, h)
+		seen[h] = true
+		clean = append(clean, h)
 	}
-	return propre, nil
+	return clean, nil
 }
 
-// hoteAutorise interroge la policy pour UN hôte, dans le contexte de la sandbox.
+// hostAllowed queries the policy for ONE host, in the sandbox's context.
 //
-// Le code de sortie de sbx n'est PAS le verdict. Personne ici n'a pu confirmer
-// que `sbx policy check` sort en 0 quand un hôte est simplement refusé ; s'il
-// sortait en 1, une lecture naïve ferait échouer den dès le premier tour, en
-// accusant le premier hôte sondé, et le settle-loop ne servirait plus à rien.
-// La sortie est donc lue AVANT de conclure quoi que ce soit de l'erreur.
+// sbx's exit code is NOT the verdict. Nobody here has been able to confirm
+// that `sbx policy check` exits 0 when a host is simply denied; if it exited
+// 1, a naive read would fail den on the first round, blaming the first
+// probed host, and the settle-loop would be pointless.
+// The output is therefore read BEFORE drawing any conclusion from the error.
 //
-// L'asymétrie qui suit est délibérée : un « non » rendu par une commande qui a
-// échoué est cru (on reboucle — c'est le comportement sûr), un « oui » ne l'est
-// pas (den n'attache pas). Croire un « oui » sorti d'une invocation ratée —
-// stdout tronqué, flag inconnu, sandbox absente — serait le seul chemin par
-// lequel ce paquet pourrait ouvrir un shell sur une policy jamais vérifiée.
+// The following asymmetry is deliberate: a "no" returned by a command that
+// failed is trusted (we loop again — the safe behavior), a "yes" is not (den
+// doesn't attach). Trusting a "yes" from a failed invocation — truncated
+// stdout, unknown flag, missing sandbox — would be the only path by which
+// this package could open a shell on a policy that was never actually
+// checked.
 //
-// indice est non nil dans le seul cas où un verdict a été retenu MALGRÉ une
-// invocation en échec. Il n'interrompt rien, mais l'appelant le garde : si la
-// boucle finit en timeout, c'est la seule trace de ce qui a réellement cloché,
-// et sans elle den envoie vérifier une allowlist qui n'y est pour rien.
-func hoteAutorise(ctx context.Context, r sbx.Runner, sandbox, hote string) (autorise bool, indice, err error) {
-	sortie, errRun := r.Run(ctx, "policy", "check", "network", "--sandbox", sandbox, "--json", hote)
-	verdict, errLecture := litVerdict(sortie)
+// hint is non-nil only in the case where a verdict was kept DESPITE a failed
+// invocation. It interrupts nothing, but the caller keeps it: if the loop
+// ends in timeout, it's the only trace of what actually went wrong, and
+// without it den sends the user to check an allowlist that has nothing to do
+// with it.
+func hostAllowed(ctx context.Context, r sbx.Runner, sandbox, host string) (allowed bool, hint, err error) {
+	output, runErr := r.Run(ctx, "policy", "check", "network", "--sandbox", sandbox, "--json", host)
+	verdict, readErr := readVerdict(output)
 
-	if errRun != nil {
+	if runErr != nil {
 		if verdict != nil && !*verdict {
-			return false, errRun, nil // refus explicite : c'est un verdict, on reboucle
+			return false, runErr, nil // explicit refusal: it's a verdict, loop again
 		}
-		return false, nil, fmt.Errorf("sandbox %s : vérification de %s : %w", sandbox, hote, errRun)
+		return false, nil, fmt.Errorf("sandbox %s: checking %s: %w", sandbox, host, runErr)
 	}
-	if errLecture != nil {
-		return false, nil, fmt.Errorf("sandbox %s : vérification de %s : %w", sandbox, hote, errLecture)
+	if readErr != nil {
+		return false, nil, fmt.Errorf("sandbox %s: checking %s: %w", sandbox, host, readErr)
 	}
 	return *verdict, nil, nil
 }
 
-// litVerdict extrait le champ `allowed` de la sortie de sbx.
+// readVerdict extracts the `allowed` field from sbx's output.
 //
-// Allowed est un POINTEUR : un champ absent doit se distinguer d'un `false`.
-// Confondre les deux ferait tourner la boucle jusqu'au timeout en accusant le
-// réseau, alors que la cause serait un changement de schéma côté sbx.
+// Allowed is a POINTER: a missing field must be distinguishable from a
+// `false`. Conflating the two would run the loop to the timeout blaming the
+// network, when the cause would be an sbx schema change.
 //
-// La lecture se fait au json.Decoder et non au json.Unmarshal : Unmarshal
-// refuse tout contenu APRÈS la valeur, si bien qu'une bannière, une ligne de log
-// ou du NDJSON derrière le verdict empêcheraient définitivement den d'attacher.
-// Le verdict est dans la première valeur ; ce qui suit est ignoré, exprès. Ce
-// qui PRÉCÈDE reste en revanche une erreur : on ne va pas chercher un verdict au
-// milieu d'un flux qu'on ne comprend pas.
+// Reading uses a json.Decoder, not json.Unmarshal: Unmarshal refuses any
+// content AFTER the value, so a banner, a log line, or NDJSON behind the
+// verdict would permanently prevent den from attaching. The verdict is in
+// the first value; what follows is ignored, deliberately. What PRECEDES it
+// is still an error: we don't go looking for a verdict in the middle of a
+// stream we don't understand.
 //
-// PORTÉE EXACTE de la détection de schéma, mesurée (17b), parce que « le schéma
-// a changé » est plus lâche qu'il n'y paraît : l'appariement de champs
-// d'encoding/json est INSENSIBLE À LA CASSE. `{"ALLOWED": true}` fait donc
-// attacher den, tout comme `{"Allowed": true}`. Sont refusés, eux, tous les
-// champs seulement VOISINS — `allowedx`, `allow`, `"allowed "` avec un espace.
-// Et quand deux clés s'apparient (`{"ALLOWED":false,"allowed":true}`), c'est la
-// DERNIÈRE du document qui gagne, pas la mieux orthographiée.
+// EXACT scope of the schema detection, measured empirically, because "the
+// schema changed" is looser than it sounds: encoding/json field matching is
+// CASE-INSENSITIVE. `{"ALLOWED": true}` therefore makes den attach, just
+// like `{"Allowed": true}`. Refused, though, are fields only NEIGHBORING it
+// — `allowedx`, `allow`, `"allowed "` with a trailing space. And when two
+// keys match (`{"ALLOWED":false,"allowed":true}`), it's the LAST one in the
+// document that wins, not the better-spelled one.
 //
-// Retenu tel quel, plutôt que rendu strict par une lecture manuelle des clés :
-//   - aucune conséquence de sûreté — un `true` sous une autre casse reste sbx
-//     qui dit « autorisé », émis par le même producteur ;
-//   - le fail-closed que ce code doit tenir est « ABSENCE de verdict ⇒ on
-//     n'attache pas », et il tient sur toutes les formes voisines mesurées ;
-//   - à l'inverse, la stricte casse transformerait un simple recasage côté sbx
-//     — l'axe A4 du spec §14.1, justement celui que personne n'a pu vérifier —
-//     en refus total d'attacher.
+// Kept as is, rather than made strict via manual key reading:
+//   - no safety consequence — a `true` under a different casing is still sbx
+//     saying "allowed", from the same producer;
+//   - the fail-closed property this code must hold is "ABSENCE of a verdict
+//     ⇒ don't attach", and it holds across every neighboring form measured;
+//   - conversely, strict casing would turn a mere recasing on sbx's side —
+//     spec §14.1's axis A4, precisely the one nobody could verify — into an
+//     outright refusal to attach.
 //
-// Trois tests tiennent ces trois propriétés dans settle_test.go ; les changer,
-// c'est changer ce contrat, pas le préciser.
-func litVerdict(sortie []byte) (*bool, error) {
-	if len(bytes.TrimSpace(sortie)) == 0 {
+// Three tests in settle_test.go hold these three properties; changing them
+// changes this contract, not just clarifies it.
+func readVerdict(output []byte) (*bool, error) {
+	if len(bytes.TrimSpace(output)) == 0 {
 		return nil, fmt.Errorf(
-			"`sbx policy check network` n'a rien écrit sur sa sortie standard (sortie vide) — " +
-				"vérifie que le flag --json existe et que le verdict ne part pas sur stderr")
+			"`sbx policy check network` wrote nothing to stdout (empty output) — " +
+				"check that the --json flag exists and the verdict isn't going to stderr")
 	}
 
-	extrait, suffixe := extraitDeSortie(sortie)
+	excerpt, suffix := outputExcerpt(output)
 
 	var doc struct {
 		Allowed *bool `json:"allowed"`
 	}
-	if err := json.NewDecoder(bytes.NewReader(sortie)).Decode(&doc); err != nil {
-		// %q, et non %s : une sortie qui n'est pas du JSON peut n'avoir aucun
-		// caractère visible, ou être pleine de caractères de contrôle. Un
-		// message qui se termine par « : » et rien ne laisse aucune piste.
+	if err := json.NewDecoder(bytes.NewReader(output)).Decode(&doc); err != nil {
+		// %q, not %s: output that isn't JSON may have no visible characters at
+		// all, or be full of control characters. A message ending in ":" and
+		// nothing leaves no lead.
 		return nil, fmt.Errorf(
-			"sortie de `sbx policy check network` illisible (%w) : %q%s", err, extrait, suffixe)
+			"unreadable output from `sbx policy check network` (%w): %q%s", err, excerpt, suffix)
 	}
 	if doc.Allowed == nil {
-		// La sortie brute est montrée telle quelle — le brief l'exige, et c'est
-		// la seule chose qui permette de voir ce que sbx rend désormais. Elle
-		// est ANNONCÉE, parce qu'un sbx verbeux y cite volontiers d'autres hôtes
-		// que celui sondé : la propriété tenue ici n'est pas « ne nomme pas un
-		// hôte déjà passé » — montrer la sortie brute la rend intenable — mais
-		// « ne lui ATTRIBUE rien ». L'appelant a préfixé « vérification de
-		// <hôte> », et ce qui suit « Sortie brute : » appartient à sbx.
+		// The raw output is shown as-is — the brief requires it, and it's the
+		// only way to see what sbx now renders. It's ANNOUNCED, because a
+		// verbose sbx will happily cite hosts other than the one probed: the
+		// property held here isn't "never names an already-passed host" —
+		// showing the raw output makes that untenable — but "never ATTRIBUTES
+		// anything to it". The caller has already prefixed "checking <host>",
+		// and what follows "raw output:" belongs to sbx.
 		return nil, fmt.Errorf(
-			"la sortie de `sbx policy check network` ne porte pas de champ \"allowed\" — "+
-				"le schéma de sbx a probablement changé. Sortie brute : %s%s", extrait, suffixe)
+			"the output of `sbx policy check network` carries no \"allowed\" field — "+
+				"sbx's schema probably changed. Raw output: %s%s", excerpt, suffix)
 	}
 	return doc.Allowed, nil
 }
 
-// tailleMaxSortie borne ce qu'un message d'erreur reprend de la sortie de sbx.
-// Assez pour un objet JSON de verdict, ou pour le début d'un usage ; pas assez
-// pour qu'une sortie de plusieurs kilo-octets noie le diagnostic qu'elle est
-// censée porter dans le terminal de l'utilisateur.
-const tailleMaxSortie = 512
+// maxOutputSize bounds how much of sbx's output an error message repeats.
+// Enough for a verdict JSON object, or the start of a usage message; not
+// enough for a multi-kilobyte output to drown the diagnostic it's supposed
+// to carry in the user's terminal.
+const maxOutputSize = 512
 
-// extraitDeSortie rend la portion citable de la sortie et, le cas échéant, la
-// mention de troncature à coller derrière. La coupe se fait sur une frontière
-// de rune : couper au milieu d'un caractère produirait un remplacement U+FFFD
-// dans le message, en donnant à croire que sbx a émis des octets invalides.
-func extraitDeSortie(sortie []byte) (extrait, suffixe string) {
-	if len(sortie) <= tailleMaxSortie {
-		return string(sortie), ""
+// outputExcerpt returns the quotable portion of the output and, if
+// applicable, the truncation note to append after it. The cut lands on a
+// rune boundary: cutting mid-character would produce a U+FFFD replacement in
+// the message, wrongly suggesting sbx emitted invalid bytes.
+func outputExcerpt(output []byte) (excerpt, suffix string) {
+	if len(output) <= maxOutputSize {
+		return string(output), ""
 	}
-	coupe := tailleMaxSortie
-	for coupe > 0 && !utf8.RuneStart(sortie[coupe]) {
-		coupe--
+	cut := maxOutputSize
+	for cut > 0 && !utf8.RuneStart(output[cut]) {
+		cut--
 	}
-	return string(sortie[:coupe]), fmt.Sprintf(" (tronquée, %d octets au total)", len(sortie))
+	return string(output[:cut]), fmt.Sprintf(" (truncated, %d bytes total)", len(output))
 }

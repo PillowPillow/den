@@ -3,17 +3,16 @@ package cli
 import (
 	"bytes"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/PillowPillow/den/internal/doctor"
 )
 
-// runDoctor exécute `den doctor` sur un den home donné avec des accès système
-// injectés. Le test ne doit rien devoir à la machine qui l'exécute : sans cette
-// injection, le contrat de sortie de la commande (« non-zéro si un check
-// échoue ») n'est vérifiable nulle part.
+// runDoctor runs `den doctor` on a given den home with injected system
+// access. The test must owe nothing to the machine running it: without this
+// injection, the command's exit contract ("non-zero if a check fails") is
+// unverifiable anywhere.
 func runDoctor(t *testing.T, home string, deps doctor.Deps) (string, error) {
 	t.Helper()
 	cmd := newDoctorCmd(&home, deps)
@@ -25,187 +24,164 @@ func runDoctor(t *testing.T, home string, deps doctor.Deps) (string, error) {
 	return out.String(), err
 }
 
-// depsSaines : sbx présent, tous les repos sur disque, git assez récent.
-func depsSaines() doctor.Deps {
-	return doctor.Deps{
-		LookPath: func(string) (string, error) { return "/usr/local/bin/sbx", nil },
-		// doctor ne regarde que l'erreur, jamais le FileInfo.
-		Stat: func(string) (os.FileInfo, error) { return nil, nil },
-		// Injectée comme les deux autres : sans elle, `den doctor` rendrait ici
-		// le verdict du git du POSTE, et le contrat de sortie de la commande
-		// deviendrait vert ou rouge selon la machine qui lance la suite.
-		VersionGit: func() (string, error) { return "git version 2.43.0\n", nil },
-		// Même raison, et elle est ici plus tranchante encore : sans injection,
-		// `den doctor` avertirait ou non selon que la session qui lance la
-		// suite a un agent SSH en marche.
-		Getenv: func(nom string) string {
-			if nom == "SSH_AUTH_SOCK" {
-				return "/tmp/den-test/agent-ssh.sock"
-			}
-			return ""
-		},
-	}
-}
-
-func TestDoctorReussitQuandToutVaBien(t *testing.T) {
-	home := denHomeDeTest(t)
-	out, err := runDoctor(t, home, depsSaines())
+func TestDoctorSucceedsWhenEverythingIsFine(t *testing.T) {
+	home := testDenHome(t)
+	out, err := runDoctor(t, home, doctor.FakeDeps())
 	if err != nil {
-		t.Fatalf("attendu une sortie nulle sur une config saine, obtenu : %v\n%s", err, out)
+		t.Fatalf("expected a nil exit on a healthy config, got: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "tout est en ordre") {
-		t.Errorf("sortie = %q, attendu le message final de succès", out)
+	if !strings.Contains(out, "all good") {
+		t.Errorf("output = %q, expected the final success message", out)
 	}
 	if strings.Contains(out, "[FAIL]") {
-		t.Errorf("sortie = %q, aucun échec attendu", out)
+		t.Errorf("output = %q, expected no failure", out)
 	}
 }
 
-// LA propriété de D2, et la raison d'être du troisième niveau : un
-// avertissement ne change PAS le code de sortie de `den doctor`. Sans elle, le
-// contrôle d'SSH_AUTH_SOCK rendrait `den doctor` rouge sur toute machine où
-// l'on travaille en local sans agent SSH — une configuration parfaitement
-// saine, que den n'a aucun moyen de distinguer d'une configuration fautive.
+// LA property of D2, and the reason the third level exists: a warning does
+// NOT change `den doctor`'s exit code. Without it, the SSH_AUTH_SOCK check
+// would turn `den doctor` red on any machine where one works locally without
+// an SSH agent — a perfectly healthy configuration den has no way to
+// distinguish from a faulty one.
 //
-// Le test exerce la commande ENTIÈRE (Execute), et non doctor.Run : c'est cobra
-// qui traduit l'erreur rendue par RunE en code de retour, et c'est donc là que
-// la propriété se vérifie. `err == nil` est exactement ce que `den doctor`
-// rendra à un rc de 0.
-func TestDoctorNEchouePasSurUnAvertissement(t *testing.T) {
-	home := denHomeDeTest(t)
-	deps := depsSaines()
-	// Aucun agent SSH. La config du fixture ne déclare pas `ssh:`, donc le mode
-	// est le défaut, agent-forward — c'est le cas nominal, pas un cas tordu.
+// The test exercises the WHOLE command (Execute), not doctor.Run: it is cobra
+// that turns the error returned by RunE into an exit code, so that is where
+// the property is checked. `err == nil` is exactly what `den doctor` will
+// render as an rc of 0.
+func TestDoctorDoesNotFailOnAWarning(t *testing.T) {
+	home := testDenHome(t)
+	deps := doctor.FakeDeps()
+	// No SSH agent. The fixture's config does not declare `ssh:`, so the mode
+	// is the default, agent-forward — the nominal case, not a corner one.
 	deps.Getenv = func(string) string { return "" }
 
 	out, err := runDoctor(t, home, deps)
 	if err != nil {
-		t.Fatalf("un avertissement ne doit pas faire échouer den doctor, obtenu : %v\n%s", err, out)
+		t.Fatalf("a warning must not fail den doctor, got: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, "[warn]") {
-		t.Errorf("sortie = %q, attendu une ligne [warn]", out)
+		t.Errorf("output = %q, expected a [warn] line", out)
 	}
 	if strings.Contains(out, "[FAIL]") {
-		t.Errorf("sortie = %q, aucun échec attendu : un agent SSH absent n'en est pas un", out)
+		t.Errorf("output = %q, expected no failure: a missing SSH agent is not one", out)
 	}
-	// L'avertissement doit rester lisible dans le résumé final : « tout est en
-	// ordre » sous une ligne [warn] se lirait comme un affichage résiduel.
-	if strings.Contains(out, "tout est en ordre") {
-		t.Errorf("sortie = %q, « tout est en ordre » contredit la ligne [warn]", out)
+	// The warning must stay visible in the final summary: "all good" under a
+	// [warn] line would read as leftover output.
+	if strings.Contains(out, "all good") {
+		t.Errorf("output = %q, \"all good\" contradicts the [warn] line", out)
 	}
-	if !strings.Contains(out, "avertissement") {
-		t.Errorf("sortie = %q, le résumé final doit signaler l'avertissement", out)
+	if !strings.Contains(out, "warning") {
+		t.Errorf("output = %q, the final summary must report the warning", out)
 	}
 	if !strings.Contains(out, "SSH_AUTH_SOCK") {
-		t.Errorf("sortie = %q, attendu le diagnostic nommant SSH_AUTH_SOCK", out)
+		t.Errorf("output = %q, expected the diagnostic naming SSH_AUTH_SOCK", out)
 	}
 }
 
-// I1 — la COMBINAISON que rien n'exerçait : un avertissement ET un échec dans
-// le même diagnostic. Les deux tests voisins n'en produisent jamais qu'un seul
-// à la fois — TestDoctorNEchouePasSurUnAvertissement pose `Getenv → ""` sur une
-// configuration saine, TestDoctorEchoueQuandSbxManque garde le socket — et
-// aucun des deux n'atteint donc le seul endroit où la question se pose.
+// I1 — the COMBINATION nothing exercised: a warning AND a failure in the same
+// diagnostic. The two neighboring tests only ever produce one at a time —
+// TestDoctorDoesNotFailOnAWarning sets `Getenv → ""` on an otherwise healthy
+// config, TestDoctorFailsWhenSbxIsMissing keeps the socket — and neither
+// reaches the one place where the question actually arises.
 //
-// Ce que ce test tient, et que RIEN ne tenait : l'ORDRE des deux blocs de
-// sortie de newDoctorCmd. Le bloc « échec » doit précéder le bloc
-// « avertissement », faute de quoi le second rend nil le premier n'ayant jamais
-// été atteint. Mesuré avant d'écrire ce test, les deux blocs intervertis :
-// la suite ENTIÈRE reste verte (rc=0), et le binaire rend 0 sur une
-// installation cassée en affichant « aucun échec » sous une ligne [FAIL].
+// What this test locks, and nothing did before: the ORDER of newDoctorCmd's
+// two output blocks. The "failure" block must precede the "warning" block, or
+// the second returns nil before the first is ever reached. Measured before
+// writing this test, with the two blocks swapped: the WHOLE suite stayed
+// green (rc=0), and the binary returned 0 on a broken install while printing
+// "no failure" under a [FAIL] line.
 //
-// Un avertissement doit donc être exactement ce qu'il annonce : sans effet sur
-// le code de sortie, dans les DEUX sens — il n'en crée pas (test voisin), et il
-// n'en efface pas (celui-ci).
-func TestDoctorEchoueMemeAvecUnAvertissement(t *testing.T) {
-	home := denHomeDeTest(t)
-	deps := depsSaines()
-	// L'avertissement : aucun agent SSH, sur une configuration dont le mode SSH
-	// est le défaut (agent-forward — le fixture ne déclare pas de bloc `ssh:`).
+// A warning must therefore be exactly what it claims: without effect on the
+// exit code, in BOTH directions — it does not create one (neighboring test),
+// and it does not erase one (this one).
+func TestDoctorFailsEvenWithAWarning(t *testing.T) {
+	home := testDenHome(t)
+	deps := doctor.FakeDeps()
+	// The warning: no SSH agent, on a config whose SSH mode is the default
+	// (agent-forward — the fixture declares no `ssh:` block).
 	deps.Getenv = func(string) string { return "" }
-	// L'échec, INDÉPENDANT du premier : sbx absent du PATH. Deux causes sans
-	// rapport, pour qu'aucune ne puisse être tenue pour un effet de l'autre.
-	deps.LookPath = func(string) (string, error) { return "", errors.New("introuvable dans le PATH") }
+	// The failure, INDEPENDENT of the first: sbx missing from PATH. Two
+	// unrelated causes, so neither can be mistaken for an effect of the other.
+	deps.LookPath = func(string) (string, error) { return "", errors.New("not found in PATH") }
 
 	out, err := runDoctor(t, home, deps)
 	if err == nil {
-		t.Fatalf("un échec doit RESTER un échec en présence d'un avertissement : "+
-			"`den doctor` rendrait 0 sur une installation cassée ; sortie :\n%s", out)
+		t.Fatalf("a failure must STAY a failure in the presence of a warning: "+
+			"`den doctor` would return 0 on a broken install; output:\n%s", out)
 	}
-	// L'erreur ne compte QUE les échecs : un avertissement compté comme échec
-	// serait l'autre moitié du défaut.
-	if !strings.Contains(err.Error(), "1 diagnostic(s) en échec") {
-		t.Errorf("erreur = %q, attendu le décompte des seuls échecs (1) ; "+
-			"l'avertissement ne doit pas y être compté", err.Error())
+	// The error counts ONLY failures: a warning counted as a failure would be
+	// the other half of the defect.
+	if !strings.Contains(err.Error(), "1 failing check(s)") {
+		t.Errorf("error = %q, expected a count of failures only (1); "+
+			"the warning must not be counted in it", err.Error())
 	}
-	// Les deux lignes coexistent : l'avertissement ne masque pas l'échec, et
-	// l'échec ne fait pas taire l'avertissement.
+	// Both lines coexist: the warning does not hide the failure, and the
+	// failure does not silence the warning.
 	if !strings.Contains(out, "[FAIL]") {
-		t.Errorf("sortie = %q, attendu une ligne [FAIL]", out)
+		t.Errorf("output = %q, expected a [FAIL] line", out)
 	}
 	if !strings.Contains(out, "[warn]") {
-		t.Errorf("sortie = %q, attendu une ligne [warn] : un échec ne doit pas faire taire l'avertissement", out)
+		t.Errorf("output = %q, expected a [warn] line: a failure must not silence the warning", out)
 	}
-	// L'épilogue ne doit RIEN affirmer de rassurant. « aucun échec » sous une
-	// ligne [FAIL] est auto-contradictoire, et c'est ce que la sortie affichait
-	// avec les deux blocs intervertis.
-	for _, interdit := range []string{"aucun échec", "tout est en ordre"} {
-		if strings.Contains(out, interdit) {
-			t.Errorf("sortie = %q, ne doit pas contenir %q alors qu'un diagnostic est en échec",
-				out, interdit)
+	// The epilogue must assert NOTHING reassuring. "no failure" under a [FAIL]
+	// line is self-contradictory, and that is what the output showed with the
+	// two blocks swapped.
+	for _, forbidden := range []string{"no failure", "all good"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("output = %q, must not contain %q while a diagnostic is failing",
+				out, forbidden)
 		}
 	}
 }
 
-func TestDoctorEchoueQuandSbxManque(t *testing.T) {
-	home := denHomeDeTest(t)
-	deps := depsSaines()
-	deps.LookPath = func(string) (string, error) { return "", errors.New("introuvable dans le PATH") }
+func TestDoctorFailsWhenSbxIsMissing(t *testing.T) {
+	home := testDenHome(t)
+	deps := doctor.FakeDeps()
+	deps.LookPath = func(string) (string, error) { return "", errors.New("not found in PATH") }
 
 	out, err := runDoctor(t, home, deps)
 	if err == nil {
-		t.Fatal("attendu une erreur : sbx manquant est un échec de diagnostic")
+		t.Fatal("expected an error: a missing sbx is a diagnostic failure")
 	}
 	if !strings.Contains(out, "[FAIL]") {
-		t.Errorf("sortie = %q, attendu une ligne [FAIL]", out)
+		t.Errorf("output = %q, expected a [FAIL] line", out)
 	}
 	if !strings.Contains(out, "sbx") {
-		t.Errorf("sortie = %q, attendu le diagnostic de sbx", out)
+		t.Errorf("output = %q, expected the sbx diagnostic", out)
 	}
-	// Les autres diagnostics doivent quand même s'afficher : on ne s'arrête
-	// jamais au premier problème.
+	// The other diagnostics must still be printed: den never stops at the
+	// first problem.
 	if !strings.Contains(out, "config.yaml") {
-		t.Errorf("sortie = %q, attendu le diagnostic de config.yaml malgré l'échec de sbx", out)
+		t.Errorf("output = %q, expected the config.yaml diagnostic despite sbx failing", out)
 	}
 }
 
-// Les tests ci-dessus construisent la commande directement pour injecter leurs
-// Deps, ce qui laisse le câblage de root.go (newDoctorCmd branché sur l'arbre
-// racine avec doctor.DepsSysteme()) sans couverture. Celui-ci passe par
-// NewRootCmd : il n'assert que l'atteignabilité et la sortie, jamais le code de
-// retour lié à sbx.
-func TestDoctorEstCableDansLArbreRacine(t *testing.T) {
+// The tests above build the command directly to inject their Deps, which
+// leaves root.go's wiring (newDoctorCmd plugged into the root tree with
+// doctor.SystemDeps()) uncovered. This one goes through NewRootCmd: it only
+// asserts reachability and output, never the exit code tied to sbx.
+func TestDoctorIsWiredIntoTheRootTree(t *testing.T) {
 	t.Setenv("DEN_HOME", t.TempDir())
 	out, err := run(t, "doctor")
-	// config.yaml est absent : au moins un diagnostic échoue, que sbx soit
-	// installé ou non sur la machine.
+	// config.yaml is missing: at least one diagnostic fails, whether sbx is
+	// installed on the machine or not.
 	if err == nil {
-		t.Error("attendu une erreur : config.yaml est absent du den home")
+		t.Error("expected an error: config.yaml is missing from the den home")
 	}
 	if !strings.Contains(out, "den home:") {
-		t.Errorf("sortie = %q, attendu l'en-tête de doctor", out)
+		t.Errorf("output = %q, expected doctor's header", out)
 	}
 	if !strings.Contains(out, "config.yaml") {
-		t.Errorf("sortie = %q, attendu le diagnostic de config.yaml", out)
+		t.Errorf("output = %q, expected the config.yaml diagnostic", out)
 	}
 }
 
-func TestDoctorEchoueSurConfigAbsente(t *testing.T) {
-	out, err := runDoctor(t, t.TempDir(), depsSaines())
+func TestDoctorFailsOnMissingConfig(t *testing.T) {
+	out, err := runDoctor(t, t.TempDir(), doctor.FakeDeps())
 	if err == nil {
-		t.Error("attendu une erreur quand la config est absente")
+		t.Error("expected an error when the config is missing")
 	}
 	if !strings.Contains(out, "config.yaml") {
-		t.Errorf("sortie = %q, attendu une mention de config.yaml", out)
+		t.Errorf("output = %q, expected a mention of config.yaml", out)
 	}
 }

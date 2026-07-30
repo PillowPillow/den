@@ -4,305 +4,259 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
-// Ces tests exercent la CLI complète sur des configurations HOSTILES — celles
-// de la table de la tâche 17c, plus celles trouvées en manipulant le binaire
-// assemblé.
+// These tests exercise the FULL CLI on HOSTILE configurations — those of task
+// 17c's table, plus a few found by poking at the built binary.
 //
-// Ils vivent au niveau de la CLI, et pas seulement dans les paquets qui portent
-// les gardes, pour une raison précise : ce qui compte n'est pas qu'une fonction
-// refuse, c'est que l'UTILISATEUR reçoive un refus avant que den n'ait rien
-// abîmé. Cette propriété-là traverse la moitié du projet et ne se vérifie
-// nulle part ailleurs.
+// They live at the CLI level, not only in the packages that carry the guards,
+// for a precise reason: what matters is not that a function refuses, it is
+// that the USER gets a refusal before den has damaged anything. That property
+// crosses half the project and is checked nowhere else.
 //
-// Aucun n'invoque le vrai `sbx` : le Runner est un sbx.Fake, et c'est sur ses
-// Appels que porte l'assertion « aucun effet de bord ».
+// None of them invokes the real `sbx`: the Runner is an sbx.Fake, and the "no
+// side effect" assertion is made on its Calls.
 
-// denHomeHostile fabrique un den home VALIDE et rend son chemin, ainsi que
-// celui de l'unique repo du nest. Chaque test n'en dégrade ensuite qu'un seul
-// aspect : sans base saine, un refus ne prouverait pas ce qui l'a causé.
+// denHomeHostile builds a VALID den home and returns its path, along with the
+// path of the nest's single repo. Each test then degrades only one aspect: a
+// refusal would prove nothing about its cause without a healthy baseline.
 //
-// Le repo est un DÉPÔT GIT RÉEL, et ce n'est pas un détail de confort : les
-// tests qui vérifient qu'aucun worktree n'a été créé seraient VIDES sans lui.
-// worktree.Assure ouvre par un verifieRepo qui échoue immédiatement sur un
-// dossier ordinaire, sans rien créer — l'assertion « aucun worktree » serait
-// alors vraie quoi qu'il arrive, y compris si den tentait vraiment d'en créer un.
-// Mesuré : avec un dossier nu, inverser l'ordre des gardes dans spawn.Spawn
-// laissait le test passer.
+// The repo is a REAL GIT REPOSITORY, and that is not a comfort detail: the
+// tests checking no worktree was created would be EMPTY without it.
+// worktree.Ensure opens with a checkRepo that fails immediately on a plain
+// directory, without creating anything — the "no worktree" assertion would
+// then be true no matter what, including if den actually tried to create one.
+// Measured: with a bare directory, swapping the guard order in spawn.Spawn
+// still let the test pass.
 //
-// Aucun `egress:` : policy.Settle rend nil sur une allowlist vide, ce qui
-// épargne à la suite les 60 s du settle-loop (même précaution que
-// denHomeSpawnable, spawn_test.go). L'environnement git est neutralisé
-// package-wide par TestMain (main_test.go).
+// No `egress:`: policy.Settle returns nil on an empty allowlist, sparing the
+// suite the 60s settle-loop (same precaution as denHomeSpawnable,
+// spawn_test.go). The git environment is neutralized package-wide by TestMain
+// (main_test.go).
 func denHomeHostile(t *testing.T) (string, string) {
 	t.Helper()
-	dir := t.TempDir()
-	repo := filepath.Join(t.TempDir(), "monrepo")
-	creeDepotGit(t, repo)
-	ecris := func(rel, contenu string) {
-		p := filepath.Join(dir, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(contenu), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	ecris("config.yaml", `agents:
-  claude:
-    config_dir: `+filepath.Join(dir, "agents", "claude")+`
-    update: "claude update"
-defaults:
-  agent: claude
-  stack: devx
-`)
-	ecris("stacks/devx/stack.yaml", "image: devx:v1\n")
-	ecris("nests/api.yaml", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
-	return dir, repo
+	repo := filepath.Join(t.TempDir(), "myrepo")
+	createTestRepo(t, repo)
+	return denHomeFor(t, repo), repo
 }
 
-// runHostile exécute l'arbre de commandes RÉEL sur un den home, avec un
-// sbx.Fake, et rend le Fake pour que l'appelant puisse asserter l'ABSENCE
-// d'appel autant que sa présence.
-func runHostile(t *testing.T, home string, args ...string) (*sbx.Fake, string, error) {
-	t.Helper()
-	f := &sbx.Fake{
-		Reponses: map[string]sbx.Reponse{"ls --json": {Sortie: []byte(`{"sandboxes":[]}`)}},
-		Defaut:   sbx.Reponse{Sortie: []byte(`{"allowed": true}`)},
-	}
-	deps := DepsSysteme()
-	deps.Sbx = f
-	sortie, err := executeCmd(t, NewRootCmdAvec(deps), append(args, "--den-home", home)...)
-	return f, sortie, err
-}
-
-// Cas 5 de la table — LE plus risqué, parce que son coût est un effet de bord :
-// un worktree créé pour une sandbox qui ne verra jamais le jour, que
-// l'utilisateur devra retirer à la main.
+// Case 5 of the table — THE riskiest, because its cost is a side effect: a
+// worktree created for a sandbox that will never exist, which the user would
+// have to remove by hand.
 //
-// Le nommage est calculé AVANT la boucle de création des worktrees dans
-// spawn.Spawn, et c'est cet ORDRE que ce test verrouille — pas le message :
-// inverser les deux étapes laisserait le refus intact et le worktree créé, sans
-// qu'aucun test du paquet spawn ne s'en aperçoive.
+// The naming is computed BEFORE the worktree-creation loop in spawn.Spawn,
+// and this test locks that ORDER, not the message: swapping the two steps
+// would leave the refusal intact and the worktree created, without any test
+// in the spawn package noticing.
 //
-// La valeur refusée est « +wip » depuis F4, et non plus « feature/123 » : un
-// « / » est désormais APLATI (la branche garde son nom, la sandbox prend
-// « feature-123 ») et ne produit donc plus aucune erreur. Ce que l'aplatissement
-// ne répare pas, c'est un premier caractère non alphanumérique — un tel nom est
-// indiscernable d'un flag, et den ne va pas en choisir un autre à la place de
-// l'utilisateur. Le « + » plutôt que le « - » : pflag prendrait « -wip » pour un
-// flag avant que den ne voie quoi que ce soit.
-func TestWorktreeNonSandboxableEstRefuseSansRienCreer(t *testing.T) {
+// The rejected value is "+wip" since F4, no longer "feature/123": a "/" is
+// now FLATTENED (the branch keeps its name, the sandbox takes
+// "feature-123") and therefore no longer produces any error. What flattening
+// does not fix is a first character that is not alphanumeric — such a name is
+// indistinguishable from a flag, and den will not pick another one on the
+// user's behalf. "+" rather than "-": pflag would take "-wip" for a flag
+// before den ever sees anything.
+func TestNonSandboxableWorktreeIsRefusedWithoutCreatingAnything(t *testing.T) {
 	home, _ := denHomeHostile(t)
 
-	f, _, err := runHostile(t, home, "api", "-w", "+wip")
+	f, _, err := runFullRoot(t, home, "api", "-w", "+wip")
 	if err == nil {
-		t.Fatal("un worktree nommé « +wip » doit être refusé")
+		t.Fatal("a worktree named \"+wip\" must be refused")
 	}
-	// Le caractère fautif, pas seulement « nom invalide » : c'est lui que
-	// l'utilisateur doit corriger.
+	// The offending character, not just "invalid name": that is what the user
+	// must fix.
 	if !strings.Contains(err.Error(), `"+"`) {
-		t.Errorf("le message doit nommer le caractère refusé ; obtenu : %v", err)
+		t.Errorf("the message must name the refused character; got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "+wip") {
-		t.Errorf("le message doit citer la valeur reçue ; obtenu : %v", err)
+		t.Errorf("the message must quote the received value; got: %v", err)
 	}
-	if len(f.Appels) != 0 {
-		t.Errorf("aucun appel sbx ne doit avoir lieu ; appels : %v", f.Appels)
+	if len(f.Calls) != 0 {
+		t.Errorf("no sbx call must happen; calls: %v", f.Calls)
 	}
-	// L'effet de bord que ce test existe pour interdire : la racine des
-	// worktrees ne doit pas même avoir été créée.
+	// The side effect this test exists to forbid: the worktree root must not
+	// even have been created.
 	if _, err := os.Stat(filepath.Join(home, "worktrees")); err == nil {
-		t.Error("un worktree a été créé alors que le nom de sandbox est invalide")
+		t.Error("a worktree was created although the sandbox name is invalid")
 	}
 }
 
-// Cas 7 de la table — un nest sans aucun repo.
+// Case 7 of the table — a nest with no repo at all.
 //
-// La question que posait le brief : `sbx create` a-t-il encore au moins un
-// workspace ? Réponse mesurée : oui, le profil de l'agent. Ce test la fige,
-// parce qu'ArgvCreate REFUSE un create sans workspace (« sbx create exige au
-// moins un chemin ») : si le profil cessait un jour d'être monté, un nest sans
-// repo deviendrait insandboxable, et le message parlerait de workspaces
-// manquants sans dire que c'est le profil qui a disparu.
-func TestUnNestSansRepoMonteQuandMemeLeProfilDeLAgent(t *testing.T) {
+// The question the brief asked: does `sbx create` still get at least one
+// workspace? Measured answer: yes, the agent's profile. This test pins it,
+// because CreateArgv REJECTS a create with no workspace ("sbx create requires
+// at least one path"): if the profile ever stopped being mounted, a
+// repo-less nest would become unsandboxable, and the message would talk about
+// missing workspaces without saying the profile is what vanished.
+func TestANestWithNoRepoStillMountsTheAgentProfile(t *testing.T) {
 	home, _ := denHomeHostile(t)
 	if err := os.WriteFile(filepath.Join(home, "nests", "api.yaml"),
 		[]byte("stack: devx\nrepos: []\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	f, _, err := runHostile(t, home, "api")
+	f, _, err := runFullRoot(t, home, "api")
 	if err != nil {
-		t.Fatalf("un nest sans repo doit rester spawnable : %v", err)
+		t.Fatalf("a nest with no repo must stay spawnable: %v", err)
 	}
-	if !f.AAppele("create") {
-		t.Fatalf("aucun `sbx create` ; appels : %v", f.Appels)
+	if !f.HasCalled("create") {
+		t.Fatalf("no `sbx create`; calls: %v", f.Calls)
 	}
 	var create []string
-	for _, a := range f.Appels {
+	for _, a := range f.Calls {
 		if len(a) > 0 && a[0] == "create" {
 			create = a
 		}
 	}
-	// Le profil de l'agent est le workspace de repli, et le seul ici.
-	profil := filepath.Join(home, "agents", "claude")
-	if !slicesContient(create, profil) {
-		t.Errorf("le profil de l'agent (%s) doit être monté ; argv create = %v", profil, create)
+	// The agent's profile is the fallback workspace, and the only one here.
+	profile := filepath.Join(home, "agents", "claude")
+	if !slices.Contains(create, profile) {
+		t.Errorf("the agent's profile (%s) must be mounted; create argv = %v", profile, create)
 	}
-	// Et il est bien le DERNIER argument positionnel, donc un workspace : un
-	// create sans aucun workspace serait refusé par ArgvCreate.
-	if create[len(create)-1] != profil {
-		t.Errorf("dernier workspace = %q, attendu le profil %q", create[len(create)-1], profil)
+	// And it is the LAST positional argument, hence a workspace: a create with
+	// no workspace at all would be rejected by CreateArgv.
+	if create[len(create)-1] != profile {
+		t.Errorf("last workspace = %q, expected profile %q", create[len(create)-1], profile)
 	}
 }
 
-// Cas 8 de la table, tel qu'il se manifeste pour l'UTILISATEUR — la 15ᵉ
-// configuration hostile, trouvée en manipulant le binaire.
+// Case 8 of the table, as it shows up to the USER — the 15th hostile
+// configuration, found by poking at the binary.
 //
-// Le refus lui-même est verrouillé par TestValideWorktreeRefuseUneRacineRelative
-// (internal/config). Ce test-ci verrouille autre chose, que le paquet config ne
-// peut pas voir : que le refus arrive AVANT le moindre effet de bord, et qu'il
-// nomme le champ à corriger. Avant correctif, mesuré sur le binaire, den créait
-// pour de bon un worktree et une branche DANS le dépôt de l'utilisateur, puis
-// échouait sur un message parlant de « workspace n°1 » — un mot qui n'apparaît
-// nulle part dans sa configuration.
-func TestWorktreeRootRelatifEstRefuseEnNommantLeChamp(t *testing.T) {
+// The refusal itself is locked by TestValidateWorktreeRefusesARelativeRoot
+// (internal/config). THIS test locks something the config package cannot
+// see: that the refusal arrives BEFORE any side effect, and names the field
+// to fix. Before the fix, measured on the binary, den actually created a
+// worktree and a branch INSIDE the user's repo, then failed with a message
+// talking about "workspace #1" — a word that appears nowhere in the user's
+// configuration.
+func TestRelativeWorktreeRootIsRefusedNamingTheField(t *testing.T) {
 	home, repo := denHomeHostile(t)
 	config, err := os.ReadFile(filepath.Join(home, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "config.yaml"),
-		append(config, []byte("worktree_root: wt-relatif\n")...), 0o644); err != nil {
+		append(config, []byte("worktree_root: wt-relative\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	f, _, err := runHostile(t, home, "api", "-w", "feat1")
+	f, _, err := runFullRoot(t, home, "api", "-w", "feat1")
 	if err == nil {
-		t.Fatal("un worktree_root relatif doit être refusé")
+		t.Fatal("a relative worktree_root must be refused")
 	}
 	if !strings.Contains(err.Error(), "worktree_root") {
-		t.Errorf("le message doit nommer le champ à corriger ; obtenu : %v", err)
+		t.Errorf("the message must name the field to fix; got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "wt-relatif") {
-		t.Errorf("le message doit citer la valeur reçue ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), "wt-relative") {
+		t.Errorf("the message must quote the received value; got: %v", err)
 	}
-	if len(f.Appels) != 0 {
-		t.Errorf("aucun appel sbx ne doit avoir lieu ; appels : %v", f.Appels)
+	if len(f.Calls) != 0 {
+		t.Errorf("no sbx call must happen; calls: %v", f.Calls)
 	}
 
-	// LE DÉFAUT EST L'EFFET DE BORD, et c'est donc lui qu'il faut mesurer : le
-	// message et l'absence d'appel sbx ne disent rien de ce que den a laissé
-	// dans le dépôt. Mesuré avant correctif, `git worktree list` rendait
-	// « <repo>/wt-relatif/feat1/monrepo … [feat1] » — un worktree ET une branche
-	// que l'utilisateur devait retirer à la main.
+	// THE DEFECT IS THE SIDE EFFECT, and that is therefore what must be
+	// measured: the message and the absence of an sbx call say nothing about
+	// what den left in the repo. Measured before the fix, `git worktree list`
+	// rendered "<repo>/wt-relative/feat1/myrepo ... [feat1]" — a worktree AND a
+	// branch the user had to remove by hand.
 	//
-	// Le chemin exact vient de la résolution relative de git : `worktree add`
-	// tourne AVEC LE REPO POUR CWD, donc « wt-relatif/… » atterrit dedans.
-	if _, err := os.Stat(filepath.Join(repo, "wt-relatif")); err == nil {
-		t.Errorf("den a créé %s dans le dépôt de l'utilisateur alors que la configuration "+
-			"est refusée", filepath.Join(repo, "wt-relatif"))
+	// The exact path comes from git's relative resolution: `worktree add` runs
+	// WITH THE REPO AS CWD, so "wt-relative/..." lands inside it.
+	if _, err := os.Stat(filepath.Join(repo, "wt-relative")); err == nil {
+		t.Errorf("den created %s inside the user's repo although the configuration "+
+			"is refused", filepath.Join(repo, "wt-relative"))
 	}
-	// La branche aussi : `git worktree add -b` la crée, et elle survit même si
-	// le dossier est nettoyé.
-	if branches := gitDansTest(t, repo, "branch", "--list", "feat1"); strings.TrimSpace(branches) != "" {
-		t.Errorf("den a créé la branche feat1 dans le dépôt de l'utilisateur : %q", branches)
+	// The branch too: `git worktree add -b` creates it, and it survives even
+	// if the directory is cleaned up.
+	if branches := gitInTest(t, repo, "branch", "--list", "feat1"); strings.TrimSpace(branches) != "" {
+		t.Errorf("den created branch feat1 in the user's repo: %q", branches)
 	}
-	// Et le dépôt ne connaît qu'un seul worktree, le principal.
-	if liste := gitDansTest(t, repo, "worktree", "list"); strings.Count(strings.TrimSpace(liste), "\n") != 0 {
-		t.Errorf("le dépôt porte plus d'un worktree :\n%s", liste)
+	// And the repo knows only one worktree, the main one.
+	if list := gitInTest(t, repo, "worktree", "list"); strings.Count(strings.TrimSpace(list), "\n") != 0 {
+		t.Errorf("the repo carries more than one worktree:\n%s", list)
 	}
 }
 
-// gitDansTest lance git dans un dépôt et rend sa sortie.
+// gitInTest runs git in a repo and returns its output.
 //
-// Elle passe par worktree.NewGit() plutôt que par le paquet exec de la
-// bibliothèque standard, et ce n'est pas une coquetterie : la garde
-// d'hermétisme de la tâche 17c interdit ce paquet dans les tests hors d'une
-// liste blanche dont ce fichier ne fait pas partie. Le besoin — lancer un vrai
-// git — est ici le même que celui qui a valu à internal/worktree son entrée
-// dans cette liste ; emprunter son accès exporté satisfait les deux.
+// It goes through worktree.NewGit() rather than the standard library's exec
+// package, and that is not a stylistic choice: task 17c's hermeticity guard
+// forbids that package in tests outside an allowlist this file is not part
+// of. The need here — running a real git — is the same one that earned
+// internal/worktree its place on that list; borrowing its exported access
+// satisfies both.
 //
-// L'environnement git de la machine est neutralisé package-wide par TestMain
-// (main_test.go). Ces appels sont en LECTURE seule : aucune configuration
-// n'est écrite, aucun `git config` n'est lancé.
-func gitDansTest(t *testing.T, dir string, args ...string) string {
+// The machine's git environment is neutralized package-wide by TestMain
+// (main_test.go). These calls are READ-ONLY: no configuration is written, no
+// `git config` is run.
+func gitInTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, err := worktree.NewGit().Run(context.Background(), dir, args...)
 	if err != nil {
-		t.Fatalf("git %v dans %s : %v\n%s", args, dir, err, out)
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}
 	return string(out)
 }
 
-// 16ᵉ configuration hostile : une stack cassée que PERSONNE n'utilise ne doit
-// pas empêcher de spawner un nest dont la stack est saine.
+// 16th hostile configuration: a broken stack that NOBODY uses must not
+// prevent spawning a nest whose stack is healthy.
 //
-// Mesuré sur le binaire avant correctif : `den api` échouait en affichant
-// l'erreur YAML d'une stack sans rapport, alors que le nest api référence devx,
-// parfaitement valide. C'est la doctrine que T16 a établie pour les nests, et
-// qui n'avait jamais été appliquée aux stacks.
-func TestUneStackCasseeNEmpechePasDeSpawnerUnNestSain(t *testing.T) {
+// Measured on the binary before the fix: `den api` failed printing the YAML
+// error of an unrelated stack, although nest api references devx, perfectly
+// valid. This is the doctrine T16 established for nests, never applied to
+// stacks until now.
+func TestABrokenStackDoesNotPreventSpawningAHealthyNest(t *testing.T) {
 	home, _ := denHomeHostile(t)
-	if err := os.MkdirAll(filepath.Join(home, "stacks", "autre"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, "stacks", "other"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "stacks", "autre", "stack.yaml"),
-		[]byte("image: autre:v1\nimag: faute-de-frappe\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "stacks", "other", "stack.yaml"),
+		[]byte("image: other:v1\nimag: typo\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	f, _, err := runHostile(t, home, "api")
+	f, _, err := runFullRoot(t, home, "api")
 	if err != nil {
-		t.Fatalf("le nest api utilise devx, saine : le spawn doit aboutir ; obtenu : %v", err)
+		t.Fatalf("nest api uses devx, healthy: the spawn must succeed; got: %v", err)
 	}
-	if !f.AAppele("create") {
-		t.Errorf("aucun `sbx create` ; appels : %v", f.Appels)
+	if !f.HasCalled("create") {
+		t.Errorf("no `sbx create`; calls: %v", f.Calls)
 	}
 }
 
-// Le pendant du test précédent, et la moitié qui compte vraiment : quand c'est
-// SA PROPRE stack qui est cassée, le nest doit échouer — et le message doit
-// porter la faute YAML, pas un « introuvable » qui enverrait créer un fichier
-// déjà présent.
+// The counterpart of the previous test, and the half that really matters:
+// when it is the nest's OWN stack that is broken, the nest must fail — and the
+// message must carry the YAML fault, not a "not found" that would send the
+// user to create a file that already exists.
 //
-// Sans ce test, ignorer purement et simplement les stacks cassées passerait le
-// test précédent en rendant le vrai problème muet.
-func TestUnNestDontLaStackEstCasseeEchoueEnNommantLaFaute(t *testing.T) {
+// Without this test, plainly ignoring broken stacks would pass the previous
+// test while making the real problem mute.
+func TestANestWhoseStackIsBrokenFailsNamingTheFault(t *testing.T) {
 	home, _ := denHomeHostile(t)
 	if err := os.WriteFile(filepath.Join(home, "stacks", "devx", "stack.yaml"),
-		[]byte("image: devx:v1\nimag: faute-de-frappe\n"), 0o644); err != nil {
+		[]byte("image: devx:v1\nimag: typo\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	f, _, err := runHostile(t, home, "api")
+	f, _, err := runFullRoot(t, home, "api")
 	if err == nil {
-		t.Fatal("un nest dont la stack est illisible ne doit pas spawner")
+		t.Fatal("a nest whose stack is unreadable must not spawn")
 	}
 	if !strings.Contains(err.Error(), "imag") {
-		t.Errorf("le message doit porter la faute YAML de la stack ; obtenu : %v", err)
+		t.Errorf("the message must carry the stack's YAML fault; got: %v", err)
 	}
-	if strings.Contains(err.Error(), "introuvable") {
-		t.Errorf("la stack existe : « introuvable » enverrait créer un fichier déjà présent ; obtenu : %v", err)
+	if strings.Contains(err.Error(), "not found") {
+		t.Errorf("the stack exists: \"not found\" would send the user to create a file "+
+			"that is already present; got: %v", err)
 	}
-	if f.AAppele("create") {
-		t.Errorf("aucune sandbox ne doit être créée ; appels : %v", f.Appels)
+	if f.HasCalled("create") {
+		t.Errorf("no sandbox must be created; calls: %v", f.Calls)
 	}
-}
-
-// slicesContient : slices.Contains sans importer slices pour un seul usage.
-func slicesContient(s []string, v string) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }

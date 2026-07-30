@@ -1,9 +1,9 @@
-# Recopie ce dossier dans ~/.den puis adapte-le.
+# Copy this directory into ~/.den, then adapt it.
 agents:
   claude:
     config_dir: ~/.den/agents/claude
     env: { CLAUDE_CONFIG_DIR: "{config_dir}" }
-    # Chemins IN-VM ajoutés au PATH avant la commande update (cf. spec §9.1).
+    # IN-VM paths added to PATH before the update command (cf. spec §9.1).
     bin_dirs: ["$HOME/.local/bin", "$HOME/.claude/local"]
     update: "claude update"
 defaults:

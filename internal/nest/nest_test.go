@@ -9,18 +9,18 @@ import (
 	"testing"
 )
 
-func ecrisNest(t *testing.T, denHome, nom, contenu string) {
+func writeNest(t *testing.T, denHome, name, content string) {
 	t.Helper()
 	dir := filepath.Join(denHome, "nests")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, nom+".yaml"), []byte(contenu), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
-const nestComplet = `
+const completeNest = `
 stack: dgdevx
 env:
   SOME_VAR: value
@@ -44,11 +44,11 @@ func TestLoadNest(t *testing.T) {
 		t.Fatal(err)
 	}
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "fullstack", nestComplet)
+	writeNest(t, denHome, "fullstack", completeNest)
 
 	n, err := LoadNest(denHome, "fullstack")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if n.Name != "fullstack" || n.Stack != "dgdevx" {
 		t.Errorf("nest = %+v", n)
@@ -57,141 +57,141 @@ func TestLoadNest(t *testing.T) {
 		t.Errorf("Env = %v", n.Env)
 	}
 	if len(n.Repos) != 2 {
-		t.Fatalf("attendu 2 repos, obtenu %d", len(n.Repos))
+		t.Fatalf("expected 2 repos, got %d", len(n.Repos))
 	}
 	if want := filepath.Join(home, "dev/review-mgmt"); n.Repos[0].Path != want {
-		t.Errorf("Repos[0].Path = %q, attendu %q (tilde expansé)", n.Repos[0].Path, want)
+		t.Errorf("Repos[0].Path = %q, expected %q (tilde expanded)", n.Repos[0].Path, want)
 	}
 	if n.Repos[0].Optional {
-		t.Error("Repos[0] doit être requis")
+		t.Error("Repos[0] must be required")
 	}
 	if !n.Repos[1].Optional {
-		t.Error("Repos[1] doit être optionnel")
+		t.Error("Repos[1] must be optional")
 	}
 	if got := n.Repos[0].Name(); got != "review-mgmt" {
-		t.Errorf("Name() = %q, attendu %q", got, "review-mgmt")
+		t.Errorf("Name() = %q, expected %q", got, "review-mgmt")
 	}
 	if n.Ports.Base != 9100 || len(n.Ports.Publish) != 2 {
 		t.Errorf("Ports = %+v", n.Ports)
 	}
 	if !n.Ports.Publish[1].LoopbackLock {
-		t.Error("le port cdp doit être loopback_lock")
+		t.Error("the cdp port must be loopback_lock")
 	}
 	if want := filepath.Join(home, ".den/agents/claude-fullstack"); n.Agents["claude"] != want {
-		t.Errorf("Agents[claude] = %q, attendu %q", n.Agents["claude"], want)
+		t.Errorf("Agents[claude] = %q, expected %q", n.Agents["claude"], want)
 	}
 }
 
-// Le nom d'un nest est le basename de son fichier — c'est le cas nominal, et le
-// seul : il n'y a pas d'autre source d'identité.
-func TestLoadNestNomDeduitDuFichier(t *testing.T) {
+// A nest's name is its file's basename — this is the nominal case, and the
+// only one: there is no other source of identity.
+func TestLoadNestNameDerivedFromFile(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "review", "stack: devx\n")
+	writeNest(t, denHome, "review", "stack: devx\n")
 	n, err := LoadNest(denHome, "review")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if n.Name != "review" {
-		t.Errorf("Name = %q, attendu %q déduit du fichier", n.Name, "review")
+		t.Errorf("Name = %q, expected %q derived from the file", n.Name, "review")
 	}
 }
 
-// Un `name:` dans le contenu était une seconde source d'identité, divergente du
-// nom de fichier : `den nest ls` cessait d'être trié (le tri porte sur les noms
-// de fichiers) et `den nest show <nom-affiché>` cherchait un fichier qui
-// n'existait pas. Le champ n'existe plus au schéma : le décodage strict le
-// rejette, à la source, avec un message qui nomme la clé fautive.
-func TestLoadNestRejetteUnNomDansLeContenu(t *testing.T) {
+// A `name:` in the content used to be a second, divergent source of identity:
+// `den nest ls` stopped being sorted (sorting is on filenames) and
+// `den nest show <displayed-name>` would look for a file that didn't exist.
+// The field no longer exists in the schema: strict decoding rejects it at the
+// source, with a message naming the offending key.
+func TestLoadNestRejectsANameInContent(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "api", "name: fullstack\nstack: devx\n")
+	writeNest(t, denHome, "api", "name: fullstack\nstack: devx\n")
 	_, err := LoadNest(denHome, "api")
 	if err == nil {
-		t.Fatal("attendu un rejet : l'identité d'un nest vient de son fichier, pas de son contenu")
+		t.Fatal("expected a rejection: a nest's identity comes from its file, not its content")
 	}
 	if !strings.Contains(err.Error(), "name") {
-		t.Errorf("erreur = %q, attendu une mention de la clé `name`", err.Error())
+		t.Errorf("error = %q, expected a mention of the `name` key", err.Error())
 	}
 }
 
-func TestLoadNestRejetteUneCleInconnue(t *testing.T) {
+func TestLoadNestRejectsAnUnknownKey(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "review", "stack: devx\negres:\n  - github.com\n")
+	writeNest(t, denHome, "review", "stack: devx\negres:\n  - github.com\n")
 	_, err := LoadNest(denHome, "review")
 	if err == nil {
-		t.Fatal("attendu une erreur sur la clé inconnue `egres`")
+		t.Fatal("expected an error on the unknown key `egres`")
 	}
 	if !strings.Contains(err.Error(), "egres") {
-		t.Errorf("erreur = %q, attendu une mention de la clé fautive", err.Error())
+		t.Errorf("error = %q, expected a mention of the offending key", err.Error())
 	}
 	if !strings.Contains(err.Error(), filepath.Join(denHome, "nests", "review.yaml")) {
-		t.Errorf("erreur = %q, attendu le chemin du fichier fautif", err.Error())
+		t.Errorf("error = %q, expected the offending file's path", err.Error())
 	}
 }
 
-func TestLoadNestFichierVide(t *testing.T) {
+func TestLoadNestEmptyFile(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "review", "")
+	writeNest(t, denHome, "review", "")
 	n, err := LoadNest(denHome, "review")
 	if err != nil {
-		t.Fatalf("un nest vide ne doit pas être une erreur de chargement : %v", err)
+		t.Fatalf("an empty nest must not be a load error: %v", err)
 	}
 	if n.Name != "review" {
-		t.Errorf("Name = %q, attendu %q déduit du fichier", n.Name, "review")
+		t.Errorf("Name = %q, expected %q derived from the file", n.Name, "review")
 	}
 }
 
-// L'ABSENCE d'un nest est le seul échec de chargement qui veut dire « cet objet
-// n'existe pas », et la CLI s'en sert pour décider de proposer une sous-commande
-// proche (`den doctr` ⇒ `den doctor`). Elle doit donc être reconnaissable
-// autrement qu'en lisant le message.
-func TestLoadNestAbsentEstUnTypeReconnaissable(t *testing.T) {
+// The ABSENCE of a nest is the only load failure that means "this object does
+// not exist", and the CLI relies on it to decide whether to suggest a close
+// subcommand (`den doctr` => `den doctor`). It must therefore be recognizable
+// other than by reading the message.
+func TestLoadNestMissingIsARecognizableType(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "api", "stack: devx\n") // le dossier nests/ existe
+	writeNest(t, denHome, "api", "stack: devx\n") // the nests/ directory exists
 
 	_, err := LoadNest(denHome, "absent")
-	var introuvable *ErreurNestIntrouvable
-	if !errors.As(err, &introuvable) {
-		t.Fatalf("errors.As(err, &ErreurNestIntrouvable) doit réussir ; err = %v (%T)", err, err)
+	var notFound *NestNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("errors.As(err, &NestNotFoundError) must succeed; err = %v (%T)", err, err)
 	}
-	if introuvable.Nom != "absent" {
-		t.Errorf("Nom = %q, attendu %q", introuvable.Nom, "absent")
+	if notFound.Name != "absent" {
+		t.Errorf("Name = %q, expected %q", notFound.Name, "absent")
 	}
-	if attendu := filepath.Join(denHome, "nests", "absent.yaml"); introuvable.Chemin != attendu {
-		t.Errorf("Chemin = %q, attendu %q", introuvable.Chemin, attendu)
+	if expected := filepath.Join(denHome, "nests", "absent.yaml"); notFound.Path != expected {
+		t.Errorf("Path = %q, expected %q", notFound.Path, expected)
 	}
-	// fs.ErrNotExist doit rester dans la chaîne : du code qui teste déjà
-	// os.IsNotExist sur cette erreur ne doit pas cesser de marcher.
+	// fs.ErrNotExist must stay in the chain: code that already tests
+	// os.IsNotExist on this error must not stop working.
 	if !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("fs.ErrNotExist doit rester repérable dans la chaîne ; err = %v", err)
+		t.Errorf("fs.ErrNotExist must stay detectable in the chain; err = %v", err)
 	}
-	// Le message ne change pas : ce type change ce que le code inspecte, pas ce
-	// que l'utilisateur lit.
-	for _, attendu := range []string{`nest "absent"`, filepath.Join(denHome, "nests", "absent.yaml")} {
-		if !strings.Contains(err.Error(), attendu) {
-			t.Errorf("message = %q, attendu contenant %q", err.Error(), attendu)
+	// The message does not change: this type changes what the code can
+	// inspect, not what the user reads.
+	for _, expected := range []string{`nest "absent"`, filepath.Join(denHome, "nests", "absent.yaml")} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("message = %q, expected it to contain %q", err.Error(), expected)
 		}
 	}
-	// Le chemin UNE SEULE fois, et pas d'anglais. C'est l'erreur la plus banale
-	// du projet — un nom de nest mal tapé — et elle rendait, mesuré sur le
-	// binaire :
+	// The path exactly once, and in den's own wording. This is the most
+	// mundane error in the project — a mistyped nest name — and it rendered,
+	// measured on the binary:
 	//
-	//	nest "inconnu" : lecture de <chemin> : open <chemin>: no such file or directory
+	//	nest "unknown": reading <path>: open <path>: no such file or directory
 	//
-	// Le *fs.PathError de l'OS porte déjà le chemin absolu que LoadNest vient de
-	// nommer, et son motif est en anglais.
-	chemin := filepath.Join(denHome, "nests", "absent.yaml")
-	if n := strings.Count(err.Error(), chemin); n != 1 {
-		t.Errorf("le chemin apparaît %d fois, attendu 1 ; message : %s", n, err.Error())
+	// The OS's *fs.PathError already carries the absolute path LoadNest just
+	// named, and its raw reason must not leak past config.FileError.
+	path := filepath.Join(denHome, "nests", "absent.yaml")
+	if n := strings.Count(err.Error(), path); n != 1 {
+		t.Errorf("the path appears %d times, expected 1; message: %s", n, err.Error())
 	}
 	if strings.Contains(err.Error(), "no such file or directory") {
-		t.Errorf("reste d'anglais dans le message : %s", err.Error())
+		t.Errorf("the raw OS reason must not leak: %s", err.Error())
 	}
 }
 
-// La contrepartie : un nest PRÉSENT mais illisible n'est pas « introuvable ».
-// Un dossier à la place du fichier, et non un chmod 0000 : la suite tourne en
-// root, où les droits ne bloquent rien.
-func TestLoadNestIllisibleNEstPasIntrouvable(t *testing.T) {
+// The counterpart: a nest that IS present but unreadable is not "not found".
+// A directory in the file's place, not a chmod 0000: the suite runs as root,
+// where permissions block nothing.
+func TestLoadNestUnreadableIsNotNotFound(t *testing.T) {
 	denHome := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(denHome, "nests", "api.yaml"), 0o755); err != nil {
 		t.Fatal(err)
@@ -199,281 +199,281 @@ func TestLoadNestIllisibleNEstPasIntrouvable(t *testing.T) {
 
 	_, err := LoadNest(denHome, "api")
 	if err == nil {
-		t.Fatal("un nest illisible doit être une erreur de chargement")
+		t.Fatal("an unreadable nest must be a load error")
 	}
-	var introuvable *ErreurNestIntrouvable
-	if errors.As(err, &introuvable) {
-		t.Errorf("un nest présent ne doit pas être rapporté introuvable ; err = %v", err)
+	var notFound *NestNotFoundError
+	if errors.As(err, &notFound) {
+		t.Errorf("a present nest must not be reported as not found; err = %v", err)
 	}
 }
 
-// Deux repos de meme basename ne sont pas honorables : --without/--only les
-// designent par ce nom (un seul `--without api` en ferait disparaitre deux), et
-// au plan 2 le layout worktree_root/<wt>/<repo> les ferait collisionner sur le
-// meme dossier. On rejette la config a la source plutot que de servir un
-// comportement surprenant.
-func TestLoadNestRejetteDeuxReposHomonymes(t *testing.T) {
+// Two repos sharing a basename are not honorable: --without/--only address
+// them by this name (a single `--without api` would silently drop both), and
+// at plan 2 the worktree_root/<wt>/<repo> layout would collide them onto the
+// same directory. Reject the config at the source rather than serve
+// surprising behavior.
+func TestLoadNestRejectsTwoHomonymousRepos(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "fullstack", "repos:\n  - { path: /tmp/x/api }\n  - { path: /tmp/y/api }\n")
+	writeNest(t, denHome, "fullstack", "repos:\n  - { path: /tmp/x/api }\n  - { path: /tmp/y/api }\n")
 	_, err := LoadNest(denHome, "fullstack")
 	if err == nil {
-		t.Fatal("attendu un rejet : deux repos partagent le basename `api`")
+		t.Fatal("expected a rejection: two repos share the basename `api`")
 	}
-	for _, attendu := range []string{"fullstack", "api", "/tmp/x/api", "/tmp/y/api"} {
-		if !strings.Contains(err.Error(), attendu) {
-			t.Errorf("erreur = %q, attendu une mention de %q", err.Error(), attendu)
+	for _, expected := range []string{"fullstack", "api", "/tmp/x/api", "/tmp/y/api"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("error = %q, expected a mention of %q", err.Error(), expected)
 		}
 	}
 }
 
-// La collision doit etre detectee APRES expansion : deux chemins ecrits
-// differemment peuvent designer le meme basename une fois `~` resolu.
-func TestLoadNestRejetteLesHomonymesApresExpansion(t *testing.T) {
+// The collision must be detected AFTER expansion: two differently-written
+// paths can name the same basename once `~` is resolved.
+func TestLoadNestRejectsHomonymsAfterExpansion(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "fullstack", "repos:\n  - { path: ~/dev/api }\n  - { path: /srv/api, optional: true }\n")
+	writeNest(t, denHome, "fullstack", "repos:\n  - { path: ~/dev/api }\n  - { path: /srv/api, optional: true }\n")
 	if _, err := LoadNest(denHome, "fullstack"); err == nil {
-		t.Fatal("attendu un rejet : les deux chemins expansés partagent le basename `api`")
+		t.Fatal("expected a rejection: the two expanded paths share the basename `api`")
 	}
 }
 
-func TestLoadNestAbsent(t *testing.T) {
-	if _, err := LoadNest(t.TempDir(), "fantome"); err == nil {
-		t.Fatal("attendu une erreur pour un nest absent")
+func TestLoadNestMissing(t *testing.T) {
+	if _, err := LoadNest(t.TempDir(), "ghost"); err == nil {
+		t.Fatal("expected an error for a missing nest")
 	}
 }
 
-// `den nest show ../../../../etc/passwd` construisait un chemin hors de
-// DEN_HOME. L'impact est faible aujourd'hui (CLI locale, fichiers de
-// l'utilisateur), mais au plan 2 ce nom devient un nom de sandbox, un label
-// `den.nest` et la graine du hash de la fenêtre de ports : on le rejette à la
-// source.
-func TestLoadNestRefuseUnNomQuiSortDeDenHome(t *testing.T) {
-	racine := t.TempDir()
-	denHome := filepath.Join(racine, "home")
-	// Un YAML de nest parfaitement valide, mais HORS du den home.
+// `den nest show ../../../../etc/passwd` used to build a path outside
+// DEN_HOME. The impact is low today (local CLI, the user's own files), but at
+// plan 2 this name becomes a sandbox name, a `den.nest` label, and the seed of
+// the port window's hash: reject it at the source.
+func TestLoadNestRefusesANameEscapingDenHome(t *testing.T) {
+	root := t.TempDir()
+	denHome := filepath.Join(root, "home")
+	// A perfectly valid nest YAML, but OUTSIDE the den home.
 	if err := os.MkdirAll(filepath.Join(denHome, "nests"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(racine, "dehors.yaml"), []byte("stack: devx\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "outside.yaml"), []byte("stack: devx\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// <denHome>/nests/../../dehors.yaml == <racine>/dehors.yaml
-	if _, err := LoadNest(denHome, "../../dehors"); err == nil {
-		t.Error("LoadNest a chargé un fichier situé hors du den home")
+	// <denHome>/nests/../../outside.yaml == <root>/outside.yaml
+	if _, err := LoadNest(denHome, "../../outside"); err == nil {
+		t.Error("LoadNest loaded a file located outside the den home")
 	}
-	for _, nom := range []string{"a/b", "..", "."} {
-		if _, err := LoadNest(denHome, nom); err == nil {
-			t.Errorf("LoadNest(%q) = nil, attendu un rejet", nom)
+	for _, name := range []string{"a/b", "..", "."} {
+		if _, err := LoadNest(denHome, name); err == nil {
+			t.Errorf("LoadNest(%q) = nil, expected a rejection", name)
 		}
 	}
 }
 
-func TestListNestsTriParNom(t *testing.T) {
+func TestListNestsSortsByName(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "web", "stack: devx\n")
-	ecrisNest(t, denHome, "api", "stack: devx\n")
-	ecrisNest(t, denHome, "review", "stack: devx\n")
-	// un fichier non-YAML ne doit pas être ramassé
+	writeNest(t, denHome, "web", "stack: devx\n")
+	writeNest(t, denHome, "api", "stack: devx\n")
+	writeNest(t, denHome, "review", "stack: devx\n")
+	// a non-YAML file must not be picked up
 	if err := os.WriteFile(filepath.Join(denHome, "nests", "NOTES.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	nests, casses, err := ListNests(denHome)
+	nests, broken, err := ListNests(denHome)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(casses) != 0 {
-		t.Fatalf("aucun nest cassé attendu, obtenu %v", casses)
+	if len(broken) != 0 {
+		t.Fatalf("expected no broken nests, got %v", broken)
 	}
-	var noms []string
+	var names []string
 	for _, n := range nests {
-		noms = append(noms, n.Name)
+		names = append(names, n.Name)
 	}
-	attendu := []string{"api", "review", "web"}
-	if len(noms) != 3 || noms[0] != attendu[0] || noms[1] != attendu[1] || noms[2] != attendu[2] {
-		t.Errorf("noms = %v, attendu %v (trié)", noms, attendu)
+	expected := []string{"api", "review", "web"}
+	if len(names) != 3 || names[0] != expected[0] || names[1] != expected[1] || names[2] != expected[2] {
+		t.Errorf("names = %v, expected %v (sorted)", names, expected)
 	}
 }
 
-// TestListNestsTriDivergeDeLOrdreFichier verrouille le tri explicite de ListNests.
-// os.ReadDir renvoie déjà ses entrées triées par nom de FICHIER : avec des noms de
-// nests qui partagent tous le même suffixe ".yaml" (cas de TestListNestsTriParNom
-// ci-dessus), l'ordre des fichiers et l'ordre des noms de nests coïncident toujours,
-// et un test bâti uniquement sur ce cas ne distinguerait pas « ListNests trie » de
-// « ReadDir trie déjà » — on pourrait retirer sort.Strings sans faire échouer la suite.
-// Ici "web-2.yaml" et "web.yaml" divergent : '-' (0x2D) précède '.' (0x2E) en ASCII, donc
-// ReadDir renvoie "web-2.yaml" avant "web.yaml", alors qu'une fois le suffixe ".yaml"
-// retiré, l'ordre trié des noms de nests place "web" avant "web-2" (préfixe plus court).
-func TestListNestsTriDivergeDeLOrdreFichier(t *testing.T) {
+// TestListNestsSortDivergesFromFileOrder locks in ListNests' explicit
+// sorting. os.ReadDir already returns entries sorted by FILENAME: with nest
+// names that all share the same ".yaml" suffix (the TestListNestsSortsByName
+// case above), file order and nest-name order always coincide, and a test
+// built solely on that case would not distinguish "ListNests sorts" from
+// "ReadDir already sorts" — sort.Strings could be removed without failing the
+// suite. Here "web-2.yaml" and "web.yaml" diverge: '-' (0x2D) precedes '.'
+// (0x2E) in ASCII, so ReadDir returns "web-2.yaml" before "web.yaml", while
+// once the ".yaml" suffix is stripped, the sorted order of nest names puts
+// "web" before "web-2" (shorter prefix).
+func TestListNestsSortDivergesFromFileOrder(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "web", "stack: devx\n")
-	ecrisNest(t, denHome, "web-2", "stack: devx\n")
-	ecrisNest(t, denHome, "api", "stack: devx\n")
+	writeNest(t, denHome, "web", "stack: devx\n")
+	writeNest(t, denHome, "web-2", "stack: devx\n")
+	writeNest(t, denHome, "api", "stack: devx\n")
 
-	nests, casses, err := ListNests(denHome)
+	nests, broken, err := ListNests(denHome)
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(casses) != 0 {
-		t.Fatalf("aucun nest cassé attendu, obtenu %v", casses)
+	if len(broken) != 0 {
+		t.Fatalf("expected no broken nests, got %v", broken)
 	}
-	var noms []string
+	var names []string
 	for _, n := range nests {
-		noms = append(noms, n.Name)
+		names = append(names, n.Name)
 	}
-	attendu := []string{"api", "web", "web-2"}
-	if len(noms) != 3 || noms[0] != attendu[0] || noms[1] != attendu[1] || noms[2] != attendu[2] {
-		t.Errorf("noms = %v, attendu %v (trié par nom de nest, pas par nom de fichier)", noms, attendu)
+	expected := []string{"api", "web", "web-2"}
+	if len(names) != 3 || names[0] != expected[0] || names[1] != expected[1] || names[2] != expected[2] {
+		t.Errorf("names = %v, expected %v (sorted by nest name, not filename)", names, expected)
 	}
 }
 
-// L'assertion mentionne le caractère fautif « _ » : sans ça, le test passerait
-// aussi si LoadNest échouait pour une tout autre raison, sans rapport avec le
-// charset de sandbox.
-func TestLoadNestRefuseUnNomNonSandboxable(t *testing.T) {
+// The assertion names the offending character "_": without it, the test would
+// also pass if LoadNest failed for a completely different reason, unrelated
+// to the sandbox charset.
+func TestLoadNestRefusesANonSandboxableName(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "mon_api", "stack: devx\nrepos: []\n")
+	writeNest(t, denHome, "mon_api", "stack: devx\nrepos: []\n")
 
 	_, err := LoadNest(denHome, "mon_api")
 	if err == nil {
-		t.Fatal("un nom de nest non convertible en nom de sandbox doit être refusé au chargement")
+		t.Fatal("a nest name that cannot become a sandbox name must be rejected at load time")
 	}
 	if !strings.Contains(err.Error(), "_") {
-		t.Errorf("erreur = %q, attendu une mention du caractère fautif « _ »", err.Error())
+		t.Errorf("error = %q, expected a mention of the offending character \"_\"", err.Error())
 	}
 }
 
-func TestListNestsListeLesSainsEtSignaleLesCasses(t *testing.T) {
+func TestListNestsListsHealthyAndReportsBroken(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos: []\n")
-	ecrisNest(t, denHome, "casse", "stack: devx\negres:\n  - typo.exemple.test\n")
-	ecrisNest(t, denHome, "web", "stack: devx\nrepos: []\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	writeNest(t, denHome, "broken", "stack: devx\negres:\n  - typo.example.test\n")
+	writeNest(t, denHome, "web", "stack: devx\nrepos: []\n")
 
-	nests, casses, err := ListNests(denHome)
+	nests, broken, err := ListNests(denHome)
 	if err != nil {
-		t.Fatalf("un nest fautif ne doit pas être une erreur structurelle : %v", err)
+		t.Fatalf("a faulty nest must not be a structural error: %v", err)
 	}
 
 	if len(nests) != 2 || nests[0].Name != "api" || nests[1].Name != "web" {
-		t.Errorf("les nests sains doivent être listés et triés ; obtenu %v", nomsDe(nests))
+		t.Errorf("healthy nests must be listed and sorted; got %v", namesOf(nests))
 	}
-	if len(casses) != 1 || casses[0].Nom != "casse" {
-		t.Fatalf("le nest fautif doit être signalé ; obtenu %v", casses)
+	if len(broken) != 1 || broken[0].Name != "broken" {
+		t.Fatalf("the faulty nest must be reported; got %v", broken)
 	}
-	// Le diagnostic doit rester exploitable : fichier, ligne, clé.
-	msg := casses[0].Err.Error()
-	for _, attendu := range []string{"casse.yaml", "egres"} {
-		if !strings.Contains(msg, attendu) {
-			t.Errorf("le diagnostic doit contenir %q ; obtenu : %s", attendu, msg)
+	// The diagnostic must stay actionable: file, line, key.
+	msg := broken[0].Err.Error()
+	for _, expected := range []string{"broken.yaml", "egres"} {
+		if !strings.Contains(msg, expected) {
+			t.Errorf("the diagnostic must contain %q; got: %s", expected, msg)
 		}
 	}
 }
 
-func TestListNestsToutSain(t *testing.T) {
+func TestListNestsAllHealthy(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
 
-	nests, casses, err := ListNests(denHome)
-	if err != nil || len(nests) != 1 || len(casses) != 0 {
-		t.Errorf("nests=%v casses=%v err=%v", nomsDe(nests), casses, err)
+	nests, broken, err := ListNests(denHome)
+	if err != nil || len(nests) != 1 || len(broken) != 0 {
+		t.Errorf("nests=%v broken=%v err=%v", namesOf(nests), broken, err)
 	}
 }
 
-func TestListNestsDossierAbsent(t *testing.T) {
-	nests, casses, err := ListNests(t.TempDir())
+func TestListNestsMissingDir(t *testing.T) {
+	nests, broken, err := ListNests(t.TempDir())
 	if err != nil {
-		t.Errorf("un ~/.den sans dossier nests n'est pas une erreur : %v", err)
+		t.Errorf("a ~/.den without a nests directory is not an error: %v", err)
 	}
-	if len(nests) != 0 || len(casses) != 0 {
-		t.Errorf("nests=%v casses=%v", nests, casses)
+	if len(nests) != 0 || len(broken) != 0 {
+		t.Errorf("nests=%v broken=%v", nests, broken)
 	}
 }
 
-// TestListNestsRacineIllisible verrouille la distinction entre un nest cassé
-// (2e valeur de retour) et un échec STRUCTUREL (3e valeur) : quand la racine
-// nests/ elle-même est illisible, il n'y a rien à lister du tout, et
-// ListNests doit le dire par une erreur nommant le chemin complet plutôt que
-// de renvoyer une liste vide silencieuse.
-func TestListNestsRacineIllisible(t *testing.T) {
+// TestListNestsUnreadableRoot locks in the distinction between a broken nest
+// (2nd return value) and a STRUCTURAL failure (3rd value): when the nests/
+// root itself is unreadable, there is nothing to list at all, and ListNests
+// must say so via an error naming the full path rather than returning a
+// silent empty list.
+func TestListNestsUnreadableRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("test non fiable en root : les permissions sont ignorées")
+		t.Skip("test unreliable as root: permissions are ignored")
 	}
 	denHome := t.TempDir()
-	racine := filepath.Join(denHome, "nests")
-	if err := os.MkdirAll(racine, 0o755); err != nil {
+	root := filepath.Join(denHome, "nests")
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(racine, 0o000); err != nil {
+	if err := os.Chmod(root, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	// os.Geteuid() == 0 ne couvre pas tous les cas (conteneurs, CFS particuliers
-	// qui ignorent aussi les permissions) : on vérifie EMPIRIQUEMENT que la
-	// lecture échoue avant d'asserter quoi que ce soit, plutôt que de supposer
-	// que 0o000 suffit sur ce poste.
-	if _, err := os.ReadDir(racine); err == nil {
-		if err := os.Chmod(racine, 0o755); err != nil {
+	// os.Geteuid() == 0 does not cover every case (containers, filesystems
+	// that also ignore permissions): verify EMPIRICALLY that the read fails
+	// before asserting anything, rather than assuming 0o000 is enough on this
+	// machine.
+	if _, err := os.ReadDir(root); err == nil {
+		if err := os.Chmod(root, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		t.Skip("la lecture d'un dossier 0o000 réussit sur cet environnement : test non fiable ici")
+		t.Skip("reading a 0o000 directory succeeds on this environment: test unreliable here")
 	}
 	t.Cleanup(func() {
-		// t.TempDir() doit pouvoir nettoyer derrière nous.
-		if err := os.Chmod(racine, 0o755); err != nil {
+		// t.TempDir() must be able to clean up after us.
+		if err := os.Chmod(root, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	})
 
-	nests, casses, err := ListNests(denHome)
+	nests, broken, err := ListNests(denHome)
 	if err == nil {
-		t.Fatal("attendu une erreur structurelle pour une racine nests/ illisible")
+		t.Fatal("expected a structural error for an unreadable nests/ root")
 	}
-	if nests != nil || casses != nil {
-		t.Errorf("nests=%v casses=%v, attendu nil sur un échec structurel", nests, casses)
+	if nests != nil || broken != nil {
+		t.Errorf("nests=%v broken=%v, expected nil on a structural failure", nests, broken)
 	}
-	// Contains(racine) serait vrai par construction : le *fs.PathError brut de
-	// os.ReadDir porte déjà le chemin absolu, wrap ou pas. HasPrefix sur le
-	// préfixe propre à den prouve que ListNests ajoute bien SON contexte
-	// (« lecture de <racine> : »), pas seulement que l'OS a nommé le chemin.
-	if !strings.HasPrefix(err.Error(), "lecture de "+racine) {
-		t.Errorf("erreur = %q, attendu le préfixe %q", err.Error(), "lecture de "+racine)
+	// Contains(root) would be true by construction: os.ReadDir's raw
+	// *fs.PathError already names the absolute path, wrapped or not.
+	// HasPrefix on den's own prefix proves that ListNests adds ITS context
+	// ("reading <root>: "), not just that the OS named the path.
+	if !strings.HasPrefix(err.Error(), "reading "+root) {
+		t.Errorf("error = %q, expected the prefix %q", err.Error(), "reading "+root)
 	}
 }
 
-// Un fichier littéralement nommé ".yaml" a un nom tronqué vide : sans repli,
-// l'avertissement ne nommerait ni le nest ni le fichier, et l'utilisateur
-// n'aurait aucun moyen de savoir quel fichier supprimer.
-func TestListNestsFichierYamlSansNomRetombeSurLeNomDeFichier(t *testing.T) {
+// A file literally named ".yaml" has an empty truncated name: without a
+// fallback, the warning would name neither the nest nor the file, and the
+// user would have no way to know which file to remove.
+func TestListNestsYamlFileWithoutNameFallsBackToFilename(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "", "stack: devx\n")
+	writeNest(t, denHome, "", "stack: devx\n")
 
-	_, casses, err := ListNests(denHome)
+	_, broken, err := ListNests(denHome)
 	if err != nil {
-		t.Fatalf("un nest fautif ne doit pas être une erreur structurelle : %v", err)
+		t.Fatalf("a faulty nest must not be a structural error: %v", err)
 	}
-	if len(casses) != 1 {
-		t.Fatalf("attendu un seul nest cassé ; obtenu %v", casses)
+	if len(broken) != 1 {
+		t.Fatalf("expected exactly one broken nest; got %v", broken)
 	}
-	if casses[0].Nom == "" {
-		t.Errorf("le nom du nest cassé ne doit jamais être vide ; Nom=%q Err=%v", casses[0].Nom, casses[0].Err)
+	if broken[0].Name == "" {
+		t.Errorf("a broken nest's name must never be empty; Name=%q Err=%v", broken[0].Name, broken[0].Err)
 	}
-	if casses[0].Nom != ".yaml" {
-		t.Errorf("le nom doit retomber sur le nom de fichier complet %q ; obtenu %q", ".yaml", casses[0].Nom)
+	if broken[0].Name != ".yaml" {
+		t.Errorf("the name must fall back to the full filename %q; got %q", ".yaml", broken[0].Name)
 	}
 }
 
-// Demander UN nest précis reste dur : répondre « il est cassé » est la seule
-// réponse honnête quand on a nommé celui-là.
-func TestLoadNestResteDur(t *testing.T) {
+// Asking for ONE specific nest stays strict: answering "it's broken" is the
+// only honest answer when that's the one named.
+func TestLoadNestStaysStrict(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisNest(t, denHome, "casse", "egres: [x]\n")
+	writeNest(t, denHome, "broken", "egres: [x]\n")
 
-	if _, err := LoadNest(denHome, "casse"); err == nil {
-		t.Fatal("LoadNest doit rester dur sur un nest illisible")
+	if _, err := LoadNest(denHome, "broken"); err == nil {
+		t.Fatal("LoadNest must stay strict on an unreadable nest")
 	}
 }
 
-func nomsDe(nests []*Nest) []string {
+func namesOf(nests []*Nest) []string {
 	out := make([]string, 0, len(nests))
 	for _, n := range nests {
 		out = append(out, n.Name)

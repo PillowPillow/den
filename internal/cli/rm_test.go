@@ -14,265 +14,263 @@ import (
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
-// ecrisDans écrit un fichier de configuration den, relatif à denHome, créant
-// les dossiers parents nécessaires. ecrisConfig/ecrisStack/ecrisNest en sont
-// des façades nommées : un seul corps à maintenir plutôt que trois copies
-// presque identiques.
-func ecrisDans(t *testing.T, denHome, rel, contenu string) {
+// writeUnder writes a den configuration file, relative to denHome, creating
+// the necessary parent directories. writeConfig/writeStack/writeNest are named
+// facades over it: one body to maintain rather than three near-identical
+// copies.
+func writeUnder(t *testing.T, denHome, rel, content string) {
 	t.Helper()
 	p := filepath.Join(denHome, rel)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p, []byte(contenu), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func ecrisConfig(t *testing.T, denHome, contenu string) {
+func writeConfig(t *testing.T, denHome, content string) {
 	t.Helper()
-	ecrisDans(t, denHome, "config.yaml", contenu)
+	writeUnder(t, denHome, "config.yaml", content)
 }
 
-func ecrisStack(t *testing.T, denHome, nom, contenu string) {
+func writeStack(t *testing.T, denHome, name, content string) {
 	t.Helper()
-	ecrisDans(t, denHome, filepath.Join("stacks", nom, "stack.yaml"), contenu)
+	writeUnder(t, denHome, filepath.Join("stacks", name, "stack.yaml"), content)
 }
 
-func ecrisNest(t *testing.T, denHome, nom, contenu string) {
+func writeNest(t *testing.T, denHome, name, content string) {
 	t.Helper()
-	ecrisDans(t, denHome, filepath.Join("nests", nom+".yaml"), contenu)
+	writeUnder(t, denHome, filepath.Join("nests", name+".yaml"), content)
 }
 
-// configMinimale suffit à tous les tests de ce fichier qui n'exercent pas la
-// résolution d'agent elle-même.
-const configMinimale = `agents:
+// minimalConfig is enough for every test in this file that does not exercise
+// agent resolution itself.
+const minimalConfig = `agents:
   claude:
-    config_dir: /profil/claude
+    config_dir: /profile/claude
     update: "claude update"
 defaults:
   agent: claude
   stack: devx
 `
 
-// lsAvec scripte `sbx ls --json` pour qu'il rende exactement ces sandboxes,
-// toutes "running".
-func lsAvec(noms ...string) map[string]sbx.Reponse {
+// lsWith scripts `sbx ls --json` to render exactly these sandboxes, all
+// "running".
+func lsWith(names ...string) map[string]sbx.Response {
 	var b strings.Builder
 	b.WriteString(`{"sandboxes":[`)
-	for i, n := range noms {
+	for i, n := range names {
 		if i > 0 {
 			b.WriteString(",")
 		}
 		b.WriteString(`{"name":"` + n + `","status":"running","workspaces":["/w"]}`)
 	}
 	b.WriteString(`]}`)
-	return map[string]sbx.Reponse{"ls --json": {Sortie: []byte(b.String())}}
+	return map[string]sbx.Response{"ls --json": {Output: []byte(b.String())}}
 }
 
-// creeDepotGit crée un dépôt git réel, avec un commit initial, au chemin
-// donné. Neutralisation de l'environnement git déjà assurée package-wide par
+// createTestRepo creates a real git repo, with an initial commit, at the
+// given path. Git environment neutralization already ensured package-wide by
 // TestMain (main_test.go).
-func creeDepotGit(t *testing.T, dir string) {
+func createTestRepo(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range [][]string{
 		{"init", "-b", "main"},
-		{"config", "user.email", "t@exemple.test"},
+		{"config", "user.email", "t@example.test"},
 		{"config", "user.name", "T"},
 		{"commit", "--allow-empty", "-m", "initial"},
 	} {
 		cmd := exec.Command("git", c...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v : %v\n%s", c, err, out)
+			t.Fatalf("git %v: %v\n%s", c, err, out)
 		}
 	}
 }
 
-func TestRmSupprimeLaSandbox(t *testing.T) {
+func TestRmDestroysTheSandbox(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	f := &sbx.Fake{Reponses: lsAvec("api")}
+	writeConfig(t, denHome, minimalConfig)
+	f := &sbx.Fake{Responses: lsWith("api")}
 
-	if _, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.AAppele("rm", "--force", "api") {
-		t.Errorf("appels : %v", f.Appels)
+	if !f.HasCalled("rm", "--force", "api") {
+		t.Errorf("calls: %v", f.Calls)
 	}
 }
 
-// Le profil agent persiste : c'est toute la raison d'être d'un config_dir
-// monté RW. Un den rm qui l'effacerait obligerait à refaire /login.
-func TestRmNeToucheJamaisAuProfilAgent(t *testing.T) {
+// The agent profile persists: that is the whole point of a config_dir mounted
+// RW. A den rm that wiped it would force the user to /login again.
+func TestRmNeverTouchesTheAgentProfile(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	profil := filepath.Join(denHome, "agents", "claude")
-	if err := os.MkdirAll(profil, 0o755); err != nil {
+	writeConfig(t, denHome, minimalConfig)
+	profile := filepath.Join(denHome, "agents", "claude")
+	if err := os.MkdirAll(profile, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	f := &sbx.Fake{Reponses: lsAvec("api")}
+	f := &sbx.Fake{Responses: lsWith("api")}
 
-	if _, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := os.Stat(profil); err != nil {
-		t.Errorf("le profil agent doit survivre au rm : %v", err)
+	if _, err := os.Stat(profile); err != nil {
+		t.Errorf("the agent profile must survive rm: %v", err)
 	}
 }
 
-func TestRmNomInconnu(t *testing.T) {
+func TestRmUnknownName(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	f := &sbx.Fake{Reponses: lsAvec("api", "web")}
+	writeConfig(t, denHome, minimalConfig)
+	f := &sbx.Fake{Responses: lsWith("api", "web")}
 
-	_, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "absente")
+	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "missing")
 	if err == nil {
-		t.Fatal("un nom inconnu doit produire une erreur")
+		t.Fatal("an unknown name must produce an error")
 	}
 	if !strings.Contains(err.Error(), "api") || !strings.Contains(err.Error(), "web") {
-		t.Errorf("le message doit lister TOUTES les sandboxes vivantes ; obtenu : %v", err)
+		t.Errorf("the message must list ALL live sandboxes; got: %v", err)
 	}
-	if f.AAppele("rm") {
-		t.Errorf("aucun rm ne doit être tenté ; appels : %v", f.Appels)
+	if f.HasCalled("rm") {
+		t.Errorf("no rm must be attempted; calls: %v", f.Calls)
 	}
 }
 
-// --keep-worktrees : la sandbox part, les dossiers restent.
-func TestRmKeepWorktreesNeTouchePasAuDisque(t *testing.T) {
+// --keep-worktrees: the sandbox goes, the directories stay.
+func TestRmKeepWorktreesLeavesDiskUntouched(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
-	// Le repo est déclaré (basename "api", assorti au dossier de worktree créé
-	// ci-dessous) : un nest à repos VIDES laisserait passer une implémentation
-	// qui appellerait nettoieWorktrees même avec --keep-worktrees, puisqu'il
-	// n'y aurait alors rien à itérer pour le trahir.
+	writeConfig(t, denHome, minimalConfig)
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	// The repo is declared (basename "api", matching the worktree directory
+	// created below): a nest with EMPTY repos would let an implementation that
+	// calls cleanWorktrees even with --keep-worktrees slip through, since
+	// there would then be nothing to iterate that could catch it.
 	repo := filepath.Join(t.TempDir(), "api")
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
 	wt := filepath.Join(denHome, "worktrees", "feat12", "api")
 	if err := os.MkdirAll(wt, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
-	if _, err := executeCmdAvecSbx(t, f, "--den-home", denHome,
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome,
 		"rm", "api.feat12", "--keep-worktrees"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := os.Stat(wt); err != nil {
-		t.Errorf("--keep-worktrees doit préserver %s : %v", wt, err)
+		t.Errorf("--keep-worktrees must preserve %s: %v", wt, err)
 	}
-	if !f.AAppele("rm", "--force", "api.feat12") {
-		t.Errorf("la sandbox doit tout de même être supprimée ; appels : %v", f.Appels)
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
 	}
 }
 
-// Une sandbox sans worktree n'a rien à nettoyer : le nettoyage ne doit pas
-// s'inventer un chemin.
-func TestRmSansWorktreeNeNettoieRien(t *testing.T) {
+// A sandbox with no worktree has nothing to clean up: cleanup must not invent
+// a path.
+func TestRmWithNoWorktreeCleansUpNothing(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos: []\n")
-	f := &sbx.Fake{Reponses: lsAvec("api")}
+	writeConfig(t, denHome, minimalConfig)
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	f := &sbx.Fake{Responses: lsWith("api")}
 
-	sortie, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api")
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if strings.Contains(sortie, "worktree") {
-		t.Errorf("aucun nettoyage de worktree ne doit être annoncé ; obtenu :\n%s", sortie)
+	if strings.Contains(out, "worktree") {
+		t.Errorf("no worktree cleanup must be announced; got:\n%s", out)
 	}
 }
 
-// Une sandbox listée par `sbx ls` peut avoir été créée hors de den, avec un
-// nom que sbx accepte mais que den refuserait comme composant de chemin :
-// sans validation, ce nom traverse tel quel jusqu'à worktree.Chemin et
-// envoie Retire hors de worktree_root — reproduit ici exactement comme
-// mesuré en revue : un nest "api" bien réel et déclaré (LoadNest réussit),
-// pour que la garde soit exercée au bout de la VRAIE résolution, pas
-// court-circuitée par un nest absent qui échouerait de toute façon pour une
-// autre raison (best-effort — voir TestRmNestIllisibleNEmpechePasLaDestruction).
-func TestRmRejetteUnNomDeSandboxNonCanonique(t *testing.T) {
+// A sandbox listed by `sbx ls` may have been created outside den, with a name
+// sbx accepts but den would refuse as a path component: without validation,
+// this name travels as-is to worktree.Path and sends Remove outside
+// worktree_root — reproduced here exactly as measured in review: a real,
+// declared nest "api" (LoadNest succeeds), so the guard is exercised at the
+// end of the REAL resolution, not short-circuited by a missing nest that would
+// fail for an unrelated reason anyway (best-effort — see
+// TestRmUnreadableNestDoesNotPreventDestruction).
+func TestRmRejectsANonCanonicalSandboxName(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	writeConfig(t, denHome, minimalConfig)
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
 	repo := filepath.Join(t.TempDir(), "api")
-	creeDepotGit(t, repo)
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
-	// DecomposeNom coupe au PREMIER point : nest "api" (valide, LoadNest
-	// réussit), worktree "../../evade" (invalide — un composant de nom de
-	// sandbox ne peut pas commencer par ".").
-	nomEtranger := "api.../../evade"
-	f := &sbx.Fake{Reponses: lsAvec(nomEtranger)}
+	// SplitName cuts at the FIRST dot: nest "api" (valid, LoadNest succeeds),
+	// worktree "../../escape" (invalid — a sandbox name component cannot start
+	// with ".").
+	foreignName := "api.../../escape"
+	f := &sbx.Fake{Responses: lsWith(foreignName)}
 
-	_, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", nomEtranger)
+	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", foreignName)
 	if err == nil {
-		t.Fatal("un nom de sandbox non canonique doit être refusé")
+		t.Fatal("a non-canonical sandbox name must be refused")
 	}
-	if f.AAppele("rm", "--force", nomEtranger) {
-		t.Errorf("aucun rm ne doit être tenté sur un nom non canonique ; appels : %v", f.Appels)
+	if f.HasCalled("rm", "--force", foreignName) {
+		t.Errorf("no rm must be attempted on a non-canonical name; calls: %v", f.Calls)
 	}
-	// Pas d'assertion sur le chemin d'évasion lui-même (worktree.Chemin(…,
-	// "../../evade", repo)) : dans cette reproduction minimale, aucun worktree
-	// n'existe réellement là (rien n'a jamais été créé à cet endroit via
-	// worktree.Assure), donc « le dossier n'existe pas » resterait vrai même
-	// SANS la garde — vérifié : sans elle, Retire conclut juste « déjà
-	// disparu » et rend nil sans rien déplacer, err et rm --force en
-	// témoignent déjà ci-dessus.
+	// No assertion on the escape path itself (worktree.Path(..., "../../escape",
+	// repo)): in this minimal reproduction, no worktree really exists there
+	// (nothing was ever created there through worktree.Ensure), so "the
+	// directory does not exist" would stay true even WITHOUT the guard —
+	// verified: without it, Remove just concludes "already gone" and returns
+	// nil without moving anything, err and rm --force already show that above.
 }
 
-// Best-effort sur la RÉSOLUTION : un nest supprimé de ~/.den/nests depuis le
-// spawn ne doit pas empêcher de détruire une sandbox bel et bien vivante — et
-// l'avertissement doit dire où le worktree abandonné a été laissé.
-func TestRmNestIllisibleNEmpechePasLaDestruction(t *testing.T) {
+// Best-effort on RESOLUTION: a nest removed from ~/.den/nests since the spawn
+// must not prevent destroying a genuinely live sandbox — and the warning must
+// say where the abandoned worktree was left.
+func TestRmUnreadableNestDoesNotPreventDestruction(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	// Pas de ecrisNest("api", ...) : le nest "api" est absent de ~/.den/nests.
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
+	writeConfig(t, denHome, minimalConfig)
+	// No writeNest("api", ...): nest "api" is absent from ~/.den/nests.
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
-	sortie, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(sortie, "illisible") {
-		t.Errorf("la sortie doit signaler le nest illisible ; obtenu :\n%s", sortie)
+	if !strings.Contains(out, "unreadable") {
+		t.Errorf("the output must report the unreadable nest; got:\n%s", out)
 	}
-	// worktree_layout/worktree_root par défaut (configMinimale n'en déclare
-	// aucun) : central, sous <denHome>/worktrees.
-	attenduOu := filepath.Join(denHome, "worktrees", "feat12")
-	if !strings.Contains(sortie, attenduOu) {
-		t.Errorf("la sortie doit dire où le worktree abandonné a été laissé (%s) ; obtenu :\n%s",
-			attenduOu, sortie)
+	// Default worktree_layout/worktree_root (minimalConfig declares neither):
+	// central, under <denHome>/worktrees.
+	expectedWhere := filepath.Join(denHome, "worktrees", "feat12")
+	if !strings.Contains(out, expectedWhere) {
+		t.Errorf("the output must say where the abandoned worktree was left (%s); got:\n%s",
+			expectedWhere, out)
 	}
-	if !f.AAppele("rm", "--force", "api.feat12") {
-		t.Errorf("la sandbox doit tout de même être détruite ; appels : %v", f.Appels)
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
 	}
 }
 
-// F1 — RÉGRESSION de la tâche 17a, mesurée en revue. Depuis que LoadGlobal
-// valide, une faute dans un champ SANS RAPPORT avec les worktrees
-// (agents.claude.update, ssh.mode, bin_dirs…) faisait sortir nettoieWorktrees
-// en erreur AVANT le `sbx rm --force`, et `den rm` n'arrivait plus à détruire
-// une sandbox bel et bien vivante.
+// F1 — REGRESSION from task 17a, measured in review. Since LoadGlobal
+// validates, a fault in a field UNRELATED to worktrees (agents.claude.update,
+// ssh.mode, bin_dirs...) made cleanWorktrees fail BEFORE the `sbx rm --force`,
+// and `den rm` could no longer destroy a genuinely live sandbox.
 //
-// C'est la doctrine T13/T16 : un ~/.den cassé ne doit jamais bloquer l'accès à
-// des VM vivantes. Et c'est déjà ce que promet la godoc de nettoieWorktrees —
-// « best-effort sur la RÉSOLUTION ».
+// This is the T13/T16 doctrine: a broken ~/.den must never block access to
+// live VMs. And that is already what cleanWorktrees' godoc promises —
+// "best-effort on RESOLUTION".
 //
-// Une commande valide ce qu'elle UTILISE : nettoieWorktrees ne lit que
-// worktree_layout et worktree_root.
-func TestRmDetruitLaSandboxMalgreUneFauteDeConfigSansRapport(t *testing.T) {
-	// Deux fautes, dans deux familles différentes, dont AUCUNE ne décide où
-	// vivent les worktrees. Les deux sont refusées par LoadGlobal.
-	const configFautiveHorsWorktrees = `agents:
+// A command validates what it USES: cleanWorktrees only reads worktree_layout
+// and worktree_root.
+func TestRmDestroysTheSandboxDespiteAnUnrelatedConfigFault(t *testing.T) {
+	// Two faults, in two different families, NEITHER of which decides where
+	// worktrees live. Both are rejected by LoadGlobal.
+	const faultyConfigOutsideWorktrees = `agents:
   claude:
-    config_dir: /profil/claude
+    config_dir: /profile/claude
     update: "   "
 defaults:
   agent: claude
@@ -281,85 +279,84 @@ ssh:
   mode: nfs
 `
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configFautiveHorsWorktrees)
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos: []\n")
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
+	writeConfig(t, denHome, faultyConfigOutsideWorktrees)
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
-	if _, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
-		t.Fatalf("une faute de config hors worktrees ne doit pas empêcher de détruire une sandbox vivante : %v", err)
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
+		t.Fatalf("a config fault unrelated to worktrees must not prevent destroying a live sandbox: %v", err)
 	}
-	if !f.AAppele("rm", "--force", "api.feat12") {
-		t.Errorf("la sandbox doit avoir été détruite ; appels : %v", f.Appels)
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must have been destroyed; calls: %v", f.Calls)
 	}
 }
 
-// La contrepartie, dans l'autre sens : une faute sur un champ que
-// nettoieWorktrees UTILISE doit rester une erreur DURE. `centrl` n'est pas
-// rattrapé par LoadGlobalSansValider — seul un worktree_layout VIDE reçoit le
-// défaut `central` (config.go) — donc sans ce refus, den calculerait un chemin
-// de worktree faux et nettoierait à côté, silencieusement.
-func TestRmRefuseUnWorktreeLayoutInconnu(t *testing.T) {
+// The counterpart, in the other direction: a fault on a field that
+// cleanWorktrees USES must stay a HARD error. `centrl` is not caught by
+// LoadGlobalUnvalidated — only an EMPTY worktree_layout gets the `central`
+// default (config.go) — so without this refusal, den would compute a wrong
+// worktree path and clean up somewhere else SILENTLY.
+func TestRmRejectsAnUnknownWorktreeLayout(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale+"worktree_layout: centrl\n")
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos: []\n")
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
+	writeConfig(t, denHome, minimalConfig+"worktree_layout: centrl\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
-	_, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
 	if err == nil {
-		t.Fatal("un worktree_layout inconnu doit faire échouer den rm : on ne nettoie pas sans savoir où")
+		t.Fatal("an unknown worktree_layout must fail den rm: we don't clean up without knowing where")
 	}
 	if !strings.Contains(err.Error(), "worktree_layout") {
-		t.Errorf("erreur = %q, attendu le champ fautif nommé", err.Error())
+		t.Errorf("error = %q, expected the faulty field named", err.Error())
 	}
 	if !strings.Contains(err.Error(), "centrl") {
-		t.Errorf("erreur = %q, attendu la valeur fautive nommée", err.Error())
+		t.Errorf("error = %q, expected the faulty value named", err.Error())
 	}
-	// Et rien n'a été détruit : on ne supprime pas une sandbox dont on ne sait
-	// pas nettoyer les worktrees.
-	if f.AAppele("rm") {
-		t.Errorf("aucun rm ne doit être tenté ; appels : %v", f.Appels)
+	// And nothing was destroyed: we do not remove a sandbox whose worktrees we
+	// cannot clean up.
+	if f.HasCalled("rm") {
+		t.Errorf("no rm must be attempted; calls: %v", f.Calls)
 	}
 }
 
-// L'avertissement « nest illisible » part sur STDERR, jamais sur stdout : un
-// `den rm | grep` doit voir un succès propre sans l'avertissement mélangé
-// dedans (I7 en revue). executeCmdAvecSbx fusionne délibérément les deux
-// flux (voir son commentaire) et ne peut donc PAS vérifier cette séparation —
-// seul executeCmdFluxSepares, qui donne deux buffers distincts, le peut.
-func TestRmNestIllisibleEcritSurStderr(t *testing.T) {
+// The "nest unreadable" warning goes on STDERR, never on stdout: a
+// `den rm | grep` must see a clean success without the warning mixed in
+// (I7 in review). executeCmdWithSbx deliberately merges both streams (see its
+// comment) and therefore CANNOT check this separation — only
+// executeCmdSeparateStreams, which gives two distinct buffers, can.
+func TestRmUnreadableNestWritesToStderr(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	// Pas de ecrisNest("api", ...) : le nest "api" est absent de ~/.den/nests.
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
-	deps := DepsSysteme()
+	writeConfig(t, denHome, minimalConfig)
+	// No writeNest("api", ...): nest "api" is absent from ~/.den/nests.
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	deps := SystemDeps()
 	deps.Sbx = f
-	root := NewRootCmdAvec(deps)
+	root := NewRootCmdWith(deps)
 
-	stdout, stderr, err := executeCmdFluxSepares(t, root, "--den-home", denHome, "rm", "api.feat12")
+	stdout, stderr, err := executeCmdSeparateStreams(t, root, "--den-home", denHome, "rm", "api.feat12")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(stderr, "illisible") {
-		t.Errorf("l'avertissement doit sortir sur stderr ; stderr obtenu :\n%s", stderr)
+	if !strings.Contains(stderr, "unreadable") {
+		t.Errorf("the warning must go on stderr; got stderr:\n%s", stderr)
 	}
-	if strings.Contains(stdout, "illisible") {
-		t.Errorf("l'avertissement ne doit PAS apparaître sur stdout ; stdout obtenu :\n%s", stdout)
+	if strings.Contains(stdout, "unreadable") {
+		t.Errorf("the warning must NOT appear on stdout; got stdout:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "détruite") {
-		t.Errorf("le message de succès doit apparaître sur stdout ; stdout obtenu :\n%s", stdout)
+	if !strings.Contains(stdout, "destroyed") {
+		t.Errorf("the success message must appear on stdout; got stdout:\n%s", stdout)
 	}
 }
 
-// L'ordre « worktrees d'abord, sandbox ensuite » est une propriété de sûreté :
-// l'inverse laisserait l'utilisateur sans VM ET avec un message d'erreur sur
-// un dossier.
-func TestRmNeDetruitPasLaSandboxSiUnWorktreeEstSale(t *testing.T) {
+// The "worktrees first, sandbox second" order is a safety property: reversed,
+// it would leave the user with no VM AND an error about a directory.
+func TestRmDoesNotDestroyTheSandboxWhenAWorktreeIsDirty(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, `agents:
+	writeConfig(t, denHome, `agents:
   claude:
-    config_dir: /profil/claude
+    config_dir: /profile/claude
     update: "claude update"
 defaults:
   agent: claude
@@ -367,123 +364,123 @@ defaults:
 worktree_layout: central
 worktree_root: `+filepath.Join(denHome, "worktrees")+`
 `)
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
 
 	repo := filepath.Join(t.TempDir(), "api")
-	creeDepotGit(t, repo)
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
-	chemin, err := worktree.Assure(context.Background(), worktree.NewGit(),
-		"central", filepath.Join(denHome, "worktrees"), worktree.Nom{Dossier: "feat12", Branche: "feat12"}, repo)
+	path, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"central", filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo)
 	if err != nil {
-		t.Fatalf("préparation du worktree : %v", err)
+		t.Fatalf("preparing the worktree: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(chemin, "brouillon.txt"), []byte("wip"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(path, "draft.txt"), []byte("wip"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
-	_, err = executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	_, err = executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
 
 	if err == nil {
-		t.Fatal("un worktree sale doit faire échouer le rm")
+		t.Fatal("a dirty worktree must fail the rm")
 	}
-	if !strings.Contains(err.Error(), chemin) {
-		t.Errorf("le message doit nommer le worktree fautif ; obtenu : %v", err)
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("the message must name the offending worktree; got: %v", err)
 	}
-	// LA propriété : la sandbox est INTACTE, et le worktree aussi.
-	if f.AAppele("rm", "--force", "api.feat12") {
-		t.Errorf("la sandbox ne doit PAS avoir été détruite ; appels : %v", f.Appels)
+	// THE property: the sandbox is INTACT, and so is the worktree.
+	if f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must NOT have been destroyed; calls: %v", f.Calls)
 	}
-	if _, err := os.Stat(filepath.Join(chemin, "brouillon.txt")); err != nil {
-		t.Errorf("le travail non commité doit être intact : %v", err)
+	if _, err := os.Stat(filepath.Join(path, "draft.txt")); err != nil {
+		t.Errorf("the uncommitted work must be intact: %v", err)
 	}
 
-	// Et avec --force, tout part : le worktree va à la corbeille, la sandbox
-	// est détruite, et l'utilisateur apprend où son travail est parti — sous
-	// un nom qui porte l'identité COMPLÈTE de la sandbox (nest ET worktree),
-	// pas seulement le nest (M12 en revue : sans quoi deux worktrees de
-	// worktrees différents du même nest se confondraient dans la corbeille).
-	f2 := &sbx.Fake{Reponses: lsAvec("api.feat12")}
-	sortie, err := executeCmdAvecSbx(t, f2, "--den-home", denHome,
+	// And with --force, everything goes: the worktree goes to trash, the
+	// sandbox is destroyed, and the user learns where their work went — under
+	// a name that carries the sandbox's FULL identity (nest AND worktree), not
+	// just the nest (M12 in review: otherwise two worktrees of different
+	// worktrees of the same nest would collide in the trash).
+	f2 := &sbx.Fake{Responses: lsWith("api.feat12")}
+	out, err := executeCmdWithSbx(t, f2, "--den-home", denHome,
 		"rm", "api.feat12", "--force")
 	if err != nil {
-		t.Fatalf("avec --force, le rm doit passer : %v", err)
+		t.Fatalf("with --force, the rm must succeed: %v", err)
 	}
-	if !f2.AAppele("rm", "--force", "api.feat12") {
-		t.Errorf("appels : %v", f2.Appels)
+	if !f2.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("calls: %v", f2.Calls)
 	}
-	if !strings.Contains(sortie, filepath.Join(denHome, "trash")) {
-		t.Errorf("la sortie doit dire où le worktree est parti (la corbeille) ; obtenu :\n%s", sortie)
+	if !strings.Contains(out, filepath.Join(denHome, "trash")) {
+		t.Errorf("the output must say where the worktree went (the trash); got:\n%s", out)
 	}
-	if !strings.Contains(sortie, "api.feat12-api") {
-		t.Errorf("l'entrée de corbeille doit porter l'identité complète api.feat12, pas juste api ; obtenu :\n%s", sortie)
+	if !strings.Contains(out, "api.feat12-api") {
+		t.Errorf("the trash entry must carry the full identity api.feat12, not just api; got:\n%s", out)
 	}
-	// F3 : et rien ne reste. Le dossier `<worktree_root>/feat12` n'existait que
-	// pour porter ce worktree ; le laisser derrière transforme worktree_root en
-	// liste de dossiers vides à mesure que l'utilisateur spawne et détruit.
-	if _, err := os.Stat(filepath.Dir(chemin)); !os.IsNotExist(err) {
-		t.Errorf("%s devait disparaître avec son dernier worktree (err = %v)", filepath.Dir(chemin), err)
+	// F3: and nothing is left behind. `<worktree_root>/feat12` only existed to
+	// carry this worktree; leaving it behind would turn worktree_root into a
+	// list of empty directories as the user spawns and destroys.
+	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+		t.Errorf("%s should have disappeared with its last worktree (err = %v)", filepath.Dir(path), err)
 	}
-	// La racine, elle, reste : c'est un réglage de l'utilisateur.
+	// The root, though, stays: that is a user setting.
 	if _, err := os.Stat(filepath.Join(denHome, "worktrees")); err != nil {
-		t.Errorf("worktree_root ne doit pas être touché : %v", err)
+		t.Errorf("worktree_root must not be touched: %v", err)
 	}
 }
 
-// worktree_layout: per-repo est une configuration supportée (spec §13.5). Un
-// layout figé dans le code cherche le worktree au mauvais endroit, ne le
-// trouve pas, laisse Retire conclure « déjà disparu », et ABANDONNE le
-// worktree RÉEL sur le disque sans un mot.
-func TestRmRespecteLeLayoutPerRepo(t *testing.T) {
+// worktree_layout: per-repo is a supported configuration (spec §13.5). A
+// layout hardcoded in the code looks for the worktree in the wrong place,
+// does not find it, lets Remove conclude "already gone", and ABANDONS the
+// REAL worktree on disk without a word.
+func TestRmRespectsThePerRepoLayout(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, `agents:
+	writeConfig(t, denHome, `agents:
   claude:
-    config_dir: /profil/claude
+    config_dir: /profile/claude
     update: "claude update"
 defaults:
   agent: claude
   stack: devx
 worktree_layout: per-repo
 `)
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
 
 	repo := filepath.Join(t.TempDir(), "api")
-	creeDepotGit(t, repo)
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
-	chemin, err := worktree.Assure(context.Background(), worktree.NewGit(),
-		"per-repo", "", worktree.Nom{Dossier: "feat12", Branche: "feat12"}, repo)
+	path, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"per-repo", "", worktree.Name{Dir: "feat12", Branch: "feat12"}, repo)
 	if err != nil {
-		t.Fatalf("préparation du worktree : %v", err)
+		t.Fatalf("preparing the worktree: %v", err)
 	}
-	attendu := filepath.Join(repo, ".den", "feat12")
-	if chemin != attendu {
-		t.Fatalf("worktree.Assure a rendu %q, attendu %q", chemin, attendu)
+	expected := filepath.Join(repo, ".den", "feat12")
+	if path != expected {
+		t.Fatalf("worktree.Ensure returned %q, expected %q", path, expected)
 	}
 
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
-	if _, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := os.Stat(chemin); !os.IsNotExist(err) {
-		t.Errorf("le worktree per-repo doit avoir été déplacé de %s ; stat : %v", chemin, err)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the per-repo worktree must have been moved from %s; stat: %v", path, err)
 	}
-	if !f.AAppele("rm", "--force", "api.feat12") {
-		t.Errorf("appels : %v", f.Appels)
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("calls: %v", f.Calls)
 	}
 }
 
-// Le dossier du worktree peut avoir disparu AVANT que `den rm` soit lancé (un
-// `rm -rf` manuel de l'utilisateur) : Retire rend alors un chemin de corbeille
-// VIDE, et rien ne doit être annoncé — sans quoi la commande affiche
-// « worktree envoyé à la corbeille : » suivi de rien, ce qui dit à
-// l'utilisateur que son travail est parti nulle part.
-func TestRmNAnnonceRienQuandLeWorktreeADejaDisparu(t *testing.T) {
+// The worktree's directory may have disappeared BEFORE `den rm` runs (a
+// manual `rm -rf` by the user): Remove then returns an EMPTY trash path, and
+// nothing must be announced — otherwise the command would print "worktree
+// moved to trash: " followed by nothing, telling the user their work went
+// nowhere.
+func TestRmAnnouncesNothingWhenTheWorktreeHasAlreadyDisappeared(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, `agents:
+	writeConfig(t, denHome, `agents:
   claude:
-    config_dir: /profil/claude
+    config_dir: /profile/claude
     update: "claude update"
 defaults:
   agent: claude
@@ -491,66 +488,66 @@ defaults:
 worktree_layout: central
 worktree_root: `+filepath.Join(denHome, "worktrees")+`
 `)
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
 
 	repo := filepath.Join(t.TempDir(), "api")
-	creeDepotGit(t, repo)
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
-	chemin, err := worktree.Assure(context.Background(), worktree.NewGit(),
-		"central", filepath.Join(denHome, "worktrees"), worktree.Nom{Dossier: "feat12", Branche: "feat12"}, repo)
+	path, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"central", filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo)
 	if err != nil {
-		t.Fatalf("préparation du worktree : %v", err)
+		t.Fatalf("preparing the worktree: %v", err)
 	}
-	if err := os.RemoveAll(chemin); err != nil {
+	if err := os.RemoveAll(path); err != nil {
 		t.Fatal(err)
 	}
 
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
-	sortie, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
 	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if strings.Contains(sortie, "envoyé à la corbeille") {
-		t.Errorf("aucune annonce de corbeille ne doit apparaître pour un dossier déjà disparu ; obtenu :\n%s", sortie)
+	if strings.Contains(out, "moved to trash") {
+		t.Errorf("no trash announcement must appear for a directory already gone; got:\n%s", out)
 	}
-	if !f.AAppele("rm", "--force", "api.feat12") {
-		t.Errorf("appels : %v", f.Appels)
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("calls: %v", f.Calls)
 	}
 }
 
-// gitPruneEchoueFactice délègue tout à un Git réel, sauf « worktree prune »
-// qui échoue systématiquement : ça isole le seul scénario où
-// worktree.Retire rend un dest NON VIDE en même temps qu'une erreur (le
-// déplacement a réussi, mais l'enregistrement n'a pas pu être élagué).
-type gitPruneEchoueFactice struct {
-	reel worktree.Git
+// fakePruneFailingGit delegates everything to a real Git, except "worktree
+// prune" which always fails: it isolates the one scenario where
+// worktree.Remove returns a NON-EMPTY dest alongside an error (the move
+// succeeded, but the registration could not be pruned).
+type fakePruneFailingGit struct {
+	real worktree.Git
 }
 
-func (g gitPruneEchoueFactice) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+func (g fakePruneFailingGit) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	if len(args) == 2 && args[0] == "worktree" && args[1] == "prune" {
-		return nil, fmt.Errorf("prune factice : échec simulé")
+		return nil, fmt.Errorf("fake prune: simulated failure")
 	}
-	return g.reel.Run(ctx, dir, args...)
+	return g.real.Run(ctx, dir, args...)
 }
 
-func (g gitPruneEchoueFactice) RunAvecEntree(ctx context.Context, dir string, entree []byte, args ...string) ([]byte, error) {
+func (g fakePruneFailingGit) RunWithInput(ctx context.Context, dir string, input []byte, args ...string) ([]byte, error) {
 	if len(args) == 2 && args[0] == "worktree" && args[1] == "prune" {
-		return nil, fmt.Errorf("prune factice : échec simulé")
+		return nil, fmt.Errorf("fake prune: simulated failure")
 	}
-	return g.reel.RunAvecEntree(ctx, dir, entree, args...)
+	return g.real.RunWithInput(ctx, dir, input, args...)
 }
 
-var _ worktree.Git = gitPruneEchoueFactice{}
+var _ worktree.Git = fakePruneFailingGit{}
 
-// nettoieWorktrees jette dest quand Retire rend (dest, err) tous deux non
-// vides (M11 en revue) — ce test vérifie que l'erreur de Retire, elle, NOMME
-// quand même la corbeille, et que la sandbox n'est pas détruite malgré tout.
-func TestRmNommeLaCorbeilleMemeQuandLElagageEchoue(t *testing.T) {
+// cleanWorktrees discards dest when Remove returns (dest, err) both non-empty
+// (M11 in review) — this test checks that Remove's error still NAMES the
+// trash, and that the sandbox is not destroyed despite everything.
+func TestRmNamesTheTrashEvenWhenPruningFails(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, `agents:
+	writeConfig(t, denHome, `agents:
   claude:
-    config_dir: /profil/claude
+    config_dir: /profile/claude
     update: "claude update"
 defaults:
   agent: claude
@@ -558,161 +555,160 @@ defaults:
 worktree_layout: central
 worktree_root: `+filepath.Join(denHome, "worktrees")+`
 `)
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
 
 	repo := filepath.Join(t.TempDir(), "api")
-	creeDepotGit(t, repo)
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
-	if _, err := worktree.Assure(context.Background(), worktree.NewGit(),
-		"central", filepath.Join(denHome, "worktrees"), worktree.Nom{Dossier: "feat12", Branche: "feat12"}, repo); err != nil {
-		t.Fatalf("préparation du worktree : %v", err)
+	if _, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"central", filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
 	}
 
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
-	deps := DepsSysteme()
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	deps := SystemDeps()
 	deps.Sbx = f
-	deps.Git = gitPruneEchoueFactice{reel: worktree.NewGit()}
-	root := NewRootCmdAvec(deps)
+	deps.Git = fakePruneFailingGit{real: worktree.NewGit()}
+	root := NewRootCmdWith(deps)
 
 	_, err := executeCmd(t, root, "--den-home", denHome, "rm", "api.feat12")
 	if err == nil {
-		t.Fatal("l'échec de l'élagage doit remonter comme une erreur")
+		t.Fatal("the pruning failure must surface as an error")
 	}
 	trash := filepath.Join(denHome, "trash")
-	entrees, errLecture := os.ReadDir(trash)
-	if errLecture != nil || len(entrees) == 0 {
-		t.Fatalf("le worktree doit avoir été déplacé vers %s malgré l'échec de l'élagage : %v (%v)",
-			trash, errLecture, entrees)
+	entries, readErr := os.ReadDir(trash)
+	if readErr != nil || len(entries) == 0 {
+		t.Fatalf("the worktree must have been moved to %s despite the pruning failure: %v (%v)",
+			trash, readErr, entries)
 	}
 	if !strings.Contains(err.Error(), trash) {
-		t.Errorf("l'erreur doit nommer la corbeille où le travail a atterri ; obtenu : %v", err)
+		t.Errorf("the error must name the trash where the work landed; got: %v", err)
 	}
-	if f.AAppele("rm", "--force", "api.feat12") {
-		t.Errorf("la sandbox ne doit pas être détruite si le nettoyage échoue ; appels : %v", f.Appels)
+	if f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must not be destroyed if cleanup fails; calls: %v", f.Calls)
 	}
 }
 
-// Un échec de `sbx rm` (VM verrouillée, sbx en panne…) doit remonter tel
-// quel, pas être avalé en silence.
-func TestRmEchecDeSbxRemonte(t *testing.T) {
+// A failure of `sbx rm` (locked VM, sbx down...) must surface as-is, not be
+// silently swallowed.
+func TestRmSbxFailureSurfaces(t *testing.T) {
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	reponses := lsAvec("api")
-	reponses["rm --force api"] = sbx.Reponse{Err: fmt.Errorf("sbx rm factice : échec simulé")}
-	f := &sbx.Fake{Reponses: reponses}
+	writeConfig(t, denHome, minimalConfig)
+	responses := lsWith("api")
+	responses["rm --force api"] = sbx.Response{Err: fmt.Errorf("fake sbx rm: simulated failure")}
+	f := &sbx.Fake{Responses: responses}
 
-	_, err := executeCmdAvecSbx(t, f, "--den-home", denHome, "rm", "api")
+	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api")
 	if err == nil {
-		t.Fatal("un échec de sbx rm doit remonter")
+		t.Fatal("a failure of sbx rm must surface")
 	}
 }
 
-// Les sondes git de worktree.Retire doivent être bornées : un dépôt sur un
-// montage réseau mort ne doit pas faire pendre `den rm` indéfiniment.
-func TestRmBorneLesSondesGitParUneEcheance(t *testing.T) {
-	original := delaiSondesGit
-	delaiSondesGit = 5 * time.Second
-	t.Cleanup(func() { delaiSondesGit = original })
+// worktree.Remove's git probes must be bounded: a repo on a dead network
+// mount must not make `den rm` hang forever.
+func TestRmBoundsGitProbesWithADeadline(t *testing.T) {
+	original := gitProbeTimeout
+	gitProbeTimeout = 5 * time.Second
+	t.Cleanup(func() { gitProbeTimeout = original })
 
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	writeConfig(t, denHome, minimalConfig)
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
 	repo := filepath.Join(t.TempDir(), "api")
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
-	git := &gitFactice{}
-	deps := DepsSysteme()
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	git := &fakeGit{}
+	deps := SystemDeps()
 	deps.Sbx = f
 	deps.Git = git
-	root := NewRootCmdAvec(deps)
+	root := NewRootCmdWith(deps)
 
 	_, err := executeCmd(t, root, "--den-home", denHome, "rm", "api.feat12")
 	if err == nil {
-		t.Fatal("le git factice refuse systématiquement : une erreur est attendue")
+		t.Fatal("the fake git refuses systematically: an error is expected")
 	}
-	if len(git.echeances) == 0 {
-		t.Fatal("le contexte transmis à worktree.Retire ne porte aucune échéance : les sondes ne sont pas bornées")
+	if len(git.deadlines) == 0 {
+		t.Fatal("the context passed to worktree.Remove carries no deadline: the probes are not bounded")
 	}
-	restant := time.Until(git.echeances[0])
-	// Bornée par le HAUT et par le BAS : un délai en dur totalement débranché
-	// de delaiSondesGit (un mutant mesuré : 400 ms, sous le plancher documenté
-	// de 499 ms) ne laisse passer qu'un contrôle « restant <= delaiSondesGit »
-	// seul — il doit aussi être PROCHE de delaiSondesGit.
-	if restant <= 0 || restant > delaiSondesGit || delaiSondesGit-restant > 500*time.Millisecond {
-		t.Errorf("échéance hors bornes : il reste %v pour un délai de %v", restant, delaiSondesGit)
+	remaining := time.Until(git.deadlines[0])
+	// Bounded from ABOVE and BELOW: a hardcoded delay totally disconnected from
+	// gitProbeTimeout (a measured mutant: 400ms, under the documented floor of
+	// 499ms) would only fail a "remaining <= gitProbeTimeout" check alone — it
+	// must also be CLOSE to gitProbeTimeout.
+	if remaining <= 0 || remaining > gitProbeTimeout || gitProbeTimeout-remaining > 500*time.Millisecond {
+		t.Errorf("deadline out of bounds: %v remaining for a %v delay", remaining, gitProbeTimeout)
 	}
 }
 
-// gitDeuxReposEcheanceFactice simule, pour PLUSIEURS repos, l'issue « déjà
-// disparu » de worktree.Retire (rc=0, aucun enregistrement) sans aucun accès
-// disque réel : il répond juste assez pour que Retire conclue « dossier
-// absent, rien à faire » à chaque repo (`worktree prune` puis
-// `worktree list --porcelain`, tous deux vides). Ça isole le BORNAGE du
-// contexte du reste du comportement de Retire.
+// fakeGitTwoRepoDeadlines simulates, for SEVERAL repos, worktree.Remove's
+// "already gone" outcome (rc=0, no registration) with no real disk access at
+// all: it answers just enough for Remove to conclude "directory absent,
+// nothing to do" for each repo (`worktree prune` then
+// `worktree list --porcelain`, both empty). This isolates the context's
+// DEADLINE BOUNDING from the rest of Remove's behavior.
 //
-// Un ralentissement simulé (sleepPremierAppel) est inséré au tout premier
-// appel : si l'échéance est posée UNE SEULE FOIS pour toute la boucle, le
-// budget restant au second repo se sera déjà entamé de ce ralentissement ;
-// si elle est posée À CHAQUE repo, le second repo repart d'un budget quasi
-// intact.
-type gitDeuxReposEcheanceFactice struct {
-	sleepPremierAppel time.Duration
-	appels            int
-	echeancesListe    []time.Time // une par repo, prise sur « worktree list »
+// A simulated slowdown (sleepOnFirstCall) is inserted on the very first call:
+// if the deadline is set ONCE for the whole loop, the second repo's remaining
+// budget will already have been eaten by that slowdown; if it is set FOR EACH
+// repo, the second repo starts from an almost-intact budget.
+type fakeGitTwoRepoDeadlines struct {
+	sleepOnFirstCall time.Duration
+	calls            int
+	listDeadlines    []time.Time // one per repo, taken on "worktree list"
 }
 
-func (g *gitDeuxReposEcheanceFactice) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	return g.RunAvecEntree(ctx, dir, nil, args...)
+func (g *fakeGitTwoRepoDeadlines) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return g.RunWithInput(ctx, dir, nil, args...)
 }
 
-func (g *gitDeuxReposEcheanceFactice) RunAvecEntree(ctx context.Context, _ string, _ []byte, args ...string) ([]byte, error) {
-	g.appels++
-	if g.appels == 1 && g.sleepPremierAppel > 0 {
-		time.Sleep(g.sleepPremierAppel)
+func (g *fakeGitTwoRepoDeadlines) RunWithInput(ctx context.Context, _ string, _ []byte, args ...string) ([]byte, error) {
+	g.calls++
+	if g.calls == 1 && g.sleepOnFirstCall > 0 {
+		time.Sleep(g.sleepOnFirstCall)
 	}
 	if len(args) == 3 && args[0] == "worktree" && args[1] == "list" {
 		if d, ok := ctx.Deadline(); ok {
-			g.echeancesListe = append(g.echeancesListe, d)
+			g.listDeadlines = append(g.listDeadlines, d)
 		}
 	}
 	return nil, nil
 }
 
-var _ worktree.Git = (*gitDeuxReposEcheanceFactice)(nil)
+var _ worktree.Git = (*fakeGitTwoRepoDeadlines)(nil)
 
-func TestRmDonneUneEcheanceFraicheAChaqueRepo(t *testing.T) {
-	original := delaiSondesGit
-	delaiSondesGit = 1200 * time.Millisecond
-	t.Cleanup(func() { delaiSondesGit = original })
+func TestRmGivesAFreshDeadlineToEachRepo(t *testing.T) {
+	original := gitProbeTimeout
+	gitProbeTimeout = 1200 * time.Millisecond
+	t.Cleanup(func() { gitProbeTimeout = original })
 
 	denHome := t.TempDir()
-	ecrisConfig(t, denHome, configMinimale)
-	ecrisStack(t, denHome, "devx", "image: devx:v1\n")
+	writeConfig(t, denHome, minimalConfig)
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
 	alpha := filepath.Join(t.TempDir(), "alpha")
 	beta := filepath.Join(t.TempDir(), "beta")
-	ecrisNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+alpha+" }\n  - { path: "+beta+" }\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+alpha+" }\n  - { path: "+beta+" }\n")
 
-	f := &sbx.Fake{Reponses: lsAvec("api.feat12")}
-	git := &gitDeuxReposEcheanceFactice{sleepPremierAppel: 700 * time.Millisecond}
-	deps := DepsSysteme()
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	git := &fakeGitTwoRepoDeadlines{sleepOnFirstCall: 700 * time.Millisecond}
+	deps := SystemDeps()
 	deps.Sbx = f
 	deps.Git = git
-	root := NewRootCmdAvec(deps)
+	root := NewRootCmdWith(deps)
 
 	if _, err := executeCmd(t, root, "--den-home", denHome, "rm", "api.feat12"); err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(git.echeancesListe) != 2 {
-		t.Fatalf("attendu une échéance par repo (2 repos), obtenu %d", len(git.echeancesListe))
+	if len(git.listDeadlines) != 2 {
+		t.Fatalf("expected one deadline per repo (2 repos), got %d", len(git.listDeadlines))
 	}
-	restantDeuxieme := time.Until(git.echeancesListe[1])
-	// Une échéance HISSÉE hors de la boucle aurait déjà perdu ~700 ms au
-	// moment du second repo ; une échéance PAR REPO repart d'un budget quasi
-	// intact.
-	if restantDeuxieme < delaiSondesGit-400*time.Millisecond {
-		t.Errorf("le second repo hérite d'un budget entamé (reste %v sur %v) : "+
-			"l'échéance n'est pas posée à chaque repo", restantDeuxieme, delaiSondesGit)
+	secondRemaining := time.Until(git.listDeadlines[1])
+	// A deadline HOISTED out of the loop would have already lost ~700ms by the
+	// time the second repo runs; a deadline PER REPO starts from an
+	// almost-intact budget.
+	if secondRemaining < gitProbeTimeout-400*time.Millisecond {
+		t.Errorf("the second repo inherits a spent budget (%v remaining out of %v): "+
+			"the deadline is not set for each repo", secondRemaining, gitProbeTimeout)
 	}
 }

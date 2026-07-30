@@ -14,122 +14,120 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// versionMixin est figée : le mixin est régénéré à chaque `sbx create` et n'a
-// pas de cycle de vie propre. Une version variable ferait diverger les golden
-// files sans rien apporter.
-const versionMixin = "0.0.0"
+// mixinVersion is fixed: the mixin is regenerated on every `sbx create` and has
+// no lifecycle of its own. A variable version would only make golden files
+// diverge for nothing.
+const mixinVersion = "0.0.0"
 
-// Mixin est le kit jetable généré par den à chaque spawn (spec §6.5).
+// Mixin is the disposable kit den generates on every spawn (spec §6.5).
 type Mixin struct {
-	NomSandbox string
-	Env        map[string]string // déjà fusionné et substitué par nest.Resolve
-	Egress     []string          // déjà unionné et trié par nest.Resolve
-	Fraicheur  []string          // argv, cf. CommandeFraicheur
+	SandboxName string
+	Env         map[string]string // already merged and substituted by nest.Resolve
+	Egress      []string          // already unioned and sorted by nest.Resolve
+	Freshness   []string          // argv, see FreshnessCommand
 }
 
-// MixinDepuis assemble le mixin d'un nest résolu.
+// MixinFrom assembles the mixin of a resolved nest.
 //
-// Env et Egress sont COPIÉS : ce sont des champs exportés d'une struct
-// exportée, et les aliaser ferait d'une écriture sur le mixin une mutation
-// silencieuse du nest résolu, que l'appelant continue d'utiliser après le spawn.
-func MixinDepuis(r *nest.Resolved, nomSandbox string) (Mixin, error) {
-	fraicheur, err := CommandeFraicheur(r.AgentName, r.Agent)
+// Env and Egress are COPIED: they are exported fields of an exported struct,
+// and aliasing them would turn a write on the mixin into a silent mutation of
+// the resolved nest, which the caller keeps using after the spawn.
+func MixinFrom(r *nest.Resolved, sandboxName string) (Mixin, error) {
+	freshness, err := FreshnessCommand(r.AgentName, r.Agent)
 	if err != nil {
 		return Mixin{}, err
 	}
 	return Mixin{
-		NomSandbox: nomSandbox,
-		Env:        maps.Clone(r.Env),
-		Egress:     slices.Clone(r.Egress),
-		Fraicheur:  fraicheur,
+		SandboxName: sandboxName,
+		Env:         maps.Clone(r.Env),
+		Egress:      slices.Clone(r.Egress),
+		Freshness:   freshness,
 	}, nil
 }
 
-// RendMixin sérialise le mixin au schéma sbx réel (schemaVersion 2).
+// RenderMixin serializes the mixin to the real sbx schema (schemaVersion 2).
 //
-// Le YAML est construit nœud par nœud plutôt que par yaml.Marshal d'une map :
-// l'ordre d'itération des maps Go est aléatoire, et un golden file ne tolère
-// pas l'aléatoire. Les clés d'environment.variables sont émises TRIÉES.
-func RendMixin(m Mixin) ([]byte, error) {
-	// La fraîcheur ne suit PAS la règle des sections vides : l'omettre rendrait
-	// un mixin parfaitement valide qui démarre une sandbox sans aucun contrôle
-	// de fraîcheur — un fail-OPEN silencieux, là où CommandeFraicheur refuse
-	// justement un agent sans update (spec §9.1). MixinDepuis ne peut pas
-	// atteindre ce cas, mais RendMixin est exportée et Mixin est une struct nue.
-	if len(m.Fraicheur) == 0 {
+// The YAML is built node by node rather than via yaml.Marshal of a map: Go
+// map iteration order is random, and a golden file cannot tolerate that.
+// environment.variables keys are emitted SORTED.
+func RenderMixin(m Mixin) ([]byte, error) {
+	// Freshness does NOT follow the empty-section rule: omitting it would
+	// render a perfectly valid mixin that starts a sandbox with no freshness
+	// check at all — a silent fail-OPEN, exactly what FreshnessCommand refuses
+	// for an agent without an update command (spec §9.1). MixinFrom can never
+	// reach this case, but RenderMixin is exported and Mixin is a bare struct.
+	if len(m.Freshness) == 0 {
 		return nil, fmt.Errorf(
-			"rendu du mixin de %s : aucune commande de fraîcheur — une sandbox ne doit jamais "+
-				"démarrer avec un agent périmé (spec §9.1)", m.NomSandbox)
+			"rendering mixin for %s: no freshness command — a sandbox must never "+
+				"start with a stale agent (spec §9.1)", m.SandboxName)
 	}
 
-	racine := &yaml.Node{Kind: yaml.MappingNode}
+	root := &yaml.Node{Kind: yaml.MappingNode}
 
-	ajoute := func(cle string, valeur *yaml.Node) {
-		racine.Content = append(racine.Content, scalaire(cle), valeur)
+	add := func(key string, value *yaml.Node) {
+		root.Content = append(root.Content, scalarNode(key), value)
 	}
 
-	ajoute("schemaVersion", scalaire("2"))
-	ajoute("kind", scalaire("mixin"))
-	// Le nom d'un kit ne peut pas porter le séparateur de nom de sandbox.
-	ajoute("name", scalaire("den-"+strings.ReplaceAll(m.NomSandbox, ".", "-")))
-	ajoute("version", scalaire(versionMixin))
-	ajoute("description", scalaire(fmt.Sprintf(
-		"Mixin genere par den pour la sandbox %s. Regenere a chaque spawn, "+
-			"ne pas editer a la main.", m.NomSandbox)))
+	add("schemaVersion", scalarNode("2"))
+	add("kind", scalarNode("mixin"))
+	// A kit name cannot carry the sandbox name separator.
+	add("name", scalarNode("den-"+strings.ReplaceAll(m.SandboxName, ".", "-")))
+	add("version", scalarNode(mixinVersion))
+	add("description", scalarNode(fmt.Sprintf(
+		"Mixin generated by den for sandbox %s. Regenerated on every spawn, "+
+			"do not edit by hand.", m.SandboxName)))
 
-	// Sections omises si vides : une `allow: []` vide signifierait « rien
-	// d'autorise », pas « pas de contrainte ».
+	// Sections are omitted when empty: an empty `allow: []` would mean
+	// "nothing allowed", not "no constraint".
 	if len(m.Egress) > 0 {
-		reseau := &yaml.Node{Kind: yaml.MappingNode}
-		reseau.Content = append(reseau.Content, scalaire("allow"), sequence(m.Egress))
+		network := &yaml.Node{Kind: yaml.MappingNode}
+		network.Content = append(network.Content, scalarNode("allow"), sequenceNode(m.Egress))
 		caps := &yaml.Node{Kind: yaml.MappingNode}
-		caps.Content = append(caps.Content, scalaire("network"), reseau)
-		ajoute("caps", caps)
+		caps.Content = append(caps.Content, scalarNode("network"), network)
+		add("caps", caps)
 	}
 
 	if len(m.Env) > 0 {
 		vars := &yaml.Node{Kind: yaml.MappingNode}
 		for _, k := range slices.Sorted(maps.Keys(m.Env)) {
-			// CLÉ ET VALEUR : les deux sont de la donnée utilisateur. La clé
-			// vient d'un `env:` de nest ou d'agent, et AUCUNE validation de
-			// charset ne s'y applique dans toute la cascade. Une clé nulle est
-			// même pire qu'une valeur nulle — elle fait disparaître l'ENTRÉE
-			// ENTIÈRE à la relecture, pas seulement son côté droit.
-			vars.Content = append(vars.Content, scalaireTexte(k), scalaireTexte(m.Env[k]))
+			// BOTH key and value are user data. The key comes from a nest's or
+			// agent's `env:`, and no charset validation applies anywhere in the
+			// cascade. A null key is worse than a null value — it drops the
+			// WHOLE entry on reread, not just its right-hand side.
+			vars.Content = append(vars.Content, stringNode(k), stringNode(m.Env[k]))
 		}
 		env := &yaml.Node{Kind: yaml.MappingNode}
-		env.Content = append(env.Content, scalaire("variables"), vars)
-		ajoute("environment", env)
+		env.Content = append(env.Content, scalarNode("variables"), vars)
+		add("environment", env)
 	}
 
-	// Inconditionnel : garanti non vide par la garde d'entrée.
-	entree := &yaml.Node{Kind: yaml.MappingNode}
-	entree.Content = append(entree.Content, scalaire("command"), sequence(m.Fraicheur))
-	startup := &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{entree}}
+	// Unconditional: guaranteed non-empty by the entry guard above.
+	entry := &yaml.Node{Kind: yaml.MappingNode}
+	entry.Content = append(entry.Content, scalarNode("command"), sequenceNode(m.Freshness))
+	startup := &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{entry}}
 	commands := &yaml.Node{Kind: yaml.MappingNode}
-	commands.Content = append(commands.Content, scalaire("startup"), startup)
-	ajoute("commands", commands)
+	commands.Content = append(commands.Content, scalarNode("startup"), startup)
+	add("commands", commands)
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	if err := enc.Encode(racine); err != nil {
-		return nil, fmt.Errorf("rendu du mixin de %s : %w", m.NomSandbox, err)
+	if err := enc.Encode(root); err != nil {
+		return nil, fmt.Errorf("rendering mixin for %s: %w", m.SandboxName, err)
 	}
 	if err := enc.Close(); err != nil {
-		return nil, fmt.Errorf("rendu du mixin de %s : %w", m.NomSandbox, err)
+		return nil, fmt.Errorf("rendering mixin for %s: %w", m.SandboxName, err)
 	}
 	return buf.Bytes(), nil
 }
 
-// scalaire construit un nœud scalaire STRUCTUREL : les clés, et les valeurs que
-// den fixe lui-même (schemaVersion, kind, name, version, description). Elles
-// sont connues, et `schemaVersion: 2` doit rester le nombre 2.
+// scalarNode builds a STRUCTURAL scalar node: keys, and values den sets itself
+// (schemaVersion, kind, name, version, description). They are known, and
+// `schemaVersion: 2` must stay the number 2.
 //
-// Un contenu multiligne passe en style littéral (« | ») : c'est le seul style
-// qui préserve un script bash sans échappement, et le script de fraîcheur en est
-// un.
-func scalaire(v string) *yaml.Node {
+// Multiline content switches to literal style ("|"): the only style that
+// preserves a bash script unescaped, and the freshness script is one.
+func scalarNode(v string) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.ScalarNode, Value: v}
 	if strings.Contains(v, "\n") {
 		n.Style = yaml.LiteralStyle
@@ -137,111 +135,101 @@ func scalaire(v string) *yaml.Node {
 	return n
 }
 
-// scalaireTexte construit un scalaire qui doit se relire comme une CHAÎNE, quoi
-// qu'il contienne. Réservé aux DONNÉES UTILISATEUR : clés ET valeurs
-// d'environnement, hôtes d'egress, arguments de la commande de fraîcheur.
+// stringNode builds a scalar that must read back as a STRING, whatever it
+// contains. Reserved for USER DATA: env keys AND values, egress hosts,
+// freshness command arguments.
 //
-// Le tag `!!str` fait quoter par l'encodeur les seules valeurs qui, nues, se
-// reliraient autrement — `~`, `null`, `true`, `8080`… Mesuré : sur toutes les
-// valeurs qui SONT déjà des chaînes pour YAML (`value`, un chemin, `github.com`,
-// `bash`, `-c`, un bloc littéral), la sortie est identique au bit près, tag ou
-// pas. C'est pourquoi le golden n'a pas bougé.
+// The `!!str` tag makes the encoder quote only the values that would
+// otherwise read back as something else — `~`, `null`, `true`, `8080`...
+// Every value that is already a plain YAML string (`value`, a path,
+// `github.com`, `bash`, `-c`, a literal block) renders byte-identical with or
+// without the tag, which is why the golden file didn't move.
 //
-// Sans ça : un `TILDE: ~` se relisait `""` et Differences annonçait « env
-// changé » à CHAQUE attache alors que rien n'avait bougé ; pire, une entrée
-// nulle d'une SÉQUENCE (egress, argv de fraîcheur) disparaissait purement et
-// simplement à la relecture. Un faux avertissement permanent apprend à
-// l'utilisateur à ne plus lire l'avertissement — y compris le jour où un egress
-// a vraiment été rétréci.
-func scalaireTexte(v string) *yaml.Node {
-	n := scalaire(v)
+// Without it: a `TILDE: ~` read back as `""` and Differences reported "env
+// changed" on EVERY attach although nothing had moved; worse, a null entry in
+// a SEQUENCE (egress, freshness argv) simply vanished on reread. A permanent
+// false warning teaches the user to stop reading it — including the day an
+// egress really was narrowed.
+func stringNode(v string) *yaml.Node {
+	n := scalarNode(v)
 	n.Tag = "!!str"
 	return n
 }
 
-func sequence(vals []string) *yaml.Node {
+func sequenceNode(vals []string) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.SequenceNode}
 	for _, v := range vals {
-		n.Content = append(n.Content, scalaireTexte(v))
+		n.Content = append(n.Content, stringNode(v))
 	}
 	return n
 }
 
-// valideNomSandbox contrôle qu'un nom peut devenir un segment de chemin.
-//
-// La garde vit ici et non chez l'appelant : ce paquet transforme un nom en
-// chemin hôte — EcrisMixin ET LisMixin, toutes deux exportées, via le même
-// cheminMixin — et « à la charge de l'appelant » est un contrat écrit nulle
-// part. sbx.DecomposeNom est délibérément TOTALE et ne valide rien (elle sert
-// aussi aux sandboxes créées hors den), et filepath.Join NETTOIE un « .. » en
-// une vraie traversée au lieu de la rejeter.
-//
-// Défense en profondeur : Spawn refuse déjà ces noms bien en amont, via
-// sbx.NomSandbox. Aucun chemin d'appel connu n'atteint la garde aujourd'hui.
-//
-// Le contrôle lui-même vit désormais dans sbx : il était dupliqué avec
-// l'assemblage de l'argv, et les deux copies avaient divergé sur « api. ».
-func valideNomSandbox(nom string) error {
-	return sbx.ValiderNomSandbox(nom)
+// mixinDir and mixinPath are the SOLE definition of where the mixin lives.
+// Writing (WriteMixin) and reading (ReadMixin) must agree: if the two composed
+// their path separately and diverged, ReadMixin would forever return
+// os.ErrNotExist, and den would report "unverifiable drift" forever, for
+// EVERY sandbox, without anything actually failing. Locked by
+// TestReadMixinRereadsWhatWriteMixinWrote.
+func mixinDir(denHome, sandboxName string) string {
+	return filepath.Join(denHome, "cache", "mixins", sandboxName)
 }
 
-// dossierMixin et cheminMixin sont l'UNIQUE définition de l'emplacement du
-// mixin. Écriture (EcrisMixin) et relecture (LisMixin) doivent y converger : si
-// les deux composaient leur chemin séparément et divergeaient, LisMixin rendrait
-// éternellement os.ErrNotExist, et den n'annoncerait plus jamais qu'une « dérive
-// non vérifiable » — pour TOUTES les sandboxes, en permanence, sans que rien
-// n'échoue. La détection ne serait pas silencieuse, elle serait définitivement
-// inutile. Verrouillé par TestLisMixinRelitCeQuEcrisMixinEcrit.
-func dossierMixin(denHome, nomSandbox string) string {
-	return filepath.Join(denHome, "cache", "mixins", nomSandbox)
+func mixinPath(denHome, sandboxName string) string {
+	return filepath.Join(mixinDir(denHome, sandboxName), "spec.yaml")
 }
 
-func cheminMixin(denHome, nomSandbox string) string {
-	return filepath.Join(dossierMixin(denHome, nomSandbox), "spec.yaml")
-}
-
-// EcrisMixin matérialise le mixin sous <denHome>/cache/mixins/<sandbox>/ et
-// renvoie le DOSSIER — c'est ce que `sbx create --kit` attend.
+// WriteMixin materializes the mixin under <denHome>/cache/mixins/<sandbox>/
+// and returns the DIRECTORY — what `sbx create --kit` expects.
 //
-// Sous cache/ et non dans un mktemp : cache/ est déclaré reconstructible par le
-// spec §3, et un mixin qui s'évapore rend indébogable un boot raté.
+// Under cache/, not a mktemp: cache/ is declared reconstructible by spec §3,
+// and a mixin that evaporates makes a failed boot undebuggable.
 //
-// Le fichier décrit ce qu'une VM a reçu à son `sbx create`, pas la configuration
-// du moment : Spawn n'appelle EcrisMixin que sur la branche create, et s'en sert
-// ensuite de RÉFÉRENCE pour détecter une configuration qui a dérivé sous une
-// sandbox vivante (cf. LisMixin et Differences). Le réécrire à chaque passage
-// détruirait cette référence — verrouillé par
-// TestSpawnNeReecritPasLeMixinDUneSandboxVivante, dans internal/spawn.
+// The file describes what a VM received at its `sbx create`, not the current
+// configuration: Spawn only calls WriteMixin on the create branch, and later
+// uses it as a REFERENCE to detect configuration drift under a live sandbox
+// (see ReadMixin and Differences). Rewriting it on every pass would destroy
+// that reference — locked by TestSpawnDoesNotRewriteTheMixinOfALiveSandbox, in
+// internal/spawn.
 //
-// Corollaire : le fichier survit à la sandbox (den ne purge pas cache/), et un
-// `sbx rm` suivi d'un nouveau spawn le remplace.
+// Corollary: the file outlives the sandbox (den doesn't purge cache/), and a
+// `sbx rm` followed by a new spawn replaces it.
 //
-// Droits restrictifs (0700/0600) : spec.yaml porte environment.variables,
-// c'est-à-dire l'env fusionné agent ∪ nest — de l'env utilisateur libre, où
-// atterrissent naturellement une clé d'API ou une URI à credentials. Rien ne
-// justifie de le rendre lisible par tous les comptes de la machine.
+// Restrictive permissions (0700/0600): spec.yaml carries
+// environment.variables, i.e. the merged agent ∪ nest env — free-form user
+// env, where an API key or a credentialed URI naturally ends up. Nothing
+// justifies making it readable by every account on the machine.
 //
-// Choix DÉLIBÉRÉ, à confirmer au premier boot réel : `sbx` n'étant pas
-// installable ici, personne n'a pu vérifier qu'il lit le --kit sous l'uid
-// appelant. S'il le lisait sous un autre uid non-root, 0600 casserait le boot —
-// mais bruyamment et immédiatement (permission refusée au premier `create`),
-// alors qu'un secret lisible par tous ne se signale jamais. root, lui,
-// outrepasse les droits de toute façon.
-func EcrisMixin(denHome, nomSandbox string, m Mixin) (string, error) {
-	if err := valideNomSandbox(nomSandbox); err != nil {
-		return "", fmt.Errorf("écriture du mixin : %w", err)
+// DELIBERATE choice, to confirm on the first real boot: `sbx` isn't
+// installable here, so nobody has verified it reads the --kit under the
+// calling uid. If it read it under a different, non-root uid, 0600 would
+// break the boot — but loudly and immediately (permission denied on the first
+// `create`), whereas a world-readable secret never signals itself. root, for
+// its part, bypasses permissions anyway.
+func WriteMixin(denHome, sandboxName string, m Mixin) (string, error) {
+	// The guard lives here, not with the caller: this package turns a name into
+	// a host path — both WriteMixin and ReadMixin, both exported, via the same
+	// mixinPath — and "caller's responsibility" is a contract written nowhere.
+	// sbx.SplitName is deliberately TOTAL and validates nothing (it also serves
+	// sandboxes created outside den), and filepath.Join CLEANS a ".." into a
+	// real traversal instead of rejecting it.
+	//
+	// Defense in depth: Spawn already refuses these names upstream, via
+	// sbx.SandboxName. No PRODUCTION call path reaches this guard today, but
+	// mixin_test.go's hostile-name cases do.
+	if err := sbx.ValidateSandboxName(sandboxName); err != nil {
+		return "", fmt.Errorf("writing mixin: %w", err)
 	}
-	dir := dossierMixin(denHome, nomSandbox)
+	dir := mixinDir(denHome, sandboxName)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("création de %s : %w", dir, err)
+		return "", fmt.Errorf("creating %s: %w", dir, err)
 	}
-	contenu, err := RendMixin(m)
+	content, err := RenderMixin(m)
 	if err != nil {
 		return "", err
 	}
-	chemin := cheminMixin(denHome, nomSandbox)
-	if err := os.WriteFile(chemin, contenu, 0o600); err != nil {
-		return "", fmt.Errorf("écriture de %s : %w", chemin, err)
+	path := mixinPath(denHome, sandboxName)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 	return dir, nil
 }
