@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/PillowPillow/den/internal/sshagent"
 )
 
 // okDeps is FakeDeps under its short local name: 19 call sites in this file
@@ -587,6 +589,164 @@ func TestRunDoesNotWarnWhenSSHAgentIsRunning(t *testing.T) {
 	// anyone spot a stale SSH_AUTH_SOCK.
 	if !strings.Contains(c.Detail, FakeSSHSocket) {
 		t.Errorf("detail = %q, must name the socket seen (%q)", c.Detail, FakeSSHSocket)
+	}
+}
+
+// A present socket is no longer enough for the "ok" line: the agent behind it
+// is interrogated, and the identity COUNT it reports is surfaced. A socket
+// present with a keyless agent used to pass as OK — the very blind spot this
+// check closes — so the count is what proves the agent was actually queried.
+func TestRunReportsTheIdentityCountWhenTheAgentHasKeys(t *testing.T) {
+	d := okDeps()
+	d.SSHAgent = func() sshagent.Result {
+		return sshagent.Result{State: sshagent.StateKeys, Identities: 3}
+	}
+
+	checks := Run(validDenHome(t), d)
+	c, ok := findExactName(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("no check named \"ssh.mode\"; checks: %+v", checks)
+	}
+	if c.Level != LevelOK {
+		t.Errorf("an agent holding keys must report OK; got %+v", c)
+	}
+	if !strings.Contains(c.Detail, "3 identities") {
+		t.Errorf("detail = %q, must surface the identity count the agent reported", c.Detail)
+	}
+	if !strings.Contains(c.Detail, FakeSSHSocket) {
+		t.Errorf("detail = %q, must still name the socket", c.Detail)
+	}
+}
+
+// One key: the singular reads "1 identity", never "1 identities". A cosmetic
+// detail, but the "ok" line is meant to be read, and the plural jars.
+func TestRunReportsASingleIdentityInTheSingular(t *testing.T) {
+	d := okDeps()
+	d.SSHAgent = func() sshagent.Result {
+		return sshagent.Result{State: sshagent.StateKeys, Identities: 1}
+	}
+	c, ok := findExactName(Run(validDenHome(t), d), "ssh.mode")
+	if !ok {
+		t.Fatal("no ssh.mode check")
+	}
+	if !strings.Contains(c.Detail, "1 identity") || strings.Contains(c.Detail, "1 identities") {
+		t.Errorf("detail = %q, want the singular \"1 identity\"", c.Detail)
+	}
+}
+
+// THE case this whole change exists for: the socket is present, so the old
+// check called it OK, but the agent behind it holds no key. A sandbox then
+// inherits a live-but-empty agent and every push dies on publickey — a warning
+// here, non-blocking (working locally without a remote is legitimate).
+func TestRunWarnsWhenTheForwardedAgentIsEmpty(t *testing.T) {
+	d := okDeps()
+	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+
+	checks := Run(validDenHome(t), d)
+	c, ok := findExactName(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("no check named \"ssh.mode\"; checks: %+v", checks)
+	}
+	if c.Level != LevelWarning {
+		t.Errorf("an empty forwarded agent must WARN; got %+v", c)
+	}
+	if c.Blocking() {
+		t.Error("an empty agent must not fail den doctor: working locally without a remote is legitimate")
+	}
+	// The message must name the observed cause, the consequence, and a fix the
+	// user can run — the socket, publickey, and a concrete ssh-add command.
+	for _, want := range []string{FakeSSHSocket, "no identity", "publickey", "ssh-add"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("detail = %q, must contain %q", c.Detail, want)
+		}
+	}
+}
+
+// The socket points at an agent nothing answers behind — a dead socket, no
+// agent, or ssh-add off PATH. Same verdict family as the empty case (warn, not
+// fail), with a message that names the different cause.
+func TestRunWarnsWhenTheForwardedAgentIsUnreachable(t *testing.T) {
+	d := okDeps()
+	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateUnreachable} }
+
+	checks := Run(validDenHome(t), d)
+	c, ok := findExactName(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("no check named \"ssh.mode\"; checks: %+v", checks)
+	}
+	if c.Level != LevelWarning {
+		t.Errorf("an unreachable agent must WARN; got %+v", c)
+	}
+	if c.Blocking() {
+		t.Error("an unreachable agent must not fail den doctor")
+	}
+	for _, want := range []string{FakeSSHSocket, "unreachable", "ssh-add"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("detail = %q, must contain %q", c.Detail, want)
+		}
+	}
+}
+
+// When SSH_AUTH_SOCK is absent, there is no agent to query: the old "absent or
+// empty" warning stands and SSHAgent must NOT be called — probing a socket
+// that isn't there would be nonsense (and, with the real Exec, a wasted
+// ssh-add).
+func TestRunDoesNotQueryTheAgentWhenTheSocketIsAbsent(t *testing.T) {
+	called := false
+	d := okDeps()
+	d.Getenv = func(string) string { return "" }
+	d.SSHAgent = func() sshagent.Result {
+		called = true
+		return sshagent.Result{}
+	}
+
+	checks := Run(validDenHome(t), d)
+	if called {
+		t.Error("SSHAgent was queried with no socket to point it at")
+	}
+	c, ok := findExactName(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("no check named \"ssh.mode\"; checks: %+v", checks)
+	}
+	if c.Level != LevelWarning || !strings.Contains(c.Detail, "absent or empty") {
+		t.Errorf("an absent socket must keep the original absent-or-empty warning; got %+v", c)
+	}
+}
+
+// Outside agent-forward, the agent is queried by nothing: `none` and `mount`
+// don't forward it, so probing it would be a false positive AND a needless
+// ssh-add. The spy proves no query happens, from the same angle as
+// TestRunDoesNotWarnOutsideAgentForward.
+func TestRunDoesNotQueryTheAgentOutsideAgentForward(t *testing.T) {
+	for _, c := range []struct{ name, ssh string }{
+		{"none", "ssh:\n  mode: none\n"},
+		{"mount", "ssh:\n  mode: mount\n  dir: /dev/ssh\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := validDenHome(t)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+`+c.ssh), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			d := okDeps()
+			d.SSHAgent = func() sshagent.Result {
+				called = true
+				return sshagent.Result{}
+			}
+
+			Run(dir, d)
+			if called {
+				t.Errorf("mode %q: the SSH agent must not be queried", c.name)
+			}
+		})
 	}
 }
 

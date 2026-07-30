@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
+	"github.com/PillowPillow/den/internal/sshagent"
 )
 
 // Level says how much a diagnostic weighs on `den doctor`'s exit code.
@@ -50,11 +52,21 @@ type Deps struct {
 	GitVersion func() (string, error)
 	// Getenv reads den's environment, for the SSH_AUTH_SOCK check.
 	Getenv func(string) string
+	// SSHAgent reports the state of the SSH agent behind SSH_AUTH_SOCK. Injected
+	// like the rest so the socket-present cases (empty, dead, has keys) are
+	// reproducible without a real agent on the machine running the suite.
+	SSHAgent func() sshagent.Result
 }
 
 // SystemDeps returns the real dependencies.
 func SystemDeps() Deps {
-	return Deps{LookPath: exec.LookPath, Stat: os.Stat, GitVersion: systemGitVersion, Getenv: os.Getenv}
+	return Deps{
+		LookPath:   exec.LookPath,
+		Stat:       os.Stat,
+		GitVersion: systemGitVersion,
+		Getenv:     os.Getenv,
+		SSHAgent:   func() sshagent.Result { return sshagent.Detect(sshagent.SystemExec()) },
+	}
 }
 
 // systemGitVersion runs `git --version`. The only doctor call that spawns a
@@ -99,6 +111,15 @@ func parseGitVersion(output string) (major, minor int, err error) {
 		return unreadable()
 	}
 	return major, minor, nil
+}
+
+// identities renders an identity count for display, singular for one so the
+// line reads "1 identity" rather than the jarring "1 identities".
+func identities(n int) string {
+	if n == 1 {
+		return "1 identity"
+	}
+	return fmt.Sprintf("%d identities", n)
 }
 
 // Run executes every diagnostic and returns the full list, failures included.
@@ -243,17 +264,41 @@ func Run(denHome string, d Deps) []Check {
 	// them apart, den doesn't call it) — naming "absent" on a variable set
 	// empty would describe a plausible cause instead of what was observed.
 	if g.SSH.Mode == "agent-forward" {
-		if socket := d.Getenv("SSH_AUTH_SOCK"); socket == "" {
+		socket := d.Getenv("SSH_AUTH_SOCK")
+		switch {
+		case socket == "":
 			warn("ssh.mode",
 				"agent-forward, but SSH_AUTH_SOCK is absent or empty in den's environment: "+
 					"there is no SSH agent to forward, sandboxes will have no SSH access "+
 					"and `git push` will fail from the VM, far from the cause — start an agent "+
 					"(`eval $(ssh-agent)` then `ssh-add`), or set `ssh.mode` to \"mount\" in %s",
 				config.GlobalPath(denHome))
-		} else {
-			// The value is named: an "ok" that doesn't say what it saw
-			// wouldn't let anyone spot a stale socket.
-			add("ssh.mode", true, "agent-forward, SSH_AUTH_SOCK=%s", socket)
+		default:
+			// Socket present: the old check stopped here and called it OK, blind
+			// to a forwarded agent that is empty or dead. Interrogate it — the
+			// socket alone proves a proxy exists, not that anything answers with
+			// a key behind it.
+			switch res := d.SSHAgent(); res.State {
+			case sshagent.StateKeys:
+				// The value AND the count are named: an "ok" that doesn't say
+				// what it saw wouldn't let anyone spot a stale socket or an agent
+				// that quietly lost its keys.
+				add("ssh.mode", true, "agent-forward, SSH_AUTH_SOCK=%s (%s)",
+					socket, identities(res.Identities))
+			case sshagent.StateEmpty:
+				warn("ssh.mode",
+					"agent-forward, but the agent at SSH_AUTH_SOCK=%s holds no identity: sandboxes "+
+						"inherit an empty agent and are denied SSH access (publickey), so `git push` "+
+						"fails from the VM far from the cause — load a key with `%s`",
+					socket, sshagent.FixCommand(runtime.GOOS))
+			case sshagent.StateUnreachable:
+				warn("ssh.mode",
+					"agent-forward, but SSH_AUTH_SOCK=%s points at an unreachable agent (dead socket, "+
+						"no agent running, or ssh-add absent from PATH): sandboxes will have no SSH "+
+						"access and `git push` fails from the VM — start an agent and load a key with "+
+						"`%s`, or set `ssh.mode` to \"mount\" in %s",
+					socket, sshagent.FixCommand(runtime.GOOS), config.GlobalPath(denHome))
+			}
 		}
 	}
 

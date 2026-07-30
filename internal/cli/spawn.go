@@ -41,10 +41,13 @@ func configureSpawn(root *cobra.Command, denHome *string, deps spawn.Deps) {
 		if err != nil {
 			return err
 		}
-		// Local copy: only Out is decided here, at run time, because it alone
-		// depends on the command (and hence on a test's SetOut).
+		// Local copy: Out and Err are decided here, at run time, because they
+		// alone depend on the command (and hence on a test's SetOut/SetErr).
+		// The empty-agent warning goes to Err so it never mixes into the stdout
+		// a caller might pipe.
 		d := deps
 		d.Out = cmd.OutOrStdout()
+		d.Err = cmd.ErrOrStderr()
 		return withSuggestion(root, o.Nest, spawn.Spawn(cmd.Context(), home, o, d))
 	}
 

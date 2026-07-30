@@ -1,11 +1,19 @@
 package doctor
 
-import "os"
+import (
+	"os"
+
+	"github.com/PillowPillow/den/internal/sshagent"
+)
 
 // FakeSSHSocket is the SSH_AUTH_SOCK value FakeDeps reports. Named because
 // tests in this package and in internal/cli both assert it appears inside a
 // Detail.
 const FakeSSHSocket = "/tmp/den-test/agent-ssh.sock"
+
+// FakeSSHIdentities is the identity count FakeDeps' agent reports. Named
+// because the doctor test asserts it surfaces in the ssh.mode "ok" detail.
+const FakeSSHIdentities = 1
 
 // FakeDeps simulates a system where sbx is installed, every path exists, git
 // is recent enough, and an SSH agent is running.
@@ -32,6 +40,14 @@ func FakeDeps() Deps {
 				return FakeSSHSocket
 			}
 			return ""
+		},
+		// A healthy agent with one key: same reasoning as Getenv — without
+		// injection the socket-present branch would query the machine's real
+		// agent and turn the ssh.mode check green or amber depending on who runs
+		// the suite. FakeSSHIdentities is named because tests assert the count
+		// surfaces in the "ok" detail.
+		SSHAgent: func() sshagent.Result {
+			return sshagent.Result{State: sshagent.StateKeys, Identities: FakeSSHIdentities}
 		},
 	}
 }

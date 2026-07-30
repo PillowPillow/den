@@ -9,6 +9,7 @@ import (
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
+	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -24,16 +25,22 @@ type Deps struct {
 	Sbx    sbx.Runner
 	Git    worktree.Git
 	Policy policy.Options
+	// SSHAgent probes the forwarded SSH agent for the spawn's empty-agent
+	// warning. Injected here (not hard-wired in NewRootCmdWith) so the wiring
+	// tests, which build Deps by hand, leave it nil and skip the real ssh-add —
+	// keeping them owing nothing to the machine, exactly as they do for Git.
+	SSHAgent func() sshagent.Result
 }
 
-// SystemDeps wires the real system accesses: sbx from PATH, real git, and the
-// default patience of policy's settle loop.
+// SystemDeps wires the real system accesses: sbx from PATH, real git, the
+// default patience of policy's settle loop, and a real SSH-agent probe.
 func SystemDeps() Deps {
 	return Deps{
-		Doctor: doctor.SystemDeps(),
-		Sbx:    sbx.NewExec(""),
-		Git:    worktree.NewGit(),
-		Policy: policy.DefaultOptions(),
+		Doctor:   doctor.SystemDeps(),
+		Sbx:      sbx.NewExec(""),
+		Git:      worktree.NewGit(),
+		Policy:   policy.DefaultOptions(),
+		SSHAgent: func() sshagent.Result { return sshagent.Detect(sshagent.SystemExec()) },
 	}
 }
 
@@ -86,9 +93,10 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// LAST: configureSpawn sets Args on the root, which only makes sense once
 	// every subcommand is registered.
 	configureSpawn(root, &denHome, spawn.Deps{
-		Sbx:    deps.Sbx,
-		Git:    deps.Git,
-		Policy: deps.Policy,
+		Sbx:      deps.Sbx,
+		Git:      deps.Git,
+		Policy:   deps.Policy,
+		SSHAgent: deps.SSHAgent,
 	})
 	return root
 }

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -29,6 +31,15 @@ type Deps struct {
 	Git    worktree.Git
 	Policy policy.Options
 	Out    io.Writer
+	// Err carries diagnostics that are not part of the command's output — the
+	// empty-SSH-agent warning goes here, on stderr, so it never pollutes the
+	// stdout a caller might pipe. Defaults to io.Discard when unset.
+	Err io.Writer
+	// SSHAgent reports the state of the forwarded SSH agent. Injected, and
+	// nil-tolerant: a nil probe (every test that doesn't exercise SSH, plus the
+	// wiring double) simply skips the warning rather than reaching for a real
+	// ssh-add.
+	SSHAgent func() sshagent.Result
 }
 
 // There is no SystemDeps constructor here, on purpose: it would let a call
@@ -61,6 +72,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// the log is cheaper than that.
 	if d.Out == nil {
 		d.Out = io.Discard
+	}
+	// Err defaults like Out: the empty-agent warning is best-effort and must
+	// never panic a spawn that left stderr unset.
+	if d.Err == nil {
+		d.Err = io.Discard
 	}
 
 	// 1. Resolve the cascade.
@@ -159,6 +175,15 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				r.Stack.Name, k, filepath.Join(r.Stack.Dir, "stack.yaml"))
 		}
 	}
+
+	// 2bis. In agent-forward, warn (never block) if the agent den is about to
+	// forward holds no key. sbx transmits the socket faithfully, but an empty
+	// agent forwards an empty agent: `git push` then dies on publickey inside
+	// the VM, far from the cause, with no ~/.ssh to fall back to. Same probe as
+	// `den doctor`; placed before `sbx create`, and applying to the attach
+	// branch too — the forwarded socket is a live proxy, so the warning is just
+	// as true when returning to a running sandbox.
+	warnEmptySSHAgent(d.Err, r.SSHMode, d.SSHAgent)
 
 	// 3. Worktrees, if requested. The first workspace must stay the first
 	// repo: sbx.Sandbox.Workdir depends on it for attach, and nothing at
@@ -356,6 +381,44 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return nil
 	}
 	return Attach(ctx, d.Sbx, sandboxName, workdir)
+}
+
+// warnEmptySSHAgent warns, on stderr, when `ssh.mode: agent-forward` would
+// forward an SSH agent that holds no key (empty) or that nothing answers
+// behind (unreachable).
+//
+// Non-blocking by design: HTTPS and read-only workflows need no SSH, and den
+// has no way to know whether this spawn does — same call as `den doctor`, T12
+// §6. Silent in every other case:
+//
+//   - modes `mount` and `none` don't forward the agent, so its state is
+//     irrelevant;
+//   - a nil probe (tests that don't exercise SSH, the wiring double) skips
+//     rather than reaching for a real ssh-add;
+//   - StateKeys is the healthy case and says nothing.
+//
+// The message points at a fix that acts WITHOUT respawning den: the forwarded
+// socket is a live proxy, so a key loaded host-side is visible in the running
+// sandbox immediately.
+func warnEmptySSHAgent(w io.Writer, sshMode string, probe func() sshagent.Result) {
+	if sshMode != "agent-forward" || probe == nil {
+		return
+	}
+	fix := sshagent.FixCommand(runtime.GOOS)
+	switch probe().State {
+	case sshagent.StateEmpty:
+		fmt.Fprintf(w,
+			"warning: ssh.mode agent-forward, but the forwarded SSH agent holds no identity — "+
+				"this sandbox is denied SSH access (publickey) and `git push` fails from inside it; "+
+				"run `%s` on the host (the forwarded socket is a live proxy, so the key takes effect "+
+				"without respawning den)\n", fix)
+	case sshagent.StateUnreachable:
+		fmt.Fprintf(w,
+			"warning: ssh.mode agent-forward, but SSH_AUTH_SOCK points at an unreachable agent "+
+				"(dead socket, no agent, or ssh-add absent from PATH) — this sandbox has no SSH access "+
+				"and `git push` fails from inside it; start an agent and run `%s` on the host (the "+
+				"forwarded socket is a live proxy, so it takes effect without respawning den)\n", fix)
+	}
 }
 
 // reportDrift prints what changed between the mixin a sandbox received at

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/PillowPillow/den/internal/doctor"
+	"github.com/PillowPillow/den/internal/sshagent"
 )
 
 // runDoctor runs `den doctor` on a given den home with injected system
@@ -75,6 +76,30 @@ func TestDoctorDoesNotFailOnAWarning(t *testing.T) {
 	}
 	if !strings.Contains(out, "SSH_AUTH_SOCK") {
 		t.Errorf("output = %q, expected the diagnostic naming SSH_AUTH_SOCK", out)
+	}
+}
+
+// The socket-present blind spot, end to end: SSH_AUTH_SOCK is set but the
+// agent behind it holds no key. The old check called that OK; now it is a
+// [warn] line — non-blocking (rc 0), naming a fix — that `den doctor` renders
+// through the whole command, not just doctor.Run.
+func TestDoctorWarnsWhenTheForwardedAgentIsEmpty(t *testing.T) {
+	home := testDenHome(t)
+	deps := doctor.FakeDeps() // socket present (FakeSSHSocket), config default agent-forward
+	deps.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+
+	out, err := runDoctor(t, home, deps)
+	if err != nil {
+		t.Fatalf("an empty agent is a warning, not a failure: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[warn]") {
+		t.Errorf("output = %q, expected a [warn] line for the empty agent", out)
+	}
+	if strings.Contains(out, "[FAIL]") {
+		t.Errorf("output = %q, an empty agent must not fail den doctor", out)
+	}
+	if !strings.Contains(out, "ssh-add") {
+		t.Errorf("output = %q, the warning must offer a concrete fix", out)
 	}
 }
 
