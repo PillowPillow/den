@@ -4,11 +4,13 @@ package cli
 
 import (
 	"fmt"
+	"runtime"
 
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
+	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -24,16 +26,22 @@ type Deps struct {
 	Sbx    sbx.Runner
 	Git    worktree.Git
 	Policy policy.Options
+	// SSHAgent probes the forwarded SSH agent for the spawn's empty-agent
+	// warning. Injected here (not hard-wired in NewRootCmdWith) so the wiring
+	// tests, which build Deps by hand, leave it nil and skip the real ssh-add —
+	// keeping them owing nothing to the machine, exactly as they do for Git.
+	SSHAgent func() sshagent.Result
 }
 
-// SystemDeps wires the real system accesses: sbx from PATH, real git, and the
-// default patience of policy's settle loop.
+// SystemDeps wires the real system accesses: sbx from PATH, real git, the
+// default patience of policy's settle loop, and a real SSH-agent probe.
 func SystemDeps() Deps {
 	return Deps{
-		Doctor: doctor.SystemDeps(),
-		Sbx:    sbx.NewExec(""),
-		Git:    worktree.NewGit(),
-		Policy: policy.DefaultOptions(),
+		Doctor:   doctor.SystemDeps(),
+		Sbx:      sbx.NewExec(""),
+		Git:      worktree.NewGit(),
+		Policy:   policy.DefaultOptions(),
+		SSHAgent: sshagent.System(),
 	}
 }
 
@@ -75,7 +83,11 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	root.AddCommand(newNestCmd(&denHome))
 	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor))
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
-	root.AddCommand(newShCmd(deps.Sbx))
+	// `den sh` gets the SSH probe and the OS too: re-entering a sandbox whose
+	// forwarded agent has been emptied fails `git push` exactly as a fresh
+	// `den <nest>` would, and this is the surface that re-enters most often.
+	// runtime.GOOS is named here, at the wiring site, like the spawn's below.
+	root.AddCommand(newShCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS))
 	root.AddCommand(newRmCmd(&denHome, deps.Sbx, deps.Git))
 
 	// spawn.Deps is ASSEMBLED here from the very fields newLsCmd just got:
@@ -86,9 +98,14 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// LAST: configureSpawn sets Args on the root, which only makes sense once
 	// every subcommand is registered.
 	configureSpawn(root, &denHome, spawn.Deps{
-		Sbx:    deps.Sbx,
-		Git:    deps.Git,
-		Policy: deps.Policy,
+		Sbx:      deps.Sbx,
+		Git:      deps.Git,
+		Policy:   deps.Policy,
+		SSHAgent: deps.SSHAgent,
+		// The real OS, named at the wiring site like every other system access:
+		// spawn has no SystemDeps constructor to hold it (see spawn.Deps), and a
+		// field left implicit here is a dependency the reader has to hunt for.
+		GOOS: runtime.GOOS,
 	})
 	return root
 }

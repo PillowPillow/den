@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/PillowPillow/den/internal/sshagent"
 )
 
 // okDeps is FakeDeps under its short local name: 19 call sites in this file
@@ -572,6 +574,35 @@ func TestSystemDepsReadsEnvironmentAndTreatsEmptyAsAbsent(t *testing.T) {
 	}
 }
 
+// The real WIRING of SSHAgent, the sibling of the Getenv check right above and
+// the one field of Deps no test could otherwise miss being dropped.
+//
+// Every test in this file injects its own probe (FakeDeps, fake.go), so
+// removing `SSHAgent: sshagent.System()` from SystemDeps leaves the whole
+// suite green — and leaves `den doctor` with a nil probe on the DEFAULT
+// configuration path: ssh.mode is "agent-forward" unless the user says
+// otherwise, and with SSH_AUTH_SOCK set, doctor.Run reaches
+// `switch res := d.SSHAgent(); res.State` (doctor.go) with no nil check, which
+// panics the command outright rather than degrading.
+//
+// The absence of that nil check is deliberate and stays: Deps' convention is
+// that ALL its fields are required — LookPath, Stat, GitVersion and Getenv are
+// each dereferenced unguarded too — so the guard belongs here, in a test on
+// the single production wiring, not in a lone `if` at the call site. (spawn's
+// warnEmptySSHAgent is nil-TOLERANT for the opposite reason: its probe is
+// genuinely optional, skipping the warning for the modes and tests that never
+// forward an agent.)
+//
+// The probe is NOT called: doing so would spawn a real `ssh-add -l` and make
+// this package's verdict depend on the machine running the suite. What is
+// asserted is what the wiring can lose.
+func TestSystemDepsProvidesAnSSHAgentProbe(t *testing.T) {
+	if SystemDeps().SSHAgent == nil {
+		t.Fatal("SystemDeps().SSHAgent is nil: with ssh.mode agent-forward (the default) " +
+			"and SSH_AUTH_SOCK set, `den doctor` panics on the nil probe")
+	}
+}
+
 // The counterpart: a running SSH agent produces no warning. Without it, a
 // `warn` wired unconditionally would pass the previous test.
 func TestRunDoesNotWarnWhenSSHAgentIsRunning(t *testing.T) {
@@ -587,6 +618,317 @@ func TestRunDoesNotWarnWhenSSHAgentIsRunning(t *testing.T) {
 	// anyone spot a stale SSH_AUTH_SOCK.
 	if !strings.Contains(c.Detail, FakeSSHSocket) {
 		t.Errorf("detail = %q, must name the socket seen (%q)", c.Detail, FakeSSHSocket)
+	}
+	// And the COUNT the fake's agent reports, expected through identities()
+	// rather than hardcoded so the two renderings can never drift. Without this
+	// line nothing in the tree read FakeSSHIdentities: FakeDeps could return any
+	// number of keys — or none while claiming StateKeys — and the whole suite
+	// stayed green, which is exactly what the constant is supposed to prevent.
+	if !strings.Contains(c.Detail, identities(FakeSSHIdentities)) {
+		t.Errorf("detail = %q, must surface the count the fake agent reports (%q)",
+			c.Detail, identities(FakeSSHIdentities))
+	}
+}
+
+// A present socket is no longer enough for the "ok" line: the agent behind it
+// is interrogated, and the identity COUNT it reports is surfaced. A socket
+// present with a keyless agent used to pass as OK — the very blind spot this
+// check closes — so the count is what proves the agent was actually queried.
+func TestRunReportsTheIdentityCountWhenTheAgentHasKeys(t *testing.T) {
+	d := okDeps()
+	d.SSHAgent = func() sshagent.Result {
+		return sshagent.Result{State: sshagent.StateKeys, Identities: 3}
+	}
+
+	checks := Run(validDenHome(t), d)
+	c, ok := findExactName(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("no check named \"ssh.mode\"; checks: %+v", checks)
+	}
+	if c.Level != LevelOK {
+		t.Errorf("an agent holding keys must report OK; got %+v", c)
+	}
+	if !strings.Contains(c.Detail, "3 identities") {
+		t.Errorf("detail = %q, must surface the identity count the agent reported", c.Detail)
+	}
+	if !strings.Contains(c.Detail, FakeSSHSocket) {
+		t.Errorf("detail = %q, must still name the socket", c.Detail)
+	}
+}
+
+// One key: the singular reads "1 identity", never "1 identities". A cosmetic
+// detail, but the "ok" line is meant to be read, and the plural jars.
+func TestRunReportsASingleIdentityInTheSingular(t *testing.T) {
+	d := okDeps()
+	d.SSHAgent = func() sshagent.Result {
+		return sshagent.Result{State: sshagent.StateKeys, Identities: 1}
+	}
+	c, ok := findExactName(Run(validDenHome(t), d), "ssh.mode")
+	if !ok {
+		t.Fatal("no ssh.mode check")
+	}
+	if !strings.Contains(c.Detail, "1 identity") || strings.Contains(c.Detail, "1 identities") {
+		t.Errorf("detail = %q, want the singular \"1 identity\"", c.Detail)
+	}
+}
+
+// THE case this whole change exists for: the socket is present, so the old
+// check called it OK, but the agent behind it holds no key. A sandbox then
+// inherits a live-but-empty agent and every push dies on publickey — a warning
+// here, non-blocking (working locally without a remote is legitimate).
+func TestRunWarnsWhenTheForwardedAgentIsEmpty(t *testing.T) {
+	d := okDeps()
+	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+
+	checks := Run(validDenHome(t), d)
+	c, ok := findExactName(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("no check named \"ssh.mode\"; checks: %+v", checks)
+	}
+	if c.Level != LevelWarning {
+		t.Errorf("an empty forwarded agent must WARN; got %+v", c)
+	}
+	if c.Blocking() {
+		t.Error("an empty agent must not fail den doctor: working locally without a remote is legitimate")
+	}
+	// The message must name the observed cause, the consequence, and a fix the
+	// user can run — the socket, publickey, and a concrete ssh-add command.
+	for _, want := range []string{FakeSSHSocket, "no identity", "publickey", "ssh-add"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("detail = %q, must contain %q", c.Detail, want)
+		}
+	}
+}
+
+// The remedy is OS-specific — macOS needs `--apple-use-keychain` to reach the
+// login keychain — and sshagent.FixCommand takes goos as a PARAMETER precisely
+// so each branch is assertable anywhere. Reading runtime.GOOS inside Run threw
+// that away: the darwin remedy became unassertable on a Linux CI, which is the
+// only place this suite ever runs. Deps.GOOS puts the choice back under the
+// injection contract, so the exact command a macOS user is told to run is
+// checked here rather than trusted.
+// ALL THREE agent-forward warnings quote a fix command, so all three are
+// checked, the absent-socket branch included: a remedy that only got the OS
+// right on some branches would still mislead the macOS users who land on the
+// others. That branch is not hypothetical — it hardcoded the bare form while
+// its two siblings templated theirs through FixCommand, so on darwin one
+// warning out of three printed a command without `--apple-use-keychain`, in
+// the one place nobody had templated.
+func TestRunNamesTheMacOSRemedyWhenGOOSIsDarwin(t *testing.T) {
+	for name, branch := range agentForwardWarningBranches {
+		t.Run(name, func(t *testing.T) {
+			d := okDeps()
+			d.GOOS = "darwin"
+			branch(&d)
+
+			c, ok := findExactName(Run(validDenHome(t), d), "ssh.mode")
+			if !ok {
+				t.Fatal("no ssh.mode check")
+			}
+			if c.Level != LevelWarning {
+				t.Fatalf("this branch must warn, otherwise the remedy assertion below "+
+					"stops exercising anything; got %+v", c)
+			}
+			if want := sshagent.FixCommand("darwin"); !strings.Contains(c.Detail, want) {
+				t.Errorf("detail = %q, must name the darwin remedy %q in full", c.Detail, want)
+			}
+		})
+	}
+}
+
+// Every warning that hands the user a load command must also name what that
+// command does NOT load: `ssh-add` reads the default `~/.ssh/id_*` names only,
+// so on a host whose real keys are named otherwise it exits 0, `ssh-add -l`
+// reports an identity, this check turns green — and `git push` from the sandbox
+// stays denied. Measured on the verification machine, where the only
+// default-named key is an `id_rsa` nothing uses.
+//
+// Asserted against the CONSTANT, never a copy of its wording: a caveat the test
+// spells out itself would keep passing after the message stopped saying it.
+func TestRunNamesTheNonDefaultKeyCaveatWhereverItQuotesAFix(t *testing.T) {
+	for name, branch := range agentForwardWarningBranches {
+		t.Run(name, func(t *testing.T) {
+			d := okDeps()
+			branch(&d)
+
+			c, ok := findExactName(Run(validDenHome(t), d), "ssh.mode")
+			if !ok {
+				t.Fatal("no ssh.mode check")
+			}
+			if !strings.Contains(c.Detail, sshagent.KeyNameCaveat) {
+				t.Errorf("detail = %q, must carry the non-default-key caveat %q: the fix it "+
+					"quotes can succeed and still leave `git push` broken",
+					c.Detail, sshagent.KeyNameCaveat)
+			}
+		})
+	}
+}
+
+// The three machine states in which `den doctor` warns about agent-forward AND
+// quotes a command to run — the population the OS-remedy tests must cover in
+// full. Declared once: the darwin assertion and its Linux counterpart have to
+// range over the SAME set, or a branch added to one is left untested by the
+// other.
+//
+// The absent-socket branch is set up by injecting Getenv, not by unsetting the
+// variable: Run reads the socket through Deps, and this suite owes nothing to
+// the machine it runs on.
+var agentForwardWarningBranches = map[string]func(*Deps){
+	"empty": func(d *Deps) {
+		d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+	},
+	"unreachable": func(d *Deps) {
+		d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateUnreachable} }
+	},
+	"socket absent": func(d *Deps) {
+		d.Getenv = func(string) string { return "" }
+	},
+}
+
+// The counterpart, and what makes the test above more than a tautology: on a
+// non-darwin GOOS the keychain flag must NOT appear. Without it, a FixCommand
+// that returned the macOS form everywhere would satisfy the darwin assertion
+// while telling every Linux user to pass a flag their ssh-add rejects.
+//
+// Over the same three branches, for the reason given on
+// agentForwardWarningBranches: the pair only holds if both sides range over the
+// whole population.
+func TestRunOmitsTheMacOSFlagOnLinux(t *testing.T) {
+	for name, branch := range agentForwardWarningBranches {
+		t.Run(name, func(t *testing.T) {
+			d := okDeps()
+			d.GOOS = "linux"
+			branch(&d)
+
+			c, ok := findExactName(Run(validDenHome(t), d), "ssh.mode")
+			if !ok {
+				t.Fatal("no ssh.mode check")
+			}
+			if strings.Contains(c.Detail, "--apple-use-keychain") {
+				t.Errorf("detail = %q, must not hand a Linux user a macOS-only flag", c.Detail)
+			}
+			if !strings.Contains(c.Detail, "ssh-add") {
+				t.Errorf("detail = %q, must still name a concrete fix command", c.Detail)
+			}
+		})
+	}
+}
+
+// The socket points at an agent nothing answers behind — a dead socket, no
+// agent, or ssh-add off PATH. Same verdict family as the empty case (warn, not
+// fail), with a message that names the different cause.
+func TestRunWarnsWhenTheForwardedAgentIsUnreachable(t *testing.T) {
+	d := okDeps()
+	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateUnreachable} }
+
+	checks := Run(validDenHome(t), d)
+	c, ok := findExactName(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("no check named \"ssh.mode\"; checks: %+v", checks)
+	}
+	if c.Level != LevelWarning {
+		t.Errorf("an unreachable agent must WARN; got %+v", c)
+	}
+	if c.Blocking() {
+		t.Error("an unreachable agent must not fail den doctor")
+	}
+	for _, want := range []string{FakeSSHSocket, "unreachable", "ssh-add"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("detail = %q, must contain %q", c.Detail, want)
+		}
+	}
+}
+
+// A state the switch doesn't model must not make the diagnostic VANISH. With
+// no default arm, a State added to sshagent (or any value doctor wasn't taught)
+// produced NO ssh.mode line at all: `den doctor` then printed nothing about the
+// agent, which reads as "nothing to report" — silence where the check is meant
+// to speak. The line must still appear, as a warning naming what was seen.
+func TestRunStillReportsSSHModeOnAnUnrecognizedAgentState(t *testing.T) {
+	d := okDeps()
+	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.State(99)} }
+
+	checks := Run(validDenHome(t), d)
+	c, ok := findExactName(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("no check named \"ssh.mode\" for an unmodelled agent state: the diagnostic "+
+			"disappeared instead of warning; checks: %+v", checks)
+	}
+	if c.Level != LevelWarning {
+		t.Errorf("an unrecognized agent state must WARN, not pass for healthy; got %+v", c)
+	}
+	if c.Blocking() {
+		t.Error("an unrecognized agent state must not fail den doctor")
+	}
+	// The socket and the unrecognized value are both named: a warning that says
+	// neither what it looked at nor what it got is unactionable.
+	for _, want := range []string{FakeSSHSocket, "99"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("detail = %q, must contain %q", c.Detail, want)
+		}
+	}
+}
+
+// When SSH_AUTH_SOCK is absent, there is no agent to query: the old "absent or
+// empty" warning stands and SSHAgent must NOT be called — probing a socket
+// that isn't there would be nonsense (and, with the real Exec, a wasted
+// ssh-add).
+func TestRunDoesNotQueryTheAgentWhenTheSocketIsAbsent(t *testing.T) {
+	called := false
+	d := okDeps()
+	d.Getenv = func(string) string { return "" }
+	d.SSHAgent = func() sshagent.Result {
+		called = true
+		return sshagent.Result{}
+	}
+
+	checks := Run(validDenHome(t), d)
+	if called {
+		t.Error("SSHAgent was queried with no socket to point it at")
+	}
+	c, ok := findExactName(checks, "ssh.mode")
+	if !ok {
+		t.Fatalf("no check named \"ssh.mode\"; checks: %+v", checks)
+	}
+	if c.Level != LevelWarning || !strings.Contains(c.Detail, "absent or empty") {
+		t.Errorf("an absent socket must keep the original absent-or-empty warning; got %+v", c)
+	}
+}
+
+// Outside agent-forward, the agent is queried by nothing: `none` and `mount`
+// don't forward it, so probing it would be a false positive AND a needless
+// ssh-add. The spy proves no query happens, from the same angle as
+// TestRunDoesNotWarnOutsideAgentForward.
+func TestRunDoesNotQueryTheAgentOutsideAgentForward(t *testing.T) {
+	for _, c := range []struct{ name, ssh string }{
+		{"none", "ssh:\n  mode: none\n"},
+		{"mount", "ssh:\n  mode: mount\n  dir: /dev/ssh\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := validDenHome(t)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+`+c.ssh), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			d := okDeps()
+			d.SSHAgent = func() sshagent.Result {
+				called = true
+				return sshagent.Result{}
+			}
+
+			Run(dir, d)
+			if called {
+				t.Errorf("mode %q: the SSH agent must not be queried", c.name)
+			}
+		})
 	}
 }
 

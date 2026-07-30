@@ -349,13 +349,39 @@ renseigne. C'est délibéré des deux côtés où l'on serait tenté de faire au
 - **pas dans le mixin** : une valeur de socket hôte écrite dans un kit serait périmée dès la
   session suivante, et trompeuse — le kit décrit la VM, pas la session qui l'a lancée.
 
-Le seul cas où ce mode ne donne rien est un hôte **sans agent SSH en marche**. `den doctor` le
-signale alors en **avertissement** (`[warn] ssh.mode`), pas en échec : travailler en local sans
-dépôt distant est légitime, et den n'a aucun moyen de savoir si l'utilisateur a besoin de SSH.
+Ce mode ne donne rien dans **trois** états de l'hôte, et non un seul : le socket prouve qu'un
+mandataire existe, jamais qu'une clé répond derrière lui.
+
+| état de l'hôte | ce que den observe | ce que la sandbox hérite |
+|---|---|---|
+| `SSH_AUTH_SOCK` **absent ou vide** | la variable manque de l'environnement de den | aucun agent |
+| agent **joignable mais sans identité** | `ssh-add -l` répond, la liste est vide | un agent vivant et vide |
+| agent **injoignable** | socket mort, aucun agent en marche, ou `ssh-add` hors du PATH | rien qui réponde |
+
+Les trois sont des **avertissements** (`[warn] ssh.mode`), jamais des échecs : travailler en local
+sans dépôt distant est légitime, et den n'a aucun moyen de savoir si l'utilisateur a besoin de SSH.
+Les deux derniers sont ceux qui coûtaient cher : tant que den ne regardait que la variable, ils
+passaient pour un `[ok]` et ne se manifestaient que **dans** la VM, par un `git push` en
+`Permission denied (publickey)` loin de la cause et sans `~/.ssh` de repli (ce repli-là, c'est
+`ssh.mode: mount`).
+
+**Deux surfaces, une seule sonde** (`internal/sshagent` : un `ssh-add -l` borné à 2 s, injecté
+comme le reste pour que les trois états soient rejouables sans agent réel sur la machine de test) :
+
+- `den doctor` **nomme le compte d'identités** quand tout va bien — `[ok] ssh.mode agent-forward,
+  SSH_AUTH_SOCK=… (N identities)`. Un `[ok]` muet ne laisserait repérer ni un socket périmé ni un
+  agent qui a perdu ses clés ;
+- `den <nest>` en `agent-forward` **avertit sur stderr**, avant le `sbx create` et aussi quand il
+  attache à une sandbox déjà vivante. Sur stderr et pas stdout : c'est l'environnement de den qui
+  est en cause, pas la sandbox que le reste de la sortie décrit.
+
+Le remède diffère selon l'état, et les messages le disent : un `ssh-add` côté hôte prend effet
+**dans une sandbox déjà lancée** (le socket forwardé est un mandataire vivant), alors qu'un socket
+absent au moment du `create` n'apparaîtra jamais dans une VM déjà bootée — là, il faut relancer den.
 
 Reste **non vérifiable sans `sbx` installé** : que `sbx` propage effectivement ce socket **dans**
 la microVM. C'est l'hypothèse **A10** du §14.1, falsifiable au premier smoke réel par un
-`git push` depuis la VM.
+`git push` qui échoue depuis la VM alors que la sonde hôte, elle, a vu des clés.
 
 ---
 
@@ -600,7 +626,7 @@ casse plus den ; il reste utile de la vérifier, mais ce n'est plus bloquant.
 | A7 | La réponse ne dépend que de `(sandbox, hôte)`, jamais transitoire | Un `sbx` qui flanche une fois (VM pas encore prête) ferait échouer tout le settle | **Oui**, même correctif qu'A1 |
 | A8 | La sandbox existe et tourne quand `policy check` est appelé | Idem A1 | **Oui** pour la garde de nom de sandbox |
 | A9 | `sbx` ne rend **jamais** `allowed:false` en échouant pour une raison **étrangère à la policy** | Une sandbox inexistante diagnostiquée `not found` **tout en** rendant `allowed:false` : den brûlerait ses 60 s en accusant l'allowlist | **Oui** — la dernière erreur runner observée est jointe au message de timeout, la vraie cause reste visible |
-| A10 | `sbx` **propage `SSH_AUTH_SOCK` de son propre environnement jusque dans la microVM** — c'est tout ce sur quoi repose `ssh.mode: agent-forward`, qui est le **défaut** | Un `git push` sur un remote SSH depuis la VM échoue en `Permission denied (publickey)` alors que `den doctor` affiche `[ok] ssh.mode agent-forward, SSH_AUTH_SOCK=…` sur l'hôte | **Partiellement.** Ce que den contrôle est prouvé : le process `sbx` hérite bien de l'environnement de den (`cmd.Env` laissé nil, tenu par `TestExec{Run,Attach}TransmetLEnvironnementDeDen`), et `den doctor` **avertit** quand la variable manque côté hôte. Ce que den ne peut pas contrôler — le saut hôte → microVM — n'a **aucun** substitut : si l'hypothèse est fausse, le repli est `ssh.mode: mount`, qui lui est testé |
+| A10 | `sbx` **propage `SSH_AUTH_SOCK` de son propre environnement jusque dans la microVM** — c'est tout ce sur quoi repose `ssh.mode: agent-forward`, qui est le **défaut** | Un `git push` sur un remote SSH depuis la VM échoue en `Permission denied (publickey)` alors que `den doctor` affiche `[ok] ssh.mode agent-forward, SSH_AUTH_SOCK=… (N identities)` sur l'hôte — c'est-à-dire une sonde hôte qui a bel et bien **vu des clés**. Un socket présent devant un agent vide ou mort ne falsifie plus rien : c'est désormais un `[warn]`, pas un `[ok]` (§10) | **Partiellement.** Ce que den contrôle est prouvé : le process `sbx` hérite bien de l'environnement de den (`cmd.Env` laissé nil, tenu par `TestExec{Run,Attach}TransmetLEnvironnementDeDen`), et `den doctor` **avertit** dans les trois états où l'agent hôte ne donnerait rien — variable absente ou vide, agent joignable mais sans identité, agent injoignable (§10) —, `den <nest>` faisant le même constat sur stderr. Ce que den ne peut pas contrôler — le saut hôte → microVM — n'a **aucun** substitut : si l'hypothèse est fausse, le repli est `ssh.mode: mount`, qui lui est testé |
 | A11 | `sbx` **monte chaque workspace au MÊME chemin absolu dans la VM que sur l'hôte** : le chemin hôte d'un workspace est aussi son chemin in-VM. C'est ce qui rend légitimes (1) la substitution de `{config_dir}` par un chemin **hôte** dans `CLAUDE_CONFIG_DIR` (`internal/nest/resolve.go`, `jetonConfigDir`) et (2) le `-w <chemin hôte>` de **toutes** les attaches (`sbx exec -it -w …`, `den <nest>` comme `den sh`) | **Deux symptômes sans lien apparent, et aucun message d'erreur.** (1) L'agent redemande `/login` **à chaque spawn** : `CLAUDE_CONFIG_DIR` pointe un chemin qui n'existe pas dans la VM, l'agent y crée un profil neuf — c'est précisément ce que `config_dir` existe pour éviter, et rien ne le signale. (2) `sbx exec -w <chemin hôte>` échoue, ou dépose le shell ailleurs que dans le code. Le smoke tranche en une ligne : `sbx exec <sandbox> pwd` après un `den <nest>`, comparé au premier workspace de `sbx ls --json` | **NON.** Aucun repli, aucune neutralisation : den n'a **aucun** moyen d'apprendre le chemin in-VM sans `sbx`. Même espèce qu'A10 — comportement d'**exécution de la microVM**, pour lequel « vert contre `sbx.Fake` » ne veut rien dire. Si elle est fausse, il faudra une source de vérité pour le chemin in-VM (sonde `sbx exec … pwd`, ou un champ de `sbx ls --json`) |
 
 ### Hypothèses assumées de den lui-même
@@ -632,9 +658,10 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
   suite (signe que la borne a bien servi).
 - **`ssh.mode: agent-forward` n'ajoute AUCUN argument** — vérifié dans `internal/spawn/spawn.go` :
   seul le mode `mount` produit un effet (un workspace en plus, et le contrôle d'existence de
-  `ssh.dir`). `agent-forward`, qui est pourtant le **défaut**, et `none` sont aujourd'hui
-  indiscernables pour den. Le forwarding est donc entièrement à la charge de `sbx`. **C'est la
-  tâche 18**, pas une régression.
+  `ssh.dir`). `agent-forward`, qui est pourtant le **défaut**, et `none` restent indiscernables
+  **dans l'argv** : la seule chose qui les distingue est l'avertissement d'agent vide, que den
+  n'émet qu'en `agent-forward` (§10) et qui ne change rien à ce que `sbx` reçoit. Le forwarding est
+  donc entièrement à la charge de `sbx`. **C'est la tâche 18**, pas une régression.
   *Falsifié par :* un agent SSH indisponible dans la VM alors que `ssh.mode` vaut `agent-forward`.
 - **L'image de stack n'est pas contrôlée avant `sbx create`.** Le §11 prévoit « lance
   `den build <stack>` » quand l'image manque, mais `den build` est du **Plan 4** et n'existe pas.

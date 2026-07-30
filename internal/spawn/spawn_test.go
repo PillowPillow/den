@@ -16,6 +16,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -1442,6 +1443,528 @@ func TestSpawnToleratesANilOut(t *testing.T) {
 	}
 	if !f.HasCalled("create", "--name", "api") {
 		t.Errorf("the spawn must have run; calls: %v", f.Calls)
+	}
+}
+
+// The same contract for Err, and it needs its own test: every warning test
+// below hands Spawn a real buffer, and fakeDeps leaves BOTH Err and SSHAgent
+// nil — so warnEmptySSHAgent returns on its nil-probe guard before reaching a
+// single Fprintf. A nil Err was therefore never once written to, and the
+// default could be dropped with the suite still green.
+//
+// Hence the deliberate setup: a socket in the environment and an EMPTY agent,
+// the one combination that makes the warning actually print. `probed` is what
+// keeps the test from passing vacuously — a spawn that silently skipped the
+// warning would satisfy "no panic" too.
+func TestSpawnToleratesANilErr(t *testing.T) {
+	forwardedSocket(t)
+	denHome, _ := denTest(t) // denTest is agent-forward
+	f, d := fakeDeps()
+	d.Err = nil
+	probed := false
+	d.SSHAgent = func() sshagent.Result {
+		probed = true
+		return sshagent.Result{State: sshagent.StateEmpty}
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !probed {
+		t.Fatal("the warning path was never reached; this test would prove nothing about a nil Err")
+	}
+	if !f.HasCalled("create", "--name", "api") {
+		t.Errorf("the spawn must have run; calls: %v", f.Calls)
+	}
+}
+
+// --- empty SSH agent warning (agent-forward) --------------------------
+//
+// sbx forwards the host agent's socket faithfully, but an empty agent
+// forwards an empty agent: `git push` dies on publickey inside the VM, far
+// from the cause. den warns at spawn — non-blocking, on stderr — the same
+// probe `den doctor` runs.
+
+// forwardedSocket puts a NON-EMPTY SSH_AUTH_SOCK in den's environment: the
+// precondition of every test below that expects the agent to be PROBED, since
+// the warning judges the variable before touching the probe.
+//
+// Set explicitly rather than inherited: left to the machine, these tests would
+// exercise the probe branches on a developer's box (agent running) and the
+// absent-socket branch on a bare CI runner — the same test asserting two
+// different things depending on where it runs.
+//
+// The path is never opened. den stats no socket, and the probe here is a
+// double, so the value only has to be non-empty and obviously fake.
+func forwardedSocket(t *testing.T) {
+	t.Helper()
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/den-test/agent.sock")
+}
+
+// The nominal defect: an empty forwarded agent warns on stderr, and the spawn
+// runs to completion regardless — HTTPS and read-only work need no SSH.
+func TestSpawnWarnsOnStderrWhenTheForwardedAgentIsEmpty(t *testing.T) {
+	forwardedSocket(t)
+	denHome, _ := denTest(t) // denTest is agent-forward
+	f, d := fakeDeps()
+	var errBuf bytes.Buffer
+	d.Err = &errBuf
+	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("an empty agent must warn, not block: %v", err)
+	}
+	// The spawn happened despite the warning.
+	if !f.HasCalled("create", "--name", "api") {
+		t.Errorf("the spawn must run despite the warning; calls: %v", f.Calls)
+	}
+	out := errBuf.String()
+	if !strings.Contains(out, "warning") {
+		t.Errorf("an empty agent must warn on stderr; got: %q", out)
+	}
+	// The message names the consequence and a fix that works WITHOUT respawn —
+	// the whole point (the forwarded socket is a live proxy).
+	for _, want := range []string{"publickey", "ssh-add", "without respawning"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stderr = %q, must contain %q", out, want)
+		}
+	}
+}
+
+// The fix the warning quotes is OS-specific: macOS needs `--apple-use-keychain`
+// to reach the login keychain where it keeps passphrases. Reading runtime.GOOS
+// inside the spawn made that branch unassertable — this suite runs on Linux, so
+// the macOS message nobody could exercise was the one shipped to macOS users.
+// Deps.GOOS puts the choice back under the injection contract.
+func TestSpawnNamesTheMacOSRemedyWhenGOOSIsDarwin(t *testing.T) {
+	forwardedSocket(t)
+	denHome, _ := denTest(t) // denTest is agent-forward
+	_, d := fakeDeps()
+	var errBuf bytes.Buffer
+	d.Err = &errBuf
+	d.GOOS = "darwin"
+	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("an empty agent must warn, not block: %v", err)
+	}
+	if want := sshagent.FixCommand("darwin"); !strings.Contains(errBuf.String(), want) {
+		t.Errorf("stderr = %q, must name the darwin remedy %q in full", errBuf.String(), want)
+	}
+}
+
+// The counterpart, without which a FixCommand returning the macOS form
+// everywhere would pass the test above: on linux the keychain flag must not
+// appear, since ssh-add there rejects it outright.
+func TestSpawnOmitsTheMacOSFlagOnLinux(t *testing.T) {
+	forwardedSocket(t)
+	denHome, _ := denTest(t)
+	_, d := fakeDeps()
+	var errBuf bytes.Buffer
+	d.Err = &errBuf
+	d.GOOS = "linux"
+	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("an empty agent must warn, not block: %v", err)
+	}
+	out := errBuf.String()
+	if strings.Contains(out, "--apple-use-keychain") {
+		t.Errorf("stderr = %q, must not hand a Linux user a macOS-only flag", out)
+	}
+	if !strings.Contains(out, "ssh-add") {
+		t.Errorf("stderr = %q, must still name a concrete fix command", out)
+	}
+}
+
+// An unreachable agent warns the same way, with the different cause named.
+func TestSpawnWarnsOnStderrWhenTheForwardedAgentIsUnreachable(t *testing.T) {
+	// A socket IS set here: "unreachable" is what a present variable pointing
+	// at a dead agent means, and it is exactly what an absent one must not be
+	// reported as (see TestSpawnWarnsWithoutProbingWhenTheSSHSocketIsAbsent).
+	forwardedSocket(t)
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	var errBuf bytes.Buffer
+	d.Err = &errBuf
+	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateUnreachable} }
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("an unreachable agent must warn, not block: %v", err)
+	}
+	if !f.HasCalled("create", "--name", "api") {
+		t.Errorf("the spawn must run despite the warning; calls: %v", f.Calls)
+	}
+	if out := errBuf.String(); !strings.Contains(out, "warning") || !strings.Contains(out, "unreachable") {
+		t.Errorf("an unreachable agent must warn and name the cause; got: %q", out)
+	}
+}
+
+// The warning is documented as applying to the ATTACH branch too — the
+// forwarded socket is a live proxy, so an empty agent is just as fatal to
+// `git push` when returning to a sandbox that is already running. Every other
+// test in this block asserts `create`, so the whole SSH warning could sit
+// inside the create-only branch and the suite would stay green while the
+// second `den api` of the day — the common case, since a sandbox is created
+// once and re-entered daily — silently forwarded an empty agent.
+//
+// Hence the two assertions together: NO create happened (this really is the
+// attach branch) and the warning still reached stderr.
+func TestSpawnWarnsOnTheAttachBranchWhenTheForwardedAgentIsEmpty(t *testing.T) {
+	forwardedSocket(t)
+	denHome, repo := denTest(t) // denTest is agent-forward
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+	var outBuf, errBuf bytes.Buffer
+	d.Out = &outBuf
+	d.Err = &errBuf
+	d.SSHAgent = func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("an empty agent must warn, not block: %v", err)
+	}
+	if f.HasCalled("create") {
+		t.Fatalf("no create must happen on a live sandbox — this test would stop "+
+			"exercising the attach branch; calls: %v", f.Calls)
+	}
+	// The attach itself, so "no create" can't be a spawn that gave up early.
+	if !f.HasAttached("exec", "-it", "-w", repo, "api", "bash", "-l") {
+		t.Fatalf("the attach must have happened; attaches: %v", f.Attaches)
+	}
+	out := errBuf.String()
+	if !strings.Contains(out, "warning") {
+		t.Errorf("an empty agent must warn on stderr when re-attaching too; got: %q", out)
+	}
+	// Same message as the create branch: the consequence, and a fix that acts
+	// without respawning den — the very reason it is true on this branch.
+	for _, want := range []string{"publickey", "ssh-add", "without respawning"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stderr = %q, must contain %q", out, want)
+		}
+	}
+	// And the stream discipline, asserted HERE and nowhere else: the only other
+	// test that inspects stdout is the has-keys one, where no warning exists to
+	// leak — so "the warning never lands on stdout" was checked in the single
+	// case where it could not fail. This is the case where it can.
+	//
+	// The attach's own log is asserted FIRST, and that order carries the
+	// argument: `Out = io.Discard` or a spawn that gave up before writing
+	// anything would satisfy "stdout holds no warning" vacuously. stdout must be
+	// PROVEN in use, then proven clean.
+	if !strings.Contains(outBuf.String(), "already live: attaching") {
+		t.Fatalf("stdout must carry the attach's own log, otherwise the cleanliness "+
+			"assertion below proves nothing; stdout: %q", outBuf.String())
+	}
+	// Markers of THIS warning, not the bare word "warning": stdout legitimately
+	// carries other ones — reportDrift writes there by the rule in Deps.Err, and
+	// this very run emits it — so asserting "no warning at all" would fail on a
+	// correct spawn and say nothing about the SSH message.
+	for _, leaked := range []string{"ssh-add", "publickey"} {
+		if strings.Contains(outBuf.String(), leaked) {
+			t.Errorf("the SSH warning must stay on stderr while stdout carries the spawn's "+
+				"log — a caller piping stdout must not receive %q; stdout: %q",
+				leaked, outBuf.String())
+		}
+	}
+}
+
+// An ABSENT SSH_AUTH_SOCK is not an unreachable agent, and den must not read
+// it as one: there is no socket to point a probe at, so probing is a wasted
+// `ssh-add` on the mainline spawn path, and "SSH_AUTH_SOCK points at an
+// unreachable agent" describes a variable the user never set — sending them
+// to look for a dead socket that does not exist. `den doctor` already decides
+// the opposite for the SAME machine state
+// (doctor.TestRunDoesNotQueryTheAgentWhenTheSocketIsAbsent): the two must not
+// contradict each other on one `den <nest>`.
+//
+// The probe returns StateUnreachable deliberately — the state that used to
+// produce the wrong sentence — so the message can only come from the socket
+// check, never from a probe that never should have run.
+func TestSpawnWarnsWithoutProbingWhenTheSSHSocketIsAbsent(t *testing.T) {
+	// Set EMPTY rather than left alone: os.Getenv answers "" for both absent
+	// and empty, and a test that relied on the machine having no agent would
+	// pass on CI and quietly stop exercising this branch on a developer's box.
+	t.Setenv("SSH_AUTH_SOCK", "")
+	denHome, _ := denTest(t) // denTest is agent-forward
+	f, d := fakeDeps()
+	var errBuf bytes.Buffer
+	d.Err = &errBuf
+	probed := false
+	d.SSHAgent = func() sshagent.Result {
+		probed = true
+		return sshagent.Result{State: sshagent.StateUnreachable}
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("an absent socket must warn, not block: %v", err)
+	}
+	if !f.HasCalled("create", "--name", "api") {
+		t.Errorf("the spawn must run despite the warning; calls: %v", f.Calls)
+	}
+	if probed {
+		t.Error("the SSH agent was probed with no socket to point it at")
+	}
+	out := errBuf.String()
+	if !strings.Contains(out, "absent or empty") {
+		t.Errorf("stderr = %q, must report SSH_AUTH_SOCK as absent or empty, "+
+			"the same verdict `den doctor` reaches for this machine", out)
+	}
+	if strings.Contains(out, "points at") {
+		t.Errorf("stderr = %q, must not claim an unset SSH_AUTH_SOCK points at anything", out)
+	}
+}
+
+// The essential counterpart: an agent holding keys is the healthy case and
+// must be SILENT. Without it, a warning wired unconditionally would pass the
+// test above. The warning also stays off stdout: it belongs on stderr alone.
+func TestSpawnDoesNotWarnWhenTheForwardedAgentHasKeys(t *testing.T) {
+	forwardedSocket(t)
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	var outBuf, errBuf bytes.Buffer
+	d.Out = &outBuf
+	d.Err = &errBuf
+	d.SSHAgent = func() sshagent.Result {
+		return sshagent.Result{State: sshagent.StateKeys, Identities: 2}
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasCalled("create", "--name", "api") {
+		t.Fatalf("the spawn must have run; calls: %v", f.Calls)
+	}
+	if strings.Contains(errBuf.String(), "warning") {
+		t.Errorf("an agent with keys must be silent; stderr: %q", errBuf.String())
+	}
+	if strings.Contains(outBuf.String(), "ssh-add") {
+		t.Errorf("the SSH warning must never land on stdout; stdout: %q", outBuf.String())
+	}
+}
+
+// Modes `mount` and `none` don't forward the agent, so its state is
+// irrelevant and no probe must fire — even when that agent is empty. The spy
+// proves the probe is never called outside agent-forward.
+func TestSpawnDoesNotProbeTheAgentOutsideAgentForward(t *testing.T) {
+	for _, mode := range []string{"mount", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			sshBlock := "  mode: " + mode + "\n"
+			if mode == "mount" {
+				sshDir := filepath.Join(t.TempDir(), "ssh")
+				if err := os.MkdirAll(sshDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				sshBlock = "  mode: mount\n  dir: " + sshDir + "\n"
+			}
+			denHome, _ := denTestSSH(t, sshBlock)
+			f, d := fakeDeps()
+			var errBuf bytes.Buffer
+			d.Err = &errBuf
+			probed := false
+			d.SSHAgent = func() sshagent.Result {
+				probed = true
+				return sshagent.Result{State: sshagent.StateEmpty}
+			}
+
+			if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+				t.Fatalf("mode %q: unexpected error: %v", mode, err)
+			}
+			if probed {
+				t.Errorf("mode %q: the SSH agent must not be probed", mode)
+			}
+			if strings.Contains(errBuf.String(), "warning") {
+				t.Errorf("mode %q: no SSH warning expected; stderr: %q", mode, errBuf.String())
+			}
+			// Without this, "no probe" would also be satisfied by a spawn that
+			// gave up before reaching the probe at all — the silence would
+			// prove nothing about the mode. The create is what makes the
+			// absence of a probe a decision rather than an early exit.
+			if !f.HasCalled("create", "--name", "api") {
+				t.Errorf("mode %q: the spawn must have run; calls: %v", mode, f.Calls)
+			}
+		})
+	}
+}
+
+// A nil probe must not panic: every test that doesn't exercise SSH, plus the
+// wiring double, leaves SSHAgent unset, and the spawn must simply skip the
+// warning rather than dereference nil.
+func TestSpawnToleratesANilSSHAgentProbe(t *testing.T) {
+	denHome, _ := denTest(t) // agent-forward, the mode that would probe
+	f, d := fakeDeps()
+	d.SSHAgent = nil
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("a nil probe must be tolerated: %v", err)
+	}
+	if !f.HasCalled("create", "--name", "api") {
+		t.Errorf("the spawn must have run; calls: %v", f.Calls)
+	}
+}
+
+// WarnEmptySSHAgentOnReentry is what `den sh` calls, and its first contract is
+// that the message is the SAME one `den <nest>` prints: two surfaces describing
+// one machine state must not word it two ways, and the fix that acts without a
+// respawn is precisely what makes the warning worth printing on a re-entry.
+func TestWarnEmptySSHAgentOnReentryWarnsOnAnEmptyAgent(t *testing.T) {
+	var buf bytes.Buffer
+	probe := func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} }
+
+	WarnEmptySSHAgentOnReentry(&buf, "agent-forward", "/tmp/den-test/agent.sock", probe, "darwin")
+
+	out := buf.String()
+	for _, want := range []string{"warning", "publickey", "without respawning",
+		sshagent.FixCommand("darwin")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, must contain %q", out, want)
+		}
+	}
+}
+
+// The one place where re-entry DIVERGES from the preflight, and the reason it
+// has its own function rather than reusing the call site of `den <nest>`.
+//
+// An absent SSH_AUTH_SOCK in the shell running `den sh` says nothing about the
+// sandbox: a live VM forwards the socket it inherited at its `sbx create`, from
+// an environment that may be long gone, and `den sh` creates nothing. So the
+// preflight's message — "start an agent … and relaunch den, which forwards the
+// socket at creation time" — would be advice for a step this command does not
+// have, about a socket den cannot see. Silence, and no probe either: without a
+// socket, `ssh-add -l` reports StateUnreachable, which would print "SSH_AUTH_SOCK
+// points at an unreachable agent" about a variable the user never set.
+func TestWarnEmptySSHAgentOnReentryStaysSilentWithoutASocket(t *testing.T) {
+	var buf bytes.Buffer
+	probed := false
+	probe := func() sshagent.Result {
+		probed = true
+		return sshagent.Result{State: sshagent.StateUnreachable}
+	}
+
+	WarnEmptySSHAgentOnReentry(&buf, "agent-forward", "", probe, "linux")
+
+	if probed {
+		t.Error("the agent was probed with no socket to point it at")
+	}
+	if buf.String() != "" {
+		t.Errorf("output = %q, want silence: nothing here describes the socket the "+
+			"live sandbox actually forwards", buf.String())
+	}
+}
+
+// The healthy case stays silent, and so do the modes that forward no agent —
+// the properties that keep the two tests above from being satisfied by a
+// function that warns unconditionally. Shared with `den <nest>` by
+// construction (both go through warnEmptySSHAgent), asserted here because
+// "shared by construction" is exactly what a refactor breaks.
+func TestWarnEmptySSHAgentOnReentryStaysSilentWhenNothingIsWrong(t *testing.T) {
+	for name, tc := range map[string]struct {
+		sshMode string
+		state   sshagent.State
+	}{
+		"agent has keys": {"agent-forward", sshagent.StateKeys},
+		"mode mount":     {"mount", sshagent.StateEmpty},
+		"mode none":      {"none", sshagent.StateEmpty},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			probe := func() sshagent.Result {
+				return sshagent.Result{State: tc.state, Identities: 1}
+			}
+
+			WarnEmptySSHAgentOnReentry(&buf, tc.sshMode, "/tmp/den-test/agent.sock", probe, "linux")
+
+			if buf.String() != "" {
+				t.Errorf("output = %q, want silence", buf.String())
+			}
+		})
+	}
+}
+
+// The spawn's side of the same property as doctor's
+// TestRunNamesTheNonDefaultKeyCaveatWhereverItQuotesAFix: all three warning
+// branches quote a load command, and `ssh-add` loads only default-named keys —
+// so all three must say so, or the user runs a command that succeeds and keeps
+// pushing into `Permission denied (publickey)`.
+//
+// The branches are driven straight through warnEmptySSHAgent rather than through
+// a full Spawn: what is under test is the message, and three spawns would prove
+// the same thing about it while also depending on a den home and a fake sbx.
+func TestWarnEmptySSHAgentNamesTheNonDefaultKeyCaveatOnEveryBranch(t *testing.T) {
+	for name, tc := range map[string]struct {
+		socket string
+		state  sshagent.State
+	}{
+		"socket absent": {"", sshagent.StateUnreachable},
+		"empty":         {"/tmp/den-test/agent.sock", sshagent.StateEmpty},
+		"unreachable":   {"/tmp/den-test/agent.sock", sshagent.StateUnreachable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+
+			warnEmptySSHAgent(&buf, "agent-forward", tc.socket,
+				func() sshagent.Result { return sshagent.Result{State: tc.state} }, "darwin")
+
+			if !strings.Contains(buf.String(), "warning") {
+				t.Fatalf("output = %q, this branch must warn or it asserts nothing", buf.String())
+			}
+			if !strings.Contains(buf.String(), sshagent.KeyNameCaveat) {
+				t.Errorf("output = %q, must carry the non-default-key caveat %q",
+					buf.String(), sshagent.KeyNameCaveat)
+			}
+		})
+	}
+}
+
+// A State this switch does not model must still say something, on BOTH entry
+// points. Without a default arm the warning printed nothing at all: the spawn
+// went quiet about the agent, which reads as "nothing to report" — the check
+// disappearing is worse than any verdict it could give, and it is exactly the
+// arm doctor.go gained (doctor.go's `default`, same reasoning). A state added to
+// sshagent must surface here rather than deleting the diagnostic.
+//
+// StateKeys+1 rather than a literal: the point is "outside what this switch
+// models", and a hardcoded number would stop meaning that the day a fourth
+// state is declared.
+func TestWarnEmptySSHAgentReportsAStateItDoesNotModel(t *testing.T) {
+	unmodelled := sshagent.StateKeys + 1
+	for name, warn := range map[string]func(io.Writer, string, string, func() sshagent.Result, string){
+		"preflight": warnEmptySSHAgent,
+		"reentry":   WarnEmptySSHAgentOnReentry,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			warn(&buf, "agent-forward", "/tmp/den-test/agent.sock",
+				func() sshagent.Result { return sshagent.Result{State: unmodelled} }, "linux")
+
+			out := buf.String()
+			if !strings.Contains(out, "warning") {
+				t.Fatalf("output = %q, an unrecognized state must not silence the check", out)
+			}
+			// The value seen is named: a warning that doesn't say WHAT it read
+			// leaves nobody able to tell which state escaped the model.
+			if !strings.Contains(out, strconv.Itoa(int(unmodelled))) {
+				t.Errorf("output = %q, must name the state it could not read (%d)", out, unmodelled)
+			}
+			// And a way out that does not depend on den understanding the agent.
+			if !strings.Contains(out, "ssh-add -l") {
+				t.Errorf("output = %q, must point at a check the user can run by hand", out)
+			}
+		})
+	}
+}
+
+// A nil probe is tolerated on this path too: `den sh`'s own wiring tests build
+// their accesses by hand and leave it unset, and they must skip the warning
+// rather than dereference nil mid-command.
+func TestWarnEmptySSHAgentOnReentryToleratesANilProbe(t *testing.T) {
+	var buf bytes.Buffer
+
+	WarnEmptySSHAgentOnReentry(&buf, "agent-forward", "/tmp/den-test/agent.sock", nil, "linux")
+
+	if buf.String() != "" {
+		t.Errorf("output = %q, want silence on a nil probe", buf.String())
 	}
 }
 

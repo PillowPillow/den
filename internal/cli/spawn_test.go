@@ -212,11 +212,20 @@ func TestFlagsReachSpawnOptions(t *testing.T) {
 // a precise reason: the den homes built above declare no `egress:` (the
 // settle-loop returns nil on an empty allowlist, so no 60s wait), and the tests
 // that pass `-w` use denHomeHostile, whose repo is a real git repository.
+//
+// deps.SSHAgent is NOT safe left real, and this is the helper where it showed:
+// these tests reach the spawn's preflight, whose empty-agent warning probes the
+// agent — with SSH_AUTH_SOCK set in the environment, `go test ./internal/cli/`
+// forked `ssh-add -l` against the developer's own agent (measured with a fake
+// ssh-add on PATH). Nil is what the warning reads as "nothing to ask", and no
+// test through here is about the warning: root_deps_test.go injects its own
+// counting probe for that.
 func runFullRoot(t *testing.T, home string, args ...string) (*sbx.Fake, string, error) {
 	t.Helper()
 	f := emptySbxFake()
 	deps := SystemDeps()
 	deps.Sbx = f
+	deps.SSHAgent = nil
 	out, err := executeCmd(t, NewRootCmdWith(deps), append(args, "--den-home", home)...)
 	return f, out, err
 }

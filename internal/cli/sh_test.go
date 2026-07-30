@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/sshagent"
 )
 
 func TestShAttachesInTheWorkdir(t *testing.T) {
@@ -145,6 +147,201 @@ func TestShRefusesASandboxThatIsNotRunning(t *testing.T) {
 				t.Errorf("no attach in a stopped VM; attaches: %v", f.Attaches)
 			}
 		})
+	}
+}
+
+// runShWithAgent runs `den sh` through the REAL command tree — NewRootCmdWith,
+// not a hand-built sh command — with an injected sbx.Runner and SSH probe, on a
+// given den home.
+//
+// The full tree on purpose: everything the empty-agent warning needs on this
+// path is wiring (the den home reaching sh.go, deps.SSHAgent reaching it too,
+// the warning landing on the command's stderr), and a helper that called
+// newShCmd directly would prove none of it.
+//
+// Separate streams, for the property the warning is judged on: a diagnostic
+// must not land in the stdout a caller pipes.
+func runShWithAgent(t *testing.T, denHome string, r sbx.Runner,
+	probe func() sshagent.Result, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: r, SSHAgent: probe}
+	return executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		append([]string{"--den-home", denHome}, args...)...)
+}
+
+// shSocket puts a forwarded socket in den's environment, like spawn's
+// forwardedSocket: without it every test below takes the absent-socket branch
+// and never reaches the probe. Set explicitly rather than inherited — left to
+// the machine, these tests would pass on a workstation running an agent and
+// change verdict on a bare CI runner.
+func shSocket(t *testing.T) {
+	t.Helper()
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/den-test/agent.sock")
+}
+
+// shDenHome writes the smallest den home `den sh` can read a mode out of. The
+// ssh block is the caller's, because the mode is what these tests vary; empty
+// means the config's default, agent-forward.
+func shDenHome(t *testing.T, sshBlock string) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeConfig(t, dir, minimalConfig+sshBlock)
+	return dir
+}
+
+// A sandbox is created once and re-entered daily, most often with `den sh` —
+// and `den sh` said nothing about an empty forwarded agent, on any OS, while
+// `den <nest>` warned on both its branches. The forwarded socket being a live
+// proxy, an agent emptied since the VM booted denies `git push` inside it just
+// as silently on re-entry: same machine state, same consequence, same warning.
+//
+// The attach is asserted too: the warning must not have replaced the shell the
+// user asked for.
+func TestShWarnsWhenTheForwardedAgentIsEmpty(t *testing.T) {
+	shSocket(t)
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+
+	stdout, stderr, err := runShWithAgent(t, shDenHome(t, ""), f,
+		func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} },
+		"sh", "api")
+	if err != nil {
+		t.Fatalf("an empty agent must warn, not block: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+		t.Fatalf("the shell must still open; attaches: %v", f.Attaches)
+	}
+	for _, want := range []string{"warning", "no identity", "publickey", "ssh-add"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr = %q, must contain %q", stderr, want)
+		}
+	}
+	if strings.Contains(stdout, "ssh-add") {
+		t.Errorf("stdout = %q, the warning belongs on stderr only", stdout)
+	}
+}
+
+// The counterpart without which a warning wired unconditionally would pass the
+// test above: an agent holding keys is the healthy case and says nothing.
+func TestShDoesNotWarnWhenTheForwardedAgentHasKeys(t *testing.T) {
+	shSocket(t)
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+
+	_, stderr, err := runShWithAgent(t, shDenHome(t, ""), f,
+		func() sshagent.Result { return sshagent.Result{State: sshagent.StateKeys, Identities: 2} },
+		"sh", "api")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(stderr, "warning") {
+		t.Errorf("an agent with keys must be silent; stderr: %q", stderr)
+	}
+}
+
+// THE constraint that makes the warning acceptable on this command at all:
+// `den sh` reads the den home only to learn ssh.mode, and a den home it cannot
+// read costs the user NOTHING — no error, no missing shell. The whole point of
+// the command is that a broken ~/.den never stands between the user and a live
+// sandbox; the warning is advisory, so it is what gives way, silently.
+//
+// The empty temp dir is exactly that state: no config.yaml at all.
+func TestShOpensTheShellWhenTheDenHomeCannotBeRead(t *testing.T) {
+	shSocket(t)
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	probed := false
+
+	_, stderr, err := runShWithAgent(t, t.TempDir(), f, func() sshagent.Result {
+		probed = true
+		return sshagent.Result{State: sshagent.StateEmpty}
+	}, "sh", "api")
+	if err != nil {
+		t.Fatalf("an unreadable den home must not cost the user their shell: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+		t.Fatalf("the shell must open regardless; attaches: %v", f.Attaches)
+	}
+	if probed {
+		t.Error("with no readable ssh.mode, den cannot know the agent is even forwarded: " +
+			"probing it decides on a mode it never read")
+	}
+	if strings.Contains(stderr, "warning") {
+		t.Errorf("stderr = %q, a den home den could not read must produce no verdict", stderr)
+	}
+}
+
+// Modes `mount` and `none` forward no agent, so its state is irrelevant and no
+// probe must fire — the same rule as the spawn path, on the command that had to
+// read the mode to obey it.
+func TestShDoesNotProbeTheAgentOutsideAgentForward(t *testing.T) {
+	for _, sshBlock := range []string{"ssh:\n  mode: none\n", "ssh:\n  mode: mount\n  dir: /tmp/den-test/ssh\n"} {
+		t.Run(sshBlock, func(t *testing.T) {
+			shSocket(t)
+			f := &sbx.Fake{Responses: map[string]sbx.Response{
+				"ls --json": {Output: []byte(
+					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			}}
+			probed := false
+
+			_, stderr, err := runShWithAgent(t, shDenHome(t, sshBlock), f, func() sshagent.Result {
+				probed = true
+				return sshagent.Result{State: sshagent.StateEmpty}
+			}, "sh", "api")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if probed {
+				t.Error("the agent must not be probed outside agent-forward")
+			}
+			if strings.Contains(stderr, "warning") {
+				t.Errorf("stderr = %q, no SSH warning expected outside agent-forward", stderr)
+			}
+			// Without this, "no probe" would also be satisfied by a `den sh` that
+			// gave up before reaching it: the attach is what makes the silence a
+			// decision about the mode.
+			if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+				t.Errorf("the shell must have opened; attaches: %v", f.Attaches)
+			}
+		})
+	}
+}
+
+// An absent SSH_AUTH_SOCK is where re-entry deliberately parts from the
+// preflight: the socket a LIVE sandbox forwards was inherited at its
+// `sbx create`, from an environment that may be long gone, so this shell's lack
+// of one says nothing about the VM — and `den sh`, which creates nothing, has no
+// "relaunch den to forward it" to offer. Silence, and no probe: `ssh-add -l`
+// without a socket answers StateUnreachable, which would blame a variable the
+// user never set.
+func TestShDoesNotWarnWhenTheSSHSocketIsAbsent(t *testing.T) {
+	// Set EMPTY rather than left alone: os.Getenv answers "" for both, and a test
+	// relying on the machine having no agent would quietly stop exercising this.
+	t.Setenv("SSH_AUTH_SOCK", "")
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	probed := false
+
+	_, stderr, err := runShWithAgent(t, shDenHome(t, ""), f, func() sshagent.Result {
+		probed = true
+		return sshagent.Result{State: sshagent.StateUnreachable}
+	}, "sh", "api")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if probed {
+		t.Error("the agent was probed with no socket to point it at")
+	}
+	if strings.Contains(stderr, "warning") {
+		t.Errorf("stderr = %q, den sh must stay silent about a socket it cannot judge", stderr)
 	}
 }
 

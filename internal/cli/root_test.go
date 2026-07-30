@@ -63,9 +63,33 @@ func run(t *testing.T, args ...string) (string, error) {
 // git call).
 func executeCmdWithSbx(t *testing.T, r sbx.Runner, args ...string) (string, error) {
 	t.Helper()
+	return executeCmd(t, NewRootCmdWith(sbxDeps(t, r)), args...)
+}
+
+// sbxDeps is SystemDeps with the injected Runner and with the ONE access that
+// would otherwise make a test through these helpers depend on the machine
+// running it: the SSH-agent probe, left nil.
+//
+// Measured, not feared. `den sh` now reads ssh.mode to warn about an empty
+// forwarded agent (sh.go), so a command whose test cares only about `sbx exec`
+// reaches the den home and the agent behind it: under a readable DEN_HOME with
+// SSH_AUTH_SOCK set, `go test -run TestShAttachesInTheWorkdir` really did fork
+// `ssh-add -l` on the developer's own agent. A nil probe is what the warning
+// treats as "nothing to ask", so no test through here consults an agent — nor,
+// since that check comes first, any config.yaml.
+//
+// DEN_HOME is deliberately NOT pinned here: ls_test.go sets it itself, and a
+// t.Setenv in this helper runs AFTER the test's own and would silently replace
+// the fixture it was pointing at.
+//
+// Tests that mean to exercise the warning inject their own probe and their own
+// den home (runShWithAgent, sh_test.go).
+func sbxDeps(t *testing.T, r sbx.Runner) Deps {
+	t.Helper()
 	deps := SystemDeps()
 	deps.Sbx = r
-	return executeCmd(t, NewRootCmdWith(deps), args...)
+	deps.SSHAgent = nil
+	return deps
 }
 
 // executeCmdWithSbxSeparateStreams combines executeCmdWithSbx (injected
@@ -74,9 +98,7 @@ func executeCmdWithSbx(t *testing.T, r sbx.Runner, args ...string) (string, erro
 // command that also needs an sbx.Runner (`den ls`).
 func executeCmdWithSbxSeparateStreams(t *testing.T, r sbx.Runner, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	deps := SystemDeps()
-	deps.Sbx = r
-	return executeCmdSeparateStreams(t, NewRootCmdWith(deps), args...)
+	return executeCmdSeparateStreams(t, NewRootCmdWith(sbxDeps(t, r)), args...)
 }
 
 func TestVersionPrintsTheVersion(t *testing.T) {

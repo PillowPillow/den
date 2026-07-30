@@ -44,6 +44,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/policy"
+	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -164,5 +165,81 @@ func TestNewRootCmdWithSharesOneSbxBetweenLsAndSpawn(t *testing.T) {
 		t.Errorf("the spawn made no new call to the SAME Fake as `den ls` "+
 			"(%d calls before, %d after): Sbx diverged between the two paths",
 			callsAfterLs, len(f.Calls))
+	}
+}
+
+// TestNewRootCmdWithPropagatesTheSSHAgentProbe locks the LAST hop of the
+// empty-agent warning, the one no other test crossed: deps.SSHAgent reaching
+// the spawn (root.go), and the warning landing on the COMMAND's stderr
+// (spawn.go's `d.Err = cmd.ErrOrStderr()`).
+//
+// Both lines were deletable with the whole suite green (measured): the spawn's
+// own tests build spawn.Deps by hand — so they never go through
+// NewRootCmdWith — and cli's tests merge the two streams through executeCmd,
+// which cannot tell a warning printed on stdout from one printed on stderr.
+// The failure a deletion produces is silent by nature: a nil probe SKIPS the
+// warning (spawn.warnEmptySSHAgent) and a nil Err falls back to io.Discard, so
+// den would spawn a sandbox denied every `git push` without saying a word.
+//
+// executeCmdSeparateStreams, not executeCmd, for exactly that reason. The
+// probe is a counting double: the sbx.Fake never sees it, so its call count is
+// the only proof the injected probe — and not some internal one — is what the
+// warning was built from.
+//
+// --detach keeps the sbx.Fake path short (same shortcut as
+// TestNewRootCmdWithSharesOneSbxBetweenLsAndSpawn): no attach to a VM that
+// does not exist. The den home from denHomeSpawnable declares no `ssh:`, so
+// the mode is the config's default, agent-forward — the only mode that
+// forwards an agent and therefore the only one this warning applies to.
+func TestNewRootCmdWithPropagatesTheSSHAgentProbe(t *testing.T) {
+	// A socket must be in den's environment, or the spawn warns about an ABSENT
+	// SSH_AUTH_SOCK and never reaches the probe — the branch this test is not
+	// about. Set explicitly rather than inherited: left to the machine, the
+	// assertion below would hold on a workstation running an agent and fail on a
+	// bare CI runner. The path is never opened (the probe is the double above).
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/den-test/agent.sock")
+	home := denHomeSpawnable(t)
+	_, spawnDeps := fakeSpawnDeps()
+	probes := 0
+
+	deps := Deps{
+		// Fake rather than System: the Doctor access is never reached on this
+		// path, and a fake owes nothing to the machine running the suite.
+		Doctor: doctor.FakeDeps(),
+		Sbx:    spawnDeps.Sbx,
+		Git:    spawnDeps.Git,
+		Policy: spawnDeps.Policy,
+		SSHAgent: func() sshagent.Result {
+			probes++
+			return sshagent.Result{State: sshagent.StateEmpty}
+		},
+	}
+
+	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"--den-home", home, "api", "--detach")
+	if err != nil {
+		t.Fatalf("den api --detach: unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+	if probes == 0 {
+		t.Fatal("deps.SSHAgent received no call: the probe does not reach the spawn")
+	}
+	if !strings.Contains(stderr, "the forwarded SSH agent holds no identity") {
+		t.Errorf("stderr = %q, expected the empty-agent warning of the INJECTED probe", stderr)
+	}
+	// The remedy is half the warning's value: "your agent is empty" without
+	// `ssh-add` leaves the user with a diagnosis and no move.
+	if !strings.Contains(stderr, "ssh-add") {
+		t.Errorf("stderr = %q, the warning must quote the fix to run on the host", stderr)
+	}
+	// A warning is a diagnostic, not output: on stdout it would land in
+	// whatever a caller pipes den into.
+	if strings.Contains(stdout, "warning") {
+		t.Errorf("stdout = %q, the empty-agent warning belongs on stderr only", stdout)
+	}
+	// ... and the streams are not merely swapped: the spawn's own report is
+	// still on stdout, so stderr carrying the warning means routing, not a
+	// command writing everything to the same place.
+	if !strings.Contains(stdout, "detached") {
+		t.Errorf("stdout = %q, expected the detached spawn's report", stdout)
 	}
 }
