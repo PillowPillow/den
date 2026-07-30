@@ -1,5 +1,5 @@
-den
+/den
 /staging/
-.claude
+.claude/**
 .superpowers
 !.claude/settings.json
