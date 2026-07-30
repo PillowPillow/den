@@ -15,8 +15,12 @@ import (
 // optionalRepos is the fixture of the checklist: one required repo the user
 // cannot decline, and two optional ones they can.
 func optionalRepos() []nest.Repo {
+	// The required repo is named "backend", NOT "api": the nest is called
+	// "api", and a required repo sharing that name would make every assertion
+	// on the rendered checklist match the header line instead — an assertion
+	// that can never fail.
 	return []nest.Repo{
-		{Path: "/dev/api"},
+		{Path: "/dev/backend"},
 		{Path: "/dev/worker", Optional: true},
 		{Path: "/dev/docs", Optional: true},
 	}
@@ -110,7 +114,7 @@ func TestPromptOffersOptionalReposOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if strings.Contains(out, "api") && !strings.Contains(out, "nest api") {
+	if strings.Contains(out, "backend") {
 		t.Errorf("a required repo must not appear in the checklist:\n%s", out)
 	}
 	if !slices.Equal(without, []string{"worker"}) {
