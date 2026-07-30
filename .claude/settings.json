@@ -8,8 +8,8 @@
   "extraKnownMarketplaces": {
     "greatkit": {
       "source": {
-        "source": "url",
-        "url": "git@gitlab.digitaleo.com:groupe/greatplugin.git"
+        "source": "git",
+        "url": "git@github.com:PillowPillow/greatkit.git"
       }
     }
   },
