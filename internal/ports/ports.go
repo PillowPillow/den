@@ -136,6 +136,30 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 			n.Name, len(decls), WindowSize)
 	}
 
+	// A declared `ports.base:` is validated from the configuration alone: the
+	// hashed base is aligned and in range by construction, a declared one
+	// carries no such guarantee — unvalidated, base 80 would send the scan
+	// probing privileged ports, and base 65530 would walk it past 65535 into
+	// bind failures reported as "no free window", never naming the real cause.
+	if b := n.Ports.Base; b != 0 {
+		// The scan may move the window up to maxShifts whole blocks: the
+		// highest base is the one whose LAST shifted port still fits in 65535.
+		const maxBase = 65535 - (maxShifts*WindowSize + WindowSize - 1)
+		if b < 1024 || b > maxBase {
+			return nil, fmt.Errorf(
+				"nest %q: `ports.base: %d` is outside 1024-%d — below 1024 are the privileged ports, and above "+
+					"%d the collision scan (up to %d shifts of a whole window) would walk past port 65535",
+				n.Name, b, maxBase, maxBase, maxShifts)
+		}
+		if b%WindowSize != 0 {
+			return nil, fmt.Errorf(
+				"nest %q: `ports.base: %d` is not aligned on a block of %d — the collision shift moves whole "+
+					"blocks, and an unaligned window interleaves with the hashed windows of neighbouring nests; "+
+					"use %d or %d",
+				n.Name, b, WindowSize, b-b%WindowSize, b-b%WindowSize+WindowSize)
+		}
+	}
+
 	// The loopback lock FIRST, and deliberately before the general bind
 	// refusal below, which would also reject this address. Behind it, this
 	// branch would be unreachable and the promise "refused even if forced"
@@ -159,19 +183,26 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 			n.Name, o.HostIP, Loopback, Loopback)
 	}
 
-	if s == nil {
-		return nil, fmt.Errorf(
-			"nest %q: no port scanner — den cannot tell whether the window is free, and assuming it is would "+
-				"hand a second instance the URLs of the first", n.Name)
-	}
-
 	// ports.base wins over the hash: it is the nest's own, explicit choice.
 	base := n.Ports.Base
 	if base == 0 {
 		base = Base(n.Name)
 	}
 
-	window, err := scan(n.Name, base, len(decls), s)
+	// Nothing to place, nothing to probe: a nest declaring no port publishes
+	// nothing, so it never touches the host — a saturated window (or no
+	// scanner at all) cannot fail a resolution that binds nothing.
+	if len(decls) == 0 {
+		return &Resolution{Nest: n.Name, Window: Window{Base: base, Canonical: true}, Ports: []Port{}}, nil
+	}
+
+	if s == nil {
+		return nil, fmt.Errorf(
+			"nest %q: no port scanner — den cannot tell whether the window is free, and assuming it is would "+
+				"hand a second instance the URLs of the first", n.Name)
+	}
+
+	window, err := scan(n.Name, base, s)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +231,7 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 // port-by-port would interleave, and "which instance is on 9103" stops having
 // an answer anyone can reason about. The first instance therefore always keeps
 // the canonical window, and later ones are moved wholesale and flagged.
-func scan(nestName string, base, declared int, s Scanner) (Window, error) {
+func scan(nestName string, base int, s Scanner) (Window, error) {
 	tried := make([]string, 0, maxShifts+1)
 	for shift := 0; shift <= maxShifts; shift++ {
 		candidate := base + shift*WindowSize

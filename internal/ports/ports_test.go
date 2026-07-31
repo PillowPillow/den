@@ -230,8 +230,11 @@ func TestPublishSpecPinsLoopback(t *testing.T) {
 	}
 }
 
+// An allBusyScanner on purpose: a nest with no port binds nothing, so it must
+// never probe the host — a saturated window (which would fail any real scan)
+// cannot fail it.
 func TestResolveWithoutDeclaredPortsYieldsAnEmptyWindow(t *testing.T) {
-	r, err := Resolve(nestWith("api", 9100), Options{}, freeScanner{})
+	r, err := Resolve(nestWith("api", 9100), Options{}, allBusyScanner{})
 	if err != nil {
 		t.Fatalf("a nest declaring no port is not an error: %v", err)
 	}
@@ -240,6 +243,56 @@ func TestResolveWithoutDeclaredPortsYieldsAnEmptyWindow(t *testing.T) {
 	}
 	if !r.Window.Canonical {
 		t.Error("nothing to place, nothing to shift: the window stays canonical")
+	}
+}
+
+// A declared `ports.base:` is the nest's own choice, but not an unchecked
+// one: the hashed base is aligned and in range by construction, and a declared
+// base must offer the same guarantees before the scan trusts it.
+func TestResolveRefusesADeclaredBaseBelowPrivilegedBoundary(t *testing.T) {
+	n := nestWith("api", 80, nest.PortDecl{Name: "vite", Container: 5173})
+	_, err := Resolve(n, Options{}, freeScanner{})
+	if err == nil {
+		t.Fatal("a base in the privileged range must be refused, never probed")
+	}
+	if !strings.Contains(err.Error(), "api") || !strings.Contains(err.Error(), "80") {
+		t.Errorf("the error must name the nest and the declared base: %v", err)
+	}
+}
+
+func TestResolveRefusesADeclaredBaseTooHighForTheShiftRange(t *testing.T) {
+	n := nestWith("api", 65530, nest.PortDecl{Name: "vite", Container: 5173})
+	_, err := Resolve(n, Options{}, freeScanner{})
+	if err == nil {
+		t.Fatal("a base whose shifted window can pass 65535 must be refused up front, " +
+			"not reported later as a mysterious \"no free window\"")
+	}
+	if !strings.Contains(err.Error(), "65530") || !strings.Contains(err.Error(), "65426") {
+		t.Errorf("the error must name the declared base and the highest acceptable one: %v", err)
+	}
+}
+
+func TestResolveRefusesAnUnalignedDeclaredBase(t *testing.T) {
+	n := nestWith("api", 9505, nest.PortDecl{Name: "vite", Container: 5173})
+	_, err := Resolve(n, Options{}, freeScanner{})
+	if err == nil {
+		t.Fatal("an unaligned base must be refused: its window interleaves with the hashed windows of neighbours")
+	}
+	if !strings.Contains(err.Error(), "9505") || !strings.Contains(err.Error(), "9500") || !strings.Contains(err.Error(), "9510") {
+		t.Errorf("the error must name the declared base and the two aligned candidates around it: %v", err)
+	}
+}
+
+// The hashed range 9000..17990 bounds what den PICKS, not what a nest may
+// ASK for: an explicit, aligned, in-range base above it is a valid choice.
+func TestResolveAcceptsAnAlignedDeclaredBaseOutsideTheHashedRange(t *testing.T) {
+	n := nestWith("api", 20000, nest.PortDecl{Name: "vite", Container: 5173})
+	r, err := Resolve(n, Options{}, freeScanner{})
+	if err != nil {
+		t.Fatalf("an aligned base outside the hashed range is a valid explicit choice: %v", err)
+	}
+	if r.Window.Base != 20000 {
+		t.Errorf("window base = %d, want 20000", r.Window.Base)
 	}
 }
 
