@@ -28,6 +28,20 @@ type allBusyScanner struct{}
 
 func (allBusyScanner) Free(int) bool { return false }
 
+// refusingScanner fails the test the moment it is consulted. It is the only
+// way to prove that a window the sandbox ALREADY publishes on is reused without
+// probing the host: a scanner answering "free" would produce the same window
+// for the wrong reason, and one answering "busy" would produce a shift the fix
+// exists to prevent.
+type refusingScanner struct{ t *testing.T }
+
+func (s refusingScanner) Free(port int) bool {
+	s.t.Helper()
+	s.t.Fatalf("the sandbox is already published on its window: den must reuse it without reading "+
+		"the host; port %d was scanned", port)
+	return false
+}
+
 func nestWith(name string, base int, decls ...nest.PortDecl) *nest.Nest {
 	return &nest.Nest{Name: name, Ports: nest.Ports{Base: base, Publish: decls}}
 }
@@ -180,24 +194,205 @@ func TestResolveBoundsTheNumberOfShifts(t *testing.T) {
 }
 
 // The exhaustion message may not send the user hunting a listener that is
-// their own.
+// their own — and since Resolve reads what THIS sandbox publishes, it must no
+// longer name that sandbox's own `den ports` runs among the candidates.
 //
-// This is where the repeat-run shift ends up: `den ports` publishes a window
-// and never takes it down, so re-running it finds that window busy, moves, and
-// publishes again — after maxShifts runs every candidate block is held by the
-// user's own earlier publications, and the only advice "free host ports" gives
-// them is to go fight themselves. The scan cannot tell those blocks apart from a
-// foreign listener's, so the message must name both and point at the attested
-// command that lists what a sandbox publishes.
-func TestResolveExhaustionNamesTheUsersOwnPublications(t *testing.T) {
+// That hedge was the pre-#15 state of the world: `den ports` published a window
+// and never took it down, so re-running it found the window busy, shifted, and
+// published again, until every candidate block was held by the user's own
+// earlier runs. Now Options.Published makes den recognise its own window and
+// reuse it, so reaching exhaustion with nothing of this sandbox's in range
+// means the blocks really do belong to something else. Naming "an earlier
+// `den ports` run of your own sandbox" here would send the user looking for a
+// culprit den has already ruled out.
+func TestResolveExhaustionRulesOutThisSandboxsOwnPublications(t *testing.T) {
 	n := nestWith("api", 9100, nest.PortDecl{Name: "vite", Container: 5173})
 	_, err := Resolve(n, Options{}, allBusyScanner{})
 	if err == nil {
 		t.Fatal("an always-busy host must end in an error")
 	}
-	for _, want := range []string{"den ports", "sbx ports"} {
+	// Still the attested command that answers "what does a sandbox publish".
+	if !strings.Contains(err.Error(), "sbx ports") {
+		t.Errorf("the message must point at the attested listing command; got: %v", err)
+	}
+	if strings.Contains(err.Error(), "den ports") {
+		t.Errorf("den read this sandbox's publications and reused none of them: the message may no "+
+			"longer blame an earlier `den ports` run of this sandbox; got: %v", err)
+	}
+}
+
+// ... unless the sandbox really does hold blocks in the range on mappings the
+// nest no longer declares. Those den CAN name, with the pair and the command
+// that releases it — the one holder of a busy block that comes with a remedy.
+func TestResolveExhaustionNamesThisSandboxsStalePublications(t *testing.T) {
+	n := nestWith("api", 9100, nest.PortDecl{Name: "vite", Container: 5173})
+	// Published on the canonical block, but for a container port the nest no
+	// longer declares: unusable as a window, and in the way of one.
+	_, err := Resolve(n, Options{Published: []Published{{Host: 9100, Container: 4444}}}, allBusyScanner{})
+	if err == nil {
+		t.Fatal("an always-busy host must end in an error")
+	}
+	for _, want := range []string{"9100->4444", "--unpublish 127.0.0.1:9100:4444"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the message must name %q as the other candidate holder; got: %v", want, err)
+			t.Errorf("the message must name the stale publication and its remedy (%q); got: %v", want, err)
+		}
+	}
+}
+
+// #15, in the pure layer: a sandbox already published on its canonical window
+// resolves back onto it, WITHOUT scanning — the scan is what used to call den's
+// own publication a collision and move the whole block.
+//
+// The scanner is the forbidding one: reusing a window den holds is not a
+// question the host can answer, and probing it would be probing ports den has
+// already accounted for.
+func TestResolveReusesTheWindowThisSandboxIsAlreadyPublishedOn(t *testing.T) {
+	n := nestWith("api", 9100,
+		nest.PortDecl{Name: "vite", Container: 5173},
+		nest.PortDecl{Name: "api", Container: 3000},
+	)
+	published := []Published{{Host: 9100, Container: 5173}, {Host: 9101, Container: 3000}}
+
+	r, err := Resolve(n, Options{Published: published}, refusingScanner{t: t})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.Window.Base != 9100 || !r.Window.Canonical {
+		t.Errorf("window = %d (canonical=%v), want 9100 canonical: the sandbox is already published "+
+			"there and re-reading the table must not move it", r.Window.Base, r.Window.Canonical)
+	}
+	for _, p := range r.Ports {
+		if !p.AlreadyPublished {
+			t.Errorf("port %q (%d) is already published: it must be marked so, or the caller "+
+				"republishes it and sbx answers 409", p.Name, p.Host)
+		}
+	}
+}
+
+// The polluted sandbox of smoke #2 §1.7: three declared ports, three windows
+// published, all mapping the same containers. The LOWEST block wins, which is
+// the canonical one — the URL the user bookmarked. Healing back to it is what
+// makes the fix retroactive on a VM that lived through #15.
+func TestResolveReusesTheLowestWindowItHolds(t *testing.T) {
+	n := nestWith("api", 9100, nest.PortDecl{Name: "vite", Container: 5173})
+	published := []Published{
+		{Host: 9120, Container: 5173},
+		{Host: 9100, Container: 5173},
+		{Host: 9110, Container: 5173},
+	}
+
+	r, err := Resolve(n, Options{Published: published}, refusingScanner{t: t})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.Window.Base != 9100 {
+		t.Errorf("window base = %d, want 9100: the lowest block this sandbox holds is the canonical "+
+			"one, and re-reading must converge back onto the bookmarkable URLs", r.Window.Base)
+	}
+	if len(r.Stale) != 0 {
+		t.Errorf("nothing was skipped, so nothing is stale; got %v", r.Stale)
+	}
+}
+
+// A window half-published — what #22's aborted run leaves behind — is FINISHED,
+// not abandoned. den reuses the block and publishes only the missing port.
+func TestResolveFinishesAPartiallyPublishedWindow(t *testing.T) {
+	n := nestWith("api", 9100,
+		nest.PortDecl{Name: "vite", Container: 5173},
+		nest.PortDecl{Name: "api", Container: 3000},
+	)
+
+	r, err := Resolve(n, Options{Published: []Published{{Host: 9100, Container: 5173}}},
+		refusingScanner{t: t})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.Window.Base != 9100 {
+		t.Errorf("window base = %d, want 9100", r.Window.Base)
+	}
+	if !r.Ports[0].AlreadyPublished {
+		t.Error("vite is published: it must not be published again")
+	}
+	if r.Ports[1].AlreadyPublished {
+		t.Error("api was never published: it must be, or the row shows a URL nothing answers")
+	}
+}
+
+// A publication of this sandbox that does NOT match a declaration is not a
+// window: den falls back to the scan, and reports what it skipped so the caller
+// can name the one holder it knows.
+func TestResolveReportsItsOwnPublicationsInSkippedBlocks(t *testing.T) {
+	n := nestWith("api", 9100, nest.PortDecl{Name: "vite", Container: 5173})
+
+	r, err := Resolve(n, Options{Published: []Published{{Host: 9100, Container: 4444}}},
+		busyScanner{9100: true})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.Window.Base != 9110 {
+		t.Errorf("window base = %d, want 9110: 9100 carries a mapping the nest no longer declares "+
+			"and cannot be reused", r.Window.Base)
+	}
+	if len(r.Stale) != 1 || r.Stale[0] != (Published{Host: 9100, Container: 4444}) {
+		t.Errorf("Stale = %v, want the 9100->4444 publication den skipped past", r.Stale)
+	}
+}
+
+// #22 in the pure layer: an identical `--add` is recognised, not republished.
+func TestResolveMarksAnExtraPairTheSandboxAlreadyPublishes(t *testing.T) {
+	n := nestWith("api", 9100, nest.PortDecl{Name: "vite", Container: 5173})
+	extra := Port{Name: addName, Host: 9801, Container: 8081}
+
+	r, err := Resolve(n, Options{
+		Extra:     []Port{extra},
+		Published: []Published{{Host: 9100, Container: 5173}, {Host: 9801, Container: 8081}},
+	}, refusingScanner{t: t})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	last := r.Ports[len(r.Ports)-1]
+	if last.Host != 9801 || !last.AlreadyPublished {
+		t.Errorf("the added pair %v must be marked already published: re-running the identical "+
+			"command answered 409 before this (#22)", last)
+	}
+}
+
+// The same reading, on a PORTLESS nest — §1.8's `beta`, where `--add` is the
+// whole command. The early return must carry the marking too, or the one nest
+// shape `--add` exists for is the one that still 409s.
+func TestResolveMarksAnExtraPairOfAPortlessNest(t *testing.T) {
+	n := nestWith("beta", 0)
+	extra := Port{Name: addName, Host: 9601, Container: 8080}
+
+	r, err := Resolve(n, Options{
+		Extra:     []Port{extra},
+		Published: []Published{{Host: 9601, Container: 8080}},
+	}, refusingScanner{t: t})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(r.Ports) != 1 || !r.Ports[0].AlreadyPublished {
+		t.Errorf("the added pair of a portless nest must be marked already published; got %v", r.Ports)
+	}
+}
+
+// A host port the sandbox publishes to ANOTHER container port is refused, here,
+// before anything is bound. sbx keys its 409 on the host port alone, so this
+// would fail anyway — late, with the declared ports already published, and with
+// a message naming neither the mapping in the way nor how to clear it.
+func TestResolveRefusesAnExtraPairOnAHostPortPublishedElsewhere(t *testing.T) {
+	n := nestWith("api", 9100, nest.PortDecl{Name: "vite", Container: 5173})
+
+	_, err := Resolve(n, Options{
+		Extra:     []Port{{Name: addName, Host: 9801, Container: 9999}},
+		Published: []Published{{Host: 9801, Container: 8081}},
+	}, refusingScanner{t: t})
+	if err == nil {
+		t.Fatal("a host port already published to another container port must be refused")
+	}
+	for _, want := range []string{"9801", "8081", "--unpublish 127.0.0.1:9801:8081"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %q; got: %v", want, err)
 		}
 	}
 }

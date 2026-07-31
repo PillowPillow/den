@@ -12,6 +12,7 @@ package ports
 import (
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -69,12 +70,15 @@ func Base(nestName string) int {
 // Window is the block of WindowSize host ports a resolution landed on.
 type Window struct {
 	Base int
-	// Canonical is false when the scan had to move the window: those URLs are
-	// valid FOR THIS INSTANCE ONLY, and the caller must say so. What it does
-	// NOT say is who holds the canonical block — the scan reads the host, and a
-	// bound port names no owner: it may be another instance of the nest, or the
-	// same sandbox's own earlier publication. A caller wording this as "another
-	// instance owns it" is asserting what this field cannot support.
+	// Canonical is false when the window is not the nest's hashed (or declared)
+	// block: those URLs are valid FOR THIS INSTANCE ONLY, and the caller must
+	// say so. What it does NOT say is who holds the canonical block — the scan
+	// reads the host, and a bound port names no owner. One candidate is now
+	// excluded, though, and it was the likeliest: THIS sandbox's own earlier
+	// publication, which Resolve reuses instead of shifting past (see
+	// reusableWindow). What it could not reuse is in Resolution.Stale, named.
+	// Anything else is another sandbox or a foreign listener, and a caller must
+	// not pick between them.
 	Canonical bool
 	// Shifts is how many blocks the window moved (0 when canonical).
 	Shifts int
@@ -90,6 +94,13 @@ type Port struct {
 	Host         int
 	Open         bool
 	LoopbackLock bool
+	// AlreadyPublished is true when the live sandbox ALREADY carries exactly
+	// this host↔container mapping (Options.Published named it). The row still
+	// renders — it is part of the table the user asked for — but the caller
+	// must NOT publish it again: `sbx ports --publish` is not idempotent, and
+	// republishing a pair the same sandbox already has is a `409 Conflict:
+	// port 127.0.0.1:<H>/tcp is already published` (measured 2026-07-31).
+	AlreadyPublished bool
 }
 
 // PublishSpec renders the port for `sbx ports --publish`, whose attested
@@ -186,12 +197,40 @@ func parsePortField(field string) (int, bool) {
 	return n, true
 }
 
+// Published is one host↔container mapping the live sandbox ALREADY carries.
+//
+// Only the two port numbers: the bind address and the protocol are the
+// caller's to filter (den publishes on Loopback/tcp and nothing else, so a
+// publication on any other address is not den's to reason about), and carrying
+// them here would invite this package to decide about addresses it has already
+// refused everywhere else.
+type Published struct {
+	Host      int
+	Container int
+}
+
 // Options carries what the caller may ask of a resolution.
 type Options struct {
 	// HostIP is the address the caller wants to bind. Empty means Loopback.
 	// Anything else is REFUSED — the field exists so that a flag offering to
 	// force it has something to be refused by, not so that it can succeed.
 	HostIP string
+	// Published is what the sandbox ALREADY publishes, read from the live VM
+	// before the resolution. It is what makes `den ports` re-readable, and the
+	// whole of the fix for #15/#22.
+	//
+	// Without it the scan reads the host, finds den's OWN previous publication
+	// holding the canonical window, calls it busy, shifts the whole block and
+	// binds a second set of host ports for the same VM — three declared ports
+	// became nine host publications in three runs of the same command (smoke
+	// #2 §1.7), and the tenth run failed outright. With it, den recognises its
+	// own window, re-renders the same table and publishes nothing.
+	//
+	// EMPTY MEANS "PUBLISHES NOTHING", NOT "UNKNOWN": a caller that cannot read
+	// the sandbox (a stopped VM hides the `ports` field entirely) must not pass
+	// an empty slice and call it a reading — it would resolve a fresh window
+	// over publications that come back on resume.
+	Published []Published
 	// Extra are the pairs `--add` asked for on top of what the nest declares
 	// (ParseAdd is what turns a flag value into one). They are resolved,
 	// published and listed WITH the declared ports, but they take no window
@@ -215,6 +254,14 @@ type Resolution struct {
 	Declared int
 	// Ports follows the nest's DECLARATION ORDER, never sorted — see Resolve.
 	Ports []Port
+	// Stale are publications of THIS sandbox that sit in a window block the
+	// resolution had to skip: mappings den itself bound on an earlier run and
+	// can no longer reuse, because the nest no longer declares that container
+	// port on that offset. They are the one holder of a busy block den can
+	// name with certainty, and the reason it can hand over a remedy
+	// (`sbx ports <name> --unpublish …`) instead of the old "den cannot tell
+	// who holds it". Empty is the ordinary case.
+	Stale []Published
 }
 
 // Resolve places a nest's declared ports on the host.
@@ -303,6 +350,23 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 		seen[e.Host] = e
 	}
 
+	// What the sandbox ALREADY publishes, indexed by host port — the reading
+	// every decision below leans on. Host port and not the pair, because that
+	// is what sbx keys its refusal on: publishing `9500:9999` over an existing
+	// `9500:8080` is the SAME `409 Conflict: port 127.0.0.1:9500/tcp is already
+	// published` as republishing `9500:8080` itself (measured 2026-07-31, both
+	// forms). A map keyed by the pair would call the first one publishable.
+	mine := indexPublished(o.Published)
+
+	// The added pairs against what the sandbox already carries — with the other
+	// pre-scan checks, and therefore before the portless early return below,
+	// which publishes them too (a portless nest with `--add` is §1.8's `beta`,
+	// and re-running it is the same 409 as anywhere else).
+	extra, err := markExtra(n.Name, o.Extra, mine)
+	if err != nil {
+		return nil, err
+	}
+
 	// ports.base wins over the hash: it is the nest's own, explicit choice.
 	base := n.Ports.Base
 	if base == 0 {
@@ -318,35 +382,51 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 		return &Resolution{
 			Nest:   n.Name,
 			Window: Window{Base: base, Canonical: true},
-			Ports:  append([]Port{}, o.Extra...),
+			Ports:  extra,
 		}, nil
 	}
 	// From here on the window WILL be placed: every return below carries
 	// len(decls) declared ports numbered by it.
 
-	if s == nil {
-		return nil, fmt.Errorf(
-			"nest %q: no port scanner — den cannot tell whether the window is free, and assuming it is would "+
-				"hand a second instance the URLs of the first", n.Name)
-	}
-
-	window, err := scan(n.Name, base, s)
-	if err != nil {
-		return nil, err
+	// THE WINDOW THIS SANDBOX IS ALREADY ON WINS OVER ANY SCAN. Re-running
+	// `den ports` is the ordinary gesture — re-reading the table — and the scan
+	// cannot serve it: it reads the host, a bound port names no owner, and den's
+	// own publication of the previous run is exactly what makes the canonical
+	// block look busy. Recognising it first is what turns the command from
+	// "bind ten more host ports" into "re-read".
+	window, ok := reusableWindow(decls, base, mine)
+	if !ok {
+		if s == nil {
+			return nil, fmt.Errorf(
+				"nest %q: no port scanner — den cannot tell whether the window is free, and assuming it is would "+
+					"hand a second instance the URLs of the first", n.Name)
+		}
+		var err error
+		if window, err = scan(n.Name, base, s, mine); err != nil {
+			return nil, err
+		}
 	}
 
 	// DECLARATION ORDER IS THE OFFSET, and this list must NEVER be sorted.
 	// This is the one exception to the repo's rule that everything displayed
 	// or serialized is sorted (HANDOFF §8): sorting here renumbers every port
 	// of the nest, and with them every URL a user has bookmarked.
-	out := make([]Port, 0, len(decls)+len(o.Extra))
+	out := make([]Port, 0, len(decls)+len(extra))
 	for i, d := range decls {
+		host := window.Base + i
+		// By construction of reusableWindow, a host port this sandbox holds
+		// inside the chosen window carries THIS declaration's container port —
+		// the lookup only ever confirms it. It is written out rather than
+		// assumed so the flag stays right for a window the SCAN produced too,
+		// where nothing is held and every port is genuinely still to publish.
+		held, ok := mine[host]
 		out = append(out, Port{
-			Name:         d.Name,
-			Container:    d.Container,
-			Host:         window.Base + i,
-			Open:         d.Open,
-			LoopbackLock: d.LoopbackLock,
+			Name:             d.Name,
+			Container:        d.Container,
+			Host:             host,
+			Open:             d.Open,
+			LoopbackLock:     d.LoopbackLock,
+			AlreadyPublished: ok && held.Container == d.Container,
 		})
 	}
 	// The added pairs against the ports just NUMBERED — here, and not with the
@@ -358,7 +438,7 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 	// An EQUALITY, never a range: the window bounds what den numbers, and a
 	// host port inside the block that no declaration was given is one den
 	// publishes nothing on — refusing it would reject a pair that binds fine.
-	for _, e := range o.Extra {
+	for _, e := range extra {
 		for _, p := range out {
 			if p.Host != e.Host {
 				continue
@@ -376,8 +456,133 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 	// The added pairs come LAST, after everything the nest declared: an
 	// addition to the window, never a substitution inside it — the declared
 	// ports keep the offsets §8 numbers them by.
-	out = append(out, o.Extra...)
-	return &Resolution{Nest: n.Name, Window: window, Declared: len(decls), Ports: out}, nil
+	out = append(out, extra...)
+	return &Resolution{
+		Nest:     n.Name,
+		Window:   window,
+		Declared: len(decls),
+		Ports:    out,
+		Stale:    staleBelow(base, window.Base, mine),
+	}, nil
+}
+
+// indexPublished keys the sandbox's publications by HOST port — the key sbx
+// itself refuses on (see Resolve). Later entries win, which cannot happen: a
+// host port is published once per sandbox, and a duplicate would mean sbx
+// contradicted itself.
+func indexPublished(list []Published) map[int]Published {
+	out := make(map[int]Published, len(list))
+	for _, p := range list {
+		out[p.Host] = p
+	}
+	return out
+}
+
+// markExtra decides, for each `--add` pair, whether the sandbox already carries
+// it — and refuses the one shape sbx would reject in den's face.
+//
+// Three cases, and they are genuinely three:
+//
+//   - the host port is free of any publication → publish it, as before;
+//   - the host port already carries THIS pair → the pair is done. The row still
+//     renders (the user asked for the table, and the pair really is published),
+//     but publishing it again is a `409 Conflict: … already published`, which is
+//     issue #22: the identical re-run failed AFTER binding one more declared
+//     window, so the command was both destructive and unusable;
+//   - the host port carries a DIFFERENT container port → den refuses, here,
+//     before a single publication. sbx keys its 409 on the host port alone, so
+//     this would fail too, but it would fail late — with the declared ports
+//     already bound — and its message ("already published") names neither the
+//     mapping in the way nor the command that clears it.
+func markExtra(nestName string, list []Port, mine map[int]Published) ([]Port, error) {
+	out := make([]Port, 0, len(list))
+	for _, e := range list {
+		held, ok := mine[e.Host]
+		if ok && held.Container != e.Container {
+			return nil, fmt.Errorf(
+				"nest %q: `--add %d:%d` asks for host port %d, which this sandbox already publishes to "+
+					"container port %d — a host port publishes once per sandbox, whatever it points at, and "+
+					"sbx refuses the second (`409 Conflict: port %s:%d/tcp is already published`); give the "+
+					"pair another host port, or release the one in the way first "+
+					"(`sbx ports SANDBOX --unpublish %s:%d:%d`)",
+				nestName, e.Host, e.Container, e.Host, held.Container,
+				Loopback, e.Host, Loopback, held.Host, held.Container)
+		}
+		e.AlreadyPublished = ok
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// reusableWindow finds the window this sandbox is ALREADY published on, if it
+// is on one.
+//
+// Only the blocks a scan could itself have produced are candidates —
+// `base + k*WindowSize`, up to maxShifts — and the LOWEST one wins. That is
+// what heals a sandbox the pre-fix den polluted: `alpha` ended smoke #2 with
+// 9500-9502, 9510-9512 and 9520-9522 all mapping the same three containers, and
+// the lowest match is 9500, the canonical block, the one URL the user
+// bookmarked. Preferring a scan of the host instead would have picked the
+// first FREE block — a fourth one.
+//
+// A block qualifies when every host port of it that this sandbox holds carries
+// the container port that declaration would land there, and at least one does.
+// The partial case is deliberate and is issue #22's wreckage: a run that aborted
+// mid-publication left some of its window bound and the rest not, and den must
+// finish it rather than move elsewhere.
+//
+// What this does NOT do is scan the block it reuses. A host port inside it that
+// den does not hold may have been taken by a foreign process since; publishing
+// it then fails with sbx's own `409 … address already in use`, which names the
+// port (smoke #2 §1.9). Shifting away instead would abandon the window the
+// sandbox is demonstrably serving on, to escape a collision on a port it may
+// not even need.
+func reusableWindow(decls []nest.PortDecl, base int, mine map[int]Published) (Window, bool) {
+	if len(mine) == 0 {
+		return Window{}, false
+	}
+	for shift := 0; shift <= maxShifts; shift++ {
+		candidate := base + shift*WindowSize
+		matched, usable := false, true
+		for i, d := range decls {
+			held, ok := mine[candidate+i]
+			if !ok {
+				continue // never published, or published elsewhere: den will bind it
+			}
+			if held.Container != d.Container {
+				usable = false // one of den's own mappings, but not this one
+				break
+			}
+			matched = true
+		}
+		if usable && matched {
+			return Window{Base: candidate, Canonical: shift == 0, Shifts: shift}, true
+		}
+	}
+	return Window{}, false
+}
+
+// staleBelow lists the sandbox's own publications sitting in the blocks between
+// the canonical base and the window finally chosen — the blocks the resolution
+// SKIPPED and this very sandbox is holding.
+//
+// It exists so the caller can say something true instead of the old "den cannot
+// tell who holds it": for these, den can. They are what an earlier `den ports`
+// bound and no longer matches — the residue of #15 on a sandbox that lived
+// through it — and the only holder of a busy block that comes with a remedy.
+//
+// Sorted by host port: everything den displays is sorted (the one exception is
+// the port table, whose order IS the offset), and map iteration would reorder
+// the warning from run to run.
+func staleBelow(base, chosen int, mine map[int]Published) []Published {
+	var out []Published
+	for host, p := range mine {
+		if host >= base && host < chosen {
+			out = append(out, p)
+		}
+	}
+	slices.SortFunc(out, func(a, b Published) int { return a.Host - b.Host })
+	return out
 }
 
 // scan walks the window forward, a WHOLE BLOCK at a time, until it finds one
@@ -387,7 +592,7 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 // port-by-port would interleave, and "which instance is on 9103" stops having
 // an answer anyone can reason about. The first instance therefore always keeps
 // the canonical window, and later ones are moved wholesale and flagged.
-func scan(nestName string, base int, s Scanner) (Window, error) {
+func scan(nestName string, base int, s Scanner, mine map[int]Published) (Window, error) {
 	tried := make([]string, 0, maxShifts+1)
 	for shift := 0; shift <= maxShifts; shift++ {
 		candidate := base + shift*WindowSize
@@ -396,21 +601,42 @@ func scan(nestName string, base int, s Scanner) (Window, error) {
 		}
 		tried = append(tried, fmt.Sprintf("%d-%d", candidate, candidate+WindowSize-1))
 	}
-	// The tried blocks are named, and so is the one holder the user is most
-	// likely to have forgotten: THEMSELVES. A publication survives the command
-	// that made it — `den ports` binds a window and nothing releases it while
-	// the VM lives — so re-running the command walks the scan through block
-	// after block of its own earlier publications, and "free host ports" alone
-	// sends the user hunting a listener that is theirs. The scan cannot tell
-	// the two apart (it reads the host, which names no owner), so the message
-	// names both candidates rather than picking one.
+	// The tried blocks are named, and so is the holder whenever den knows it.
+	// It used to be unable to: the scan reads the host, and a bound port names
+	// no owner, so the message had to hedge between "a foreign listener" and
+	// "an earlier `den ports` run of your own". Half of that hedge is gone —
+	// Resolve now reads what THIS sandbox publishes and reuses it instead of
+	// shifting past it, so reaching this point means the sandbox's own
+	// publications are not what stands here… unless they are stale ones den
+	// cannot map onto a declaration, which is the case named below.
+	if stale := staleBelow(base, base+(maxShifts+1)*WindowSize, mine); len(stale) > 0 {
+		return Window{}, fmt.Errorf(
+			"nest %q: no free window after %d shifts (tried %s) — and this sandbox itself publishes %s "+
+				"inside that range, on mappings the nest no longer declares: release them "+
+				"(`sbx ports SANDBOX --unpublish %s:%d:%d`, one per pair) and re-run, or set "+
+				"`ports.base:` in the nest to a quieter range",
+			nestName, maxShifts, strings.Join(tried, ", "), formatPublished(stale),
+			Loopback, stale[0].Host, stale[0].Container)
+	}
 	return Window{}, fmt.Errorf(
 		"nest %q: no free window after %d shifts (tried %s) — the scan reads the host, which says a "+
-			"port is bound and never by whom: those blocks may be foreign listeners, or earlier "+
-			"`den ports` runs of your own sandboxes, whose publications stay bound as long as the VM "+
-			"lives (`sbx ports SANDBOX` lists what one publishes). Free host ports, or set "+
-			"`ports.base:` in the nest to a quieter range",
+			"port is bound and never by whom, and none of it is this sandbox's own publication "+
+			"(den read those first): those blocks are foreign listeners, or other sandboxes of "+
+			"yours, whose publications stay bound as long as their VM lives (`sbx ports SANDBOX` "+
+			"lists what one publishes). Free host ports, or set `ports.base:` in the nest to a "+
+			"quieter range",
 		nestName, maxShifts, strings.Join(tried, ", "))
+}
+
+// formatPublished renders a list of publications as `9500->8080, 9501->3000`,
+// the form the warning and the exhaustion error both need. One writer, because
+// the two sentences must describe a mapping the same way.
+func formatPublished(list []Published) string {
+	parts := make([]string, 0, len(list))
+	for _, p := range list {
+		parts = append(parts, fmt.Sprintf("%d->%d", p.Host, p.Container))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // windowIsFree probes the WHOLE window, not just the ports actually declared:
