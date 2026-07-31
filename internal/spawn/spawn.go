@@ -30,7 +30,13 @@ type Deps struct {
 	Sbx    sbx.Runner
 	Git    worktree.Git
 	Policy policy.Options
-	Out    io.Writer
+	// Freshness parametrizes the §9.1 agent-freshness gate, on the same terms
+	// as Policy and for the same reason: its clock is injected so the suite
+	// never waits, and it is REQUIRED — a zero value is refused by
+	// agent.WaitFreshness rather than filled in, because a gate with no
+	// patience reads exactly like a gate that checks nothing.
+	Freshness agent.GateOptions
+	Out       io.Writer
 	// Err carries diagnostics that are not part of the command's output.
 	//
 	// Spawn prints `warning:` lines on BOTH streams, so the rule that splits
@@ -456,7 +462,47 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return err
 	}
 
-	// 8. Attach.
+	// 8. The §9.1 agent-freshness gate.
+	//
+	// §9.1 promises "a sandbox never starts with a stale agent" and makes the
+	// update fail-closed. Until now den enforced neither: it waited for the
+	// network policy and for nothing in the kit dispatcher, so it printed
+	// "ready" and exited 0 roughly 35 s before the freshness command finished —
+	// and when that command FAILED (measured, with an agent whose update exits
+	// non-zero), den said nothing, then or ever, not even on re-attach. The
+	// promise was carried by no code at all.
+	//
+	// Waiting is not free: it is the difference between a 7.6 s spawn and a
+	// ~42 s one, so where den waits was arbitrated rather than assumed.
+	//
+	//   - Attaching a shell: den WAITS. The user is about to run the agent —
+	//     that is what the sandbox is for — and handing them a stale one is the
+	//     exact failure §9.1 exists to prevent.
+	//   - `--detach`: den does NOT wait. Nobody is at a prompt, the caller is
+	//     usually a script that will not touch the agent, and 35 s on every
+	//     spawn of a chain is a real cost against a risk the next attach
+	//     catches anyway. It warns instead, on stderr, and names how to read
+	//     the verdict.
+	//
+	// A FAILED gate refuses, on both paths: fail-closed is §9.1's word, and it
+	// is the same discipline as the settle-loop, which already declines to
+	// attach into a sandbox whose policy is not in place. A gate still silent
+	// when the budget runs out only warns — den waited what it promised, and a
+	// dispatcher still working is no evidence of a stale agent.
+	//
+	// SKIPPED on a sandbox den has decided to leave stopped: reading the
+	// journal is an `sbx exec`, which restarts the VM, and waking one to
+	// inspect it would contradict the line printed twenty lines below. Nothing
+	// is lost — the dispatcher re-runs on the next restart (measured), so the
+	// gate is evaluated again exactly when the sandbox comes back.
+	staysStopped := live != nil && live.IsStopped() && o.Detach
+	if !staysStopped {
+		if err := checkFreshness(ctx, d, sandboxName, o.Detach); err != nil {
+			return err
+		}
+	}
+
+	// 9. Attach.
 	if o.Detach {
 		// "READY" IS A CLAIM, AND den ONLY MAKES IT WHERE IT HOLDS.
 		//
@@ -495,6 +541,86 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return nil
 	}
 	return Attach(ctx, d.Sbx, sandboxName, workdir)
+}
+
+// checkFreshness runs the §9.1 gate and turns its verdict into den's behaviour.
+// The arbitration behind "wait here, warn there" is at the call site; this is
+// what each verdict costs the user.
+//
+// Under `--detach` it READS instead of waiting: den still wants the verdict —
+// a gate that has already failed must refuse there too, and the re-attach case
+// is exactly a journal that already carries one — it just will not stand and
+// wait for one that has not arrived.
+func checkFreshness(ctx context.Context, d Deps, sandboxName string, detach bool) error {
+	read := func() (agent.GateVerdict, error) {
+		if detach {
+			return agent.ReadFreshness(ctx, d.Sbx, sandboxName)
+		}
+		return agent.WaitFreshness(ctx, d.Sbx, sandboxName, d.Freshness, func() {
+			fmt.Fprintf(d.Out, "waiting for agent freshness (spec §9.1)...\n")
+		})
+	}
+	verdict, err := read()
+	if err != nil {
+		return err
+	}
+
+	switch verdict.State {
+	case agent.GatePassed:
+		// Silent. The gate passing is the ordinary outcome, and announcing it
+		// on every spawn would bury the two lines below that matter.
+	case agent.GateFailed:
+		// FAIL-CLOSED, and the log line travels with the refusal: §9.1 says the
+		// journal is what made the 2026-07-27 bug diagnosable, and a message
+		// that says "the gate failed" without it sends the user back into the
+		// VM to read what den has already read.
+		return fmt.Errorf(
+			"sandbox %s: the agent-freshness gate of spec §9.1 FAILED — %s.\n  %s\n"+
+				"den does not open a sandbox whose agent it knows to be stale. Fix the agent's "+
+				"`update:` command in the registry, then `den rm %s` and relaunch; the whole journal "+
+				"is `sbx exec %s cat %s`",
+			sandboxName, verdict.Reason, strings.TrimSpace(verdict.Line),
+			sandboxName, sandboxName, agent.KitLogPath)
+	case agent.GateAbsent:
+		// Out, not Err: both warnings describe THE SANDBOX den is reporting on,
+		// and Deps.Err's rule sends those to Out — stderr is for what is wrong
+		// with den's environment (the SSH-agent warning), true of the host
+		// before this spawn existed. reportDrift and reportMissingGitDirs, the
+		// two other sandbox-level warnings, land here for the same reason.
+		fmt.Fprintf(d.Out,
+			"warning: sandbox %s: %s — its agent is whatever the image carries, and den cannot say "+
+				"how old that is; `den rm %s` and relaunch to get the §9.1 gate\n",
+			sandboxName, verdict.Reason, sandboxName)
+	default:
+		// GatePending. On the attach path this means the budget ran out; under
+		// --detach it is the ordinary case, since den made exactly one read —
+		// the gate needs about 35 s and a detached spawn returns in about 7.
+		//
+		// "note:", NOT "warning:", and the distinction is load-bearing rather
+		// than cosmetic. Under --detach this line prints on essentially EVERY
+		// spawn; calling that a warning would put a warning on the happy path
+		// and teach the reader to skip the ones that mean something — including
+		// the refusal three lines above. Nothing is wrong here: den has no
+		// verdict yet, says so, and says when it will have one.
+		fmt.Fprintf(d.Out,
+			"note: sandbox %s: the agent-freshness gate of spec §9.1 has not reported yet — "+
+				"den did not wait for it%s, so the agent may still be updating (or may have failed "+
+				"to). den re-reads the verdict on the next attach; the journal is "+
+				"`sbx exec %s cat %s`\n",
+			sandboxName, pendingBecause(detach), sandboxName, agent.KitLogPath)
+	}
+	return nil
+}
+
+// pendingBecause names WHY den stopped waiting, because the two reasons call
+// for opposite reactions: under --detach nothing is wrong and the next attach
+// settles it, while a budget that ran out on the attach path means the
+// dispatcher is slower than den's patience and deserves a look.
+func pendingBecause(detach bool) string {
+	if detach {
+		return " under `--detach`, where nobody is waiting at a prompt"
+	}
+	return " beyond its budget"
 }
 
 // warnEmptySSHAgent warns, on stderr, when `ssh.mode: agent-forward` would

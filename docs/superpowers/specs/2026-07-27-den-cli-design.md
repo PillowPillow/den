@@ -540,6 +540,41 @@ journal dans `/var/log/sbx-kit-startup.log`) :
    n'atteste PAS : que `sbx` applique les `--kit` dans l'ordre de la ligne de commande (voir
    « Hypothèses assumées », §14.1).
 
+**Format du journal du dispatcher** (`/var/log/sbx-kit-startup.log`, relevé le **2026-07-31** sur
+v0.35.0 — c'est ce relevé qui rend la porte du §9.1 observable, cf. `internal/agent/gate.go`) :
+
+```
+=== dispatcher run 2026-07-31T15:34:24Z ===
+> /etc/durable-startup.d/001-startup-claude/000-cmd.sh
+ok /etc/durable-startup.d/001-startup-claude/000-cmd.sh
+> /etc/durable-startup.d/002-startup-den-alpha/000-cmd.sh
+agent claude: up to date
+ok /etc/durable-startup.d/002-startup-den-alpha/000-cmd.sh
+=== dispatcher complete ===
+```
+
+- une ligne `> <chemin>` par commande, puis **`ok <chemin>`** ou **`fail <chemin> exit=<n>`** ; entre
+  les deux, la sortie de la commande elle-même (texte arbitraire — seules les lignes `ok `/`fail `
+  sont un verdict) ;
+- le dossier du kit de den est **`<NNN>-startup-<nom du kit>`**, donc `002-startup-den-alpha` pour la
+  sandbox `alpha`. Le nom du kit est celui que den génère (`agent.MixinName` : `den-` + le nom de
+  sandbox dont les `.` sont aplatis en `-`), vérifié sur une sandbox à worktree :
+  `alpha.wt2` → `002-startup-den-alpha-wt2`. **Le préfixe numérique `002-` n'est pas documenté** et
+  n'est pas une position que den choisit : la reconnaissance se fait sur le suffixe du segment de
+  chemin, jamais sur ce préfixe ;
+- **le fichier s'ACCUMULE** : un redémarrage ajoute un nouveau bloc `=== dispatcher run … ===`. Le
+  dispatcher **rejoue** donc bien ses startup commands quand une sandbox arrêtée est relancée par
+  `sbx exec` — c'est la réserve n°6 laissée ouverte par le smoke réel n°2, mesurée ici. Seul le
+  **dernier** bloc décrit la sandbox telle qu'elle est.
+
+**Champ `ports` de `sbx ls --json`** (relevé le 2026-07-31) :
+`{"host_ip","host_port","sandbox_port","protocol"}`, présent **uniquement si `status` vaut
+`running`** — une sandbox arrêtée ne porte pas la clé du tout, alors que ses publications
+reviennent à la reprise. `sbx ports SANDBOX --json` dit la même chose sous forme de **tableau JSON
+nu**. Le `409 Conflict: port <IP>:<P>/tcp is already published` est clé sur le **port hôte** seul,
+quel que soit le port conteneur visé ; `sbx ports SANDBOX --unpublish <IP>:<H>:<C>` le libère.
+Réveil mesuré d'une sandbox arrêtée par `sbx exec <name> true` : **1,4 s**.
+
 ### Questions ouvertes et risques restants
 
 - **Surface `sbx` figée le 2026-07-28** (v0.35.0), ci-dessus : `policy check network [--sandbox S]

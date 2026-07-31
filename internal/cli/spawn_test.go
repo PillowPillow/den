@@ -147,9 +147,10 @@ func fakeSpawnDeps() (*sbx.Fake, spawn.Deps) {
 	// Out stays nil: configureSpawn overwrites it on every run with
 	// cmd.OutOrStdout(), and Spawn falls back to io.Discard if it is missing.
 	return f, spawn.Deps{
-		Sbx:    f,
-		Git:    worktree.NewGit(),
-		Policy: policy.DefaultOptions(),
+		Sbx:       f,
+		Git:       worktree.NewGit(),
+		Policy:    policy.DefaultOptions(),
+		Freshness: instantGate(),
 	}
 }
 
@@ -226,6 +227,13 @@ func runFullRoot(t *testing.T, home string, args ...string) (*sbx.Fake, string, 
 	deps := SystemDeps()
 	deps.Sbx = f
 	deps.SSHAgent = nil
+	// deps.Freshness is NOT safe left real either, and for the same shape of
+	// reason as SSHAgent: the §9.1 gate polls the kit journal with a real
+	// time.Sleep, and a fake sbx never answers anything a journal can be read
+	// out of — so every test through here would stand and wait out the gate's
+	// full ninety-second budget before warning. instantGate keeps the budget
+	// and moves the clock only when the loop sleeps.
+	deps.Freshness = instantGate()
 	out, err := executeCmd(t, NewRootCmdWith(deps), append(args, "--den-home", home)...)
 	return f, out, err
 }

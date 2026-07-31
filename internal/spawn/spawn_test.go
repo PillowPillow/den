@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sshagent"
@@ -126,6 +127,19 @@ func instantPolicy() policy.Options {
 	return o
 }
 
+// instantFreshness is instantPolicy's twin for the §9.1 gate: the real budget,
+// a clock that only moves when the loop sleeps. The gate then exhausts its
+// patience in no wall-clock time at all, which is what every test that is NOT
+// about the gate wants — a fake sbx answers nothing a dispatcher journal could
+// be read out of, so the verdict is "has not reported yet" and den warns.
+func instantFreshness() agent.GateOptions {
+	o := agent.DefaultGateOptions()
+	clock := time.Now()
+	o.Sleep = func(d time.Duration) { clock = clock.Add(d) }
+	o.Now = func() time.Time { return clock }
+	return o
+}
+
 // fakeDeps returns a fake sbx that answers "no sandbox" then "everything
 // allowed".
 func fakeDeps() (*sbx.Fake, Deps) {
@@ -140,10 +154,11 @@ func fakeDepsWithVerdict(verdict string) (*sbx.Fake, Deps) {
 		Default: sbx.Response{Output: []byte(verdict)},
 	}
 	return f, Deps{
-		Sbx:    f,
-		Git:    worktree.NewGit(),
-		Policy: instantPolicy(),
-		Out:    io.Discard,
+		Sbx:       f,
+		Git:       worktree.NewGit(),
+		Policy:    instantPolicy(),
+		Freshness: instantFreshness(),
+		Out:       io.Discard,
 	}
 }
 
@@ -470,6 +485,182 @@ func TestSpawnDetachedStillCallsAFreshSandboxReady(t *testing.T) {
 	if !strings.Contains(out.String(), "ready (detached)") {
 		t.Errorf("a sandbox just created is running: the line must say ready; output:\n%s", out.String())
 	}
+}
+
+// gateLog scripts the kit-journal read of a sandbox, leaving every other call
+// on the Fake's Default. The key is the exact argv agent.WaitFreshness issues,
+// which is what makes these tests fail loudly if that argv ever moves.
+func gateLog(f *sbx.Fake, sandbox, log string) {
+	f.Responses["exec "+sandbox+" cat "+agent.KitLogPath] = sbx.Response{Output: []byte(log)}
+}
+
+// gatePassed is a complete dispatcher run in which den's mixin passed.
+func gatePassed(sandbox string) string {
+	path := "/etc/durable-startup.d/002-startup-" + agent.MixinName(sandbox) + "/000-cmd.sh"
+	return "=== dispatcher run 2026-07-31T15:34:24Z ===\n> " + path + "\nok " + path +
+		"\n=== dispatcher complete ===\n"
+}
+
+// gateFailed is smoke #2's measured failure path (§D4): an agent whose update
+// command exits non-zero, the fail-closed abort after three attempts.
+func gateFailed(sandbox string) string {
+	path := "/etc/durable-startup.d/002-startup-" + agent.MixinName(sandbox) + "/000-cmd.sh"
+	return "=== dispatcher run 2026-07-31T15:34:24Z ===\n> " + path +
+		"\nagent broken: FATAL update failed after 3 attempts (fail-closed)\nfail " + path +
+		" exit=1\n"
+}
+
+// #18, the half that has no cost and no arbitration: a gate that has already
+// FAILED refuses the spawn, on both paths.
+//
+// This was measured and is the sharpest half of the defect: with an agent whose
+// freshness command fails by construction, the fail-closed gate closed, den had
+// already returned "ready" and exit 0 — and it never caught up. A re-attach on
+// the same sandbox printed "already live: attaching … ready (detached)", exit 0,
+// with nothing on either stream about the failure, then or ever. §9.1 promises
+// "a sandbox never starts with a stale agent"; the agent had never been updated
+// at all.
+func TestSpawnRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
+	for _, detach := range []bool{false, true} {
+		name := "attach"
+		if detach {
+			name = "detach"
+		}
+		t.Run(name, func(t *testing.T) {
+			denHome, _ := denTest(t)
+			f, d := fakeDeps()
+			gateLog(f, "api", gateFailed("api"))
+
+			err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: detach}, d)
+			if err == nil {
+				t.Fatal("§9.1 is fail-closed: a sandbox whose agent was never updated must be refused")
+			}
+			// The log line travels with the refusal — §9.1 makes the journal the
+			// diagnosis, and a message without it sends the user into the VM to
+			// read what den already read.
+			for _, want := range []string{"§9.1", "exit=1", agent.KitLogPath} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal must carry %q; got: %v", want, err)
+				}
+			}
+			// And no shell is opened into it.
+			if f.HasAttached("exec", "-it") {
+				t.Errorf("a refused gate must not attach; attaches: %v", f.Attaches)
+			}
+		})
+	}
+}
+
+// A gate that PASSED is silent: the ordinary outcome, and announcing it on
+// every spawn would bury the lines that mean something.
+func TestSpawnSaysNothingWhenTheFreshnessGatePassed(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	gateLog(f, "api", gatePassed("api"))
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("a passing gate must not fail the spawn: %v", err)
+	}
+	for _, unwanted := range []string{"warning", "note:", "waiting for agent freshness"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Errorf("a passing gate is silent, %q leaked; output:\n%s", unwanted, out.String())
+		}
+	}
+}
+
+// THE ARBITRATION, in one test: den waits on the attach path and does not wait
+// under `--detach`.
+//
+// Waiting costs the difference between a 7.6 s spawn and a ~42 s one (measured),
+// so where it waits was decided rather than assumed: a user about to run the
+// agent gets a fresh one, a script that will not touch it gets its seven
+// seconds back and a note saying the verdict is not in yet.
+//
+// The number of journal READS is what proves it, not the message: a single read
+// cannot be a wait, and a poll cannot be anything else.
+func TestSpawnWaitsForTheFreshnessGateOnlyWhenItAttaches(t *testing.T) {
+	pending := "=== dispatcher run 2026-07-31T15:34:24Z ===\n"
+
+	detached, dd := fakeDeps()
+	var detachedOut bytes.Buffer
+	dd.Out = &detachedOut
+	gateLog(detached, "api", pending)
+	denHome, _ := denTest(t)
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, dd); err != nil {
+		t.Fatalf("--detach must not fail on a gate that has not reported: %v", err)
+	}
+	if n := countCalls(detached, "exec", "api", "cat", agent.KitLogPath); n != 1 {
+		t.Errorf("--detach must read the journal ONCE, not wait for it; reads: %d", n)
+	}
+	if !strings.Contains(detachedOut.String(), "note:") {
+		t.Errorf("--detach must say the verdict is not in yet; output:\n%s", detachedOut.String())
+	}
+	if strings.Contains(detachedOut.String(), "waiting for agent freshness") {
+		t.Errorf("--detach announces no wait, because it does not wait; output:\n%s",
+			detachedOut.String())
+	}
+
+	attaching, ad := fakeDeps()
+	var attachingOut bytes.Buffer
+	ad.Out = &attachingOut
+	gateLog(attaching, "api", pending)
+	denHome2, _ := denTest(t)
+	if err := Spawn(context.Background(), denHome2, Options{Nest: "api"}, ad); err != nil {
+		t.Fatalf("a gate that never reports must not fail the spawn: %v", err)
+	}
+	if n := countCalls(attaching, "exec", "api", "cat", agent.KitLogPath); n < 2 {
+		t.Errorf("the attach path must WAIT for the gate, polling the journal; reads: %d", n)
+	}
+	if !strings.Contains(attachingOut.String(), "waiting for agent freshness") {
+		t.Errorf("a wait of tens of seconds must be announced; output:\n%s", attachingOut.String())
+	}
+	// A budget that runs out is a note, never a refusal: den waited what it
+	// promised, and a dispatcher still working is no evidence of a stale agent.
+	if !attaching.HasAttached("exec", "-it") {
+		t.Errorf("a gate still silent at the budget must not block the attach; attaches: %v",
+			attaching.Attaches)
+	}
+}
+
+// The gate is SKIPPED on a sandbox den has decided to leave stopped: reading the
+// journal is an `sbx exec`, which restarts the VM, and waking one to inspect it
+// would contradict the line `--detach` prints about that very sandbox (#17).
+// Nothing is lost — the dispatcher re-runs on the next restart (measured), so
+// the gate is evaluated exactly when the sandbox comes back.
+func TestSpawnDoesNotWakeAStoppedSandboxToReadTheFreshnessGate(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("--detach on a stopped sandbox: %v", err)
+	}
+	if n := countCalls(f, "exec", "api", "cat", agent.KitLogPath); n != 0 {
+		t.Errorf("reading the journal restarts the VM: den must not, on a sandbox it just said "+
+			"stays stopped; reads: %d", n)
+	}
+	if strings.Contains(out.String(), "freshness") {
+		t.Errorf("den checked nothing and must claim nothing; output:\n%s", out.String())
+	}
+}
+
+// countCalls counts the invocations whose argv starts with this prefix — the
+// counting sibling of Fake.HasCalled, which only answers "at least one" and so
+// cannot tell a single read apart from a poll.
+func countCalls(f *sbx.Fake, prefix ...string) int {
+	n := 0
+	for _, c := range f.Calls {
+		if len(c) >= len(prefix) && slices.Equal(c[:len(prefix)], prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 // The allowlist stays FAIL-CLOSED for everything else: sbx status values
