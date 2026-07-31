@@ -80,6 +80,11 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 			if err := b.CheckAttachable(); err != nil {
 				return err
 			}
+			// A STOPPED sandbox is woken, here, before anything is read or
+			// published — see wakeForPorts for why waking and not refusing.
+			if b, err = wakeForPorts(cmd, runner, b); err != nil {
+				return err
+			}
 
 			// The den home is read HERE rather than at the top like `den rm`:
 			// everything above answers from `sbx ls --json` alone, so a sandbox
@@ -136,6 +141,88 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 	cmd.Flags().StringArrayVar(&add, "add", nil,
 		"publish an extra HOST_PORT:CONTAINER_PORT pair the nest does not declare (repeatable)")
 	return cmd
+}
+
+// wakeForPorts starts a stopped sandbox and re-reads it, returning the sandbox
+// as it now is. A running one is returned untouched, with no call made.
+//
+// THE DECISION, and it is one decision for two defects (#16 and #17):
+//
+//	den wakes a sandbox only when the operation itself requires a live VM,
+//	and it never claims a state it has not verified.
+//
+// Both halves were arbitrated together, because the alternative — refuse early
+// with a remedy, which is what spec §2's "den refuses rather than normalizing
+// in silence" suggests at first reading — answers one and worsens the other.
+//
+// WHY WAKING, AND NOT REFUSING. §2 is about not guessing the user's INTENT: a
+// typo'd config key, a flag contradiction, an ambiguous selection. There is
+// nothing ambiguous here. `sbx ports --publish` needs a container endpoint, and
+// on a stopped sandbox it answers `500 Internal Server Error: … no container
+// endpoint with IP address found` — a string naming neither the state nor a
+// remedy (#16). A refusal would name both, but the only thing the user could do
+// with it is run a command that starts the VM, which is the one thing den was
+// refusing to do for them. That is a chore, not a safeguard. And F2 already
+// settled the precedent in the other direction: `den sh` and `den <nest>` take
+// a stopped sandbox back without asking, because `sbx exec` restarts it
+// transparently — the surface `sbx ports` conspicuously does not share.
+// Measured: a bare `sbx exec <name> true` restarts a stopped sandbox in ~1.4 s.
+//
+// It is also what makes the reading of #15's fix legitimate at all. `sbx ls
+// --json` omits the `ports` array entirely while a sandbox is stopped, and
+// every publication comes back on resume (sbx.Publication): reading it before
+// the wake would report "publishes nothing" about a VM that publishes plenty,
+// and den would republish a window that is already bound. Hence the SECOND
+// read below, after the wake — not a precaution, the whole point.
+//
+// WHY THE OTHER HALF IS NOT A WAKE. The same principle applied to `den <nest>
+// --detach` (#17) gives the opposite gesture: --detach on a live-but-stopped
+// sandbox restarts nothing, so den must stop calling it "ready" — see
+// internal/spawn/spawn.go. Waking there would buy a truth with a measured
+// lifetime of about 45 s (sbx parks idle sandboxes that fast, smoke #2 §6), for
+// a command whose contract is precisely NOT to enter the VM. The operation does
+// not require a live VM; the sentence just has to be true.
+func wakeForPorts(cmd *cobra.Command, runner sbx.Runner, b *sbx.Sandbox) (*sbx.Sandbox, error) {
+	if !b.IsStopped() {
+		return b, nil
+	}
+	// STDERR, like every other diagnostic of this command: what a script pipes
+	// is the table and nothing else. Announced BEFORE the call, not after —
+	// starting a microVM takes a second or two, and a silent pause is what a
+	// hang looks like.
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"sandbox %s is stopped: den is starting it — publishing a port needs a live endpoint in the "+
+			"VM, and `sbx ports` (unlike `sbx exec`) does not restart one; its state is preserved\n",
+		b.Name)
+	if _, err := runner.Run(cmd.Context(), "exec", b.Name, "true"); err != nil {
+		return nil, err
+	}
+
+	boxes, err := sbx.Ls(cmd.Context(), runner)
+	if err != nil {
+		return nil, err
+	}
+	woken := sbx.Find(boxes, b.Name)
+	if woken == nil {
+		return nil, fmt.Errorf(
+			"sandbox %q disappeared while den was starting it (live: %v) — something removed it "+
+				"between the two readings; re-run `den ports %s`, or `den ls` to see what is left",
+			b.Name, liveNames(boxes), b.Name)
+	}
+	// FAIL-CLOSED on anything but a running VM. A sandbox that is still stopped
+	// after a successful `sbx exec` is a contradiction den cannot resolve, and
+	// carrying on would resolve a window against publications sbx is still
+	// hiding — publishing, a second time, ports that are already bound. The
+	// status read is rendered, so the case is diagnosable rather than silent.
+	if woken.Status != sbx.StatusRunning {
+		return nil, fmt.Errorf(
+			"sandbox %q: status read %q after den started it, expected %q — den will not publish "+
+				"into a VM whose state it cannot confirm, because a sandbox that is not running "+
+				"hides what it already publishes and den would bind those ports a second time; "+
+				"check it with `sbx ls`",
+			b.Name, woken.Status, sbx.StatusRunning)
+	}
+	return woken, nil
 }
 
 // publicationsOf translates what `sbx ls --json` says a sandbox publishes into

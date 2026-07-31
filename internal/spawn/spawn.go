@@ -458,6 +458,38 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 
 	// 8. Attach.
 	if o.Detach {
+		// "READY" IS A CLAIM, AND den ONLY MAKES IT WHERE IT HOLDS.
+		//
+		// On the attach branch of a STOPPED sandbox, nothing above restarts
+		// anything: the mixin is not reapplied, no `sbx exec` runs, and the
+		// settle-loop answers on a stopped VM too (smoke #2 §6 — `sbx policy
+		// check` does not need it running). So den used to print "ready
+		// (detached)" over a sandbox `sbx ls --json` still reported as
+		// `stopped`, and the scripted follow-up `den X --detach && den ports X`
+		// walked straight into an sbx 500 (#17, and #16 behind it).
+		//
+		// Waking it here was the other candidate and was rejected: sbx parks
+		// idle sandboxes in about 45 s (measured), so the truth bought would
+		// outlive the command by less than a minute, and --detach's whole
+		// contract is NOT to enter the VM. The principle den applies to both
+		// defects — wake only where the operation requires a live VM, never
+		// claim an unverified state (internal/cli/ports.go, wakeForPorts) —
+		// makes this half a sentence, not a call.
+		//
+		// The status is the one den READ, not one it inferred: `live` comes
+		// from the `sbx ls --json` of step 1. On the create branch there is no
+		// such reading, and none is taken — a sandbox `sbx create` has just
+		// returned success for is running, and a second listing to re-assert it
+		// would be a round trip buying a fact already established.
+		if live != nil && live.IsStopped() {
+			fmt.Fprintf(d.Out,
+				"sandbox %s stays stopped (detached) — den started nothing: its configuration is "+
+					"checked and its state preserved, and it restarts on the next attach "+
+					"(`den sh %s`, or `den ports %s`, which starts it because publishing needs a "+
+					"live endpoint)\n",
+				sandboxName, sandboxName, sandboxName)
+			return nil
+		}
 		fmt.Fprintf(d.Out, "sandbox %s ready (detached) — run `den sh %s` to enter\n",
 			sandboxName, sandboxName)
 		return nil
