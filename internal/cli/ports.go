@@ -46,8 +46,14 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 			// refuse — a bind address that is not the loopback, a value that is
 			// not a pair — is knowable from the flag alone, and a refusal found
 			// later would leave the declared ports published while rejecting the
-			// very port the user ran the command for. Nothing is published until
-			// everything asked for is admissible.
+			// very port the user ran the command for. Every refusal DEN can make
+			// is made before anything is published — but only den's: the added
+			// host port is never scanned (Options.Extra's contract — re-running
+			// the command must re-read a table whose added pair THIS sandbox
+			// already publishes), so sbx can still refuse it host-side after the
+			// declared ports are bound. That failure aborts like any other
+			// (declared ports stay published, no table), and the runner's own
+			// error says which port it was.
 			extra, err := parseAdds(add)
 			if err != nil {
 				return err
@@ -205,6 +211,18 @@ func publishPorts(ctx context.Context, runner sbx.Runner, sandbox string, list [
 func renderPorts(cmd *cobra.Command, sandbox string, res *ports.Resolution) error {
 	out := cmd.OutOrStdout()
 
+	// A PORTLESS nest has no window on the host: ports.Resolve placed nothing
+	// in the range (Resolution.Declared is zero), so a header claiming
+	// `window: 9100-9109 (canonical)` — and, below, a tunnel line on its base
+	// — would describe ports nothing listens on. The header then names the
+	// nest and the sandbox and stops; the table still renders, because the
+	// `--add` pairs (when any) really were published and their rows are the
+	// whole point of running the command on such a nest.
+	if res.Declared == 0 {
+		fmt.Fprintf(out, "nest: %s   sandbox: %s\n", res.Nest, sandbox)
+		return renderPortRows(cmd, res)
+	}
+
 	window := fmt.Sprintf("%d-%d", res.Window.Base, res.Window.Last())
 	if res.Window.Canonical {
 		window += " (canonical)"
@@ -247,9 +265,25 @@ func renderPorts(cmd *cobra.Command, sandbox string, res *ports.Resolution) erro
 	}
 	fmt.Fprintf(out, "nest: %s   sandbox: %s   window: %s\n", res.Nest, sandbox, window)
 
+	if err := renderPortRows(cmd, res); err != nil {
+		return err
+	}
+
+	// `you@$(hostname)` is a LITERAL: den never resolves it. The line is meant
+	// to be pasted into the user's OWN shell, where $(hostname) expands on the
+	// machine that will run the tunnel — and `you` is the one thing den cannot
+	// know, since the remote account is not the local one.
+	fmt.Fprintf(out, "  remote?  ssh -L %d:%s:%d you@$(hostname)\n",
+		res.Window.Base, ports.Loopback, res.Window.Base)
+	return nil
+}
+
+// renderPortRows writes the column header and one row per resolved port — the
+// part of the §8 table both headers share, whether or not a window was placed.
+func renderPortRows(cmd *cobra.Command, res *ports.Resolution) error {
 	// Same tabwriter settings as `den ls`: the two tables are read in the same
 	// terminal, and a second alignment convention would look like a bug.
-	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "  NAME\tCONTAINER\tURL")
 	for _, p := range res.Ports {
 		// DECLARATION ORDER, never sorted: it IS the offset (ports.Resolve),
@@ -263,17 +297,7 @@ func renderPorts(cmd *cobra.Command, sandbox string, res *ports.Resolution) erro
 		}
 		fmt.Fprintln(w, row)
 	}
-	if err := w.Flush(); err != nil {
-		return err
-	}
-
-	// `you@$(hostname)` is a LITERAL: den never resolves it. The line is meant
-	// to be pasted into the user's OWN shell, where $(hostname) expands on the
-	// machine that will run the tunnel — and `you` is the one thing den cannot
-	// know, since the remote account is not the local one.
-	fmt.Fprintf(out, "  remote?  ssh -L %d:%s:%d you@$(hostname)\n",
-		res.Window.Base, ports.Loopback, res.Window.Base)
-	return nil
+	return w.Flush()
 }
 
 // portURL is the address a resolved port answers on — written ONCE, because the

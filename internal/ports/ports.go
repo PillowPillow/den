@@ -206,6 +206,13 @@ type Options struct {
 type Resolution struct {
 	Nest   string
 	Window Window
+	// Declared counts the leading entries of Ports that come from the nest's
+	// `ports.publish` — the ones the window numbered; the rest are Extra
+	// pairs. ZERO means the window was never placed on the host: a portless
+	// nest scans nothing and binds nothing in its range, so a caller
+	// rendering the window bounds or a tunnel line on its base would be
+	// describing ports nothing listens on.
+	Declared int
 	// Ports follows the nest's DECLARATION ORDER, never sorted — see Resolve.
 	Ports []Port
 }
@@ -314,6 +321,8 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 			Ports:  append([]Port{}, o.Extra...),
 		}, nil
 	}
+	// From here on the window WILL be placed: every return below carries
+	// len(decls) declared ports numbered by it.
 
 	if s == nil {
 		return nil, fmt.Errorf(
@@ -368,7 +377,7 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 	// addition to the window, never a substitution inside it — the declared
 	// ports keep the offsets §8 numbers them by.
 	out = append(out, o.Extra...)
-	return &Resolution{Nest: n.Name, Window: window, Ports: out}, nil
+	return &Resolution{Nest: n.Name, Window: window, Declared: len(decls), Ports: out}, nil
 }
 
 // scan walks the window forward, a WHOLE BLOCK at a time, until it finds one

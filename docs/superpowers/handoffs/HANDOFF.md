@@ -62,7 +62,7 @@ l'infra partagée. Toute décision de design se tranche par « est-ce que ça pe
 7. **SSH défaut `agent-forward`** (aucune clé dans la VM) ; `mount ~/.ssh_sbx` (clé dédiée
    révocable) = override courant à l'usage ; `none` réservé au futur autonome.
 8. **Ports** : fenêtre déterministe par nest (`base = 9000 + hash(nom)%900*10`, 10 ports),
-   **publication À LA DEMANDE** via `den ports <nest>` (PAS au spawn), scan anti-collision +
+   **publication À LA DEMANDE** via `den ports <name>` (PAS au spawn), scan anti-collision +
    décalage de fenêtre si occupée (1re instance garde l'URL canonique). **Loopback-only strict**
    (`127.0.0.1`, jamais `0.0.0.0`), CDP/Playwright **loopback-locked**. Accès distant = **tunnel
    SSH imprimé** (`ssh -L`), jamais de bind LAN.
@@ -113,7 +113,7 @@ Il remplace le `mktemp` manuel du TUTO actuel. Layering au `create` :
 [--without r] [--only r]` · `den doctor` · flag global `--den-home`.
 
 **À venir :** `den <nest> [-w wt] [--without r] [--only r] [-i] [--agent a] [--detach]`
-(spawn-or-attach+shell) · `den ls` · `den sh <name>` · `den ports <nest> [--add H:C]` ·
+(spawn-or-attach+shell) · `den ls` · `den sh <name>` · `den ports <name> [--add H:C]` ·
 `den rm <name> [--keep-worktrees]` · `den build [stack] [--force]`.
 
 ## 5. Data flow spawn (résumé — détail au §6 du spec)

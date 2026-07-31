@@ -845,6 +845,13 @@ func TestPortsWithNoDeclaredPortNeitherPublishesNorScans(t *testing.T) {
 	if strings.Contains(stdout, "http://") {
 		t.Errorf("no port is declared, so no URL may be printed; got: %q", stdout)
 	}
+	// No window was placed on the host, so the header may not claim one and
+	// the tunnel line may not point into it.
+	for _, s := range []string{"window:", "ssh -L"} {
+		if strings.Contains(stdout, s) {
+			t.Errorf("a portless nest placed no window, so %q may not appear; got: %q", s, stdout)
+		}
+	}
 }
 
 // C10: `open: true` opens ONE browser, on the URL the table just printed, and
@@ -1026,5 +1033,104 @@ func TestSpecCommandTableNamesThePortsArgumentAsImplemented(t *testing.T) {
 	}
 	if !strings.HasPrefix(rows[0], want) {
 		t.Errorf("the §5 row for `den ports` must open with %q, got %q", want, rows[0])
+	}
+}
+
+// C17's sibling for the HANDOFF: the spec's command table is not the only
+// document announcing the signature — HANDOFF.md carries it twice (§8's
+// decision and its own command list), and a reader following EITHER would type
+// a nest name and be told the sandbox was not found. Same contract, so the
+// expected wording is derived from cmd.Use the same way.
+func TestHandoffNamesThePortsArgumentAsImplemented(t *testing.T) {
+	cmd := newPortsCmd(new(string), nil, nil, nil)
+	// No closing backtick: HANDOFF writes the signature both bare and with
+	// its `[--add H:C]` tail, and the contract here is the ARGUMENT's name.
+	want := "`den " + cmd.Use
+
+	path := filepath.Join("..", "..", "docs", "superpowers", "handoffs", "HANDOFF.md")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the handoff at %s: %v", path, err)
+	}
+	for i, line := range strings.Split(string(b), "\n") {
+		if !strings.Contains(line, "`den ports <") {
+			continue
+		}
+		if !strings.Contains(line, want) {
+			t.Errorf("%s:%d names `den ports` with an argument that is not %s: %q",
+				path, i+1, want, line)
+		}
+	}
+}
+
+// The `--add` host port is NEVER scanned (Options.Extra's contract: re-running
+// the command must re-read a table whose added pair this sandbox already
+// publishes), so sbx can refuse it host-side AFTER the declared window is
+// bound. That failure must behave like every failed publication (C3's failure
+// half): the runner's own error, publication stopped there, and NO table — the
+// declared ports stay published, and newPortsCmd's own comment says so.
+func TestPortsAddRefusedBySbxAbortsAfterTheDeclaredWindow(t *testing.T) {
+	denHome := portsDenHome(t, "web", portsTwoPortNestYAML)
+	boom := errors.New("sbx: address already in use")
+	responses := lsWith("web.feat123")
+	// The declared window binds fine; the ADDED pair is the one already taken
+	// on the host — the case the scan cannot see, since 8080 is outside the
+	// window and Extra pairs take no probe.
+	responses["ports web.feat123 --publish 127.0.0.1:8080:3000"] = sbx.Response{Err: boom}
+	f := &sbx.Fake{Responses: responses}
+
+	stdout, _, err := runPorts(t, f, freeScanner{},
+		"--den-home", denHome, "ports", "web.feat123", "--add", "8080:3000")
+	if err == nil {
+		t.Fatal("a refused publication must fail the command")
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("the runner's own error must reach the user; got: %v", err)
+	}
+	// Both declared ports were published BEFORE the added pair failed: the
+	// abort does not unwind them, and pinning the count is what keeps this
+	// partial-publish outcome documented rather than accidental.
+	if n := len(portsCalls(f)); n != 3 {
+		t.Errorf("2 declared publications + the failed add = 3 calls, got %d: %v",
+			n, portsCalls(f))
+	}
+	if strings.Contains(stdout, "NAME") || strings.Contains(stdout, "http://") {
+		t.Errorf("no table may be printed for a window that was not fully published; got:\n%s", stdout)
+	}
+}
+
+// A PORTLESS nest with `--add` publishes the added pair and ONLY describes the
+// added pair: no window was placed on the host (ports.Resolve scanned nothing,
+// bound nothing in the range), so a header claiming `window: <base>-<last>
+// (canonical)` and a tunnel line on that base would point at ports nothing
+// listens on. The header stops at the nest and the sandbox; the added row and
+// its URL are the whole output — and the whole point of the command here.
+func TestPortsPortlessNestWithAddRendersNoWindow(t *testing.T) {
+	denHome := portsDenHome(t, "api", "stack: devx\n")
+	f := &sbx.Fake{Responses: lsWith("api")}
+
+	stdout, _, err := runPorts(t, f, forbiddenScanner{t: t},
+		"--den-home", denHome, "ports", "api", "--add", "8080:3000")
+	if err != nil {
+		t.Fatalf("a portless nest with an added pair is not an error: %v", err)
+	}
+
+	// The added pair really is published — its own call, like any other.
+	calls := portsCalls(f)
+	want := []string{"ports", "api", "--publish", "127.0.0.1:8080:3000"}
+	if len(calls) != 1 || !slices.Equal(calls[0], want) {
+		t.Fatalf("publications = %v, want exactly [%v]", calls, want)
+	}
+	// ... and its row is in the table, under the plain header.
+	for _, s := range []string{"nest: api", "sandbox: api", "http://127.0.0.1:8080"} {
+		if !strings.Contains(stdout, s) {
+			t.Errorf("output must contain %q; got:\n%s", s, stdout)
+		}
+	}
+	// No phantom range, no tunnel to a port nothing was bound on.
+	for _, s := range []string{"window:", "(canonical)", "ssh -L"} {
+		if strings.Contains(stdout, s) {
+			t.Errorf("a portless nest placed no window, so %q may not appear; got:\n%s", s, stdout)
+		}
 	}
 }
