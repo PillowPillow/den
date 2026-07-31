@@ -8,11 +8,37 @@ import (
 	"strings"
 )
 
+// Publication is one host↔sandbox port mapping the VM currently publishes, as
+// the `ports` array of `sbx ls --json` carries it (schema recorded 2026-07-31,
+// sbx v0.35.0):
+//
+//	{"host_ip":"127.0.0.1","host_port":9500,"sandbox_port":8080,"protocol":"tcp"}
+//
+// It is the ONLY surface that tells den what a sandbox already publishes
+// without a second call to sbx — `den ports` reads `sbx ls --json` anyway, to
+// find the sandbox. `sbx ports SANDBOX [--json]` says the same thing, at the
+// cost of one more process.
+//
+// MEASURED, AND THE MEASUREMENT MATTERS: the field is present only while the
+// sandbox is RUNNING. A stopped sandbox carries no `ports` key at all (and the
+// bare `sbx ports SANDBOX` answers "No published ports"), yet every publication
+// comes back on resume. Reading it on a stopped sandbox therefore reports
+// "publishes nothing" about a VM that publishes plenty, which is why callers
+// must gate the reading on the status (internal/cli/ports.go) rather than take
+// an absent array for an answer.
+type Publication struct {
+	HostIP      string `json:"host_ip"`
+	HostPort    int    `json:"host_port"`
+	SandboxPort int    `json:"sandbox_port"`
+	Protocol    string `json:"protocol"`
+}
+
 // Sandbox is a sandbox as `sbx ls --json` describes it.
 //
-// The schema is that of sbx v0.35.0, recorded 2026-07-28:
+// The schema is that of sbx v0.35.0, recorded 2026-07-28 and extended
+// 2026-07-31 with `ports`:
 //
-//	{"sandboxes":[{"name","id","agent","status","workspaces":["/p","/p:ro"]}]}
+//	{"sandboxes":[{"name","id","agent","status","ports":[…],"workspaces":["/p","/p:ro"]}]}
 //
 // There is NO date field: a sandbox's age isn't computable, and the "age"
 // column of spec §5 was dropped as a result.
@@ -21,10 +47,13 @@ import (
 // configuration YAML): this output comes from a third-party tool, not from
 // the user. A field added by a later sbx version must not break `den ls`.
 type Sandbox struct {
-	Name       string   `json:"name"`
-	Agent      string   `json:"agent"`
-	Status     string   `json:"status"`
-	Workspaces []string `json:"workspaces"`
+	Name   string `json:"name"`
+	Agent  string `json:"agent"`
+	Status string `json:"status"`
+	// Ports is empty when the sandbox publishes nothing — AND when it is
+	// stopped, which is a different thing entirely. See Publication.
+	Ports      []Publication `json:"ports"`
+	Workspaces []string      `json:"workspaces"`
 }
 
 // Nest is the sandbox's originating nest, derived from the name — sbx having

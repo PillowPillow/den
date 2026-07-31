@@ -95,7 +95,19 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 				return err
 			}
 
-			res, err := ports.Resolve(n, ports.Options{Extra: extra}, scanner)
+			res, err := ports.Resolve(n, ports.Options{
+				Extra: extra,
+				// WHAT THIS SANDBOX ALREADY PUBLISHES, read before anything is
+				// resolved — the whole of the fix for #15/#22. Without it the
+				// scan finds den's own previous window, calls it busy, and
+				// binds a second set of host ports for the same VM.
+				//
+				// Read from the `ls --json` already fetched above rather than
+				// from a second `sbx ports <name>`: same answer (both were
+				// measured against the same VM on 2026-07-31), one process
+				// fewer, and no third place where a sandbox name is spelled.
+				Published: publicationsOf(b),
+			}, scanner)
 			if err != nil {
 				return err
 			}
@@ -124,6 +136,34 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 	cmd.Flags().StringArrayVar(&add, "add", nil,
 		"publish an extra HOST_PORT:CONTAINER_PORT pair the nest does not declare (repeatable)")
 	return cmd
+}
+
+// publicationsOf translates what `sbx ls --json` says a sandbox publishes into
+// the pairs internal/ports reasons about.
+//
+// THE FILTER IS THE POINT. Only publications on ports.Loopback over tcp are
+// den's: den binds nothing else anywhere (spec §8), and sbx keys its "already
+// published" refusal on the triple address/port/protocol — so a publication on
+// another address is neither reusable as den's own window nor in the way of
+// one, and counting it would make den skip a publication it never made.
+//
+// An empty result on a STOPPED sandbox means nothing at all: sbx omits the
+// `ports` array entirely until the VM is running, while the publications come
+// back on resume (sbx.Publication). This is why the caller must not reach here
+// with a stopped sandbox — the reading would be a fiction, and acting on it
+// republishes a window that is already bound.
+func publicationsOf(b *sbx.Sandbox) []ports.Published {
+	if b.Status != sbx.StatusRunning {
+		return nil
+	}
+	out := make([]ports.Published, 0, len(b.Ports))
+	for _, p := range b.Ports {
+		if p.HostIP != ports.Loopback || p.Protocol != "tcp" {
+			continue
+		}
+		out = append(out, ports.Published{Host: p.HostPort, Container: p.SandboxPort})
+	}
+	return out
 }
 
 // parseAdds turns the `--add` values into the pairs ports.Resolve appends to the
@@ -190,8 +230,19 @@ func openMarkedPorts(cmd *cobra.Command, open func(url string) error, list []por
 // A nest declaring no port loops zero times — no `sbx ports` call at all, which
 // is the second half of the promise ports.Resolve keeps host-side by never
 // scanning for it.
+//
+// A port the sandbox ALREADY publishes is skipped, and that skip is the command
+// becoming re-runnable. `sbx ports --publish` is not idempotent: republishing a
+// pair the same sandbox carries answers `409 Conflict: port 127.0.0.1:<H>/tcp is
+// already published` (#22), and it answered it AFTER the declared window had
+// been bound a second time — a command that both failed and left a mess. den
+// publishes only what is missing, so the second run of an identical command
+// makes no `sbx ports` call at all and prints the same table as the first.
 func publishPorts(ctx context.Context, runner sbx.Runner, sandbox string, list []ports.Port) error {
 	for _, p := range list {
+		if p.AlreadyPublished {
+			continue
+		}
 		if _, err := runner.Run(ctx, "ports", sandbox, "--publish", p.PublishSpec()); err != nil {
 			return err
 		}
@@ -234,34 +285,31 @@ func renderPorts(cmd *cobra.Command, sandbox string, res *ports.Resolution) erro
 		// the range that was taken and the fact that these addresses hold for
 		// this instance alone are said here, to the human.
 		//
-		// WHO holds the canonical window is NOT said, because den does not know
-		// it. ports.Resolve scans the host through ports.Scanner, and a bound
-		// port names no owner: the holder may be another instance of the nest —
-		// or this very sandbox, whose previous `den ports` run published that
-		// window and never took it down. That second case is the ordinary one
-		// (re-running the command to re-read the table), and the sentence this
-		// warning used to carry — "the first instance of the nest keeps the
-		// canonical window" — told the user, precisely then, that a rival
-		// instance owned a window nobody but them was on.
+		// WHO holds the canonical window is still not fully known — the scan
+		// reads the host, and a bound port names no owner — but ONE candidate
+		// is now excluded, and it was the likeliest by far: this sandbox's own
+		// earlier publication. den reads what the sandbox publishes before
+		// resolving and reuses that window instead of shifting past it, so a
+		// shift here can no longer be den moving away from itself.
 		//
-		// So the warning names both candidates and hands over the one command
-		// that settles it: `sbx ports SANDBOX`, the bare attested form of spec
-		// §14.0 (den reads no JSON here — the schema of `sbx ports --json` is
-		// not in the 2026-07-28 survey, and this package assumes no surface the
-		// survey does not attest). Same discipline as the SSH-agent warning's
-		// key-name caveat: den names the limit, it does not guess.
+		// The warning this replaced had to hedge, and the hedge was the defect:
+		// re-reading the table was the ordinary gesture, it shifted every time,
+		// and the message told the user a rival instance owned a window nobody
+		// but them was on — while the run bound ten more host ports (#15).
+		//
+		// What remains genuinely ambiguous is named as such, and the one case
+		// den CAN name is named: publications of this sandbox that no longer
+		// match a declaration (res.Stale), with the command that clears them.
 		canonical := res.Window.Base - res.Window.Shifts*ports.WindowSize
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"warning: nest %q: the canonical window %d-%d is busy — den moved the whole block to %d-%d, "+
-				"so the addresses below are valid for THIS INSTANCE ONLY and are not the ones to bookmark; "+
-				"den cannot tell who holds it (the scan reads the host, which says a port is bound, never "+
-				"by whom): either another instance of the nest, or an earlier `den ports %s` run of THIS "+
-				"sandbox, still published on the canonical window — in which case those addresses are the "+
-				"ones to keep and this run just bound a SECOND set of host ports for the same VM "+
-				"(`sbx ports %s` lists what this sandbox publishes). Either way the block moves again on "+
-				"the next run while the host stays busy.\n",
+				"so the addresses below are valid for THIS INSTANCE ONLY and are not the ones to bookmark. "+
+				"It is not this sandbox publishing there: den read what %s already publishes and would have "+
+				"reused it. So the holder is another sandbox of yours, or a foreign listener (`sbx ports "+
+				"SANDBOX` lists what a sandbox publishes; `lsof -nP -iTCP:%d -sTCP:LISTEN` names the "+
+				"process).%s\n",
 			res.Nest, canonical, canonical+ports.WindowSize-1,
-			res.Window.Base, res.Window.Last(), sandbox, sandbox)
+			res.Window.Base, res.Window.Last(), sandbox, canonical, staleClause(sandbox, res))
 	}
 	fmt.Fprintf(out, "nest: %s   sandbox: %s   window: %s\n", res.Nest, sandbox, window)
 
@@ -276,6 +324,33 @@ func renderPorts(cmd *cobra.Command, sandbox string, res *ports.Resolution) erro
 	fmt.Fprintf(out, "  remote?  ssh -L %d:%s:%d you@$(hostname)\n",
 		res.Window.Base, ports.Loopback, res.Window.Base)
 	return nil
+}
+
+// staleClause names the publications of THIS sandbox that sit in the blocks the
+// resolution had to skip, and the command that releases them. Empty — not a
+// sentence saying "none" — when there are none: the ordinary shift has nothing
+// to do with den's own leftovers, and a clause about an empty list would read
+// as an accusation.
+//
+// These are the residue of #15 on a sandbox that lived through it: windows an
+// earlier den bound and that no longer map onto any declaration (the nest's
+// `ports:` changed since, or a `--add` pair took a port the window now wants).
+// den does NOT unpublish them by itself — releasing a port a user may be
+// tunnelling through is a destruction they did not ask for, and `den rm`
+// already frees every publication when the VM goes.
+func staleClause(sandbox string, res *ports.Resolution) string {
+	if len(res.Stale) == 0 {
+		return ""
+	}
+	specs := make([]string, 0, len(res.Stale))
+	for _, p := range res.Stale {
+		specs = append(specs, fmt.Sprintf("%s:%d:%d", ports.Loopback, p.Host, p.Container))
+	}
+	return fmt.Sprintf(
+		" What den can name: %s itself still publishes %s in that range, on mappings the nest no "+
+			"longer declares — den left them alone rather than unpublish behind your back; clear them "+
+			"with `sbx ports %s --unpublish %s` to get the canonical window back.",
+		sandbox, strings.Join(specs, " "), sandbox, strings.Join(specs, " --unpublish "))
 }
 
 // renderPortRows writes the column header and one row per resolved port — the

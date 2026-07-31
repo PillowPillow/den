@@ -29,15 +29,41 @@ func (b busyBlockScanner) Free(port int) bool {
 	return port < b.base || port >= b.base+ports.WindowSize
 }
 
-// forbiddenScanner fails the test if it is consulted at all. A nest that
-// declares no port must never touch the host: "no publication" is only half
-// the promise, "no scan" is the other half, and nothing but a scanner that
-// refuses to answer can tell them apart.
+// forbiddenScanner fails the test if it is consulted at all — the double for
+// every case where den must reach a window WITHOUT reading the host. There are
+// two, and nothing but a scanner that refuses to answer tells them apart from a
+// scan that happened to agree:
+//
+//   - a nest declaring no port never touches the host ("no publication" is only
+//     half the promise, "no scan" is the other half);
+//   - a sandbox already published on its window reuses it (#15): a scanner
+//     answering "free" would produce the same window for the wrong reason, and
+//     one answering "busy" would produce the shift the fix exists to prevent.
 type forbiddenScanner struct{ t *testing.T }
 
 func (s forbiddenScanner) Free(port int) bool {
-	s.t.Fatalf("a nest declaring no port must never probe the host; port %d was scanned", port)
+	s.t.Helper()
+	s.t.Fatalf("den must reach its window without probing the host here; port %d was scanned", port)
 	return false
+}
+
+// pub builds one entry of the `ports` array of `sbx ls --json`, in the schema
+// recorded 2026-07-31: loopback and tcp, the only shape den publishes.
+func pub(host, container int) string {
+	return fmt.Sprintf(`{"host_ip":"127.0.0.1","host_port":%d,"sandbox_port":%d,"protocol":"tcp"}`,
+		host, container)
+}
+
+// lsWithPorts is lsWith for ONE running sandbox that already publishes
+// something — the fixture of every re-run case. The array is written as raw
+// JSON rather than marshalled from sbx.Publication on purpose: what these tests
+// pin is den's reading of sbx's output, and a fixture built from den's own
+// struct would agree with it by construction.
+func lsWithPorts(name string, publications ...string) map[string]sbx.Response {
+	out := fmt.Sprintf(
+		`{"sandboxes":[{"name":%q,"status":"running","ports":[%s],"workspaces":["/w"]}]}`,
+		name, strings.Join(publications, ","))
+	return map[string]sbx.Response{"ls --json": {Output: []byte(out)}}
 }
 
 // runPorts runs `den ports` through the REAL command tree, with Deps built BY
@@ -493,22 +519,23 @@ func TestPortsWarnsOnStderrAndTablesOnStdout(t *testing.T) {
 	}
 }
 
-// The shift warning may not assert what den cannot know.
+// The shift warning may not assert what den cannot know — and it may no longer
+// hedge about what den now DOES know.
 //
 // The scan interrogates the HOST: a canonical window that answers "busy" says
-// its ports are BOUND, never by whom. Re-running `den ports` on the same
-// sandbox — the most ordinary repeat action there is, re-reading the table —
-// finds the window held by that sandbox's OWN previous publication, and the
-// wording that answered that case with "the first instance of the nest keeps
-// the canonical window" told the user a rival instance owns a window nobody but
-// them is on.
+// its ports are BOUND, never by whom. Two wordings have been wrong here in
+// turn. "The first instance of the nest keeps the canonical window" claimed a
+// rival instance den had no evidence for. Its replacement hedged between that
+// rival and "an earlier `den ports` run of THIS sandbox" — true at the time,
+// and the very defect of #15: re-reading the table shifted every run. den now
+// reads what the sandbox publishes and reuses that window, so reaching a shift
+// RULES OUT this sandbox, and saying otherwise sends the user hunting a culprit
+// den has already cleared.
 //
 // Two-sided on purpose. Forbidding a phrase alone would go green on any
-// reworded falsehood; the positive half is what pins the sentence to the
-// situation den is actually in — it cannot tell the two holders apart, so it
-// names both, names THIS sandbox's earlier run among them, and points at the
-// attested command that answers the question (`sbx ports SANDBOX`, spec §14.0).
-func TestPortsShiftWarningDoesNotBlameARivalInstance(t *testing.T) {
+// reworded falsehood; the positive half pins the sentence to the situation den
+// is actually in.
+func TestPortsShiftWarningRulesOutThisSandboxWithoutBlamingARival(t *testing.T) {
 	denHome := portsDenHome(t, "api", "stack: devx\nports:\n  publish:\n"+
 		"    - { name: vite, container: 5173 }\n")
 	base := ports.Base("api")
@@ -520,28 +547,122 @@ func TestPortsShiftWarningDoesNotBlameARivalInstance(t *testing.T) {
 		t.Fatalf("a busy window must shift, not fail: %v", err)
 	}
 
-	// The claim den has no evidence for: that a FIRST, other instance holds the
-	// canonical window.
-	if strings.Contains(stderr, "first instance") {
-		t.Errorf("den scans the host, which never says WHO holds a port: the warning may not assert "+
-			"that a first instance owns the canonical window; got: %q", stderr)
+	// The two claims den has no evidence for: a FIRST, other instance holding
+	// the canonical window, and this sandbox's own earlier run — which den has
+	// positively excluded by reading its publications.
+	for _, unwanted := range []string{"first instance", "den ports api.feat12"} {
+		if strings.Contains(stderr, unwanted) {
+			t.Errorf("the warning may not name %q as the holder: den scans the host, which says a port "+
+				"is bound and never by whom, and it has already ruled this sandbox out; got: %q",
+				unwanted, stderr)
+		}
 	}
-	// ... and what it must say instead: the holder is unknown, this sandbox's
-	// own earlier run is one of the candidates, and here is how to find out.
+	// ... and what it must say instead: this sandbox is excluded, and here is
+	// how to find out who is not.
 	for _, want := range []string{
-		"cannot tell",
-		"den ports api.feat12",
-		"sbx ports api.feat12",
+		"read what api.feat12 already publishes",
+		"another sandbox of yours, or a foreign listener",
+		"sbx ports SANDBOX",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("the warning must state %q; got: %q", want, stderr)
 		}
 	}
 	// The split of C8 still holds: none of this leaks into the table.
-	for _, unwanted := range []string{"cannot tell", "sbx ports", "instance"} {
+	for _, unwanted := range []string{"foreign listener", "sbx ports", "publishes"} {
 		if strings.Contains(stdout, unwanted) {
 			t.Errorf("stdout = %q, must carry no part of the warning (%q)", stdout, unwanted)
 		}
+	}
+}
+
+// #15 end to end through the command tree: a sandbox `sbx ls --json` reports as
+// already publishing its canonical window re-renders the SAME table and makes
+// no `sbx ports --publish` call at all.
+//
+// The scanner is the forbidden one: reading the host is exactly what turned the
+// second run into a second window. Three declared ports became nine host
+// publications in three runs before this (smoke #2 §1.7).
+func TestPortsRereadsAPublishedWindowWithoutRepublishing(t *testing.T) {
+	denHome := portsDenHome(t, "web", portsNestYAML)
+	f := &sbx.Fake{Responses: lsWithPorts("web.feat123",
+		pub(9100, 5173), pub(9101, 3000), pub(9102, 9223))}
+
+	stdout, stderr, err := runPorts(t, f, forbiddenScanner{t: t},
+		"--den-home", denHome, "ports", "web.feat123")
+	if err != nil {
+		t.Fatalf("re-reading a published table must succeed: %v", err)
+	}
+	if calls := portsCalls(f); len(calls) != 0 {
+		t.Errorf("nothing was missing: den must publish nothing; calls: %v", calls)
+	}
+	if !strings.Contains(stdout, "window: 9100-9109 (canonical)") {
+		t.Errorf("the window must be the canonical one, unmoved; got: %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("a window den recognises as its own is not a collision: stderr = %q", stderr)
+	}
+}
+
+// The same reading, half-published — what an aborted run leaves (#22 §1.10).
+// den finishes the window instead of moving to a new one.
+func TestPortsPublishesOnlyWhatIsMissingFromAPublishedWindow(t *testing.T) {
+	denHome := portsDenHome(t, "web", portsTwoPortNestYAML)
+	f := &sbx.Fake{Responses: lsWithPorts("web.feat123", pub(9100, 5173))}
+
+	stdout, _, err := runPorts(t, f, forbiddenScanner{t: t},
+		"--den-home", denHome, "ports", "web.feat123")
+	if err != nil {
+		t.Fatalf("finishing a half-published window must succeed: %v", err)
+	}
+	calls := portsCalls(f)
+	if len(calls) != 1 || !slices.Equal(calls[0],
+		[]string{"ports", "web.feat123", "--publish", "127.0.0.1:9101:3000"}) {
+		t.Errorf("only the missing port must be published; calls: %v", calls)
+	}
+	if !strings.Contains(stdout, "window: 9100-9109 (canonical)") {
+		t.Errorf("the window must be the one already half-bound; got: %q", stdout)
+	}
+}
+
+// #22 end to end: the identical `--add` re-run. It answered `409 Conflict: …
+// already published` before this — and did so AFTER binding one more declared
+// window, so the command both failed and left a mess.
+func TestPortsAddIsRerunnableWhenTheSandboxAlreadyPublishesIt(t *testing.T) {
+	denHome := portsDenHome(t, "web", portsTwoPortNestYAML)
+	f := &sbx.Fake{Responses: lsWithPorts("web.feat123",
+		pub(9100, 5173), pub(9101, 3000), pub(9801, 8081))}
+
+	stdout, _, err := runPorts(t, f, forbiddenScanner{t: t},
+		"--den-home", denHome, "ports", "web.feat123", "--add", "9801:8081")
+	if err != nil {
+		t.Fatalf("an identical re-run must succeed, not 409: %v", err)
+	}
+	if calls := portsCalls(f); len(calls) != 0 {
+		t.Errorf("everything is already published: den must publish nothing; calls: %v", calls)
+	}
+	if !strings.Contains(stdout, "http://127.0.0.1:9801") {
+		t.Errorf("the added pair is published and must still be listed; got: %q", stdout)
+	}
+}
+
+// A STOPPED sandbox hides the `ports` array entirely while its publications
+// come back on resume (measured 2026-07-31). den must not read that absence as
+// "publishes nothing" — the reading is passed through the status, so a stopped
+// sandbox contributes none and the resolution falls back to the scan, exactly
+// as it did before this fix.
+func TestPortsIgnoresThePublicationsOfAStoppedSandbox(t *testing.T) {
+	denHome := portsDenHome(t, "web", portsTwoPortNestYAML)
+	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": {Output: []byte(
+		`{"sandboxes":[{"name":"web.feat123","status":"stopped","workspaces":["/w"]}]}`)}}}
+
+	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "web.feat123")
+	if err != nil {
+		t.Fatalf("ports on a stopped sandbox: %v", err)
+	}
+	if len(portsCalls(f)) != 2 {
+		t.Errorf("a stopped sandbox says nothing about what it publishes: den must resolve and "+
+			"publish as if it had read nothing; calls: %v", portsCalls(f))
 	}
 }
 
