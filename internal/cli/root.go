@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/ports"
@@ -27,6 +28,11 @@ type Deps struct {
 	Sbx    sbx.Runner
 	Git    worktree.Git
 	Policy policy.Options
+	// Freshness is the patience of the §9.1 agent-freshness gate, injected for
+	// the reason Policy is: its clock is real (time.Sleep, time.Now), so a test
+	// tree that inherited it would stand and wait for a dispatcher no fake will
+	// ever answer for.
+	Freshness agent.GateOptions
 	// Scanner tells `den ports` whether a host port is free. Injected like
 	// every other system access, and for the sharpest reason in this struct:
 	// the real one (ports.ListenScanner) BINDS host sockets across 9000-17990,
@@ -56,14 +62,15 @@ type Deps struct {
 // default patience of policy's settle loop, and a real SSH-agent probe.
 func SystemDeps() Deps {
 	return Deps{
-		Doctor:   doctor.SystemDeps(),
-		Sbx:      sbx.NewExec(""),
-		Git:      worktree.NewGit(),
-		Policy:   policy.DefaultOptions(),
-		Scanner:  ports.ListenScanner{},
-		Open:     ports.OpenURL,
-		SSHAgent: sshagent.System(),
-		IsTTY:    spawn.StdinIsTerminal,
+		Doctor:    doctor.SystemDeps(),
+		Sbx:       sbx.NewExec(""),
+		Git:       worktree.NewGit(),
+		Policy:    policy.DefaultOptions(),
+		Freshness: agent.DefaultGateOptions(),
+		Scanner:   ports.ListenScanner{},
+		Open:      ports.OpenURL,
+		SSHAgent:  sshagent.System(),
+		IsTTY:     spawn.StdinIsTerminal,
 	}
 }
 
@@ -125,11 +132,12 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// LAST: configureSpawn sets Args on the root, which only makes sense once
 	// every subcommand is registered.
 	configureSpawn(root, &denHome, spawn.Deps{
-		Sbx:      deps.Sbx,
-		Git:      deps.Git,
-		Policy:   deps.Policy,
-		SSHAgent: deps.SSHAgent,
-		IsTTY:    deps.IsTTY,
+		Sbx:       deps.Sbx,
+		Git:       deps.Git,
+		Policy:    deps.Policy,
+		Freshness: deps.Freshness,
+		SSHAgent:  deps.SSHAgent,
+		IsTTY:     deps.IsTTY,
 		// The real OS, named at the wiring site like every other system access:
 		// spawn has no SystemDeps constructor to hold it (see spawn.Deps), and a
 		// field left implicit here is a dependency the reader has to hunt for.

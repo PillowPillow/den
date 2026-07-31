@@ -84,10 +84,11 @@ func TestNewRootCmdWithPropagatesGit(t *testing.T) {
 	git := &fakeGit{}
 
 	deps := Deps{
-		Doctor: doctor.SystemDeps(),
-		Sbx:    spawnDeps.Sbx,
-		Git:    git,
-		Policy: spawnDeps.Policy,
+		Doctor:    doctor.SystemDeps(),
+		Sbx:       spawnDeps.Sbx,
+		Git:       git,
+		Policy:    spawnDeps.Policy,
+		Freshness: spawnDeps.Freshness,
 	}
 	root := NewRootCmdWith(deps)
 
@@ -115,10 +116,11 @@ func TestNewRootCmdWithPropagatesPolicy(t *testing.T) {
 	_, spawnDeps := fakeSpawnDeps()
 
 	deps := Deps{
-		Doctor: doctor.SystemDeps(),
-		Sbx:    spawnDeps.Sbx,
-		Git:    spawnDeps.Git,
-		Policy: policy.Options{}, // Timeout=0: rejected by validate()
+		Doctor:    doctor.SystemDeps(),
+		Sbx:       spawnDeps.Sbx,
+		Git:       spawnDeps.Git,
+		Policy:    policy.Options{}, // Timeout=0: rejected by validate()
+		Freshness: spawnDeps.Freshness,
 	}
 	root := NewRootCmdWith(deps)
 
@@ -144,10 +146,11 @@ func TestNewRootCmdWithSharesOneSbxBetweenLsAndSpawn(t *testing.T) {
 	f, spawnDeps := fakeSpawnDeps()
 
 	deps := Deps{
-		Doctor: doctor.SystemDeps(),
-		Sbx:    f,
-		Git:    spawnDeps.Git,
-		Policy: spawnDeps.Policy,
+		Doctor:    doctor.SystemDeps(),
+		Sbx:       f,
+		Git:       spawnDeps.Git,
+		Policy:    spawnDeps.Policy,
+		Freshness: spawnDeps.Freshness,
 	}
 
 	if _, err := executeCmd(t, NewRootCmdWith(deps), "--den-home", home, "ls"); err != nil {
@@ -205,10 +208,11 @@ func TestNewRootCmdWithPropagatesTheSSHAgentProbe(t *testing.T) {
 	deps := Deps{
 		// Fake rather than System: the Doctor access is never reached on this
 		// path, and a fake owes nothing to the machine running the suite.
-		Doctor: doctor.FakeDeps(),
-		Sbx:    spawnDeps.Sbx,
-		Git:    spawnDeps.Git,
-		Policy: spawnDeps.Policy,
+		Doctor:    doctor.FakeDeps(),
+		Sbx:       spawnDeps.Sbx,
+		Git:       spawnDeps.Git,
+		Policy:    spawnDeps.Policy,
+		Freshness: spawnDeps.Freshness,
 		SSHAgent: func() sshagent.Result {
 			probes++
 			return sshagent.Result{State: sshagent.StateEmpty}
