@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -81,14 +82,43 @@ func lsWithPorts(name string, publications ...string) map[string]sbx.Response {
 //
 // Separate streams, because half of what this command promises is WHICH stream
 // a line lands on (the table on stdout, the non-canonical warning on stderr).
-func runPorts(t *testing.T, f *sbx.Fake, s ports.Scanner, args ...string) (stdout, stderr string, err error) {
+// The runner is an sbx.Runner, not a *sbx.Fake: one case (#16's wake) needs a
+// second `ls --json` to answer differently from the first, which the Fake's
+// argv-keyed Responses cannot express — see wakingRunner. Every other call site
+// passes the Fake itself.
+func runPorts(t *testing.T, f sbx.Runner, s ports.Scanner, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	return runPortsWithOpener(t, f, s, nil, args...)
 }
 
+// wakingRunner is an sbx.Fake whose SECOND `ls --json` answers as a woken
+// sandbox does: running, and publishing what the stopped listing hid.
+//
+// It exists rather than a `Sequence` field on sbx.Fake because the need is one
+// test's, and sbx.Fake is a production type three packages share: a
+// call-ordering feature there would be a contract everyone can accidentally
+// depend on. Everything else — Calls, HasCalled — comes through the embedded
+// Fake unchanged.
+type wakingRunner struct {
+	*sbx.Fake
+	woken   []byte
+	lsCount int
+}
+
+func (r *wakingRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
+	out, err := r.Fake.Run(ctx, args...)
+	if len(args) == 2 && args[0] == "ls" {
+		r.lsCount++
+		if r.lsCount > 1 {
+			return slices.Clone(r.woken), nil
+		}
+	}
+	return out, err
+}
+
 // runPortsWithOpener is runPorts with the browser opener supplied — a FAKE,
 // always: ports.OpenURL, the real one, is never named by a test.
-func runPortsWithOpener(t *testing.T, f *sbx.Fake, s ports.Scanner, open func(string) error,
+func runPortsWithOpener(t *testing.T, f sbx.Runner, s ports.Scanner, open func(string) error,
 	args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Scanner: s, Open: open}
@@ -646,23 +676,67 @@ func TestPortsAddIsRerunnableWhenTheSandboxAlreadyPublishesIt(t *testing.T) {
 	}
 }
 
-// A STOPPED sandbox hides the `ports` array entirely while its publications
-// come back on resume (measured 2026-07-31). den must not read that absence as
-// "publishes nothing" — the reading is passed through the status, so a stopped
-// sandbox contributes none and the resolution falls back to the scan, exactly
-// as it did before this fix.
-func TestPortsIgnoresThePublicationsOfAStoppedSandbox(t *testing.T) {
+// #16: a STOPPED sandbox is started, and its publications are read AFTER.
+//
+// `sbx ports --publish` needs a container endpoint and does not restart a
+// sandbox to get one — it answers `500 Internal Server Error: … no container
+// endpoint with IP address found`, naming neither the state nor a remedy. And
+// the reading #15's fix depends on is unavailable until then: `sbx ls --json`
+// omits the `ports` array entirely while a sandbox is stopped, while every
+// publication comes back on resume (measured 2026-07-31).
+//
+// Both halves are asserted, and the SECOND listing is the load-bearing one: a
+// wake that reused the first reading would resolve a fresh window over ports
+// already bound — publishing them twice, which is the defect #15 just closed.
+func TestPortsStartsAStoppedSandboxAndRereadsIt(t *testing.T) {
+	denHome := portsDenHome(t, "web", portsTwoPortNestYAML)
+	stopped := `{"sandboxes":[{"name":"web.feat123","status":"stopped","workspaces":["/w"]}]}`
+	f := &wakingRunner{
+		Fake:  &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": {Output: []byte(stopped)}}},
+		woken: lsWithPorts("web.feat123", pub(9100, 5173), pub(9101, 3000))["ls --json"].Output,
+	}
+
+	stdout, stderr, err := runPorts(t, f, forbiddenScanner{t: t},
+		"--den-home", denHome, "ports", "web.feat123")
+	if err != nil {
+		t.Fatalf("a stopped sandbox must be started, not relayed as a 500: %v", err)
+	}
+	if !f.HasCalled("exec", "web.feat123", "true") {
+		t.Errorf("the sandbox must be started before anything is published; calls: %v", f.Calls)
+	}
+	if f.lsCount != 2 {
+		t.Errorf("ls --json was read %d time(s): the reading after the wake is the whole point — a "+
+			"stopped sandbox hides what it publishes", f.lsCount)
+	}
+	if calls := portsCalls(f.Fake); len(calls) != 0 {
+		t.Errorf("the woken sandbox already publishes both ports: den must publish nothing; "+
+			"calls: %v", calls)
+	}
+	if !strings.Contains(stderr, "is stopped: den is starting it") {
+		t.Errorf("starting a VM takes seconds: it must be announced on stderr; got %q", stderr)
+	}
+	if strings.Contains(stdout, "stopped") {
+		t.Errorf("stdout carries the table and nothing else; got %q", stdout)
+	}
+}
+
+// The wake is fail-closed: a sandbox that is still not running afterwards ends
+// the command rather than resolving a window against publications sbx is still
+// hiding — which would bind, a second time, ports that are already bound.
+func TestPortsRefusesASandboxThatDoesNotStart(t *testing.T) {
 	denHome := portsDenHome(t, "web", portsTwoPortNestYAML)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": {Output: []byte(
 		`{"sandboxes":[{"name":"web.feat123","status":"stopped","workspaces":["/w"]}]}`)}}}
 
 	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "web.feat123")
-	if err != nil {
-		t.Fatalf("ports on a stopped sandbox: %v", err)
+	if err == nil {
+		t.Fatal("a sandbox still stopped after den started it must not be published into")
 	}
-	if len(portsCalls(f)) != 2 {
-		t.Errorf("a stopped sandbox says nothing about what it publishes: den must resolve and "+
-			"publish as if it had read nothing; calls: %v", portsCalls(f))
+	if !strings.Contains(err.Error(), "stopped") || !strings.Contains(err.Error(), "running") {
+		t.Errorf("the refusal must render the status read and the one expected; got: %v", err)
+	}
+	if calls := portsCalls(f); len(calls) != 0 {
+		t.Errorf("nothing may be published; calls: %v", calls)
 	}
 }
 

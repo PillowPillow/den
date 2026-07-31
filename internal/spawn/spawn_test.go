@@ -414,6 +414,64 @@ func TestSpawnResumesAStoppedSandbox(t *testing.T) {
 	}
 }
 
+// #17: `--detach` on a stopped sandbox may NOT call it "ready".
+//
+// The attach branch restarts nothing — no mixin is reapplied, no `sbx exec`
+// runs, and the settle-loop answers on a stopped VM too (`sbx policy check`
+// does not need it running, smoke #2 §6). den printed "ready (detached)" over a
+// sandbox `sbx ls --json` still reported as `stopped`, and the scripted
+// follow-up `den X --detach && den ports X` walked into an sbx 500.
+//
+// Two-sided: forbidding the word alone would go green on a message that says
+// nothing at all. The positive half pins what the line must carry — that the
+// sandbox stays stopped, that its state survives, and that the next attach
+// starts it.
+func TestSpawnDetachedDoesNotCallAStoppedSandboxReady(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("--detach on a stopped sandbox: %v", err)
+	}
+
+	if strings.Contains(out.String(), "ready") {
+		t.Errorf("nothing restarted the VM, so it is not ready: den may not claim it; output:\n%s",
+			out.String())
+	}
+	for _, want := range []string{"stays stopped", "state preserved", "den sh api", "den ports api"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the detached line must state %q; output:\n%s", want, out.String())
+		}
+	}
+	// Still no exec: --detach's contract is not to enter the VM, and waking it
+	// here would buy a truth sbx undoes in about 45 s of idleness.
+	if f.HasCalled("exec") {
+		t.Errorf("--detach must start nothing; calls: %v", f.Calls)
+	}
+}
+
+// The other side of the same line: a sandbox den just CREATED is running, and
+// "ready (detached)" is the truth there. The status check must not have turned
+// the ordinary spawn into a hedge.
+func TestSpawnDetachedStillCallsAFreshSandboxReady(t *testing.T) {
+	denHome, _ := denTest(t)
+	_, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("--detach on a fresh sandbox: %v", err)
+	}
+	if !strings.Contains(out.String(), "ready (detached)") {
+		t.Errorf("a sandbox just created is running: the line must say ready; output:\n%s", out.String())
+	}
+}
+
 // The allowlist stays FAIL-CLOSED for everything else: sbx status values
 // other than `running` aren't recognized. A denylist would attach on any
 // status a later sbx version might introduce, including an error status.
