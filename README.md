@@ -45,6 +45,7 @@ Options of `den <nest>`:
 | `--detach` | prepares the sandbox without attaching a shell |
 | `--only <repo,...>` | keep only these optional repos (required repos stay mounted) |
 | `--without <repo,...>` | exclude these optional repos |
+| `-i`, `--interactive` | pick the optional repos from a checklist; refused together with `--only`/`--without`, and outside a terminal (a pipe or CI must use those two) |
 | `--agent <name>` | overrides `defaults.agent` |
 
 `-w` takes a **branch** name, and a branch name often contains a `/`.

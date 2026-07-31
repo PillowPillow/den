@@ -48,6 +48,11 @@ func configureSpawn(root *cobra.Command, denHome *string, deps spawn.Deps) {
 		d := deps
 		d.Out = cmd.OutOrStdout()
 		d.Err = cmd.ErrOrStderr()
+		// In follows the same rule as Out and Err, and for the same reason: the
+		// `-i` checklist must read what cobra hands this command (a test's
+		// SetIn), never os.Stdin directly. The terminal probe stays in deps —
+		// it describes the machine, not the command.
+		d.In = cmd.InOrStdin()
 		return withSuggestion(root, o.Nest, spawn.Spawn(cmd.Context(), home, o, d))
 	}
 
@@ -56,6 +61,8 @@ func configureSpawn(root *cobra.Command, denHome *string, deps spawn.Deps) {
 	root.Flags().StringSliceVar(&o.Without, "without", nil, "exclude these optional repos")
 	root.Flags().StringSliceVar(&o.Only, "only", nil, "keep only these optional repos")
 	root.Flags().BoolVar(&o.Detach, "detach", false, "do not attach a shell after the spawn")
+	root.Flags().BoolVarP(&o.Interactive, "interactive", "i", false,
+		"pick the nest's optional repos from a checklist (contradicts --only/--without)")
 }
 
 // withSuggestion appends "did you mean ...?" to a failed spawn when the
