@@ -8,6 +8,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/policy"
+	"github.com/PillowPillow/den/internal/ports"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
 	"github.com/PillowPillow/den/internal/sshagent"
@@ -26,11 +27,24 @@ type Deps struct {
 	Sbx    sbx.Runner
 	Git    worktree.Git
 	Policy policy.Options
+	// Scanner tells `den ports` whether a host port is free. Injected like
+	// every other system access, and for the sharpest reason in this struct:
+	// the real one (ports.ListenScanner) BINDS host sockets across 9000-17990,
+	// so a test tree that inherited it would open real ports on the machine
+	// running the suite and take its verdict from whatever else listens there.
+	Scanner ports.Scanner
 	// SSHAgent probes the forwarded SSH agent for the spawn's empty-agent
 	// warning. Injected here (not hard-wired in NewRootCmdWith) so the wiring
 	// tests, which build Deps by hand, leave it nil and skip the real ssh-add —
 	// keeping them owing nothing to the machine, exactly as they do for Git.
 	SSHAgent func() sshagent.Result
+	// Open hands the URL of an `open: true` port to the host's browser, for
+	// `den ports`. Injected for the same reason as Scanner, one notch sharper:
+	// the real one (ports.OpenURL) SPAWNS A PROCESS, so a suite that inherited
+	// it would pop a browser window per test run. Every test injects a recording
+	// double or leaves this nil — and nil is a no-op, so the wiring tests that
+	// build Deps by hand keep owing nothing to the machine.
+	Open func(url string) error
 	// IsTTY reports whether den's input is a terminal, for the `-i` checklist.
 	// Injected here for the same reason as SSHAgent: the wiring tests build
 	// Deps by hand, leave it nil, and `-i` then takes its clean refusal instead
@@ -46,6 +60,8 @@ func SystemDeps() Deps {
 		Sbx:      sbx.NewExec(""),
 		Git:      worktree.NewGit(),
 		Policy:   policy.DefaultOptions(),
+		Scanner:  ports.ListenScanner{},
+		Open:     ports.OpenURL,
 		SSHAgent: sshagent.System(),
 		IsTTY:    spawn.StdinIsTerminal,
 	}
@@ -95,6 +111,11 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// runtime.GOOS is named here, at the wiring site, like the spawn's below.
 	root.AddCommand(newShCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS))
 	root.AddCommand(newRmCmd(&denHome, deps.Sbx, deps.Git))
+	// `den ports` reads the SAME sbx as `den ls` and `den sh` (deps.Sbx is the
+	// single runner) and gets its port scanner AND its browser opener from Deps,
+	// where a test can replace the real ones — which bind host sockets and spawn
+	// a browser — with doubles.
+	root.AddCommand(newPortsCmd(&denHome, deps.Sbx, deps.Scanner, deps.Open))
 
 	// spawn.Deps is ASSEMBLED here from the very fields newLsCmd just got:
 	// deps.Sbx is the single source. Out is left unset, configureSpawn

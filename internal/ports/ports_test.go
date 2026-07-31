@@ -179,6 +179,29 @@ func TestResolveBoundsTheNumberOfShifts(t *testing.T) {
 	}
 }
 
+// The exhaustion message may not send the user hunting a listener that is
+// their own.
+//
+// This is where the repeat-run shift ends up: `den ports` publishes a window
+// and never takes it down, so re-running it finds that window busy, moves, and
+// publishes again — after maxShifts runs every candidate block is held by the
+// user's own earlier publications, and the only advice "free host ports" gives
+// them is to go fight themselves. The scan cannot tell those blocks apart from a
+// foreign listener's, so the message must name both and point at the attested
+// command that lists what a sandbox publishes.
+func TestResolveExhaustionNamesTheUsersOwnPublications(t *testing.T) {
+	n := nestWith("api", 9100, nest.PortDecl{Name: "vite", Container: 5173})
+	_, err := Resolve(n, Options{}, allBusyScanner{})
+	if err == nil {
+		t.Fatal("an always-busy host must end in an error")
+	}
+	for _, want := range []string{"den ports", "sbx ports"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the message must name %q as the other candidate holder; got: %v", want, err)
+		}
+	}
+}
+
 // loopback_lock is refused outside loopback EVEN IF FORCED, and it says so in
 // its own words: the general "always 127.0.0.1" refusal would also reject this
 // bind, so a lock check placed behind it would never run.
@@ -303,6 +326,284 @@ func TestResolveRefusesANilScanner(t *testing.T) {
 	n := nestWith("api", 9100, nest.PortDecl{Name: "vite", Container: 5173})
 	if _, err := Resolve(n, Options{}, nil); err == nil {
 		t.Fatal("a nil scanner must be refused, never treated as an all-free host")
+	}
+}
+
+// `--add H:C` is a pair the NEST never declared: the host port is the one the
+// user wrote, verbatim, so it takes no window offset.
+func TestParseAddYieldsTheHostAndContainerPair(t *testing.T) {
+	p, err := ParseAdd("8080:3000")
+	if err != nil {
+		t.Fatalf("`8080:3000` is the documented form of --add: %v", err)
+	}
+	if p.Host != 8080 || p.Container != 3000 {
+		t.Errorf("ParseAdd(\"8080:3000\") = host %d, container %d; want 8080 and 3000", p.Host, p.Container)
+	}
+	if p.Open || p.LoopbackLock {
+		t.Errorf("an --add pair declares no flag: %+v", p)
+	}
+	if got := p.PublishSpec(); got != "127.0.0.1:8080:3000" {
+		t.Errorf("PublishSpec() = %q, want %q — an added pair binds the loopback like any other", got,
+			"127.0.0.1:8080:3000")
+	}
+}
+
+// The three-field form is accepted ONLY on 127.0.0.1: the flag exists to add a
+// pair, never to widen the bind §8 refuses to widen anywhere else.
+func TestParseAddRefusesANonLoopbackHostAddress(t *testing.T) {
+	for _, value := range []string{
+		"0.0.0.0:8080:3000",
+		"192.168.1.10:8080:3000",
+		// Not Loopback either, for the reason isLoopback's godoc gives:
+		// "localhost" goes through the host's name service and can answer
+		// something other than 127.0.0.1. (The other half of that godoc, the
+		// IPv6 literal, is refused one door earlier — `::1:8080:3000` splits
+		// into empty fields and is malformed, not merely non-loopback.)
+		"localhost:8080:3000",
+	} {
+		_, err := ParseAdd(value)
+		if err == nil {
+			t.Errorf("--add %q must be refused: den publishes on %s and nothing else", value, Loopback)
+			continue
+		}
+		if !strings.Contains(err.Error(), Loopback) {
+			t.Errorf("--add %q: the refusal must name the only address den binds: %v", value, err)
+		}
+	}
+	// The refused address is named, so the user reads what den rejected rather
+	// than having to guess which field was wrong.
+	_, err := ParseAdd("0.0.0.0:8080:3000")
+	if !strings.Contains(err.Error(), "0.0.0.0") {
+		t.Errorf("the refusal must name the refused address: %v", err)
+	}
+	// ... and the remedy is the one §8 offers everywhere else: a tunnel.
+	if !strings.Contains(err.Error(), "ssh -L") {
+		t.Errorf("the refusal must point at the tunnel, like Resolve's own: %v", err)
+	}
+}
+
+func TestParseAddAcceptsAnExplicitLoopback(t *testing.T) {
+	p, err := ParseAdd("127.0.0.1:8080:3000")
+	if err != nil {
+		t.Fatalf("127.0.0.1 written out is the default, not a forcing: %v", err)
+	}
+	if p.Host != 8080 || p.Container != 3000 {
+		t.Errorf("host %d, container %d; want 8080 and 3000", p.Host, p.Container)
+	}
+}
+
+func TestParseAddRefusesAMalformedValue(t *testing.T) {
+	for _, value := range []string{
+		"",                        // nothing at all
+		"8080",                    // no container port
+		"8080:3000:9000:1",        // one field too many
+		"8080:",                   // an empty container port
+		":3000",                   // an empty host port
+		"127.0.0.1::3000",         // an empty host port, three-field form
+		":8080:3000",              // an empty host address
+		"::1:8080:3000",           // an IPv6 literal: ambiguous in a colon-separated grammar
+		"vite:3000",               // a name is not a host port
+		"8080:api",                // ... nor a container port
+		"0:3000",                  // port 0 is not a port a user can reach
+		"70000:3000",              // above 65535
+		"8080:70000",              // ... on either side
+		" 8080:3000",              // Atoi accepts no padding, and neither does sbx
+		"127.0.0.1:8080:3000/tcp", // den declares no protocol (see PublishSpec)
+	} {
+		if _, err := ParseAdd(value); err == nil {
+			t.Errorf("--add %q must be refused: it is not a HOST_PORT:CONTAINER_PORT pair", value)
+		}
+	}
+}
+
+// The added pair travels WITH the declared ports — same resolution, same
+// publication, same table — but it is the LAST of them: the declared ports keep
+// the offsets §8 numbers them by.
+func TestResolveAppendsTheExtraPairAfterTheDeclaredPorts(t *testing.T) {
+	n := nestWith("api", 9100,
+		nest.PortDecl{Name: "vite", Container: 5173},
+		nest.PortDecl{Name: "api", Container: 3000},
+	)
+	extra, err := ParseAdd("8080:3000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// The scanner holds 8080 as TAKEN: an added pair is not scanned, because
+	// the host port is the user's own explicit choice — shifting it would
+	// publish an address they never asked for.
+	r, err := Resolve(n, Options{Extra: []Port{extra}}, busyScanner{8080: true})
+	if err != nil {
+		t.Fatalf("an added pair is not scanned, so a busy host port cannot fail the resolution: %v", err)
+	}
+	if len(r.Ports) != 3 {
+		t.Fatalf("2 declared ports + 1 added = 3: %+v", r.Ports)
+	}
+	if r.Ports[0].Host != 9100 || r.Ports[1].Host != 9101 {
+		t.Errorf("the declared ports keep their offsets: %d, %d", r.Ports[0].Host, r.Ports[1].Host)
+	}
+	last := r.Ports[2]
+	if last.Host != 8080 || last.Container != 3000 {
+		t.Errorf("the added pair takes no offset: host %d, container %d; want 8080 and 3000",
+			last.Host, last.Container)
+	}
+	if r.Window.Base != 9100 || !r.Window.Canonical {
+		t.Errorf("an added pair moves no window: %+v", r.Window)
+	}
+}
+
+// A nest declaring nothing still publishes what the user added on the command
+// line — the early return of a portless nest must not swallow it.
+func TestResolveCarriesTheExtraPairOfAPortlessNest(t *testing.T) {
+	extra, err := ParseAdd("8080:3000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	r, err := Resolve(nestWith("api", 9100), Options{Extra: []Port{extra}}, allBusyScanner{})
+	if err != nil {
+		t.Fatalf("a portless nest with an added pair scans nothing and fails on nothing: %v", err)
+	}
+	if len(r.Ports) != 1 || r.Ports[0].Host != 8080 {
+		t.Fatalf("the added pair must reach the caller: %+v", r.Ports)
+	}
+}
+
+// The window bounds the DECLARED ports, the ones it numbers. An added pair
+// takes no offset, so it cannot overflow a window it never occupies.
+func TestResolveDoesNotCountExtraPairsAgainstTheWindow(t *testing.T) {
+	decls := make([]nest.PortDecl, WindowSize)
+	for i := range decls {
+		decls[i] = nest.PortDecl{Name: fmt.Sprintf("p%d", i), Container: 3000 + i}
+	}
+	extra, err := ParseAdd("8080:3000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	r, err := Resolve(nestWith("api", 9100, decls...), Options{Extra: []Port{extra}}, freeScanner{})
+	if err != nil {
+		t.Fatalf("a full window plus an added pair is not an overflow: %v", err)
+	}
+	if len(r.Ports) != WindowSize+1 {
+		t.Errorf("%d ports resolved, want %d declared + 1 added", len(r.Ports), WindowSize)
+	}
+}
+
+// An added pair asking for a host port the window ALREADY gave to a declared
+// port is refused here, before anything is published.
+//
+// The caller publishes one pair at a time (`sbx ports … --publish` per port),
+// so a resolution carrying 9100, 9101 and an added 9101 binds the first two and
+// then fails on den's OWN collision: the window is left half-bound, no table is
+// printed, and the error names sbx rather than the two lines of the request
+// that cannot both be honoured.
+func TestResolveRefusesAnExtraPairOnADeclaredHostPort(t *testing.T) {
+	n := nestWith("web", 9100,
+		nest.PortDecl{Name: "vite", Container: 5173},
+		nest.PortDecl{Name: "api", Container: 3000},
+		nest.PortDecl{Name: "cdp", Container: 9223},
+	)
+	extra, err := ParseAdd("9101:4000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, err := Resolve(n, Options{Extra: []Port{extra}}, freeScanner{}); err == nil {
+		t.Fatal("`--add 9101:4000` lands on the host port the window already gave to `api`: den would " +
+			"publish the first ports, then fail on its own collision with the window half-bound")
+	} else {
+		for _, fragment := range []string{"9101", "4000", "api"} {
+			if !strings.Contains(err.Error(), fragment) {
+				t.Errorf("the refusal must name the added pair and the declared port it collides with "+
+					"(%q missing): %v", fragment, err)
+			}
+		}
+	}
+}
+
+// The collision is read against the RESOLVED window, not the canonical one: a
+// shifted window renumbers every declared port, so the host ports an added pair
+// must clear are the ones this run actually publishes.
+func TestResolveReadsTheExtraPairAgainstTheShiftedWindow(t *testing.T) {
+	n := nestWith("web", 9100,
+		nest.PortDecl{Name: "vite", Container: 5173},
+		nest.PortDecl{Name: "api", Container: 3000},
+	)
+	extra, err := ParseAdd("9111:4000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// One busy port moves the whole block to 9110: `api` is on 9111 now, and
+	// that — not the canonical 9101 — is what the added pair collides with.
+	if _, err := Resolve(n, Options{Extra: []Port{extra}}, busyScanner{9105: true}); err == nil {
+		t.Fatal("the shifted window put `api` on 9111: an added 9111 collides with it")
+	} else if !strings.Contains(err.Error(), "9111") || !strings.Contains(err.Error(), "api") {
+		t.Errorf("the refusal must name the shifted host port and the declared port holding it: %v", err)
+	}
+}
+
+// Two `--add` values naming the same host port collide with each other, and are
+// refused on the same terms: the first would bind, the second would fail, and
+// the pair of lines that cannot both be honoured is knowable from the flags
+// alone — before the scan, and before a single publication.
+func TestResolveRefusesTwoExtraPairsOnTheSameHostPort(t *testing.T) {
+	first, err := ParseAdd("8080:3000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	second, err := ParseAdd("8080:4000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	n := nestWith("web", 9100, nest.PortDecl{Name: "vite", Container: 5173})
+	if _, err := Resolve(n, Options{Extra: []Port{first, second}}, freeScanner{}); err == nil {
+		t.Fatal("`--add 8080:3000 --add 8080:4000` asks for one host port twice: the second publication " +
+			"would fail with the first already bound")
+	} else {
+		for _, fragment := range []string{"8080", "3000", "4000"} {
+			if !strings.Contains(err.Error(), fragment) {
+				t.Errorf("the refusal must name both added pairs (%q missing): %v", fragment, err)
+			}
+		}
+	}
+}
+
+// ... including on a nest that declares nothing at all: the portless early
+// return publishes the added pairs, so it must weigh them against each other
+// too — a refusal placed only on the declared path would let this one through.
+func TestResolveRefusesTwoExtraPairsOnTheSameHostPortOfAPortlessNest(t *testing.T) {
+	first, err := ParseAdd("8080:3000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	second, err := ParseAdd("8080:4000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, err := Resolve(nestWith("web", 9100), Options{Extra: []Port{first, second}}, freeScanner{}); err == nil {
+		t.Fatal("a portless nest publishes the added pairs and nothing else: two of them on 8080 still " +
+			"collide")
+	} else if !strings.Contains(err.Error(), "8080") {
+		t.Errorf("the refusal must name the host port asked for twice: %v", err)
+	}
+}
+
+// The refusal is an EQUALITY, never a range: the window bounds what den
+// NUMBERS, and a host port inside the block that no declared port was given is
+// a port den publishes nothing on. Refusing it would reject a pair that binds
+// perfectly well.
+func TestResolveAcceptsAnExtraPairOnAnUnusedPortOfTheWindow(t *testing.T) {
+	n := nestWith("web", 9100,
+		nest.PortDecl{Name: "vite", Container: 5173},
+		nest.PortDecl{Name: "api", Container: 3000},
+	)
+	extra, err := ParseAdd("9105:4000")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	r, err := Resolve(n, Options{Extra: []Port{extra}}, freeScanner{})
+	if err != nil {
+		t.Fatalf("9105 is inside the window but assigned to no declared port: %v", err)
+	}
+	if len(r.Ports) != 3 || r.Ports[2].Host != 9105 {
+		t.Errorf("the added pair must reach the caller unchanged: %+v", r.Ports)
 	}
 }
 

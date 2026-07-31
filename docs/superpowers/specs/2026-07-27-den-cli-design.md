@@ -169,7 +169,7 @@ sandbox**.
 | `den <nest> [-w <wt>] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell |
 | `den ls` | sandboxes vivantes (`sbx ls --json` filtré sur le motif de nommage, colonnes nom/nest/worktree/statut/workspaces) |
 | `den sh <name>` | shell dans une sandbox existante |
-| `den ports <nest> [--add H:C]` | **publie à la demande** la fenêtre déclarée + affiche le tableau |
+| `den ports <name> [--add H:C]` | **publie à la demande** la fenêtre déclarée + affiche le tableau |
 | `den rm <name> [--keep-worktrees]` | teardown (profil agent persiste ; worktrees nettoyés sauf `--keep`) |
 | `den build [<stack>] [--force]` | build image(s), ordre DAG |
 | `den doctor` | valide config, teste egress, présence/login sbx |
