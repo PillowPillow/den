@@ -270,8 +270,78 @@ func TestExecStreamMissingBinaryProducesAnActionableMessage(t *testing.T) {
 			t.Errorf("the message must contain %q; got: %s", want, err.Error())
 		}
 	}
+	// Asserted SEPARATELY from the presence above, for the reason Run's twin
+	// states: a message that added the remedy without dropping os/exec's line
+	// would stay green on the presence assertion alone.
+	for _, leftover := range []string{"executable file not found", "exec: "} {
+		if strings.Contains(err.Error(), leftover) {
+			t.Errorf("leftover os/exec wording %q in the message: %s", leftover, err.Error())
+		}
+	}
 	if !errors.Is(err, exec.ErrNotFound) {
 		t.Errorf("exec.ErrNotFound must stay detectable in the chain; err = %v", err)
+	}
+}
+
+// Ctrl-C DURING a build, which is now den's primary interrupt path: cli.Execute
+// wires signal.NotifyContext, and the process a signal finds running is a
+// provisioning step — a Stream call, not a Run one.
+//
+// The property does not come for free, and nothing else on Stream would notice
+// its loss. os/exec kills the process and Cmd.Wait PREFERS the process's error
+// to the context's, so cmd.Run returns an *exec.ExitError ("signal: killed")
+// wrapping no context reason at all; `Cancellation: ctx.Err()` is the only
+// thing putting Canceled back in the chain. Delete that line and every other
+// Stream test here stays green while `den build` starts reporting a Ctrl-C as
+// sbx having crashed.
+//
+// Only the IN-FLIGHT case is exercised: a context canceled before the process
+// starts is os/exec's own easy path (Cmd.Start returns ctx.Err() without
+// launching anything) and proves nothing about this one — see
+// TestExecRunContextCanceledBeforeStart. Hence the witness rather than a clock,
+// for the reason TestExecRunCancellationReasonSurvivesProcessDeath documents at
+// length: canceling on a fixed delay regularly beats the fork/exec, and the
+// test then measures the easy case while claiming the hard one.
+func TestExecStreamCancellationReasonSurvivesProcessDeath(t *testing.T) {
+	witness := filepath.Join(t.TempDir(), "started")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	// No deadline on this context: ctx.Err() can only be context.Canceled.
+	go func() {
+		waitForWitness(witness)
+		cancel()
+	}()
+
+	e := &Exec{Bin: "sh", DrainDelay: 50 * time.Millisecond}
+	// `exec sleep 5`, not `sleep 5`: without exec, dash forks and the
+	// grandchild keeps the pipe alive past the kill.
+	err := e.Stream(ctx, &strings.Builder{}, "-c", "touch "+witness+"; exec sleep 5")
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	// THE PRECONDITION, checked rather than assumed.
+	if _, errWitness := os.Stat(witness); errWitness != nil {
+		t.Fatalf("the process never started (witness %s absent): the cancellation beat the "+
+			"fork/exec, and this test measures the before-start case it does not claim", witness)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(err, context.Canceled) = false; err = %v", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("errors.Is(err, context.DeadlineExceeded) = true: the two reasons are "+
+			"conflated; err = %v", err)
+	}
+	// The message must SAY the interruption: a bare "signal: killed" reads like
+	// sbx crashing, which is the confusion the field exists to prevent.
+	if !strings.Contains(err.Error(), "interrupted (canceled)") {
+		t.Errorf("message = %q, want it to name the interruption", err.Error())
+	}
+	// Without this, joining the reason could have REPLACED the original chain
+	// instead of adding to it, and the exit-code property would slip away
+	// unnoticed.
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("the original *exec.ExitError was lost; err = %v (%T)", err, err)
 	}
 }
 
