@@ -243,6 +243,10 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
   `devx:v1` ↔ `docker.io/library/devx` + `v1`, `library/devx` est un *namespace*, `ghcr.io/…` et
   `localhost[:port]/…` sont des *registres*, un `:` avant le dernier `/` est un port et non un tag,
   et un tag vide (`devx:`) n'est pas complété en `latest` (il ne doit apparier aucune image).
+  Une référence **épinglée par digest** (`devx@sha256:…`) est inarbitrable par construction —
+  `sbx template ls` ne rapporte que `repository` + `tag`, jamais de digest — donc elle n'apparie
+  rien (`sbx.IsDigestRef`) : `den build` reconstruit l'ancêtre (dépenser un build plutôt que sauter
+  sans justification), le contrôle du spawn se tait (voir §11 et §14.1).
 - **Une stack sans `build.sh` n'est pas constructible, et c'est une configuration déclarée** : son
   `image:` peut nommer une image de registre que `sbx` tire. Elle est **sautée et nommée**, jamais
   un refus — c'est la même réponse que le contrôle d'image du spawn (§14.1), et les deux doivent
@@ -256,7 +260,13 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
   (forme du garde de `agent.RenderMixin`) : `Step` est une structure exportée nue, et un plan
   construit à la main ne doit pas atteindre la moitié de la chaîne avant de découvrir le trou.
 - **Une stack cassée ne coule pas le build** (doctrine `config.LoadStacks`) : nommée sur stderr, non
-  construite. Elle n'est un refus que si elle est la cible ou un ancêtre de la cible.
+  construite. Elle n'est un refus que si elle est la cible ou un ancêtre de la cible. Mesuré le
+  2026-08-03 : utilisée comme `parent:` d'une stack saine, elle coulait tout le `den build` sans
+  cible. Corrigé : les stacks dont l'ascendance atteint une stack illisible — ou un `parent:` qui
+  n'existe pas — sont **exclues et nommées** (`build.Excluded`), les saines construites ; le remède
+  diffère selon la cause (stack illisible : réparer *son* fichier ; parent inexistant : réparer la
+  ligne `parent:` du déclarant). Un **cycle** reste un refus même sans cible : c'est une
+  contradiction qu'aucune stack ne peut contourner.
 
 ---
 
@@ -515,7 +525,7 @@ nest. Cache `~/.den/cache/` reconstructible, jamais source de vérité.
 
 | Situation | Comportement |
 |---|---|
-| Image stack absente | Stop → « lance `den build <stack>` ». Lu sur `sbx template ls --json` **avant** `sbx create`, et **seulement** si la stack a un `build.sh` (sinon den n'a pas de remède à proposer). Un inventaire en échec est fail-open : `sbx` refuse de lui-même |
+| Image stack absente | Stop → « lance `den build <stack>` ». Lu sur `sbx template ls --json` **avant** `sbx create`, et **seulement** si la stack a un `build.sh` (sinon den n'a pas de remède à proposer) et que l'`image:` n'est pas épinglée par digest (l'inventaire ne rapporte aucun digest, §14.1). Un inventaire en échec est fail-open : `sbx` refuse de lui-même |
 | Chemin repo introuvable | Stop **avant** tout create |
 | Worktree `<wt>` déjà pris par une autre branche | Stop → propose `--attach-worktree` ou autre nom |
 | Policy non settled dans le timeout | **Fail-closed**, n'attache pas, liste les hôtes bloqués |
@@ -992,12 +1002,15 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
   `sbx template ls --json` **avant** `sbx create` et refuse en nommant le remède du §11 — « lance
   `den build <stack>` ». Le contrôle est placé à l'étape 2ter de la séquence, ce qui a fait
   **remonter la lecture `sbx ls --json`** (le verdict créer-ou-attacher) au-dessus des worktrees :
-  refuser plus bas aurait laissé un worktree git par dépôt derrière soi. Deux silences délibérés,
+  refuser plus bas aurait laissé un worktree git par dépôt derrière soi. Trois silences délibérés,
   chacun évitant un refus que den ne saurait justifier :
 
   - une stack **sans `build.sh`** n'est pas contrôlée du tout. Son `image:` peut nommer une image de
     registre que `sbx` sait tirer, et « lance `den build` » sur une stack sans script n'est pas un
     conseil mais une deuxième erreur ;
+  - une `image:` **épinglée par digest** n'est pas contrôlée non plus (`sbx.IsDigestRef`) :
+    l'inventaire ne rapporte aucun digest, donc il ne peut ni confirmer ni infirmer l'épingle, et
+    lire son silence comme « absente » refuserait un spawn sur une image présente ;
   - un `sbx template ls` **en échec** est fail-open. Le contrôle améliore un message, il ne garde
     rien : `sbx` refuse toujours le create de lui-même si l'image manque vraiment, donc un
     diagnostic en panne ne doit pas interdire un spawn.
