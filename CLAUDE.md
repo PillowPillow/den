@@ -77,6 +77,10 @@ reapplied to a live VM — den warns about mixin drift and missing git dirs inst
 
 - `README.md` no longer lags on `den ports` nor on `den build` (both notes were themselves stale —
   the rows and the sections are there). `den build` shipped with #8.
+- `README.md`'s `den build` section describes the **shipped** #8 model — a per-stack `build.sh` run
+  on the host. The spec was amended on 2026-08-03: den now owns `create` → `exec` → `save`, the
+  `build.sh` is gone and a stack declares `provision:` instead. Until that lands, README = what
+  ships, spec = where it is going. Do not "fix" one against the other; the spec wins on intent.
 - `docs/superpowers/handoffs/HANDOFF.md` says Plan 2 is unexecuted and nothing is pushed. Both are
   false (PRs #12–#14 merged). Handoffs and plans are historical; the spec
   `docs/superpowers/specs/2026-07-27-den-cli-design.md` is the source of truth.
