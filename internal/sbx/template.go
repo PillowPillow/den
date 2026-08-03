@@ -87,6 +87,15 @@ const (
 	// to, so `image: devx` and the template `devx:latest` are the same image
 	// everywhere else too.
 	defaultTag = "latest"
+	// indexDockerIORegistry is docker.io's other name: it is the registry host
+	// that predates the shorter `docker.io` and every OCI client still
+	// resolves it to the exact same registry. NormalizeImageRef folds it to
+	// defaultRegistry (see below) rather than treating it as a distinct host,
+	// because `sbx template ls` reports images ONLY as `docker.io/...` (spec
+	// §14.0) — an unfolded `index.docker.io/devx:v1` would normalize to a
+	// registry sbx never spells, and FindTemplate would then refuse a spawn
+	// over an image that is actually present.
+	indexDockerIORegistry = "index.docker.io"
 )
 
 // NormalizeImageRef splits an image reference into a FULLY QUALIFIED
@@ -100,8 +109,12 @@ const (
 //	devx:v1                     → docker.io/library/devx      v1
 //	library/devx:v1             → docker.io/library/devx      v1
 //	docker.io/library/devx:v1   → docker.io/library/devx      v1
+//	docker.io/devx:v1           → docker.io/library/devx      v1
+//	index.docker.io/devx:v1     → docker.io/library/devx      v1
+//	index.docker.io/acme/devx:v2 → docker.io/acme/devx        v2
 //	devx                        → docker.io/library/devx      latest
 //	ghcr.io/acme/devx:v2        → ghcr.io/acme/devx           v2
+//	ghcr.io/devx:v2             → ghcr.io/devx                v2
 //	localhost:5000/devx:v1      → localhost:5000/devx         v1
 //	devx@sha256:e3b0c442…       → devx@sha256:e3b0c442…       (no tag)
 //
@@ -111,6 +124,17 @@ const (
 // differently would make den's verdict disagree with what sbx actually pulls,
 // which is worse than not checking at all: it would refuse a spawn over an
 // image that is present.
+//
+// `docker.io/devx` (registry-qualified, exactly ONE component after the
+// registry) still completes to the `library` namespace, same as the bare
+// form: every OCI client resolves it that way, so leaving it as written would
+// read `docker.io/devx` as missing against sbx's `docker.io/library/devx` and
+// needlessly rebuild it — the false-refusal failure mode this file exists to
+// prevent. `index.docker.io` is folded to `docker.io` first (see
+// indexDockerIORegistry) so both spellings land on the one form sbx reports.
+// No other registry gets this treatment: `ghcr.io/devx` has no `library`
+// convention, so a single component there is a genuine one-component
+// repository, not a namespace to complete.
 func NormalizeImageRef(ref string) (repository, tag string) {
 	repository, tag = ref, defaultTag
 
@@ -144,7 +168,28 @@ func NormalizeImageRef(ref string) (repository, tag string) {
 	case len(parts) == 1:
 		repository = defaultRegistry + "/" + defaultNamespace + "/" + repository
 	case isRegistry(parts[0]):
-		// Already qualified: leave it exactly as written.
+		registry := parts[0]
+		// index.docker.io names the exact same registry as docker.io to every
+		// OCI client — folded here, unconditionally, because sbx's inventory
+		// never spells it any other way (see indexDockerIORegistry). Without
+		// this fold `index.docker.io/acme/devx` would keep a registry host sbx
+		// never reports and could never match, silently.
+		if registry == indexDockerIORegistry {
+			registry = defaultRegistry
+		}
+		switch {
+		case registry == defaultRegistry && len(parts) == 2:
+			// Registry-qualified with exactly one component: still the
+			// `library` namespace, same as the unqualified form above. Other
+			// registries are NOT completed — `ghcr.io/devx` has no `library`
+			// convention, so its one component is a genuine repository name,
+			// not a namespace to insert.
+			repository = registry + "/" + defaultNamespace + "/" + parts[1]
+		default:
+			// Already qualified beyond that: leave the components as written,
+			// only folding the registry name settled above.
+			repository = registry + "/" + strings.Join(parts[1:], "/")
+		}
 	default:
 		repository = defaultRegistry + "/" + repository
 	}

@@ -118,6 +118,14 @@ func TestNormalizeImageRef(t *testing.T) {
 			"the colon before the last slash is a PORT, not a tag"},
 		{"localhost/devx", "localhost/devx", "latest",
 			"bare localhost is a registry by convention, dot or no dot"},
+		{"docker.io/devx:v1", "docker.io/library/devx", "v1",
+			"registry-qualified with ONE component still completes to `library`, the same as the bare form"},
+		{"index.docker.io/devx:v1", "docker.io/library/devx", "v1",
+			"index.docker.io is docker.io's other name to every OCI client — folded before completion, so this matches the exact same template"},
+		{"index.docker.io/acme/devx:v2", "docker.io/acme/devx", "v2",
+			"the fold is unconditional: a namespace already present is kept, only the registry name lands on the one form sbx reports"},
+		{"ghcr.io/devx:v2", "ghcr.io/devx", "v2",
+			"guard: ghcr.io has no `library` convention, so its one component stays a genuine repository, uncompleted"},
 	}
 	for _, c := range cases {
 		t.Run(c.ref, func(t *testing.T) {
@@ -227,6 +235,20 @@ func TestFindTemplateMatchesAnUnqualifiedReference(t *testing.T) {
 	if got := FindTemplate(list, "dgdevx:v2"); got != nil {
 		t.Errorf("FindTemplate(%q) = %+v, want nil — the registry is ghcr.io, not the default one",
 			"dgdevx:v2", got)
+	}
+}
+
+// The docker.io namespace completion, exercised through FindTemplate rather
+// than NormalizeImageRef alone: `docker.io/devx:v1` is the shape an OCI
+// client resolves to `docker.io/library/devx`, and it must find the very
+// template sbx reports under that qualified name.
+func TestFindTemplateMatchesADockerIORegistryQualifiedReference(t *testing.T) {
+	list := []Template{
+		{Repository: "docker.io/library/devx", Tag: "v1"},
+		{Repository: "ghcr.io/acme/dgdevx", Tag: "v2"},
+	}
+	if got := FindTemplate(list, "docker.io/devx:v1"); got == nil {
+		t.Errorf("FindTemplate(%q) = nil, want the docker.io/library/devx v1 template", "docker.io/devx:v1")
 	}
 }
 
