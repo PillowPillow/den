@@ -5,70 +5,130 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/sbx"
 )
+
+// Deps is what Execute needs from the machine. Injected for the reason every
+// field of cli.Deps is: the real Runner spawns processes, and DenHome is what
+// `--den-home` redirects to keep the suite hermetic.
+type Deps struct {
+	Sbx     sbx.Runner
+	DenHome string
+}
 
 // Execute runs the plan, in order.
 //
-// EVERY script is checked to exist BEFORE the first one runs. That ordering is
-// the same one internal/spawn states at length: anything rejectable up front is
+// EVERY provision file of the whole chain is read BEFORE the first create —
+// the ordering internal/spawn states at length: anything rejectable up front is
 // rejected before the first side effect. Here the side effect is expensive
-// rather than messy — `den build dgdevx` that built its base image for four
-// minutes and only then discovered dgdevx has no build.sh would have burned
-// that time to reach a refusal den could have made instantly.
-//
-// Plan already turns a missing script into a skip (or, for the stack the user
-// named, into a refusal), so no plan Plan produces can reach the loop below.
-// The check stays as a GUARD, in the shape agent.RenderMixin's freshness guard
-// takes: Steps is a bare exported struct, and a hand-built plan must not reach
-// half the chain before discovering a script that was never there.
-func Execute(ctx context.Context, steps []Step, script Script, out io.Writer) error {
+// rather than messy: a chain that built four minutes of base image and only
+// then discovered a missing step would have spent that time to reach a refusal
+// den could make instantly. Nothing is read twice; the text is what the
+// payloads are composed from.
+func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
+	provisioned := make(map[string]Provisioning, len(steps))
 	for _, s := range steps {
 		if !s.Build {
 			continue
 		}
-		path := ScriptPath(s.Stack)
-		info, err := os.Stat(path)
-		if err != nil {
+		// Plan already turns a stack with no provision.steps into a skip (or,
+		// for the stack the user named, into a refusal), so no plan Plan
+		// produces reaches this. The check stays as a GUARD, in the shape
+		// agent.RenderMixin's freshness guard takes: Step is a bare exported
+		// struct, and a hand-built plan must not reach half the chain before
+		// discovering the hole.
+		if !s.Stack.Buildable() {
 			return notBuildableError(s.Stack)
 		}
-		// The EXECUTABLE BIT, not just existence. den runs the script directly
-		// (no `sh <path>`, so the shebang stays the script's own choice), which
-		// means a build.sh committed without +x dies on `fork/exec: permission
-		// denied` — measured on the bench, 2026-08-03, and measured LATE: the
-		// chain had already built the stacks before it. Checking it here puts
-		// that failure where every other one already is, before the first build.
-		//
-		// The 0o111 test PRESUMES a POSIX filesystem: os.Stat never reports
-		// those bits on Windows, where this would therefore refuse every
-		// build.sh — which is not a case den has, since it only runs where sbx
-		// does, on darwin and linux.
-		if info.Mode()&0o111 == 0 {
-			return fmt.Errorf(
-				"stack %q: build script not executable: %s — `chmod +x %s` (den runs it directly, "+
-					"so its shebang stays its own choice)",
-				s.Stack.Name, path, path)
+		p, err := ReadProvisioning(s.Stack)
+		if err != nil {
+			return err
 		}
+		provisioned[s.Stack.Name] = p
 	}
 
 	for i, s := range steps {
 		if !s.Build {
-			// Announced, never silent: `den build dgdevx` that printed one line
-			// would leave "devx was already built" indistinguishable from "den
-			// forgot devx". The reason carries its own remedy — see Step.Skipped:
-			// --force rebuilds an image that is already there, and does nothing
-			// at all for a stack with no build.sh.
-			fmt.Fprintf(out, "[%d/%d] %s: skipped, %s\n",
-				i+1, len(steps), s.Stack.Name, s.Skipped)
+			// Announced, never silent: a `den build dgdevx` that printed one
+			// line would leave "devx was already built" indistinguishable from
+			// "den forgot devx". The reason carries its own remedy.
+			fmt.Fprintf(out, "[%d/%d] %s: skipped, %s\n", i+1, len(steps), s.Stack.Name, s.Skipped)
 			continue
 		}
 		fmt.Fprintf(out, "[%d/%d] %s: building %s...\n", i+1, len(steps), s.Stack.Name, s.Stack.Image)
-		if err := script.Run(ctx, s.Stack, out); err != nil {
-			// The step is named because the script's own output is already on
-			// the same stream, several screens up: without this line the user
-			// sees a wall of build log and an exit code, and has to count the
-			// stages to learn which stack died.
-			return fmt.Errorf("stack %q: %s failed: %w", s.Stack.Name, ScriptPath(s.Stack), err)
+		if err := buildOne(ctx, d, s.Stack, provisioned[s.Stack.Name], out); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// buildOne is one stack's whole sequence. A function of its own so the
+// teardown can be a `defer` — in a loop it would pile up until Execute
+// returned, which is exactly the leak it exists to prevent.
+func buildOne(ctx context.Context, d Deps, s *config.Stack, p Provisioning, out io.Writer) error {
+	name := SandboxName(s.Name)
+
+	// A pre-existing build sandbox is a REFUSAL, not a `rm --force` first.
+	// `<stack>-build` is a legal nest name (the component charset allows it),
+	// so a blind cleanup can destroy a real sandbox of the user's. The teardown
+	// below being deferred, a leftover only survives a den killed by SIGKILL:
+	// rare enough to deserve a human look.
+	boxes, err := sbx.Ls(ctx, d.Sbx)
+	if err != nil {
+		return fmt.Errorf("stack %q: could not check whether %s already exists: %w", s.Name, name, err)
+	}
+	if sbx.Find(boxes, name) != nil {
+		return fmt.Errorf(
+			"stack %q: a sandbox named %s already exists — den will not remove it for you, "+
+				"because that name is also a legal nest name. Inspect it, then `sbx rm --force %s`",
+			s.Name, name, name)
+	}
+
+	scratch := ScratchDir(d.DenHome, s.Name)
+	if err := os.MkdirAll(scratch, 0o755); err != nil {
+		return fmt.Errorf("stack %q: could not create the build scratch %s: %w", s.Name, scratch, &config.FileError{Err: err})
+	}
+
+	// The parent's IMAGE, not its name: `--template` takes a reference. Empty
+	// for a root stack, which is what makes CreateArgv use `base:` instead.
+	parentImage := ""
+	if s.Parent != "" {
+		parentImage = s.ParentImage
+	}
+	argv, err := CreateArgv(s, parentImage, scratch)
+	if err != nil {
+		return err
+	}
+	if _, err := d.Sbx.Run(ctx, argv...); err != nil {
+		return fmt.Errorf("stack %q: could not create the build sandbox: %w", s.Name, err)
+	}
+	// From here on the VM exists: it must not outlive this function, whatever
+	// happens. This is the `trap` every build.sh had to write by hand, and that
+	// no test could verify.
+	defer func() {
+		if _, err := d.Sbx.Run(ctx, "rm", "--force", name); err != nil {
+			fmt.Fprintf(out, "warning: build sandbox %s could not be removed: %v\n", name, err)
+		}
+	}()
+
+	for i := range p.Steps {
+		if _, err := d.Sbx.Run(ctx, "exec", name, "--", "bash", "-lc", p.Payload(i)); err != nil {
+			return fmt.Errorf("stack %q: step %d/%d %s failed: %w",
+				s.Name, i+1, len(p.Steps), p.Steps[i].Path, err)
+		}
+	}
+
+	if _, err := d.Sbx.Run(ctx, "stop", name); err != nil {
+		return fmt.Errorf("stack %q: could not stop the build sandbox before saving: %w", s.Name, err)
+	}
+	// den passes the image name. THE point of the whole sequence: `image:` and
+	// what is actually saved cannot disagree, so `den build` succeeding and
+	// `den <nest>` demanding `den build` can no longer both be true.
+	if _, err := d.Sbx.Run(ctx, "template", "save", name, s.Image); err != nil {
+		return fmt.Errorf("stack %q: could not save image %s: %w", s.Name, s.Image, err)
 	}
 	return nil
 }

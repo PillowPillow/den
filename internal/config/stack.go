@@ -55,6 +55,14 @@ type Stack struct {
 	Provision Provision `yaml:"provision"`
 
 	Dir string `yaml:"-"` // stack directory, filled in at load time
+
+	// ParentImage is Parent's own `image:`, filled in by build.Chain's walk —
+	// never decoded from YAML, hence `yaml:"-"`. A build derives from the
+	// parent's IMAGE, not its name (`sbx create --template` takes a
+	// reference), and Chain already holds the parent *Stack at the moment it
+	// resolves it; carrying the image here spares Execute a second walk of the
+	// graph over a chain it was handed as a flat, already-ordered slice.
+	ParentImage string `yaml:"-"`
 }
 
 // DeclaredKits returns the kits this stack declares, in sbx's LAYERING ORDER:

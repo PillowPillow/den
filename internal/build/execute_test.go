@@ -1,193 +1,166 @@
 package build
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/sbx"
 )
 
-// recordingScript is the injected Script. It never spawns anything — issue #8
-// requires it in so many words ("aucun test ne lance de script réel"), and the
-// repo's suite forbids it anyway.
-type recordingScript struct {
-	ran  []string
-	fail map[string]error
-	// emit is written to out before returning, to prove the script's own
-	// output reaches the same stream den writes its stage lines on.
-	emit string
+// buildableStack writes a stack whose provision files really exist, since
+// Execute reads them. Returns the stack and the den home it lives under.
+func buildableStack(t *testing.T, name, image, base string, stepNames ...string) (*config.Stack, string) {
+	t.Helper()
+	home := t.TempDir()
+	dir := filepath.Join(home, "stacks", name)
+	steps := make([]string, 0, len(stepNames))
+	for _, n := range stepNames {
+		p := filepath.Join(dir, n)
+		writeFile(t, p, "echo "+n+"\n")
+		steps = append(steps, p)
+	}
+	return &config.Stack{
+		Name: name, Image: image, Base: base, Dir: dir,
+		Provision: config.Provision{Steps: steps},
+	}, home
 }
 
-func (r *recordingScript) Run(_ context.Context, s *config.Stack, out io.Writer) error {
-	r.ran = append(r.ran, s.Name)
-	if r.emit != "" {
-		fmt.Fprint(out, r.emit)
+// The sequence, in order, with the image name coming from den. This is the
+// assertion the whole change exists for: `template save` carries `image:`, so
+// it cannot disagree with what the spawn later looks for.
+func TestExecuteRunsTheWholeSequenceInOrder(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh", "two.sh")
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+	}}
+	if err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	return r.fail[s.Name]
-}
 
-func TestExecuteRunsTheStepsInOrder(t *testing.T) {
-	steps := plan(t, fixture, "delta", true, &fakeImages{})
-
-	script := &recordingScript{}
-	var out bytes.Buffer
-	if err := Execute(context.Background(), steps, script, &out); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	scratch := ScratchDir(home, "devx")
+	want := [][]string{
+		{"ls", "--json"},
+		{"create", "--name", "devx-build", "claude", scratch},
+		{"exec", "devx-build", "--", "bash", "-lc", "echo one.sh\n"},
+		{"exec", "devx-build", "--", "bash", "-lc", "echo two.sh\n"},
+		{"stop", "devx-build"},
+		{"template", "save", "devx-build", "devx:v1"},
+		{"rm", "--force", "devx-build"},
 	}
-	if got := strings.Join(script.ran, ","); got != "alpha,gamma,delta" {
-		t.Errorf("ran = %v, want alpha,gamma,delta", script.ran)
+	if len(fake.Calls) != len(want) {
+		t.Fatalf("calls =\n  %v\nwant %d calls", fake.Calls, len(want))
 	}
-}
-
-// A skipped step runs nothing but is ANNOUNCED, with the flag that overrides
-// it: a silent skip and a forgotten stack look identical from the outside.
-func TestExecuteAnnouncesASkippedStepWithoutRunningIt(t *testing.T) {
-	steps := plan(t, fixture, "delta", false, &fakeImages{present: []string{"alpha:v1"}})
-
-	script := &recordingScript{}
-	var out bytes.Buffer
-	if err := Execute(context.Background(), steps, script, &out); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if slices.Contains(script.ran, "alpha") {
-		t.Errorf("ran = %v, want alpha never run", script.ran)
-	}
-	text := out.String()
-	for _, want := range []string{"alpha", "skipped", "alpha:v1", "--force"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("output = %q, want it to contain %q", text, want)
+	for i := range want {
+		if !slices.Equal(fake.Calls[i], want[i]) {
+			t.Errorf("call %d =\n  %v\nwant\n  %v", i, fake.Calls[i], want[i])
 		}
 	}
 }
 
-// EVERY script is checked before the FIRST one runs. `den build dgdevx` that
-// built its base image for four minutes and only then found dgdevx has no
-// build.sh would have burned that time to reach a refusal den could have made
-// instantly.
-//
-// The plan is built BY HAND here, because Plan can no longer produce this
-// shape: it turns a missing script into a skip, or — for the stack the user
-// named — into its own refusal. What stays under test is the guard, in the
-// shape agent.RenderMixin's freshness guard takes.
-func TestExecuteChecksEveryScriptBeforeRunningAny(t *testing.T) {
-	stacks := loadStacks(t, fixture, "delta") // delta gets no build.sh
-	chain, _, err := Chain(stacks, "delta")
-	if err != nil {
-		t.Fatalf("building the chain: %v", err)
-	}
-	steps := make([]Step, 0, len(chain))
-	for _, s := range chain {
-		steps = append(steps, Step{Stack: s, Build: true})
-	}
-
-	script := &recordingScript{}
-	err = Execute(context.Background(), steps, script, io.Discard)
+// The failing step is NAMED. Without it the user sees a wall of build log and
+// an exit code, and has to count the stages to learn which script died.
+func TestExecuteNamesTheFailingStep(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh", "two.sh")
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"exec devx-build -- bash -lc echo two.sh\n": {Err: errors.New("exit status 1")},
+	}}
+	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
 	if err == nil {
-		t.Fatal("expected a refusal on a step whose build.sh does not exist")
+		t.Fatal("Execute succeeded over a failing step")
 	}
-	if len(script.ran) != 0 {
-		t.Errorf("ran = %v, want nothing run before the refusal", script.ran)
-	}
-	msg := err.Error()
-	for _, want := range []string{`"delta"`, ScriptName, "delta:v1"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("message = %q, want it to contain %q", msg, want)
+	for _, want := range []string{"devx", "step 2/2", "two.sh"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
 		}
 	}
 }
 
-// A SKIPPED step needs no script: it is not going to be run, and demanding one
-// would refuse a `den build dgdevx` whose base image is a prebuilt one nobody
-// rebuilds locally.
-func TestExecuteDoesNotDemandAScriptForASkippedStep(t *testing.T) {
-	steps := planScriptless(t, fixture, "delta", false, &fakeImages{}, "alpha")
-
-	if err := Execute(context.Background(), steps, &recordingScript{}, io.Discard); err != nil {
-		t.Fatalf("a skipped step must not need a build.sh: %v", err)
+// Teardown is an INVARIANT, not a `trap` each script had to remember. A failed
+// build must not leave the VM behind, and it must not save an image either.
+func TestExecuteTearsDownAfterAFailedStep(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"exec devx-build -- bash -lc echo one.sh\n": {Err: errors.New("boom")},
+	}}
+	_ = Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+	if !fake.HasCalled("rm", "--force", "devx-build") {
+		t.Error("no teardown after a failed step — the build VM leaks")
+	}
+	if fake.HasCalled("template", "save") {
+		t.Error("den saved an image over a failed build")
 	}
 }
 
-// A failing script stops the chain and NAMES the stack. Without that line the
-// user sees a wall of build log and an exit code, and has to count the stages
-// to learn which stack died.
-func TestExecuteNamesTheStackWhoseScriptFailed(t *testing.T) {
-	steps := plan(t, fixture, "delta", true, &fakeImages{})
-
-	script := &recordingScript{fail: map[string]error{"gamma": errors.New("exit status 2")}}
-	err := Execute(context.Background(), steps, script, io.Discard)
+// A pre-existing `<stack>-build` is a REFUSAL, never a blind `rm --force`:
+// that name is a legal nest name, so cleaning it up could destroy a real
+// sandbox of the user's. The message names the remedy.
+func TestExecuteRefusesAPreexistingBuildSandbox(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"devx-build","status":"running"}]}`)},
+	}}
+	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
 	if err == nil {
-		t.Fatal("expected the script failure to travel back")
+		t.Fatal("Execute reused a pre-existing build sandbox")
 	}
-	msg := err.Error()
-	for _, want := range []string{`"gamma"`, ScriptName, "exit status 2"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("message = %q, want it to contain %q", msg, want)
-		}
+	if !strings.Contains(err.Error(), "sbx rm --force devx-build") {
+		t.Errorf("error %q does not name the remedy", err)
 	}
-	// And it stops there: delta must not be built on top of a base that failed.
-	if slices.Contains(script.ran, "delta") {
-		t.Errorf("ran = %v, want the chain stopped at gamma", script.ran)
+	if fake.HasCalled("create") {
+		t.Error("den created over a pre-existing sandbox")
 	}
 }
 
-// The script's own output and den's stage lines share one stream, in order: a
-// build is something the user watches, and splitting the two would interleave
-// wrongly.
-func TestExecuteWritesTheScriptOutputOnTheSameStream(t *testing.T) {
-	steps := plan(t, fixture, "zeta", false, &fakeImages{})
-
-	script := &recordingScript{emit: "layer 1/3\n"}
-	var out bytes.Buffer
-	if err := Execute(context.Background(), steps, script, &out); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// Every provision file of the WHOLE chain is read before the first create.
+// Building four minutes of base image to then discover a missing script spends
+// that time to reach a refusal den could make instantly.
+func TestExecuteReadsEveryProvisionFileBeforeTheFirstCreate(t *testing.T) {
+	good, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	broken := &config.Stack{
+		Name: "dgdevx", Image: "dgdevx:v1", Base: "claude",
+		Dir:       filepath.Join(home, "stacks", "dgdevx"),
+		Provision: config.Provision{Steps: []string{filepath.Join(home, "stacks", "dgdevx", "gone.sh")}},
 	}
-	text := out.String()
-	stage := strings.Index(text, "zeta")
-	body := strings.Index(text, "layer 1/3")
-	if stage < 0 || body < 0 || stage > body {
-		t.Errorf("output = %q, want den's stage line before the script's own output", text)
-	}
-}
-
-// ScriptPath is the SOLE definition of where a build script lives: the
-// refusal and the execution must name the same file, or den would refuse a
-// path it never tried to run.
-func TestScriptPathIsUnderTheStackDirectory(t *testing.T) {
-	s := &config.Stack{Name: "devx", Dir: filepath.Join("home", "stacks", "devx")}
-	if got, want := ScriptPath(s), filepath.Join("home", "stacks", "devx", ScriptName); got != want {
-		t.Errorf("ScriptPath = %q, want %q", got, want)
-	}
-}
-
-// A build.sh committed without +x dies on `fork/exec: permission denied`, and
-// it used to die LATE — measured on the bench 2026-08-03, after the chain had
-// already built the stacks before it. den runs the script directly (so its
-// shebang stays its own choice), which makes the bit part of "is this
-// buildable".
-func TestExecuteRefusesANonExecutableScriptUpFront(t *testing.T) {
-	steps := plan(t, fixture, "delta", true, &fakeImages{})
-	path := ScriptPath(steps[len(steps)-1].Stack) // delta, the LAST step
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	script := &recordingScript{}
-	err := Execute(context.Background(), steps, script, io.Discard)
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+	}}
+	err := Execute(context.Background(),
+		[]Step{{Stack: good, Build: true}, {Stack: broken, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
 	if err == nil {
-		t.Fatal("expected a refusal on a build.sh that is not executable")
+		t.Fatal("Execute started a chain with an unreadable step")
 	}
-	if len(script.ran) != 0 {
-		t.Errorf("ran = %v, want nothing run — the refusal must land before the first build", script.ran)
+	if fake.HasCalled("create") {
+		t.Error("den created a VM before discovering the unreadable step")
 	}
-	if !strings.Contains(err.Error(), "chmod +x") {
-		t.Errorf("message = %q, want it to name the remedy", err)
+}
+
+// A skipped step is ANNOUNCED, never silent: "already built" and "den forgot
+// it" must not look the same from the outside.
+func TestExecuteAnnouncesSkippedSteps(t *testing.T) {
+	s := &config.Stack{Name: "devx", Image: "devx:v1"}
+	var out strings.Builder
+	fake := &sbx.Fake{}
+	if err := Execute(context.Background(),
+		[]Step{{Stack: s, Skipped: "image devx:v1 already built (--force rebuilds it)"}},
+		Deps{Sbx: fake, DenHome: t.TempDir()}, &out); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out.String(), "already built") {
+		t.Errorf("output %q does not carry the skip reason", out.String())
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("a skipped step touched sbx: %v", fake.Calls)
 	}
 }

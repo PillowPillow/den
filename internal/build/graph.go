@@ -147,7 +147,8 @@ func visit(stacks config.Stacks, name string, path []string, built map[string]bo
 		// the refusal names the stack that DECLARES the missing parent. The
 		// error from Get alone says `stack "base" not found`, which is true and
 		// unactionable: nothing in it points at the file to edit.
-		if _, err := stacks.Get(s.Parent); err != nil {
+		parent, err := stacks.Get(s.Parent)
+		if err != nil {
 			// ...but "fix `parent:` in <this stack>" is the remedy for ONE of
 			// Get's two verdicts. A parent that does not load is a parent that
 			// is really there: the `parent:` line naming it is correct, and the
@@ -176,6 +177,9 @@ func visit(stacks config.Stacks, name string, path []string, built map[string]bo
 				reason: fmt.Sprintf("its ancestor %q does not exist — fix `parent:` in %s", s.Parent, stackFile(s)),
 			}
 		}
+		// The parent's image is carried on the child so Execute does not have to
+		// re-resolve the graph it was handed a linear chain of.
+		s.ParentImage = parent.Image
 		if err := visit(stacks, s.Parent, append(slices.Clone(path), name), built, out); err != nil {
 			return err
 		}
