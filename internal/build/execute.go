@@ -80,6 +80,25 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 		// exactly what makes CreateArgv fall back to `base:` — and Execute was
 		// handed a flat chain precisely so it would not have to re-walk the
 		// graph to get it back.
+		// Guarded HERE, in the pre-flight, and not where the directory is
+		// actually emptied: buildOne's RemoveAll is the one destructive
+		// operation in the command, and ScratchDir collapses under an empty
+		// input — an empty stack name makes it the SHARED `cache/build` root,
+		// whose removal would wipe every stack's scratch, and an empty DenHome
+		// makes it the RELATIVE `cache/build/<stack>` under whatever directory
+		// den happens to run from. Neither is reachable through the CLI, but
+		// Deps and Step are exported bare structs anyone can fill, which is
+		// exactly the doctrine sbx.CreateArgv states for its own inputs — and
+		// "unreachable" is what CreateArgv's own comment said while a hole was
+		// open. Rejectable from config alone ⇒ rejected before the first side
+		// effect, which is this loop's whole reason to exist; leaving it in
+		// buildOne would have let the chain's `sbx ls` run first.
+		if d.DenHome == "" || s.Stack.Name == "" {
+			return fmt.Errorf(
+				"refusing to derive a build scratch from an empty den home or stack name "+
+					"(den home %q, stack %q) — the path would be the shared build cache root, "+
+					"or relative to the current directory", d.DenHome, s.Stack.Name)
+		}
 		scratch := ScratchDir(d.DenHome, s.Stack.Name)
 		argv, err := CreateArgv(s.Stack, s.Stack.ParentImage, scratch)
 		if err != nil {
@@ -158,21 +177,6 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out io.Writer) error {
 	name, scratch := plan.sandbox, plan.scratch
 
-	// The ONE destructive operation in the whole command, so it is guarded like
-	// one. ScratchDir joins DenHome + "cache/build" + the stack name: an empty
-	// stack name collapses it to the SHARED root and the RemoveAll below would
-	// wipe every stack's scratch, an empty DenHome makes it the RELATIVE
-	// `cache/build/<stack>` under whatever directory den happens to run from.
-	// Neither is reachable through the CLI — but Deps and Step are exported bare
-	// structs anyone can fill, which is exactly the doctrine sbx.CreateArgv
-	// states for its own inputs, and "unreachable" is what the comment in
-	// CreateArgv said while a hole was open.
-	if d.DenHome == "" || s.Name == "" {
-		return fmt.Errorf(
-			"refusing to prepare a build scratch from an empty den home or stack name "+
-				"(den home %q, stack %q) — the path would be the shared build cache root, "+
-				"or relative to the current directory", d.DenHome, s.Name)
-	}
 	// EMPTIED, not merely created. Spec §6 calls the scratch "un dossier **vide**
 	// monté dans la VM de build", and after one build it is no longer: the VM has
 	// had it mounted read-write and may have written into it, so the next build

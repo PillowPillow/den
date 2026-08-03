@@ -414,7 +414,12 @@ func TestExecuteEmptiesTheScratchBeforeEachBuild(t *testing.T) {
 // directory den runs from. Unreachable through the CLI, guarded anyway: Deps
 // and Step are exported bare structs, the doctrine sbx.CreateArgv states for
 // its own inputs.
-func TestExecuteRefusesToPrepareAScratchFromAnEmptyDenHome(t *testing.T) {
+//
+// The refusal lands in the PRE-FLIGHT, so not one sbx process runs first — not
+// even the chain's read-only `sbx ls`. That is this loop's stated reason to
+// exist, and a guard on the one destructive operation in the command is exactly
+// what must not be the exception to it.
+func TestExecuteRefusesToDeriveAScratchFromAnEmptyDenHome(t *testing.T) {
 	s, _ := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
@@ -422,10 +427,10 @@ func TestExecuteRefusesToPrepareAScratchFromAnEmptyDenHome(t *testing.T) {
 	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
 		Deps{Sbx: fake, DenHome: ""}, &strings.Builder{})
 	if err == nil {
-		t.Fatal("Execute prepared a build scratch from an empty den home")
+		t.Fatal("Execute derived a build scratch from an empty den home")
 	}
-	if fake.HasCalled("create") {
-		t.Errorf("den created a VM over a scratch it should have refused; calls: %v", fake.Calls)
+	if len(fake.Calls) != 0 {
+		t.Errorf("den touched sbx before refusing a scratch it could reject from config alone: %v", fake.Calls)
 	}
 }
 

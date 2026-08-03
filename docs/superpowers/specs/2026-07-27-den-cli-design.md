@@ -159,6 +159,30 @@ refus et non un ordre de priorité : deux origines pour une même image est une 
 préférence à arbitrer. Une stack **sans `provision.steps`** n'en pose aucun des deux : elle n'est pas
 constructible, et c'est une configuration déclarée (§6).
 
+`image:` est **obligatoire**, sur *toute* stack — constructible ou non. Un `image:` vide (ou blanc)
+est un refus au **chargement** (`config.LoadStack`), jamais une valeur que den complète. Décidé le
+2026-08-03 contre la tentation de ne l'exiger que des stacks constructibles, à la forme des deux
+refus voisins ci-dessus : le vide voyage dans **trois** directions, et seule la première se voit.
+
+1. **Constructible.** La stack se construit entièrement, `sbx template save <S>-build ""` s'exécute,
+   den annonce le succès. Le `den <nest>` suivant répond « image&nbsp;&nbsp;n'est pas construite —
+   lance `den build devx` » (l'espace doublé est la place de l'image), c'est-à-dire exactement ce que
+   l'utilisateur vient de faire. C'est la **boucle fermée** du §6 : den possédant `template save` en
+   corrige le NOM, rien n'en corrigeait la vacuité.
+2. **En tant que `parent:`.** L'enfant reçoit un `ParentImage` vide, que `build.CreateArgv` lit comme
+   « stack racine », d'où un repli sur le `base:` de l'enfant — qu'une stack déclarant `parent:` n'a
+   pas. Le refus « no origin » tombe alors sur l'ENFANT, en nommant *son* `stack.yaml`, qui déclare
+   déjà le `parent:` que le message réclame : mauvais fichier, remède déjà appliqué. Et il tombe dans
+   le pré-vol de chaîne, donc **une** stack sans `image:` refuse le `den build` **entier**. C'est ce
+   cas, et lui seul, qui impose le contrôle **inconditionnel** : il survit intact à un contrôle gardé
+   par `Buildable()` dès que le parent sans image est lui-même tirable — vérifié contre
+   `build.CreateArgv` le 2026-08-03 avant de trancher.
+3. **Tirable.** `sbx.CreateArgv` refuse bien un `image:` vide, mais seulement au `create` du spawn,
+   *après* les worktrees et le profil agent. Refuser au chargement, c'est l'ordonnancement tenu
+   partout ailleurs (§6) — tout ce qui est rejetable depuis la config seule l'est avant le premier
+   effet de bord — et cela rend à ce garde-là son rôle de **garde-frontière**, celui que sa propre
+   doctrine lui assigne.
+
 ### 4.3 `nests/<n>.yaml` (objet spawnable)
 
 ```yaml
@@ -415,6 +439,11 @@ séquence ne touche.
   `sbx template ls` ne rapporte que `repository` + `tag`, jamais de digest — donc elle n'apparie
   rien (`sbx.IsDigestRef`) : `den build` reconstruit l'ancêtre (dépenser un build plutôt que sauter
   sans justification), le contrôle du spawn se tait (voir §11 et §14.1).
+- **Un `image:` vide est un refus au chargement, inconditionnel** (§4.2, qui porte les trois
+  conséquences et la raison de l'inconditionnalité). C'est le complément indispensable de « den
+  possède `template save` » : la séquence rend le nom correct par construction, elle ne le rend pas
+  non vide. Sans ce refus, la boucle fermée que tout cet amendement existe pour tuer se rouvre
+  telle quelle, un cran plus bas.
 - **Une stack sans `provision.steps` n'est pas constructible, et c'est une configuration déclarée** :
   son `image:` peut nommer une image de registre que `sbx` tire. Elle est **sautée et nommée**,
   jamais un refus — c'est la même réponse que le contrôle d'image du spawn (§14.1), et les deux
