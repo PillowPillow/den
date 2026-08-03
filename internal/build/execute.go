@@ -236,6 +236,24 @@ func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out,
 	}()
 
 	for i := range plan.provisioning.Steps {
+		// Stream, not Run, and it is the STEPS ALONE that get it: they are the
+		// part the stack authored, addressed to the user and arriving over
+		// minutes, while `create`, `stop`, `save` and `rm` are den's own plumbing
+		// (and `ls --json` is parsed, which is Run's whole reason to exist).
+		//
+		// Two things Run could not do, each of which cost the user something
+		// real. Stream relays DURING the step instead of after it — four minutes
+		// of silent apt-get is indistinguishable from den having hung — and it
+		// relays STDERR, which Run surfaces only inside ExecError, i.e. only on
+		// FAILURE: every apt/pip warning of a step that SUCCEEDED was dropped
+		// without trace. See sbx.Runner's godoc for why that is a third method
+		// rather than a flag on Run.
+		//
+		// On failure the log has therefore already reached out, above the error —
+		// the reading order the user needs — and the ExecError's Stderr is empty,
+		// so failureCause below takes the cause from Err: `... failed: exit
+		// status 1`, spec §6's shape, with the diagnostic sitting just above it.
+		//
 		// `-- bash -lc <payload>`, and every token earns its place:
 		//
 		//   - `--` ends sbx's own flag parsing before den's text begins. The
@@ -264,18 +282,7 @@ func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out,
 		// ATTESTED against a real sbx on 2026-08-03: `sbx exec <name> -- bash
 		// -lc '<payload>'` runs, `--` included. This repo attests sbx behaviour
 		// with its date rather than extrapolating it.
-		stdout, err := d.Sbx.Run(ctx, "exec", name, "--", "bash", "-lc", plan.provisioning.Payload(i))
-		// Relayed on SUCCESS AND ON FAILURE, and before the error is returned so
-		// the log reads above the cause rather than after it. A build that
-		// swallowed its own output left the user with a stack name and an exit
-		// code for four minutes of apt-get. Only the STEPS are relayed — they are
-		// the part the stack authored; `create`, `stop`, `save` and `rm` are
-		// den's own plumbing.
-		//
-		// After the step, not during: real-time streaming would need a new
-		// sbx.Runner method (Run captures to parse), and adding one is out of
-		// this change's scope. The whole step's log arrives at once.
-		out.Write(stdout)
+		err := d.Sbx.Stream(ctx, out, "exec", name, "--", "bash", "-lc", plan.provisioning.Payload(i))
 		if err != nil {
 			return failureCause(
 				fmt.Sprintf("stack %q: step %d/%d %s failed",

@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -179,7 +180,14 @@ func TestExecuteNamesTheFailingStep(t *testing.T) {
 // the entire provisioning script, then a lone `: `, and only on the last line
 // the one actionable fact. Spec §14.1 names that shape as a defect of the
 // pre-#8 experience; the payload made it worse. The cause now comes from
-// sbx.ExecError.Detail — the stderr — and the argv is gone.
+// sbx.ExecError.Detail, and the argv is gone.
+//
+// The ExecError scripted below carries a Stderr, which a REAL step failure no
+// longer does — Stream relays stderr as it is produced and leaves the field
+// empty (see the test below for that shape). It is kept as-is anyway: what this
+// test guards is the argv SUPPRESSION, and a non-empty Stderr is the harder
+// case for it — the cause is long, and the temptation to prefix it with the
+// argv is exactly what regressed once already.
 func TestExecuteNamesTheFailingStepWithoutInliningThePayload(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	payload := "echo one.sh\n"
@@ -216,6 +224,52 @@ func TestExecuteNamesTheFailingStepWithoutInliningThePayload(t *testing.T) {
 	}
 }
 
+// SPEC §6's MESSAGE, whole, on the error shape a step failure now actually
+// produces.
+//
+//	stack "devx": step 2/3 ./provision/gh.sh failed: exit status 1
+//
+// Every other failure test above scripts an ExecError carrying a Stderr, which
+// is what Run produced. Stream does not: it has already written sbx's stderr to
+// the build log, so it leaves the field empty rather than making the user read
+// the same apt-get failure twice — and ExecError.Detail then falls back to Err.
+// That fallback is the last link in the chain that renders the promised line,
+// and nothing exercised it THROUGH this package: an equality assertion, not a
+// `contains`, because the promise is the shape and a `contains` would hold just
+// as well with an argv wedged in front of it.
+func TestExecuteRendersAStepFailureAsSpecPromises(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	step := filepath.Join(home, "stacks", "devx", "one.sh")
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		// Exactly what sbx.Exec.Stream builds on a failing step: no Stderr, the
+		// text having gone to the writer as it was produced.
+		"exec devx-build -- bash -lc echo one.sh\n": {
+			Output: []byte("E: Unable to locate package ripgrep\n"),
+			Err: &sbx.ExecError{
+				Bin:  "sbx",
+				Args: []string{"exec", "devx-build", "--", "bash", "-lc", "echo one.sh\n"},
+				Err:  errors.New("exit status 1"),
+			},
+		},
+	}}
+	var out strings.Builder
+	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &out, &strings.Builder{})
+	if err == nil {
+		t.Fatal("Execute succeeded over a failing step")
+	}
+	want := `stack "devx": step 1/1 ` + step + " failed: exit status 1"
+	if err.Error() != want {
+		t.Errorf("error =\n  %s\nwant\n  %s", err.Error(), want)
+	}
+	// And the diagnostic is in the log ABOVE that line, which is the only place
+	// it exists now — it is not in the error, by design.
+	if !strings.Contains(out.String(), "E: Unable to locate package ripgrep") {
+		t.Errorf("the relayed diagnostic never reached the build log:\n%s", out.String())
+	}
+}
+
 // Same treatment for the CREATE failure, whose argv carries the scratch path
 // and, on a derived stack, the parent's `--template`. den has already named the
 // stack and the operation; the argv in front of the cause is the same defect at
@@ -249,6 +303,16 @@ func TestExecuteDoesNotInlineTheCreateArgvOnAFailedCreate(t *testing.T) {
 // The provisioning output reaches the user. Every step's bytes used to be
 // thrown away — `if _, err := d.Sbx.Run(...)` at all five call sites — leaving
 // four minutes of apt-get represented by a stack name and an exit code.
+//
+// This is ALSO what pins the step onto Stream rather than Run, without a
+// `Streams` slice on sbx.Fake to assert against: buildOne no longer writes
+// anything itself, and only Fake.Stream writes the scripted output to `out` —
+// Fake.Run hands it back instead. A step that regressed to Run would leave out
+// empty and fail here. What Stream additionally carries — the STDERR of a step
+// that SUCCEEDS, the regression it was added for — cannot be shown from this
+// package at all: sbx.Response has one output field and the Fake has no notion
+// of two streams. That property is held on a real process, in
+// TestExecStreamRelaysStdoutAndStderrInOrderIncludingOnSuccess.
 func TestExecuteWritesEveryStepsOutput(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh", "two.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
@@ -351,13 +415,21 @@ type ctxCapturingRunner struct {
 }
 
 func (r *ctxCapturingRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
-	if len(args) > 0 && args[0] == "exec" {
-		r.cancel()
-	}
 	if len(args) > 0 && args[0] == "rm" {
 		r.rmCtx = ctx
 	}
 	return r.Fake.Run(ctx, args...)
+}
+
+// The cancellation is armed HERE and not in Run, because the provisioning step
+// travels through Stream now: a step-triggered `r.cancel()` left in Run would
+// never fire, and the test would still pass — on a context nothing had
+// canceled, proving nothing about the teardown's detachment.
+func (r *ctxCapturingRunner) Stream(ctx context.Context, out io.Writer, args ...string) error {
+	if len(args) > 0 && args[0] == "exec" {
+		r.cancel()
+	}
+	return r.Fake.Stream(ctx, out, args...)
 }
 
 // THE regression this whole task exists to prevent: cli.Execute now wires
