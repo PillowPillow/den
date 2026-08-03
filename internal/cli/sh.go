@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
@@ -13,10 +14,13 @@ import (
 
 // newShCmd opens a shell in an already live sandbox.
 //
-// What `den sh` DECIDES comes only from what `sbx ls --json` reports: the den
-// home is read for exactly one advisory purpose — ssh.mode, for the empty-agent
-// warning below — and every failure to read it is swallowed, so a broken ~/.den
-// still never costs the user their shell.
+// What `den sh` DECIDES comes from the SANDBOX and nothing else: `sbx ls --json`
+// for its status, and the kit dispatcher's own journal for the §9.1 freshness
+// gate. The den home is read for exactly one advisory purpose — ssh.mode, for
+// the empty-agent warning below — and every failure to read it is swallowed, so
+// a broken ~/.den still never costs the user their shell. A refused gate does
+// cost it, deliberately: that one is a fact about the sandbox being entered,
+// not about den's configuration.
 //
 // denHome is a POINTER for the reason newRmCmd's is: --den-home is a persistent
 // flag, and its value only exists once cobra has parsed it, after this
@@ -25,7 +29,14 @@ import (
 // goos names the OS whose ssh-agent remedy the warning quotes. Threaded from
 // the wiring site like spawn.Deps.GOOS rather than read here from runtime.GOOS:
 // den's convention is that system access is named where the tree is assembled.
-func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Result, goos string) *cobra.Command {
+//
+// freshness is the §9.1 gate's patience, the SAME value spawn.Deps carries, and
+// it is threaded for the reason cli.Deps.Freshness is injected at all: its clock
+// is real, so a command tree built by a test must be able to hand it a clock
+// that is not. `den sh` only consults it on the branch that starts a stopped
+// sandbox — the branch that waits.
+func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Result, goos string,
+	freshness agent.GateOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "sh <name>",
 		Short: "Open a shell in an existing sandbox",
@@ -43,9 +54,27 @@ func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Resul
 				if err := b.CheckAttachable(); err != nil {
 					return err
 				}
-				if b.IsStopped() {
+				stopped := b.IsStopped()
+				if stopped {
 					fmt.Fprintf(cmd.OutOrStdout(),
 						"sandbox %s is stopped: it restarts on attach (its state is kept)\n", b.Name)
+				}
+				// The §9.1 gate, on the door spawn does not own. `den <nest>`
+				// refuses a sandbox whose agent den knows to be stale; this
+				// command reached the same sandbox and said nothing (issue #27).
+				// It runs AFTER the stopped-sandbox line above, which is what
+				// tells the user the gate below will restart the VM, and BEFORE
+				// the attach, because a refusal behind a shell that owns the
+				// terminal is a refusal nobody reads.
+				//
+				// stopped is passed through, not re-derived: on a stopped
+				// sandbox this command STARTS one, and §9.2 makes that branch
+				// wait rather than read once. The verdict handling — refuse,
+				// warn, note — belongs to spawn: two doors answering the same
+				// journal differently is exactly the defect being closed.
+				if err := spawn.CheckFreshnessOnReentry(
+					cmd.Context(), runner, cmd.OutOrStdout(), b.Name, stopped, freshness); err != nil {
+					return err
 				}
 				// Before the attach, never after: once the shell has the terminal,
 				// a warning printed behind it is a line the user scrolls past on

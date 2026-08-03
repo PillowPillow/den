@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/spf13/cobra"
 )
@@ -84,12 +86,29 @@ func executeCmdWithSbx(t *testing.T, r sbx.Runner, args ...string) (string, erro
 //
 // Tests that mean to exercise the warning inject their own probe and their own
 // den home (runShWithAgent, sh_test.go).
+// The gate options are replaced too, and for the reason cli.Deps.Freshness
+// exists: SystemDeps() carries time.Sleep and time.Now, and `den sh` on a
+// STOPPED sandbox now waits on the §9.1 gate (sh.go). Left real, any such test
+// would stand still for the full 90 s budget against a fake that answers
+// nothing — the suite would look hung rather than red.
 func sbxDeps(t *testing.T, r sbx.Runner) Deps {
 	t.Helper()
 	deps := SystemDeps()
 	deps.Sbx = r
 	deps.SSHAgent = nil
+	deps.Freshness = fakeGateOptions()
 	return deps
+}
+
+// fakeGateOptions is DefaultGateOptions' budget on an injected clock that jumps
+// instead of sleeping: the wait's SHAPE is preserved (same timeout, same
+// interval, so maxRounds is the real one) while the suite never blocks.
+func fakeGateOptions() agent.GateOptions {
+	o := agent.DefaultGateOptions()
+	now := time.Now()
+	o.Sleep = func(d time.Duration) { now = now.Add(d) }
+	o.Now = func() time.Time { return now }
+	return o
 }
 
 // executeCmdWithSbxSeparateStreams combines executeCmdWithSbx (injected

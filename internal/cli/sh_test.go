@@ -150,6 +150,185 @@ func TestShRefusesASandboxThatIsNotRunning(t *testing.T) {
 	}
 }
 
+// shGateLog renders a dispatcher journal whose LAST run reports on den's own
+// mixin for this sandbox. `verdict` is the whole verdict line's leading token —
+// `ok` or `fail … exit=1` — because what agent.ParseKitLog reads is that token
+// and the path that follows it.
+//
+// The path carries the `002-` prefix sbx assigns, which agent.MixinName
+// deliberately does NOT match on: writing the realistic form here is what keeps
+// this fixture a sample of the measured journal rather than a restatement of
+// the parser.
+func shGateLog(sandbox, verdict string) []byte {
+	path := "/etc/durable-startup.d/002-startup-den-" + strings.ReplaceAll(sandbox, ".", "-") + "/000-cmd.sh"
+	return []byte("=== dispatcher run 2026-08-03T10:00:00Z ===\n" +
+		"> " + path + "\n" +
+		verdict + " " + path + "\n")
+}
+
+// shGateRead is the key of the ONE `sbx exec` agent.ReadFreshness makes.
+func shGateRead(sandbox string) string {
+	return "exec " + sandbox + " cat /var/log/sbx-kit-startup.log"
+}
+
+// #18's hole, entered through the other door. `den <nest>` holds the §9.1 gate
+// since PR #26 — it refuses a sandbox whose agent den KNOWS was not updated —
+// but `den sh` does not go through spawn.Spawn at all, and on the bench the
+// very same sandbox that `den <nest>` refused handed out a shell in silence.
+//
+// A guarantee held by one door out of two is more misleading than no guarantee:
+// §9.1 says "a sandbox never starts with a stale agent", and `den sh` on a
+// STOPPED sandbox starts one.
+func TestShRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+		shGateRead("api"): {Output: shGateLog("api", "fail")},
+	}}
+
+	_, err := executeCmdWithSbx(t, f, "sh", "api")
+	if err == nil {
+		t.Fatal("a failed §9.1 gate must not lead to a shell")
+	}
+	for _, want := range []string{"api", "§9.1", "/var/log/sbx-kit-startup.log"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must contain %q; got: %v", want, err)
+		}
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("a refused gate must attach nowhere; attaches: %v", f.Attaches)
+	}
+}
+
+// The case issue #27 names as the real one: `den sh` on a STOPPED sandbox
+// STARTS it, and the gate must hold there too rather than be skipped for a VM
+// den is about to boot.
+//
+// The fixture is TWO blocks — a failed run, then the one the restart appended,
+// failing again, which is what a deterministically broken freshness command
+// does on every boot. It pins that the stopped branch REFUSES; it does not by
+// itself prove den waited, since a single read of the last block would refuse
+// this fixture too. TestShPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox
+// below is the one that discriminates, and it exists because the two are
+// otherwise indistinguishable — which is exactly how the hole got in.
+func TestShWaitsForTheGateWhenItStartsAStoppedSandbox(t *testing.T) {
+	log := append(shGateLog("api", "fail"), shGateLog("api", "fail")...)
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+		shGateRead("api"): {Output: log},
+	}}
+
+	_, err := executeCmdWithSbx(t, f, "sh", "api")
+	if err == nil {
+		t.Fatal("starting a stopped sandbox whose gate failed must not lead to a shell")
+	}
+	if !strings.Contains(err.Error(), "§9.1") {
+		t.Errorf("the refusal must be the §9.1 one; got: %v", err)
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("a refused gate must attach nowhere; attaches: %v", f.Attaches)
+	}
+}
+
+// ...and the wait really is a WAIT, not a single read wearing its name.
+//
+// This is the property that closes the hole. A restart makes the dispatcher
+// RE-RUN (measured, agent.KitLogPath) and ParseKitLog reads only the LAST
+// block, so right after `den sh` wakes a stopped sandbox the fresh block has
+// begun and reported nothing: a lone read answers GatePending, prints a note,
+// and opens a shell while the agent is mid-update — #18's silence rebuilt
+// inside the fix for #27. Polling is what lets the verdict arrive.
+//
+// The fixture stays pending forever because sbx.Fake answers every call with
+// the same bytes; a journal that fills in mid-wait is what the real dispatcher
+// does and what smoke #3 measures. What is assertable here is the SHAPE of the
+// wait — more than one read, announced, and a budget that runs out is a note
+// rather than a refusal.
+//
+// The clock is the injected one (sbxDeps), so the rounds happen instantly.
+func TestShPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+		// A run that has begun and reported nothing: GatePending, forever.
+		shGateRead("api"): {Output: []byte("=== dispatcher run 2026-08-03T10:00:00Z ===\n")},
+	}}
+
+	stdout, err := executeCmdWithSbx(t, f, "sh", "api")
+	if err != nil {
+		t.Fatalf("a budget that runs out is a note, never a refusal: %v", err)
+	}
+	reads := 0
+	for _, c := range f.Calls {
+		if strings.Join(c, " ") == shGateRead("api") {
+			reads++
+		}
+	}
+	if reads < 2 {
+		t.Errorf("the stopped branch must POLL the journal; %d read(s), calls: %v", reads, f.Calls)
+	}
+	if !strings.Contains(stdout, "waiting for agent freshness") {
+		t.Errorf("a wait den actually performs must be announced; got: %q", stdout)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+		t.Errorf("an exhausted budget must still open the shell; attaches: %v", f.Attaches)
+	}
+}
+
+// The other half: a gate that PASSED costs the user nothing — no line, and the
+// shell they asked for. Asserted together with the refusal above, because a
+// `den sh` that refused everything would satisfy that test alone.
+func TestShAttachesAndStaysSilentWhenTheFreshnessGatePassed(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+		shGateRead("api"): {Output: shGateLog("api", "ok")},
+	}}
+
+	stdout, err := executeCmdWithSbx(t, f, "sh", "api")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+		t.Errorf("a passing gate must not cost the shell; attaches: %v", f.Attaches)
+	}
+	if strings.Contains(stdout, "§9.1") {
+		t.Errorf("a passing gate is the ordinary outcome and says nothing; got: %q", stdout)
+	}
+}
+
+// The gate is read BEFORE the attach, not alongside it. Read after, its refusal
+// would arrive behind a shell that already owns the terminal — which is the
+// exact defect the ordering of warnEmptyAgentOnReentry already avoids.
+func TestShReadsTheFreshnessGateBeforeAttaching(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+		shGateRead("api"): {Output: shGateLog("api", "ok")},
+	}}
+
+	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	read, attach := -1, -1
+	for i, c := range f.Calls {
+		if strings.Join(c, " ") == shGateRead("api") {
+			read = i
+		}
+		if slices.Contains(c, "-it") {
+			attach = i
+		}
+	}
+	if read < 0 {
+		t.Fatalf("den sh must read the §9.1 journal; calls: %v", f.Calls)
+	}
+	if attach < 0 || read > attach {
+		t.Errorf("the journal must be read before the attach; read=%d attach=%d, calls: %v",
+			read, attach, f.Calls)
+	}
+}
+
 // runShWithAgent runs `den sh` through the REAL command tree — NewRootCmdWith,
 // not a hand-built sh command — with an injected sbx.Runner and SSH probe, on a
 // given den home.

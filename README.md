@@ -200,8 +200,12 @@ and never saves an image.
 Each step is **its own `sbx exec`**, which is what lets a failure name the script that produced it:
 
 ```
-stack "devx": step 2/3 ./provision/gh.sh failed: E: Unable to locate package ripgrep
+stack "devx": step 2/3 $DEN_HOME/stacks/devx/provision/gh.sh failed: E: Unable to locate package ripgrep
 ```
+
+The path is absolute because `provision.steps` is resolved against the stack directory at load time,
+and because the message is meant to name the file you open. `$DEN_HOME` stands in for its expanded
+value here.
 
 The price is that every step opens a **fresh shell**. Between two steps only the VM's filesystem
 survives: installed packages and dropped binaries stay, but variables, functions and `cwd` die with

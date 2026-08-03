@@ -381,8 +381,16 @@ appliquée à la seule opération destructrice de la commande.
 `steps` est joué **un `sbx exec` par entrée**, ce qui donne le nommage de l'étape fautive :
 
 ```
-stack "devx": step 2/3 ./provision/gh.sh failed: exit status 1
+stack "devx": step 2/3 $DEN_HOME/stacks/devx/provision/gh.sh failed: exit status 1
 ```
+
+**Le chemin est ABSOLU, et c'est arbitré** (issue #30). Ce spec a longtemps montré
+`./provision/gh.sh`, un chemin relatif, alors que `config.LoadStack` résout `provision.steps` en
+chemins absolus dès le chargement (`resolveAgainst`) : den n'a jamais émis autre chose qu'un chemin
+absolu, et c'était **l'exemple** qui avait tort. Il est corrigé plutôt que le rendu, pour la doctrine
+du §2 — le message nomme le fichier à ouvrir, et un chemin cliquable dans un terminal qui les résout
+vaut mieux qu'un chemin court. `$DEN_HOME` est écrit ici pour que l'exemple ne dépende pas de la
+machine qui l'a rédigé ; le message réel porte le chemin expansé.
 
 Le prix de ce nommage est que chaque `exec` ouvre **un shell neuf**. Entre deux steps, **seul le
 système de fichiers de la VM persiste** : les paquets installés et les binaires posés restent, les
@@ -642,8 +650,27 @@ Quatre verdicts, et ce qu'ils coûtent :
   sur cette même sandbox (§11). Rien n'est perdu — le dispatcher **rejoue** au redémarrage suivant
   (mesuré, §14.0), donc la porte est réévaluée exactement quand la sandbox revient.
 
-**Portée connue et non couverte** : `den sh <sandbox>` n'interroge pas la porte — c'est une commande
-à part, qui ne passe pas par la séquence du §6. Le trou est mesuré et suivi (issue #27), pas ignoré.
+- **`den sh <sandbox>` sur une sandbox qui TOURNE** → il **lit une fois**, comme `--detach` et pour
+  la raison inverse : la sandbox est déjà debout, le journal porte donc déjà le verdict qui existe,
+  et faire patienter une ré-entrée ordinaire pour un verdict non arrivé la taxerait sans rien
+  attraper. Un verdict **échoué** refuse, exactement comme sur le chemin du §6 ;
+- **`den sh <sandbox>` sur une sandbox ARRÊTÉE** → il **attend**, en l'annonçant, parce que la
+  première règle de cette liste s'applique telle quelle : den attache un shell, et il démarre la VM
+  pour le faire. Lire une seule fois y serait pire qu'inutile — le `sbx exec … cat` redémarre la
+  VM, le dispatcher **rejoue**, et `ParseKitLog` ne lit que le **dernier** bloc : la lecture unique
+  tomberait donc sur un bloc qui vient de commencer et n'a rien rendu, imprimerait une `note:` et
+  ouvrirait un shell pendant que l'agent se met à jour, le `fail` du bloc précédent devenu
+  invisible. C'est le silence de #18 reconstitué à l'intérieur du correctif de #27.
+
+**La porte tient sur les DEUX chemins depuis l'issue #27.** Elle ne tenait d'abord que sur
+`den <nest>` : `den sh` est une commande à part, qui ne passe pas par la séquence du §6, et sur le
+banc la sandbox `gamma` dont la porte venait d'être prouvée fermée (`fail … exit=1`) refusait
+`den <nest> --agent broken` **et** donnait un shell en silence à `den sh gamma`. Une garantie tenue
+par une porte sur deux est plus trompeuse que pas de garantie du tout, d'autant que `den sh` sur une
+sandbox **arrêtée** la redémarre — c'est-à-dire exactement le « une sandbox démarre » dont parle le
+§9.1. L'arbitrage du verdict vit désormais dans **une seule fonction** (`spawn.reportFreshness`) :
+deux portes qui liraient le même journal et en tireraient des conclusions différentes seraient la
+même classe de défaut, reconstituée.
 
 ---
 

@@ -221,9 +221,9 @@ func TestExecStreamRelaysStdoutAndStderrInOrderIncludingOnSuccess(t *testing.T) 
 // The exit code stays reachable, and the stderr is NOT folded into the message
 // a second time: Stream already wrote it to the caller's writer, so ExecError's
 // Stderr is left empty and Detail falls back to Err. That is what makes
-// internal/build render `step 2/3 ./provision/gh.sh failed: exit status 1`, the
-// shape spec §6 promises, instead of repeating the apt-get failure the user has
-// just read.
+// internal/build render `step 2/3 <absolute step path> failed: exit status 1`,
+// the shape spec §6 promises, instead of repeating the apt-get failure the user
+// has just read.
 //
 // Both halves are asserted, because either alone would pass on a broken
 // implementation: an empty message with the text nowhere, or the text in both

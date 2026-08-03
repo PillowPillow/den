@@ -227,13 +227,13 @@ func TestExecuteNamesTheFailingStepWithoutInliningThePayload(t *testing.T) {
 // SPEC §6's MESSAGE FRAME, on the error shape a step failure now actually
 // produces:
 //
-//	stack "devx": step 2/3 ./provision/gh.sh failed: exit status 1
+//	stack "devx": step 2/3 $DEN_HOME/stacks/devx/provision/gh.sh failed: exit status 1
 //
-// The spec's own example names a RELATIVE path (./provision/gh.sh); config
-// resolves provision.steps to an ABSOLUTE path at load time, so den emits and
-// this test asserts an absolute one instead. That divergence is left open —
-// spec-vs-shipped arbitration, tracked in issue #30 — and what this
-// test actually pins down is the FRAME around it: `stack %q: step i/n <path>
+// The path is ABSOLUTE on both sides now. config resolves provision.steps at
+// load time, so den never emitted anything else; the spec showed a relative
+// `./provision/gh.sh` until issue #30 arbitrated the divergence in favour of
+// the shipped form, on the doctrine that the message names the file to open.
+// What this test pins down is the FRAME around it: `stack %q: step i/n <path>
 // failed: <cause>`, no argv, and the cause reaching Detail() through the Err
 // fallback rather than Stderr.
 //

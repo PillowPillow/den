@@ -4,3 +4,4 @@ nest: web   sandbox: web.feat123   window: 9100-9109 (canonical)
   api   3000       http://127.0.0.1:9101
   cdp   9223       http://127.0.0.1:9102  [loopback-locked]
   remote?  ssh -L 9100:127.0.0.1:9100 you@$(hostname)
+           run it FROM the other machine; needs an SSH server on this host (not `sbx ssh`)
