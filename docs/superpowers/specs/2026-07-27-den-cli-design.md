@@ -16,7 +16,9 @@ en une commande, sans retaper mixin/kits/policy à la main. La microVM reste la 
   **exemple** à recopier, pas une dépendance.
 - **Périmètre v1 = runtime + build** :
   - *runtime* : spawn-or-attach, shell, ls, ports, rm d'une sandbox ; multi-projet natif.
-  - *build* : orchestration DAG des images (`den build`), réutilise les `build.sh` existants.
+  - *build* : orchestration DAG des images (`den build`). den possède la séquence de bout en bout,
+    du `sbx create` au `sbx template save` ; une stack ne fournit que ses scripts de
+    provisionnement (§6).
 - **Interactif d'abord.** Le flux **agent autonome** (VM éphémère `--clone`, review→merge,
   prune) est **réservé dans le vocabulaire** mais **hors v1**.
 - La CLI vit dans un **nouveau dépôt** (elle-même). `~/.den/` contient la config utilisateur.
@@ -67,12 +69,15 @@ actionnable, jamais normalisé en silence : normaliser casserait l'aller-retour
   config.yaml              # défauts globaux (agents, ssh, egress baseline, worktree, defaults)
   stacks/
     devx/
-      stack.yaml           # image + parent (DAG) + kit + egress stack
-      build.sh             # produit l'image devx:v1 (script existant)
+      stack.yaml           # image + base|parent (DAG) + provision + kit + egress stack
+      provision/           # scripts joués DANS la VM de build, un `sbx exec` par entrée (§6)
+        go-tools.sh · gh.sh · playwright.sh
       kit/spec.yaml        # overlay env/policy de la stack
     dgdevx/
       stack.yaml           # parent: devx
-      build.sh · kit/spec.yaml
+      provision/ · kit/spec.yaml
+  lib/                     # fichiers `includes:` partagés entre stacks — définitions shell
+    common.sh              #   atteint depuis une stack par `../../lib/common.sh`
   nests/
     review.yaml
     fullstack.yaml
@@ -81,7 +86,12 @@ actionnable, jamais normalisé en silence : normaliser casserait l'aller-retour
   worktrees/               # worktrees générés (layout central par défaut)
     <wt>/<repo>/
   cache/                   # optionnel, reconstructible — jamais source de vérité
+    build/<stack>/         #   dossier vide monté dans la VM de build (§6)
 ```
+
+`lib/` n'a **aucune sémantique pour den** : c'est l'emplacement conventionnel des fichiers qu'une
+stack cite dans `includes:`, rien de plus. den ne lit que `stacks/*/stack.yaml` et les chemins que
+ceux-ci déclarent ; un `lib/` absent n'est un défaut que pour la stack qui le référence.
 
 La **vérité de « ce qui tourne »** vient de `sbx ls --json` : l'identité de chaque sandbox est
 attribuée à un nest (et un worktree) par décomposition de son **nom** — **pas de base de données
@@ -123,16 +133,31 @@ egress:                                  # allowlist baseline, TOUTES sandboxes
 ### 4.2 `stacks/<n>/stack.yaml` (recette image)
 
 ```yaml
-image: dgdevx:v1        # passé à `sbx create --template`
-parent: devx            # DAG de build (build devx avant dgdevx)
+image: dgdevx:v1        # passé à `sbx create --template` au spawn ; produit par `den build`
+parent: devx            # DAG de build (build devx avant dgdevx) — exclusif avec `base`
+base: claude            # RACINES SEULEMENT : positionnel AGENT de `sbx create`, qui choisit
+                        #   l'image de départ quand il n'y a pas de `--template`
+provision:              # optionnel : ce que den joue DANS la VM de build (§6)
+  includes:             #   optionnel : concaténés en tête de CHAQUE step
+    - ../../lib/common.sh
+  steps:                #   ordonné : un `sbx exec` par entrée
+    - ./provision/glab.sh
+    - ./provision/dgdev.sh
 kit: ./kit              # kit par défaut de la stack (env + egress toolchain)
 kits:                   # optionnel : kits transverses layerés AVANT `kit`
   - ../../kits/ssh-known-hosts
 egress: []              # ajouts egress niveau stack
 ```
 
-Les chemins de `kit` et `kits` sont résolus **relativement au dossier de la stack**. L'ordre de
-`kits` est préservé : c'est un ordre de layering, pas un ensemble.
+Les chemins de `kit`, `kits`, `provision.includes` et `provision.steps` sont résolus
+**relativement au dossier de la stack**. L'ordre de `kits` est préservé : c'est un ordre de
+layering, pas un ensemble. Celui de `includes` et de `steps` aussi, pour la raison donnée au §6.
+
+`base` et `parent` sont **mutuellement exclusifs**, et une stack qui déclare `provision.steps` doit
+en poser exactement un — sans quoi den ne sait pas de quoi partir. Les déclarer tous les deux est un
+refus et non un ordre de priorité : deux origines pour une même image est une contradiction, pas une
+préférence à arbitrer. Une stack **sans `provision.steps`** n'en pose aucun des deux : elle n'est pas
+constructible, et c'est une configuration déclarée (§6).
 
 ### 4.3 `nests/<n>.yaml` (objet spawnable)
 
@@ -222,10 +247,123 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
 - Parse tous les `stacks/*/stack.yaml` → graphe via `parent`.
 - `den build dgdevx` → construit `devx` d'abord **si son image manque**, puis `dgdevx`.
   `den build` (sans arg) → tout, ordre topologique.
-- Chaque nœud lance son `stacks/<n>/build.sh` (inchangé). `--force` reconstruit aussi les ancêtres.
-  `versions.lock` tenu à jour par les `build.sh`.
+- **den possède la séquence de build entière** : `create` → N × `exec` → `stop` → `template save` →
+  `rm`. Une stack ne fournit que le contenu des `exec`, sous `provision:` (§4.2). `--force`
+  reconstruit aussi les ancêtres.
 
-**Ce que l'implémentation (#8) fixe en plus, et pourquoi** :
+> **Amendement du 2026-08-03.** Ce qui suit remplace le modèle livré par #8, où chaque nœud lançait
+> son `stacks/<n>/build.sh` **sur l'hôte**, inchangé, et où `versions.lock` était « tenu à jour par
+> les `build.sh` ». Le `build.sh` par stack **disparaît** ; `versions.lock` sort du modèle den pour
+> la v0 — den ne prétend plus rien sur le versionnage des outils, les épingles restent où elles sont
+> déjà, en dur dans les scripts. La raison du remplacement est en tête de sous-section, ce n'est pas
+> une préférence de style.
+
+#### Pourquoi den possède la séquence
+
+Le modèle #8 laissait le nom de l'image s'écrire **deux fois sans lien** : `image:` dans
+`stack.yaml`, et le tag passé à `sbx template save` dans le script. `Execute` ne contrôlait rien
+après le script — le code de sortie, et c'est tout. Éditer l'un sans l'autre produisait ceci :
+
+1. `den build devx` → le script tourne, sort en 0, den annonce le succès ;
+2. `den <nest>` → `checkStackImage` ne trouve pas `image:` dans l'inventaire → « lance
+   `den build devx` » ;
+3. …ce que l'utilisateur vient de faire, avec succès.
+
+Une boucle fermée dont les deux messages sont **individuellement exacts**. C'est exactement la
+classe de panne que le §11 existe pour tuer — le `403 Forbidden` d'un cran au-dessus : un diagnostic
+vrai qui désigne le mauvais coupable. den faisant lui-même le `template save`, le nom est correct
+**par construction** et la panne n'a plus d'endroit où exister.
+
+Deux gains suivent, et ils comptent presque autant :
+
+- **La justification de `Script`/`ExecScript` était circulaire.** « L'implémentation réelle lance un
+  process, donc on l'isole derrière une interface » : elle est intestable *parce qu'*elle est
+  arbitraire. La séquence den est cinq formes d'argv à travers `sbx.Runner`, et `sbx.Fake` existe
+  déjà en fichier de production pour ça. Il ne reste à `internal/build` que du **filesystem** — lire
+  les fichiers de `provision:`, créer le scratch — rejouable sur un dossier temporaire, là où la
+  surface intestable croissait avec chaque script utilisateur.
+- **Le teardown devient un invariant.** C'est le `trap` que chaque script devait écrire à la main et
+  qu'aucun test ne pouvait vérifier.
+
+#### La séquence, pour une stack `S` d'image `I`
+
+| # | Commande | Note |
+|---|---|---|
+| 1 | `sbx create --name S-build [--template <image du parent>] <shell\|base> <scratch>` | `--template` + positionnel `shell` si `parent:` ; positionnel `base` sinon |
+| 2 | `sbx exec S-build -- bash -lc "<includes><step i>"` | une fois par entrée de `steps`, dans l'ordre |
+| 3 | `sbx stop S-build` | |
+| 4 | `sbx template save S-build I` | **den passe `I`** — c'est tout le point |
+| 5 | `sbx rm --force S-build` | **différé** : court aussi sur échec de 2, 3 ou 4 |
+
+Le positionnel n'est porteur qu'en l'absence de `--template`. Avec une image, c'est son **flavor**
+qui décide de la commande attachée, doctrine déjà écrite dans `sbx.PositionalAgent` — d'où `shell`
+pour les dérivées, qui ne promet rien qu'il ne tienne. Sans image, il **choisit la base** :
+`base: claude` → `docker/sandbox-templates:claude-code-docker`. C'est le seul endroit où den doit
+connaître un agent sbx, et la seule raison d'être de la clé `base`.
+
+Le `<scratch>` est un dossier vide sous `~/.den/cache/build/<S>/` : `sbx create` exige au moins un
+chemin, et monter le `/tmp` de l'hôte dans une VM de build n'a aucune justification.
+
+**Un step n'a aucun accès au système de fichiers de l'hôte, et c'est délibéré.** La seule matière
+hôte qui entre dans la VM est le **texte** des fichiers `includes:` et `steps:`, transporté dans le
+payload de l'`exec` ; tout le reste — paquets, binaires, `.deb`, archives — s'obtient **par le
+réseau**, sous la policy egress. C'est une restriction réelle par rapport au modèle #8, où le script
+tournait sur l'hôte et pouvait lire n'importe quel fichier. Vérifié contre `sbx-devbox` le
+2026-08-03 : aucun build n'en a besoin. Le seul fichier hôte que ses deux scripts lisent est
+`lib/common.sh`, qui est précisément le cas d'`includes:` ; les `.env.dist` des dossiers de stack
+sont du **runtime** et le disent (« sourcé EN PLUS du kit par la session, pas figé dans l'image »).
+Le jour où un build aurait vraiment besoin d'un fichier hôte, ce sera un ajout conscient à cette
+liste, pas un trou qu'on découvre.
+
+**Une sandbox `S-build` préexistante est un refus, pas un `rm --force` préalable.** `S-build` est un
+nom de nest parfaitement légal — le charset des composants (§2) l'autorise — donc un nettoyage
+aveugle peut détruire une vraie sandbox de l'utilisateur. Le teardown étant différé, un résidu ne
+survit qu'à un den tué au SIGKILL : assez rare pour mériter un œil humain, et le message nomme
+`sbx rm --force S-build`. C'est la doctrine du §2 — den refuse plutôt que de normaliser en silence —
+appliquée à la seule opération destructrice de la commande.
+
+#### `provision:` — ce que la stack fournit
+
+`steps` est joué **un `sbx exec` par entrée**, ce qui donne le nommage de l'étape fautive :
+
+```
+stack "devx": step 2/3 ./provision/gh.sh failed: exit status 1
+```
+
+Le prix de ce nommage est que chaque `exec` ouvre **un shell neuf**. Entre deux steps, **seul le
+système de fichiers de la VM persiste** : les paquets installés et les binaires posés restent, les
+variables, fonctions et `cwd` meurent avec le process. Un step qui doit transmettre une variable à un
+step suivant l'écrit (`/etc/profile.d/…`), il ne l'`export`e pas.
+
+`includes` est la réponse à cette perte, et **ce n'est pas un script joué en premier** : son texte
+est concaténé **en tête de chaque step**. La différence est observable, pas cosmétique —
+
+| contenu placé dans `includes` | si c'était « joué d'abord » | réalité (réinjecté par step) |
+|---|---|---|
+| `common::gh() { … }` | visible au step 1 seulement | visible dans **tous** les steps |
+| `export PATH=…` | perdu dès le step 2 | présent dans **tous** les steps |
+| `apt-get install …` | une fois | **N fois** |
+
+D'où le contrat, qui est la raison d'être du mot : **`includes` définit, il n'agit pas.** Un effet de
+bord y est rejoué une fois par step, en silence. Le contrat n'est pas vérifiable par den — il est
+écrit ici, et le nom de la clé est choisi pour qu'un `apt-get install` s'y lise comme une faute avant
+toute documentation. Mesuré le 2026-08-03 : le `lib/common.sh` de `sbx-devbox` le respecte **sans
+modification** — cinq définitions de fonctions, et au niveau racine un seul `set -euo pipefail`,
+idempotent et souhaitable dans chaque step.
+
+`includes` est **optionnel** : une stack dont les steps sont autonomes ne le déclare pas, et den
+n'injecte alors aucun préfixe.
+
+Deux servitudes du modèle #8 disparaissent : les fichiers n'ont plus besoin du **bit exécutable** ni
+d'un **shebang**, puisque den lit leur contenu au lieu de les lancer — le `chmod +x` oublié, mesuré
+le 2026-08-03 et diagnostiqué tardivement, n'a plus de cas. En contrepartie le shell cesse d'être le
+choix du script : den envoie `bash -lc`, le `-l` étant requis pour que le `PATH` de la base (go,
+node) soit chargé.
+
+**Ce que l'implémentation (#8) fixe en plus, et pourquoi.** L'amendement ci-dessus ne remplace que
+le **modèle d'exécution** — qui lance quoi, et où. Tout l'**arbitrage** de #8 survit intact : il
+répond à « quelles stacks, dans quel ordre, lesquelles sauter », questions qu'aucun changement de
+séquence ne touche.
 
 - **La cible est toujours reconstruite.** L'utilisateur l'a nommée ; seuls ses ancêtres sont un
   moyen. Corollaire : l'inventaire n'est **jamais** interrogé sur l'image de la cible.
@@ -247,18 +385,21 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
   `sbx template ls` ne rapporte que `repository` + `tag`, jamais de digest — donc elle n'apparie
   rien (`sbx.IsDigestRef`) : `den build` reconstruit l'ancêtre (dépenser un build plutôt que sauter
   sans justification), le contrôle du spawn se tait (voir §11 et §14.1).
-- **Une stack sans `build.sh` n'est pas constructible, et c'est une configuration déclarée** : son
-  `image:` peut nommer une image de registre que `sbx` tire. Elle est **sautée et nommée**, jamais
-  un refus — c'est la même réponse que le contrôle d'image du spawn (§14.1), et les deux doivent
-  s'accorder. Mesuré le 2026-08-03 : elles ne s'accordaient pas, et un `den build` sur un den
-  comportant une seule stack tirable ne construisait **rien** en exigeant un `build.sh` pour la
-  stack que den avait déjà décidé de ne pas construire. **Seule exception** : la stack *nommée* par
+- **Une stack sans `provision.steps` n'est pas constructible, et c'est une configuration déclarée** :
+  son `image:` peut nommer une image de registre que `sbx` tire. Elle est **sautée et nommée**,
+  jamais un refus — c'est la même réponse que le contrôle d'image du spawn (§14.1), et les deux
+  doivent s'accorder. Mesuré le 2026-08-03 : elles ne s'accordaient pas, et un `den build` sur un den
+  comportant une seule stack tirable ne construisait **rien** en exigeant un script pour la stack que
+  den avait déjà décidé de ne pas construire. **Seule exception** : la stack *nommée* par
   l'utilisateur, qui est un refus — une ligne « sauté » se lirait comme un succès.
-- **Tous les `build.sh` sont contrôlés avant que le premier ne tourne.** Bâtir quatre minutes
-  d'image de base pour découvrir ensuite qu'un maillon n'a pas de script, c'est dépenser ce temps
-  pour atteindre un refus immédiat. `Plan` tranchant déjà le cas, ce contrôle est un **garde-fou**
-  (forme du garde de `agent.RenderMixin`) : `Step` est une structure exportée nue, et un plan
-  construit à la main ne doit pas atteindre la moitié de la chaîne avant de découvrir le trou.
+- **Tous les fichiers de `provision:` sont lus avant le premier `create`.** Bâtir quatre minutes
+  d'image de base pour découvrir ensuite qu'un `includes:` ou un `steps:` de la chaîne est illisible,
+  c'est dépenser ce temps pour atteindre un refus que den pouvait rendre instantanément. La lecture
+  est **anticipée**, pas seulement l'existence contrôlée : den doit de toute façon disposer du texte
+  pour composer le payload, donc rien n'est relu deux fois. `Plan` tranchant déjà le cas, ce contrôle
+  reste un **garde-fou** (forme du garde de `agent.RenderMixin`) : `Step` est une structure exportée
+  nue, et un plan construit à la main ne doit pas atteindre la moitié de la chaîne avant de découvrir
+  le trou.
 - **Une stack cassée ne coule pas le build** (doctrine `config.LoadStacks`) : nommée sur stderr, non
   construite. Elle n'est un refus que si elle est la cible ou un ancêtre de la cible. Mesuré le
   2026-08-03 : utilisée comme `parent:` d'une stack saine, elle coulait tout le `den build` sans
@@ -525,7 +666,7 @@ nest. Cache `~/.den/cache/` reconstructible, jamais source de vérité.
 
 | Situation | Comportement |
 |---|---|
-| Image stack absente | Stop → « lance `den build <stack>` ». Lu sur `sbx template ls --json` **avant** `sbx create`, et **seulement** si la stack a un `build.sh` (sinon den n'a pas de remède à proposer) et que l'`image:` n'est pas épinglée par digest (l'inventaire ne rapporte aucun digest, §14.1). Un inventaire en échec est fail-open : `sbx` refuse de lui-même |
+| Image stack absente | Stop → « lance `den build <stack>` ». Lu sur `sbx template ls --json` **avant** `sbx create`, et **seulement** si la stack est constructible — elle déclare `provision.steps` (sinon den n'a pas de remède à proposer) — et que l'`image:` n'est pas épinglée par digest (l'inventaire ne rapporte aucun digest, §14.1). Un inventaire en échec est fail-open : `sbx` refuse de lui-même |
 | Chemin repo introuvable | Stop **avant** tout create |
 | Worktree `<wt>` déjà pris par une autre branche | Stop → propose `--attach-worktree` ou autre nom |
 | Policy non settled dans le timeout | **Fail-closed**, n'attache pas, liste les hôtes bloqués |
@@ -578,6 +719,8 @@ internal/
   policy/                # union egress + settle-loop fail-closed
   ports/                 # fenêtre déterministe + scan anti-collision
   agent/                 # résolution agent + mixin généré (env + egress)
+  build/                 # graphe `parent`, ordre, arbitrage d'image, séquence de build (§6)
+  doctor/                # diagnostic de la configuration et de l'environnement
   spawn/                 # orchestration de `den <nest>` (§6), hors cli pour rester testable
 ```
 
@@ -585,6 +728,12 @@ internal/
 - **Unitaires sur la logique pure** (cœur de la valeur, zéro sbx) : cascade de config,
   union/dédup egress, calcul fenêtre de ports + anti-collision, sélection repos, rendu du mixin
   YAML, **assemblage de l'argv `sbx create`** (golden files : on assert la commande exacte).
+- **`build/` ne lance plus aucun process** depuis l'amendement du §6 : la séquence
+  `create`/`exec`/`stop`/`save`/`rm` passe entière par `sbx.Runner`, donc par `sbx.Fake`, et le
+  golden porte sur la **suite d'argv** d'un build à deux stacks. Il ne subsiste que du filesystem
+  (lecture des fichiers de `provision:`, création du scratch), rejouable sur un dossier temporaire
+  comme `worktree/` le fait déjà. C'est ce que le modèle précédent interdisait — lancer un
+  `build.sh` réel n'est pas testable, et cette surface-là croissait avec chaque script utilisateur.
 - **`worktree/`** contre des repos git temporaires réels.
 - **Smoke e2e** manuel/optionnel : un vrai spawn (nécessite sbx + login) — **hors CI**, gated.
 
@@ -1005,9 +1154,9 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
   refuser plus bas aurait laissé un worktree git par dépôt derrière soi. Trois silences délibérés,
   chacun évitant un refus que den ne saurait justifier :
 
-  - une stack **sans `build.sh`** n'est pas contrôlée du tout. Son `image:` peut nommer une image de
-    registre que `sbx` sait tirer, et « lance `den build` » sur une stack sans script n'est pas un
-    conseil mais une deuxième erreur ;
+  - une stack **sans `provision.steps`** n'est pas contrôlée du tout. Son `image:` peut nommer une
+    image de registre que `sbx` sait tirer, et « lance `den build` » sur une stack que den ne sait
+    pas construire n'est pas un conseil mais une deuxième erreur ;
   - une `image:` **épinglée par digest** n'est pas contrôlée non plus (`sbx.IsDigestRef`) :
     l'inventaire ne rapporte aucun digest, donc il ne peut ni confirmer ni infirmer l'épingle, et
     lire son silence comme « absente » refuserait un spawn sur une image présente ;
