@@ -3,10 +3,12 @@ package build
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/sbx"
 )
 
@@ -26,14 +28,40 @@ func (f *fakeImages) Has(_ context.Context, image string) (bool, error) {
 	return slices.Contains(f.present, image), nil
 }
 
+// buildableFixture is graph_test.go's fixture graph with the one thing that
+// makes a stack buildable under the new model: `provision.steps` plus an
+// origin (`base:` for the two roots, `parent:` already there for the rest).
+//
+// Kept SEPARATE from `fixture` rather than edited in place: `fixture` is also
+// what execute_test.go arms the OLD way, through loadStacks's `scriptless`
+// parameter — that file belongs to Task 6, untouched here.
+//
+//	alpha ← beta
+//	      ← gamma ← delta
+//	zeta
+var buildableFixture = map[string]string{
+	"alpha": "image: alpha:v1\nbase: claude\nprovision:\n  steps: [./build.sh]\n",
+	"beta":  "image: beta:v1\nparent: alpha\nprovision:\n  steps: [./build.sh]\n",
+	"gamma": "image: gamma:v1\nparent: alpha\nprovision:\n  steps: [./build.sh]\n",
+	"delta": "image: delta:v1\nparent: gamma\nprovision:\n  steps: [./build.sh]\n",
+	"zeta":  "image: zeta:v1\nbase: claude\nprovision:\n  steps: [./build.sh]\n",
+}
+
 // plan is the whole `den build [target]` pipeline, minus the execution.
 func plan(t *testing.T, files map[string]string, target string, force bool, images Images) []Step {
 	t.Helper()
 	return planScriptless(t, files, target, force, images)
 }
 
-// planScriptless is plan with some stacks deprived of their build.sh — the
-// "declared but not buildable" shape.
+// planScriptless is plan with some stacks deprived of their build.sh.
+//
+// KEPT, unlike the rest of this split: execute_test.go (Task 6's file) still
+// calls it directly, on `fixture`, to arm the OLD "no build.sh on disk" shape
+// its own tests exercise. Under THIS file's new model a build.sh on disk means
+// nothing — buildability comes from `provision.steps` in the YAML, which
+// `scriptless` does not touch — so no test added here relies on it; the tests
+// that need a stack den cannot build say so in the YAML instead (see
+// TestPlanSkipsANotBuildableStackAmongBuildableSiblings and its neighbours).
 func planScriptless(t *testing.T, files map[string]string, target string, force bool, images Images,
 	scriptless ...string) []Step {
 	t.Helper()
@@ -74,7 +102,7 @@ func skipped(steps []Step) []string {
 // `sbx template ls` that fails.
 func TestPlanWithoutATargetBuildsEverythingAndConsultsNothing(t *testing.T) {
 	images := &fakeImages{present: []string{"alpha:v1", "gamma:v1", "delta:v1", "beta:v1", "zeta:v1"}}
-	steps := plan(t, fixture, "", false, images)
+	steps := plan(t, buildableFixture, "", false, images)
 
 	if got := strings.Join(built(steps), ","); got != "alpha,beta,gamma,delta,zeta" {
 		t.Errorf("built = %v, want every stack in topological order", built(steps))
@@ -89,7 +117,7 @@ func TestPlanWithoutATargetBuildsEverythingAndConsultsNothing(t *testing.T) {
 // command is for.
 func TestPlanSkipsAnAncestorWhoseImageIsBuilt(t *testing.T) {
 	images := &fakeImages{present: []string{"alpha:v1", "delta:v1"}}
-	steps := plan(t, fixture, "delta", false, images)
+	steps := plan(t, buildableFixture, "delta", false, images)
 
 	if got := strings.Join(built(steps), ","); got != "gamma,delta" {
 		t.Errorf("built = %v, want gamma,delta — alpha is there, delta is the target", built(steps))
@@ -110,7 +138,7 @@ func TestPlanSkipsAnAncestorWhoseImageIsBuilt(t *testing.T) {
 // asking would be a process spent on a decision that is already made.
 func TestPlanDoesNotConsultTheInventoryForTheTarget(t *testing.T) {
 	images := &fakeImages{present: []string{"alpha:v1", "gamma:v1", "delta:v1"}}
-	steps := plan(t, fixture, "delta", false, images)
+	steps := plan(t, buildableFixture, "delta", false, images)
 
 	if got := strings.Join(built(steps), ","); got != "delta" {
 		t.Errorf("built = %v, want delta only", built(steps))
@@ -124,7 +152,7 @@ func TestPlanDoesNotConsultTheInventoryForTheTarget(t *testing.T) {
 // nothing: the decision no longer depends on what is built.
 func TestPlanForceRebuildsTheAncestorsWithoutConsulting(t *testing.T) {
 	images := &fakeImages{present: []string{"alpha:v1", "gamma:v1", "delta:v1"}}
-	steps := plan(t, fixture, "delta", true, images)
+	steps := plan(t, buildableFixture, "delta", true, images)
 
 	if got := strings.Join(built(steps), ","); got != "alpha,gamma,delta" {
 		t.Errorf("built = %v, want the whole chain", built(steps))
@@ -138,8 +166,8 @@ func TestPlanForceRebuildsTheAncestorsWithoutConsulting(t *testing.T) {
 // difference IS the flag's definition.
 func TestPlanWithoutForceSkipsWhatForceRebuilds(t *testing.T) {
 	present := []string{"alpha:v1", "gamma:v1"}
-	lenient := plan(t, fixture, "delta", false, &fakeImages{present: present})
-	forced := plan(t, fixture, "delta", true, &fakeImages{present: present})
+	lenient := plan(t, buildableFixture, "delta", false, &fakeImages{present: present})
+	forced := plan(t, buildableFixture, "delta", true, &fakeImages{present: present})
 
 	if got := strings.Join(built(lenient), ","); got != "delta" {
 		t.Errorf("without --force, built = %v, want delta only", built(lenient))
@@ -154,7 +182,7 @@ func TestPlanWithoutForceSkipsWhatForceRebuilds(t *testing.T) {
 // spend minutes the user did not ask for. den refuses, and names the flag that
 // makes the question go away.
 func TestPlanRefusesWhenTheInventoryFails(t *testing.T) {
-	chain, _, err := Chain(loadStacks(t, fixture), "delta")
+	chain, _, err := Chain(loadStacks(t, buildableFixture), "delta")
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}
@@ -223,8 +251,8 @@ func TestSbxImagesRemembersAFailure(t *testing.T) {
 // to write.
 func TestPlanBuildsAStackWithoutAnImage(t *testing.T) {
 	files := map[string]string{
-		"base":  "parent: \n",
-		"child": "image: child:v1\nparent: base\n",
+		"base":  "base: claude\nprovision:\n  steps: [./build.sh]\n",
+		"child": "image: child:v1\nparent: base\nprovision:\n  steps: [./build.sh]\n",
 	}
 	images := &fakeImages{}
 	steps := plan(t, files, "child", false, images)
@@ -236,13 +264,56 @@ func TestPlanBuildsAStackWithoutAnImage(t *testing.T) {
 var _ Images = (*fakeImages)(nil)
 var _ Images = (*SbxImages)(nil)
 
+// A stack den cannot build is skipped and NAMED, never a refusal — the answer
+// must match the spawn's silence (Task 2). The skip line carries the reason,
+// and for this cause there is no --force that would help.
+func TestPlanSkipsANotBuildableStack(t *testing.T) {
+	pullable := &config.Stack{Name: "pulled", Image: "ghcr.io/acme/base:v3"}
+	steps, err := Plan(context.Background(), []*config.Stack{pullable}, "", false, nil)
+	if err != nil {
+		t.Fatalf("Plan refused a pullable stack: %v", err)
+	}
+	if len(steps) != 1 || steps[0].Build {
+		t.Fatalf("steps = %+v, want one skipped step", steps)
+	}
+	if !strings.Contains(steps[0].Skipped, "provision.steps") {
+		t.Errorf("skip reason %q does not name what is missing", steps[0].Skipped)
+	}
+}
+
+// The one exception: the stack the user NAMED. A "skipped" line there would
+// read as success for a build they asked for specifically.
+func TestPlanRefusesANamedStackItCannotBuild(t *testing.T) {
+	pullable := &config.Stack{Name: "pulled", Image: "ghcr.io/acme/base:v3"}
+	_, err := Plan(context.Background(), []*config.Stack{pullable}, "pulled", false, nil)
+	if err == nil {
+		t.Fatal("Plan accepted a named stack with no provision.steps")
+	}
+	for _, want := range []string{"pulled", "provision.steps"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
 // THE DEFECT THIS SPLIT EXISTS FOR, measured on the bench 2026-08-03: a den
-// holding one pullable stack (`image:` and no build.sh) plus buildable ones
-// answered `den build` with a refusal naming the pullable one, and built
-// NOTHING. den had already decided, in the spawn's own image check, that such a
-// stack is not its business; Execute's pre-flight said the opposite.
-func TestPlanSkipsAStackWithNoBuildScript(t *testing.T) {
-	steps := planScriptless(t, fixture, "", false, &fakeImages{}, "zeta")
+// holding one pullable stack (`image:` and no provision.steps) plus buildable
+// ones answered `den build` with a refusal naming the pullable one, and built
+// NOTHING. den had already decided, in the spawn's own image check, that such
+// a stack is not its business; Execute's pre-flight said the opposite.
+//
+// TestPlanSkipsANotBuildableStack above proves the single-stack case; this is
+// the integration shape the defect actually had — a not-buildable stack
+// SHARING A CHAIN with buildable ones.
+func TestPlanSkipsANotBuildableStackAmongBuildableSiblings(t *testing.T) {
+	files := map[string]string{
+		"alpha": "image: alpha:v1\nbase: claude\nprovision:\n  steps: [./build.sh]\n",
+		"beta":  "image: beta:v1\nparent: alpha\nprovision:\n  steps: [./build.sh]\n",
+		"gamma": "image: gamma:v1\nparent: alpha\nprovision:\n  steps: [./build.sh]\n",
+		"delta": "image: delta:v1\nparent: gamma\nprovision:\n  steps: [./build.sh]\n",
+		"zeta":  "image: zeta:v1\n", // no provision.steps: declared, not buildable
+	}
+	steps := plan(t, files, "", false, &fakeImages{})
 
 	if got := strings.Join(built(steps), ","); got != "alpha,beta,gamma,delta" {
 		t.Errorf("built = %v, want every buildable stack", built(steps))
@@ -253,17 +324,22 @@ func TestPlanSkipsAStackWithNoBuildScript(t *testing.T) {
 	// And the reason does NOT offer --force, which would change nothing here.
 	for _, s := range steps {
 		if s.Stack.Name == "zeta" {
-			if !strings.Contains(s.Skipped, ScriptName) || strings.Contains(s.Skipped, "--force") {
-				t.Errorf("zeta skipped for %q, want it to name %s and not offer --force", s.Skipped, ScriptName)
+			if !strings.Contains(s.Skipped, "provision.steps") || strings.Contains(s.Skipped, "--force") {
+				t.Errorf("zeta skipped for %q, want it to name provision.steps and not offer --force", s.Skipped)
 			}
 		}
 	}
 }
 
-// Same for an ANCESTOR: `den build delta` must not demand a build.sh for a base
-// image that is only ever pulled.
-func TestPlanSkipsAScriptlessAncestor(t *testing.T) {
-	steps := planScriptless(t, fixture, "delta", false, &fakeImages{}, "alpha")
+// Same for an ANCESTOR: `den build delta` must not demand provision.steps for
+// a base image that is only ever pulled.
+func TestPlanSkipsANotBuildableAncestor(t *testing.T) {
+	files := map[string]string{
+		"alpha": "image: alpha:v1\n", // no provision.steps: declared, not buildable
+		"gamma": "image: gamma:v1\nparent: alpha\nprovision:\n  steps: [./build.sh]\n",
+		"delta": "image: delta:v1\nparent: gamma\nprovision:\n  steps: [./build.sh]\n",
+	}
+	steps := plan(t, files, "delta", false, &fakeImages{})
 
 	if got := strings.Join(built(steps), ","); got != "gamma,delta" {
 		t.Errorf("built = %v, want gamma,delta", built(steps))
@@ -271,7 +347,7 @@ func TestPlanSkipsAScriptlessAncestor(t *testing.T) {
 	// It is skipped before any inventory question: there is nothing to build
 	// whatever the answer would have been.
 	images := &fakeImages{}
-	planScriptless(t, fixture, "delta", false, images, "alpha")
+	plan(t, files, "delta", false, images)
 	if slices.Contains(images.asked, "alpha:v1") {
 		t.Errorf("inventory asked about a stack den cannot build (%v)", images.asked)
 	}
@@ -280,17 +356,24 @@ func TestPlanSkipsAScriptlessAncestor(t *testing.T) {
 // The one exception: the stack the user NAMED. `den build zeta` on a stack den
 // cannot build is a request to refuse, not to answer with a skip line — doing
 // nothing silently would read as success.
-func TestPlanRefusesANamedTargetWithNoBuildScript(t *testing.T) {
-	chain, _, err := Chain(loadStacks(t, fixture, "zeta"), "zeta")
+//
+// TestPlanRefusesANamedStackItCannotBuild above covers the same refusal on a
+// hand-built Stack with an empty Dir; this one goes through Chain/loadStacks
+// so the message is checked against a REAL stack.yaml path.
+func TestPlanRefusesANamedTargetWithNoProvisionSteps(t *testing.T) {
+	files := map[string]string{"zeta": "image: zeta:v1\n"}
+	chain, _, err := Chain(loadStacks(t, files), "zeta")
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}
 	_, err = Plan(context.Background(), chain, "zeta", false, &fakeImages{})
 	if err == nil {
-		t.Fatal("expected a refusal on a target den has no build for")
+		t.Fatal("expected a refusal on a target den has no provision.steps for")
 	}
 	msg := err.Error()
-	for _, want := range []string{`"zeta"`, ScriptName, "zeta:v1"} {
+	for _, want := range []string{
+		`"zeta"`, "provision.steps", "zeta:v1", filepath.Join("stacks", "zeta", "stack.yaml"),
+	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message = %q, want it to contain %q", msg, want)
 		}

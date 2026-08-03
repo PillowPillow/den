@@ -3,7 +3,7 @@ package build
 import (
 	"context"
 	"fmt"
-	"os"
+	"path/filepath"
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/sbx"
@@ -80,27 +80,25 @@ type Step struct {
 func Plan(ctx context.Context, chain []*config.Stack, target string, force bool, images Images) ([]Step, error) {
 	steps := make([]Step, 0, len(chain))
 	for _, s := range chain {
-		// A stack with NO build.sh is not buildable, and that is a declared
-		// configuration rather than a mistake: its `image:` may name a registry
-		// image sbx will pull, which is exactly why the spawn's own image check
-		// (internal/spawn, checkStackImage) leaves such a stack alone. This
-		// branch is what keeps the two answers the same. Without it `den build`
+		// A stack with NO `provision.steps` is not buildable, and that is a
+		// DECLARED configuration rather than a mistake: its `image:` may name a
+		// registry image sbx will pull, which is exactly why the spawn's own
+		// image check leaves such a stack alone. Reading the same
+		// config.Stack.Buildable on both sides is what keeps the two answers
+		// the same — measured on 2026-08-03, they had drifted, and a `den build`
 		// on a den holding one pullable base and three buildable stacks built
-		// NOTHING and demanded a build.sh for the one stack den had already
-		// decided was not its business (measured on the bench, 2026-08-03).
+		// NOTHING.
 		//
-		// The one exception is the stack the user NAMED. `den build beta` on a
-		// stack den cannot build is a request den must refuse rather than
-		// answer with a skip line — the user asked for that build specifically,
-		// and silently doing nothing would read as success.
-		script := ScriptPath(s)
-		if _, err := os.Stat(script); err != nil {
+		// The one exception is the stack the user NAMED. That is a request den
+		// must refuse rather than answer with a skip line: the user asked for
+		// that build specifically, and silently doing nothing reads as success.
+		if !s.Buildable() {
 			if s.Name == target {
-				return nil, missingScriptError(s)
+				return nil, notBuildableError(s)
 			}
 			steps = append(steps, Step{
 				Stack:   s,
-				Skipped: fmt.Sprintf("no %s, nothing for den to build", ScriptName),
+				Skipped: "no `provision.steps`, nothing for den to build",
 			})
 			continue
 		}
@@ -130,7 +128,8 @@ func Plan(ctx context.Context, chain []*config.Stack, target string, force bool,
 				Stack: s,
 				// The remedy travels WITH the reason, because it is not the same
 				// for every skip: --force rebuilds an image that is already
-				// there, and does nothing at all for a stack with no build.sh.
+				// there, and does nothing at all for a stack with no
+				// provision.steps.
 				Skipped: fmt.Sprintf("image %s already built (--force rebuilds it)", s.Image),
 			})
 			continue
@@ -140,17 +139,16 @@ func Plan(ctx context.Context, chain []*config.Stack, target string, force bool,
 	return steps, nil
 }
 
-// missingScriptError is the refusal for a stack den is asked to build and whose
-// build.sh is not there.
+// notBuildableError is the refusal for a stack den is asked to build and that
+// declares nothing to run.
 //
 // ONE definition for the two sites that produce it — Plan, on the stack the
 // user NAMED, and Execute's pre-flight guard — because they answer the same
-// fault and the two copies had already started to drift apart on a verb. The
-// message stays what it was: the script does not exist in either case, so it is
-// what WOULD produce the image, and the remedy is to write it.
-func missingScriptError(s *config.Stack) error {
+// fault, and the two copies of the previous version had already started to
+// drift apart on a verb.
+func notBuildableError(s *config.Stack) error {
 	return fmt.Errorf(
-		"stack %q: build script not found: %s — create it (den runs it unchanged, "+
-			"it is what would produce image %s)",
-		s.Name, ScriptPath(s), s.Image)
+		"stack %q: nothing to build — declare `provision.steps` in %s "+
+			"(den runs each entry in the build VM, in order, and saves the result as %s)",
+		s.Name, filepath.Join(s.Dir, "stack.yaml"), s.Image)
 }

@@ -29,7 +29,7 @@ func Execute(ctx context.Context, steps []Step, script Script, out io.Writer) er
 		path := ScriptPath(s.Stack)
 		info, err := os.Stat(path)
 		if err != nil {
-			return missingScriptError(s.Stack)
+			return notBuildableError(s.Stack)
 		}
 		// The EXECUTABLE BIT, not just existence. den runs the script directly
 		// (no `sh <path>`, so the shebang stays the script's own choice), which
