@@ -33,7 +33,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den sh <name>` | opens a shell in an existing sandbox |
 | `den ports <name>` | publishes the nest's declared ports into that sandbox and prints where they land on the host |
 | `den rm <name>` | destroys a sandbox and cleans up the worktrees den created (the agent profile persists) |
-| `den build [<stack>]` | builds stack images in `parent` order, by running each stack's own `build.sh` |
+| `den build [<stack>]` | builds stack images in `parent` order, playing each stack's `provision.steps` in a throwaway build VM |
 | `den nest ls` | lists the declared nests |
 | `den nest show <n>` | shows a fully resolved nest (stack, agent, egress, repos) |
 | `den doctor` | diagnoses the configuration and the environment |
@@ -156,26 +156,114 @@ den build dgdevx          # devx first if its image is missing, then dgdevx
 den build dgdevx --force  # rebuild devx too
 ```
 
-- Each stack is built by its own `stacks/<name>/build.sh`, which den runs **unchanged**, from the
-  stack directory, with your environment. den orders the builds; it does not rewrite them, and
-  `versions.lock` stays whatever the scripts maintain.
+### What a stack declares
+
+**den owns the build sequence**; a stack only says what to run inside it. A `stacks/<name>/build.sh`
+is **no longer read** — if you have one from an earlier den, see [Coming from
+`build.sh`](#coming-from-buildsh) below.
+
+```yaml
+# ~/.den/stacks/devx/stack.yaml
+image: devx:v1          # required — the name den saves the built image under
+base: claude            # a ROOT stack: the sbx agent the build starts from
+provision:
+  includes:             # optional, concatenated ahead of EVERY step
+    - ../../lib/common.sh
+  steps:                # one `sbx exec` per entry, in order
+    - ./provision/go-tools.sh
+    - ./provision/gh.sh
+```
+
+```yaml
+# ~/.den/stacks/dgdevx/stack.yaml
+image: dgdevx:v1
+parent: devx            # a DERIVED stack: it builds FROM devx's image
+provision:
+  steps: [./provision/glab.sh]
+```
+
+- **`image:` is required**, on every stack. It is the single name den saves into and `den <nest>`
+  looks for, which is what keeps the two from ever disagreeing.
+- **`base:` or `parent:`, never both.** `base:` names the sbx agent a root stack starts from
+  (`claude`); `parent:` names another stack, and the build starts from *its* image. A stack that
+  declares `provision.steps` must have exactly one of them.
+- Paths in `includes:` and `steps:` are **relative to the stack directory** (`../../lib/common.sh`
+  reaches `~/.den/lib/common.sh`).
+
+For each stack, den runs: `sbx create --name <stack>-build …` → one `sbx exec … bash -lc` per
+`steps:` entry → `sbx stop` → `sbx template save <stack>-build <image>` → `sbx rm --force`. The
+teardown is guaranteed: it also runs when a step fails, so a failed build never leaves a VM behind
+and never saves an image.
+
+### `steps:` and `includes:`
+
+Each step is **its own `sbx exec`**, which is what lets a failure name the script that produced it:
+
+```
+stack "devx": step 2/3 ./provision/gh.sh failed: E: Unable to locate package ripgrep
+```
+
+The price is that every step opens a **fresh shell**. Between two steps only the VM's filesystem
+survives: installed packages and dropped binaries stay, but variables, functions and `cwd` die with
+the process. A step that must pass a variable to a later step *writes* it (`/etc/profile.d/…`); it
+does not `export` it.
+
+`includes:` is the answer to that loss, and it is **not a script played first** — its text is
+concatenated at the **head of every step**. So:
+
+| in `includes:` | if it were "played first" | reality |
+|---|---|---|
+| `common::gh() { … }` | visible in step 1 only | visible in **all** steps |
+| `export PATH=…` | lost from step 2 on | present in **all** steps |
+| `apt-get install …` | once | **N times**, silently |
+
+Hence the contract, which is the reason for the word: **`includes` defines, it does not act.** den
+cannot verify it; a side effect placed there is replayed once per step.
+
+Two conveniences follow from den reading the files instead of executing them: they need neither the
+**executable bit** nor a **shebang**. In exchange the shell is den's choice, not the script's — den
+sends `bash -lc`, the `-l` being what loads the base image's `PATH` (go, node).
+
+A step reaches **no host file**. The only host material entering the VM is the *text* of `includes:`
+and `steps:`; everything else — packages, binaries, archives — comes over the **network**, under the
+nest's egress policy.
+
+### What gets rebuilt
+
 - The **target** is always rebuilt — you named it. Only its ancestors are skipped when their image
   is already there, and every skip is printed, with the `--force` that overrides it.
 - "Already there" is read from `sbx template ls --json`, which is also why `den build` (everything)
   and `--force` never call it: those forms rebuild by definition.
-- A stack with **no `build.sh`** is not something den builds: its `image:` is one sbx pulls. It is
-  skipped and named, never a refusal — unless you ask for it by name, which den does refuse rather
-  than answer with a skip line that reads as success.
+- A stack with **no `provision.steps`** is not something den builds: its `image:` is one sbx pulls.
+  It is skipped and named, never a refusal — unless you ask for it by name, which den does refuse
+  rather than answer with a skip line that reads as success.
 - A `parent:` cycle is refused with the whole cycle spelled out (`a → b → a`), a `parent:` that does
-  not exist names the file to fix, and every `build.sh` is checked to exist **before the first one
-  runs** — a four-minute base image should not be built to reach a refusal den could make instantly.
+  not exist names the file to fix, and **every `includes:` and `steps:` file of the whole chain is
+  read before the first `sbx create`** — a four-minute base image should not be built to reach a
+  refusal den could make instantly.
+- A **pre-existing `<stack>-build` sandbox is a refusal**, not a cleanup: that is a legal nest name,
+  so removing it blindly could destroy a sandbox of yours. The message names `sbx rm --force`.
 
-`den <nest>` uses the same inventory: if the stack has a `build.sh` and its image was never built,
-den stops and tells you to run `den build <stack>`. Without that check the failure surfaces as
-sbx's own `403 Forbidden: pull failed for image "X"` — sbx treats an unknown template as a registry
-pull, so the message talks about authorization rather than about a missing build. A stack with no
-`build.sh` is left alone: its `image:` may well be one sbx can pull, and den has no build to
-suggest.
+`den <nest>` uses the same inventory: if the stack declares `provision.steps` and its image was
+never built, den stops and tells you to run `den build <stack>`. Without that check the failure
+surfaces as sbx's own `403 Forbidden: pull failed for image "X"` — sbx treats an unknown template as
+a registry pull, so the message talks about authorization rather than about a missing build. A stack
+with no `provision.steps` is left alone: its `image:` may well be one sbx can pull, and den has no
+build to suggest.
+
+### Coming from `build.sh`
+
+If your `~/.den` predates this model, every stack still has a `stacks/<name>/build.sh` and **den no
+longer reads it**. Nothing breaks and nothing is deleted, but until you migrate, `den build` skips
+every stack ("no `provision.steps`, nothing for den to build") and `den <nest>` stops warning about
+missing images.
+
+To migrate a stack: split what the script does into one file per stage under `stacks/<name>/provision/`,
+list them in `steps:`, move any shared function library into `includes:`, and delete the `build.sh`
+(the `sbx create`/`template save`/`trap` scaffolding it carried is now den's). Two things the old
+scripts could do and steps cannot: read host files (only `includes:`/`steps:` text enters the VM),
+and pick their own shell (den sends `bash -lc`). `versions.lock` is out of the model — den claims
+nothing about tool versioning, and pins stay where they already are, in the scripts.
 
 ## Design
 

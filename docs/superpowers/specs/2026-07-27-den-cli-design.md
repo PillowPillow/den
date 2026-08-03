@@ -315,6 +315,36 @@ sont du **runtime** et le disent (« sourcé EN PLUS du kit par la session, pas 
 Le jour où un build aurait vraiment besoin d'un fichier hôte, ce sera un ajout conscient à cette
 liste, pas un trou qu'on découvre.
 
+#### Sonde egress du 2026-08-03 — ce qui est attesté, et ce qui ne l'est pas
+
+Le paragraphe ci-dessus engage la VM de build à joindre les dépôts de paquets : c'est par là que
+passe *tout* ce qu'un step installe. Une sonde a été lancée sur la machine de l'utilisateur ce
+jour-là, puis démontée.
+
+| Mesuré | Verdict |
+|---|---|
+| `sbx create --name den-egress-probe claude <scratch>` — l'argv **exact** que den construit pour une stack RACINE, sans kit | accepté, sortie 0, agent `claude` |
+| `sbx exec <name> -- bash -lc '<payload>'` | fonctionne, `--` compris |
+| `curl` vers `deb.debian.org`, **depuis l'intérieur** de la VM | HTTP 200 |
+| `curl` vers `registry.npmjs.org`, depuis l'intérieur de la VM | HTTP 200 |
+
+Une VM de build **sans kit** joint donc les dépôts, et la séquence du §6 n'a pas à y injecter de kit
+egress pour que le modèle tienne.
+
+**Le caveat, et c'est tout le caveat.** Sur cette machine, `sbx policy check network --json`
+rapportait `"governance": {"active": false}` — globalement **et** dans le contexte de la sandbox. La
+sonde n'atteste donc que le **cas permissif** : gouvernance inactive, tout passe, ce qui est
+exactement ce qu'on observerait d'une VM sans aucune policy. Autrement dit elle prouve que rien dans
+l'argv de den ne ferme le réseau ; elle ne prouve rien sur ce qu'une gouvernance active laisserait
+passer.
+
+**Question ouverte, à trancher avant le premier vrai build sous gouvernance active** : ce qu'obtient
+une VM de build sans kit quand `governance.active` vaut `true`. La réponse décide si la séquence doit
+poser un kit egress sur la VM de build, et lequel — une stack déclare déjà `egress:` (§4.2) pour ses
+*spawns*, et rien ne dit aujourd'hui que la même liste convienne à son *build* (un build tire des
+paquets que le runtime n'a plus besoin de joindre). Tant que ce n'est pas mesuré, ce n'est pas écrit
+ici : ce dépôt atteste le comportement de `sbx` avec sa date, il ne l'extrapole pas.
+
 **Une sandbox `S-build` préexistante est un refus, pas un `rm --force` préalable.** `S-build` est un
 nom de nest parfaitement légal — le charset des composants (§2) l'autorise — donc un nettoyage
 aveugle peut détruire une vraie sandbox de l'utilisateur. Le teardown étant différé, un résidu ne
