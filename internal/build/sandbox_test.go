@@ -3,6 +3,7 @@ package build
 import (
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/PillowPillow/den/internal/config"
@@ -62,10 +63,16 @@ func TestCreateArgvCarriesNoSpawnMachinery(t *testing.T) {
 // refuses. Guarded here so a stack name legal for den but illegal as a
 // sandbox component is caught before any process runs.
 func TestCreateArgvRefusesAStackNameThatIsNotANameableSandbox(t *testing.T) {
+	stackDir := "/home/u/.den/stacks/-weird"
 	s := &config.Stack{Name: "-weird", Image: "x:v1", Base: "claude",
+		Dir:       stackDir,
 		Provision: config.Provision{Steps: []string{"/x/go.sh"}}}
-	if _, err := CreateArgv(s, "", "/scratch/x"); err == nil {
+	_, err := CreateArgv(s, "", "/scratch/x")
+	if err == nil {
 		t.Fatal("CreateArgv accepted a stack name that cannot be a sandbox name")
+	}
+	if !strings.Contains(err.Error(), stackDir) {
+		t.Errorf("error does not name the stack directory: got %v, expected to contain %q", err, stackDir)
 	}
 }
 

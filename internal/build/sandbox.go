@@ -51,7 +51,7 @@ func CreateArgv(s *config.Stack, parentImage, scratch string) ([]string, error) 
 	// accepts names sbx would reject (it only forbids separators and the two
 	// reserved dots), and a build must not reach a process to learn it.
 	if err := sbx.ValidateSandboxName(name); err != nil {
-		return nil, fmt.Errorf("stack %q: cannot name its build sandbox — rename the stack directory in %s: %w", s.Name, filepath.Join(s.Dir, ".."), err)
+		return nil, fmt.Errorf("stack %q: cannot name its build sandbox — rename the stack directory %s: %w", s.Name, s.Dir, err)
 	}
 
 	argv := []string{"create", "--name", name}
