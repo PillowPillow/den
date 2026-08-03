@@ -124,6 +124,24 @@ func TestChainOnATargetTakesItsAncestorsOnly(t *testing.T) {
 	}
 }
 
+// The parent's IMAGE travels with the child, not its NAME: `sbx create
+// --template` takes a reference, and Execute (Task 6) reads this field
+// straight off the stack rather than re-resolving the graph it was handed as
+// a flat, already-ordered chain.
+func TestChainCarriesTheParentImageOnTheChild(t *testing.T) {
+	chain, _, err := Chain(loadStacks(t, fixture), "delta")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	alpha, delta := chain[0], chain[len(chain)-1]
+	if alpha.ParentImage != "" {
+		t.Errorf("alpha.ParentImage = %q, want empty: alpha is a root, it has no parent", alpha.ParentImage)
+	}
+	if delta.ParentImage != "gamma:v1" {
+		t.Errorf("delta.ParentImage = %q, want gamma:v1 (delta's parent gamma's image, not its name)", delta.ParentImage)
+	}
+}
+
 func TestChainOnARootTargetIsJustThatStack(t *testing.T) {
 	chain, _, err := Chain(loadStacks(t, fixture), "zeta")
 	if err != nil {
