@@ -178,11 +178,13 @@ comme le §6 les décrit. Relevé versé au §14.0 sous « Les commandes relevé
 Deux choses que ce smoke a laissées ouvertes, et qui n'ont pas bloqué le tag — elles restent
 ouvertes **après** v1.0.0, écrites ouvertes plutôt que fermées par absence de banc :
 
-- la **gouvernance active** (§6) : `governance.active` valait encore `false`, aucun banc n'existe
-  ici. La question reste écrite ouverte plutôt que fermée par absence de banc ;
+- la **gouvernance active** (§6) : `governance.active` valait `false` sur le banc, et rien n'a mesuré
+  ce qu'une VM de build sans kit en fait ;
 - la porte du §9.1 sur `den sh` : qu'un journal se **remplisse** pendant l'attente reste non prouvé
-  (le double rend toujours les mêmes octets, et le smoke n°3 ne visait pas cette surface). Pour un
-  prochain smoke, pas pour v1.
+  (le double rend toujours les mêmes octets, et le smoke n°3 ne visait pas cette surface).
+
+Les deux sont pour un prochain smoke réel. Aucune ne rend faux ce que v1.0.0 livre : elles nomment
+deux surfaces de `sbx` qu'aucun banc n'a encore touchées.
 
 ## 9. Docs de référence
 
