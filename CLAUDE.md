@@ -15,8 +15,8 @@ hermetic.
 make test        # go test -count=1 ./...   (-count=1 defeats the cache — plain `go test` can pass stale)
 make typecheck   # go build ./...
 make lint        # go vet ./... && test -z "$(gofmt -l .)"   — gofmt is enforced, not advisory
-go build -o den ./cmd/den
-go build -ldflags "-X github.com/PillowPillow/den/internal/cli.Version=v0.1.0" -o den ./cmd/den
+make build       # go build -ldflags "-X .../cli.Version=$(git describe --tags --always --dirty)" -o den ./cmd/den
+                 # the ONLY documented way to build: a plain `go build` answers `den dev`
 
 go test ./internal/spawn/ -run TestSpawnAddsNoWorkspaceOutsideMountMode -count=1   # single test
 ```
@@ -83,8 +83,13 @@ reapplied to a live VM — den warns about mixin drift and missing git dirs inst
   now agree; the earlier note here said they deliberately did not, and telling you to prefer the
   spec over the README is no longer right. The spec remains the source of truth on **intent**, but
   a divergence is now a bug in one of them, not a phase.
-- `docs/superpowers/handoffs/HANDOFF.md` says Plan 2 is unexecuted and nothing is pushed. Both are
-  false (PRs #12–#14 merged). Handoffs and plans are historical; the spec
-  `docs/superpowers/specs/2026-07-27-den-cli-design.md` is the source of truth.
+- `docs/superpowers/handoffs/HANDOFF.md` was itself the liar this section warned about; it was
+  rewritten on 2026-08-03 and is current as of the `v1.0.0` tag. The **dated** handoffs beside it
+  (`2026-07-*`, `2026-08-*`) are historical and never rewritten — each describes the state on its
+  own date. So is everything under `docs/superpowers/plans/` and `.superpowers/sdd/`, where several
+  reports still say `sbx` is not installed on this machine. It is (`/opt/homebrew/bin/sbx`,
+  v0.35.0, three real smokes). The spec `docs/superpowers/specs/2026-07-27-den-cli-design.md`
+  remains the source of truth, and its §14.0/§14.1 the only place that says what a real `sbx` has
+  actually answered.
 - `.claude/worktrees/feat+spawn-interactive/` is a full shadow copy of the tree. Exclude it from
   greps or every search returns doubled hits.

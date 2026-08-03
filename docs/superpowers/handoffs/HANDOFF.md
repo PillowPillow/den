@@ -4,7 +4,7 @@
 > `CLAUDE.md`, puis le spec. Réponds en français (préférence utilisateur) ; écris le code, les
 > commentaires et les messages utilisateur **en anglais**.
 >
-> Dernière mise à jour : **2026-08-03**, après la merge de `den build` (#8, PR #29).
+> Dernière mise à jour : **2026-08-03**, après le tag **`v1.0.0`** (#10, PR #34).
 
 > ⚠️ **Ce fichier a menti pendant cinq jours.** Sa version précédente, datée du 2026-07-28,
 > annonçait « Plan 2 écrit et PAS exécuté », « 34 commits, rien n'est poussé », et des conventions
@@ -17,12 +17,15 @@
 
 - **Les quatre plans sont livrés et mergés sur `main`.** Fondations, spawn, ports, build DAG.
   `origin` est `git@github.com:PillowPillow/den.git` et `main` y est poussé.
-- **697 fonctions de test, 12 paquets, vert** (`make test`, qui passe `-count=1` : un `go test` nu
+- **699 fonctions de test, 12 paquets testés sur 13, vert** (`make test`, qui passe `-count=1` : un `go test` nu
   peut passer sur du cache périmé).
 - **La suite est hermétique et n'invoque jamais `sbx`.** Elle ne prouve donc rien sur le binaire.
   Ce qui est attesté contre un `sbx` réel l'est par des **smokes datés** et consigné au spec §14.0
   et §14.1, avec sa date. Ce dépôt atteste le comportement de `sbx` ; il ne l'extrapole pas.
-- **v1 n'est pas taguée.** `Version = "dev"`, aucun tag. Ce qui reste est au §8 ci-dessous.
+- **v1.0.0 est taguée** (2026-08-03, tag annoté sur `e964606`). `make build` stampe
+  `git describe --tags --always --dirty` dans `cli.Version` : un binaire construit en suivant le
+  README répond `den v1.0.0`, plus `den dev`. **Toutes les issues v1 sont fermées.** Ce qui reste
+  ouvert et pourquoi ça ne bloquait pas le tag est au §8 ci-dessous.
 
 ## 1. Mission
 
@@ -145,11 +148,23 @@ Deux avertissements qui coûtent cher si on les oublie :
 - « vert contre `sbx.Fake` » ne veut **rien dire** pour un comportement d'exécution de la microVM.
   Le double répond à l'argv qu'on lui donne, y compris à un argv qui n'existe pas.
 
-## 8. Ce qui reste pour taguer v1
+## 8. v1 est taguée — ce que ça a fermé, ce que ça n'a pas fermé
 
-**Une seule étape, et elle n'est plus bloquée.**
+**Rien ne reste pour v1. `v1.0.0` est un tag annoté sur `e964606` (2026-08-03), poussé.** Son
+message reprend le périmètre du §1 — runtime + build, interactif d'abord — et ses cinq
+non-objectifs mot pour mot : pas de flux autonome, pas de `den sync`, pas de snapshot de plugins
+agent, pas de sécurisation d'infra partagée, pas de registry ni de CI de distribution.
 
-**#10** — `-ldflags` remplissant `Version`, README final, tag `v1.0.0`.
+**#10 est FAIT** (PR #34). `make build` stampe `git describe --tags --always --dirty` dans
+`cli.Version`, et le README ne donne plus que cette commande — deux façons documentées de builder,
+c'est ainsi que celle sans version survit. Le contrôle qui tranche n'est pas « la sortie n'est pas
+`dev` » : un `Version` vide, ce que produit un `$(...)` non échappé dans une recette make, n'est pas
+`dev` non plus. C'est l'**accord** de `./den version` et de `git describe` qui vaut preuve.
+
+**#21, #27 et #30 étaient faits depuis la PR #32** et sont restés ouverts trois jours : sa
+description disait `Closes #20, #21, #27, #30`, et GitHub n'honore le mot-clé que devant le
+**premier** numéro. Fermés le 2026-08-03 en nommant leur commit. À retenir pour la prochaine PR
+multi-issues : un `Closes` par numéro.
 
 **#31 est FAIT** (2026-08-03, `docs/superpowers/handoffs/2026-08-03-smoke-reel-3.md`). Le smoke réel
 n°3 a tourné sur la machine de l'utilisateur contre `sbx` v0.35.0 : `sbx stop` et
@@ -160,13 +175,16 @@ déclarées en ordre parent et **s'arrête au premier échec**, et les chemins d
 délibéré au step 2 sur 3, `^C` en plein step, `S-build` préexistant, streaming live — se comportent
 comme le §6 les décrit. Relevé versé au §14.0 sous « Les commandes relevées le 2026-08-03 ».
 
-Deux choses que ce smoke a laissées ouvertes, et qui ne bloquent pas le tag :
+Deux choses que ce smoke a laissées ouvertes, et qui n'ont pas bloqué le tag — elles restent
+ouvertes **après** v1.0.0, écrites ouvertes plutôt que fermées par absence de banc :
 
-- la **gouvernance active** (§6) : `governance.active` valait encore `false`, aucun banc n'existe
-  ici. La question reste écrite ouverte plutôt que fermée par absence de banc ;
+- la **gouvernance active** (§6) : `governance.active` valait `false` sur le banc, et rien n'a mesuré
+  ce qu'une VM de build sans kit en fait ;
 - la porte du §9.1 sur `den sh` : qu'un journal se **remplisse** pendant l'attente reste non prouvé
-  (le double rend toujours les mêmes octets, et le smoke n°3 ne visait pas cette surface). Pour un
-  prochain smoke, pas pour v1.
+  (le double rend toujours les mêmes octets, et le smoke n°3 ne visait pas cette surface).
+
+Les deux sont pour un prochain smoke réel. Aucune ne rend faux ce que v1.0.0 livre : elles nomment
+deux surfaces de `sbx` qu'aucun banc n'a encore touchées.
 
 ## 9. Docs de référence
 
