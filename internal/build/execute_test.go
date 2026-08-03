@@ -224,19 +224,29 @@ func TestExecuteNamesTheFailingStepWithoutInliningThePayload(t *testing.T) {
 	}
 }
 
-// SPEC §6's MESSAGE, whole, on the error shape a step failure now actually
-// produces.
+// SPEC §6's MESSAGE FRAME, on the error shape a step failure now actually
+// produces:
 //
 //	stack "devx": step 2/3 ./provision/gh.sh failed: exit status 1
 //
-// Every other failure test above scripts an ExecError carrying a Stderr, which
-// is what Run produced. Stream does not: it has already written sbx's stderr to
-// the build log, so it leaves the field empty rather than making the user read
-// the same apt-get failure twice — and ExecError.Detail then falls back to Err.
-// That fallback is the last link in the chain that renders the promised line,
-// and nothing exercised it THROUGH this package: an equality assertion, not a
-// `contains`, because the promise is the shape and a `contains` would hold just
-// as well with an argv wedged in front of it.
+// The spec's own example names a RELATIVE path (./provision/gh.sh); config
+// resolves provision.steps to an ABSOLUTE path at load time, so den emits and
+// this test asserts an absolute one instead. That divergence is left open —
+// spec-vs-shipped arbitration, tracked in a follow-up issue — and what this
+// test actually pins down is the FRAME around it: `stack %q: step i/n <path>
+// failed: <cause>`, no argv, and the cause reaching Detail() through the Err
+// fallback rather than Stderr.
+//
+// TestExecuteNamesTheFailingStepWithoutInliningThePayload and
+// TestExecuteDoesNotInlineTheCreateArgvOnAFailedCreate above both script an
+// ExecError carrying a Stderr, which is what Run produces. Stream does not: it
+// has already written sbx's stderr to the build log, so it leaves the field
+// empty rather than making the user read the same apt-get failure twice — and
+// ExecError.Detail then falls back to Err. That fallback is the last link in
+// the chain that renders the line above, and nothing exercised it THROUGH this
+// package until now: an equality assertion, not a `contains`, because the
+// promise is the shape and a `contains` would hold just as well with an argv
+// wedged in front of it.
 func TestExecuteRendersAStepFailureAsSpecPromises(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	step := filepath.Join(home, "stacks", "devx", "one.sh")

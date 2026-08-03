@@ -151,9 +151,14 @@ func Execute(ctx context.Context, steps []Step, d Deps, out, errOut io.Writer) e
 			// AND run on context.WithoutCancel(ctx) (see buildOne), a Ctrl-C
 			// or `kill` now tears down same as a clean failure — cli.Execute
 			// wires signal.NotifyContext so this ctx observes the interrupt
-			// in the first place. A leftover now survives only a SIGKILL
-			// (which no `defer` outruns) or den itself crashing: rare enough
-			// to deserve a human look.
+			// in the first place. A leftover now survives only a signal no
+			// handler catches (SIGKILL, SIGHUP, SIGQUIT — NotifyContext arms
+			// only os.Interrupt and SIGTERM), a second interrupt landing on
+			// the teardown's own `sbx rm --force` child (os/exec never sets
+			// Setpgid, so that child shares den's foreground process group
+			// and a second Ctrl-C during a slow teardown kills it while den
+			// itself keeps ignoring the signal), or den itself crashing:
+			// rare enough to deserve a human look.
 			name := plans[s.Stack.Name].sandbox
 			if sbx.Find(boxes, name) != nil {
 				return fmt.Errorf(

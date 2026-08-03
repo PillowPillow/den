@@ -173,10 +173,21 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 // sh`, spawn) deliberately sets cmd.Cancel = nil, so this context ending
 // does nothing to an attached shell — the tty driver delivers a Ctrl-C typed
 // inside it directly to the sandbox's foreground process, not through here.
-// Checked, not assumed: in both callers (internal/cli/sh.go, spawn.Run at
+// Checked, not assumed: in both callers (internal/cli/sh.go, spawn.Spawn at
 // internal/spawn/spawn.go) the Attach call is the LAST use of ctx — nothing
 // runs after it that could see this context canceled by an in-shell Ctrl-C
 // the tty already delivered straight to den's own process group.
+//
+// No re-arm, deliberately: the textbook pattern — a goroutine that calls
+// stop() again once ctx.Done() fires, so a second signal escalates — is
+// rejected here. Attach's cmd.Cancel = nil exists precisely so that ctx
+// canceling does nothing to an attached shell; re-arming would undo that on
+// the very path it protects, making a second in-shell Ctrl-C during `den sh`
+// kill den outright while sbx still holds the tty. Bounding the teardown
+// instead (context.WithTimeout over the context.WithoutCancel(ctx) buildOne
+// already uses) was considered and rejected at buildOne's decision site, not
+// here. Without this paragraph the next reader "fixes" the swallowed second
+// Ctrl-C and breaks `den sh`.
 //
 // The wiring itself is an untestable one-liner, in the shape spawn.
 // StdinIsTerminal and ports.ListenScanner already are: sending a real signal

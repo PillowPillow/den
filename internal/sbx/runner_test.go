@@ -189,9 +189,16 @@ func TestExecRunPreservesExitCodeAndStderr(t *testing.T) {
 // is deliberate: interleaving in the order the process produced it is the
 // property, and a `contains` pair would stay green if the two streams arrived
 // through two pipes and two copier goroutines racing to the same writer. This
-// test is therefore also what proves the streamSink pointer identity does its
-// job — os/exec hands ONE descriptor to the child, so the kernel orders the
-// writes.
+// test proves that ORDERING holds for Stream as wired today — it does not
+// prove the streamSink pointer wrapper is doing anything: `out` here is a
+// *strings.Builder, and passing it to both cmd.Stdout and cmd.Stderr directly
+// would already make interfaceEqual hold and the descriptors get shared, since
+// a *strings.Builder is a comparable dynamic type. streamSink's actual
+// justification is the case argued in runner.go — a caller's writer whose
+// dynamic type is NOT comparable, where the wrapper is what keeps the identity
+// structural instead of silently falling back to two pipes and a data race —
+// and no test in this package can cleanly observe that without engineering a
+// non-comparable io.Writer expressly to fail without the wrapper.
 //
 // The shell's own buffering is not left to chance either: `echo` is a builtin
 // in both shells /bin/sh can be here, and both flush it per command (dash's
