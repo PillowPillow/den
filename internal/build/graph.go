@@ -9,6 +9,7 @@
 package build
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,20 @@ import (
 
 	"github.com/PillowPillow/den/internal/config"
 )
+
+// Excluded is a stack `den build` (no target) leaves out because its `parent:`
+// chain reaches a stack den cannot resolve, and why.
+//
+// Returned rather than swallowed, for the reason Step.Skipped exists: a silent
+// skip and a forgotten stack look identical from the outside. And Reason is
+// composed HERE, where the verdict is known, exactly as Step.Skipped is: the
+// two causes do not send the user to the same file — an unreadable ancestor is
+// fixed in its own stack.yaml, a `parent:` naming nothing is fixed on the line
+// that names it. The CLI prints the sentence; it does not decide it.
+type Excluded struct {
+	Stack  string // the stack that is not built
+	Reason string // why, remedy included
+}
 
 // Chain returns the stacks `den build [target]` must consider, ANCESTORS
 // FIRST — the topological order of spec §6. It decides nothing about what is
@@ -34,29 +49,72 @@ import (
 //
 // A BROKEN stack does not sink the whole build, on the same doctrine as
 // config.LoadStacks: `den build` walks the healthy ones, and a stack that
-// fails to decode is only named if it is the target or an ancestor of it —
-// through config.Stacks.Get, which distinguishes "unreadable" from "does not
-// exist" and would otherwise send the user to create a file they already have.
-func Chain(stacks config.Stacks, target string) ([]*config.Stack, error) {
+// fails to decode is only a REFUSAL when it is the target or an ancestor of
+// the target — through config.Stacks.Get, which distinguishes "unreadable"
+// from "does not exist" and would otherwise send the user to create a file
+// they already have.
+//
+// Without a target the same broken stack used as a `parent:` is not a refusal
+// either: it would sink every healthy stack around it, which is precisely what
+// the doctrine above forbids. The stacks whose ancestry reaches it are EXCLUDED
+// from the chain and returned as such — measured on this branch, 2026-08-03: a
+// den holding one healthy stack, one unreadable stack and one child of the
+// unreadable one answered `den build` with a refusal and built nothing.
+//
+// A `parent:` naming a stack that does not exist AT ALL is the same defect
+// class and takes the same answer, only with the other remedy: there the fault
+// really is the `parent:` line, so the exclusion names the file that declares
+// it. Only the REFUSABLE cases stay refusals — a named target, and a parent
+// cycle, which is a contradiction no other stack can be walked around.
+//
+// Every healthy stack is a root of the no-target walk, so a whole affected
+// subtree comes back stack by stack rather than as the top of the subtree
+// alone: the user gets the list of what was not built, not a list to deduce it
+// from.
+func Chain(stacks config.Stacks, target string) ([]*config.Stack, []Excluded, error) {
 	roots := stacks.Names()
 	if target != "" {
 		// Get, not a map lookup: it is the sole source of the "unreadable vs
 		// absent" verdict, and it lists the declared stacks in its message.
 		if _, err := stacks.Get(target); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		roots = []string{target}
 	}
 
 	var out []*config.Stack
+	var excluded []Excluded
 	built := map[string]bool{}
 	for _, root := range roots {
-		if err := visit(stacks, root, nil, built, &out); err != nil {
-			return nil, err
+		err := visit(stacks, root, nil, built, &out)
+		var ancestry *ancestryError
+		if target == "" && errors.As(err, &ancestry) {
+			// Nothing to roll back: visit appends a stack only AFTER its whole
+			// ancestry has been walked, so a chain that dies on an unresolvable
+			// ancestor has emitted none of itself.
+			excluded = append(excluded, Excluded{Stack: root, Reason: ancestry.reason})
+			continue
+		}
+		if err != nil {
+			return nil, nil, err
 		}
 	}
-	return out, nil
+	return out, excluded, nil
 }
+
+// ancestryError is the walk's verdict on a `parent:` den cannot resolve. A TYPE
+// rather than a plain error because Chain answers it two ways, and it carries
+// BOTH wordings for that reason: err is the refusal a named target gets, reason
+// is the same fault as the one-line exclusion the no-target form reports. They
+// are written together, here, so the remedy cannot differ between the two forms.
+type ancestryError struct {
+	err    error  // the refusal, verbatim
+	reason string // why the stack is not built, remedy included
+}
+
+func (e *ancestryError) Error() string { return e.err.Error() }
+
+func (e *ancestryError) Unwrap() error { return e.err }
 
 // visit walks one stack's ancestry, emitting parents before children.
 //
@@ -90,7 +148,33 @@ func visit(stacks config.Stacks, name string, path []string, built map[string]bo
 		// error from Get alone says `stack "base" not found`, which is true and
 		// unactionable: nothing in it points at the file to edit.
 		if _, err := stacks.Get(s.Parent); err != nil {
-			return fmt.Errorf("stack %q: %w — fix `parent:` in %s", name, err, stackFile(s))
+			// ...but "fix `parent:` in <this stack>" is the remedy for ONE of
+			// Get's two verdicts. A parent that does not load is a parent that
+			// is really there: the `parent:` line naming it is correct, and the
+			// file to fix is the parent's own — which Get's verdict already
+			// cites. Sending the user to edit the child's `parent:` there would
+			// point at the one line that is not wrong.
+			var unreadable *config.UnreadableStackError
+			if errors.As(err, &unreadable) {
+				return &ancestryError{
+					// The refusal names the affected stack and then hands over to
+					// Get's verdict, which names the unreadable stack AND its
+					// file. NOTHING is appended after it: that verdict wraps a
+					// multi-line YAML diagnostic, and a remedy trailing it would
+					// read as belonging to its last line — the reason
+					// config.Stacks.Get gives for appending no location either.
+					err:    fmt.Errorf("stack %q: %w", name, err),
+					reason: fmt.Sprintf("its ancestor %q is unreadable, fix that stack first", s.Parent),
+				}
+			}
+			return &ancestryError{
+				err: fmt.Errorf("stack %q: %w — fix `parent:` in %s", name, err, stackFile(s)),
+				// The exclusion line is not Get's message: that one lists the
+				// declared stacks over several lines, which belongs in a refusal
+				// the user asked for, not in a one-line report about a stack
+				// they did not name. What survives is what to edit.
+				reason: fmt.Sprintf("its ancestor %q does not exist — fix `parent:` in %s", s.Parent, stackFile(s)),
+			}
 		}
 		if err := visit(stacks, s.Parent, append(slices.Clone(path), name), built, out); err != nil {
 			return err

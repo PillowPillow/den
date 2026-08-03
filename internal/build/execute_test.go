@@ -79,7 +79,7 @@ func TestExecuteAnnouncesASkippedStepWithoutRunningIt(t *testing.T) {
 // shape agent.RenderMixin's freshness guard takes.
 func TestExecuteChecksEveryScriptBeforeRunningAny(t *testing.T) {
 	stacks := loadStacks(t, fixture, "delta") // delta gets no build.sh
-	chain, err := Chain(stacks, "delta")
+	chain, _, err := Chain(stacks, "delta")
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}

@@ -37,7 +37,7 @@ func plan(t *testing.T, files map[string]string, target string, force bool, imag
 func planScriptless(t *testing.T, files map[string]string, target string, force bool, images Images,
 	scriptless ...string) []Step {
 	t.Helper()
-	chain, err := Chain(loadStacks(t, files, scriptless...), target)
+	chain, _, err := Chain(loadStacks(t, files, scriptless...), target)
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestPlanWithoutForceSkipsWhatForceRebuilds(t *testing.T) {
 // spend minutes the user did not ask for. den refuses, and names the flag that
 // makes the question go away.
 func TestPlanRefusesWhenTheInventoryFails(t *testing.T) {
-	chain, err := Chain(loadStacks(t, fixture), "delta")
+	chain, _, err := Chain(loadStacks(t, fixture), "delta")
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestPlanSkipsAScriptlessAncestor(t *testing.T) {
 // cannot build is a request to refuse, not to answer with a skip line — doing
 // nothing silently would read as success.
 func TestPlanRefusesANamedTargetWithNoBuildScript(t *testing.T) {
-	chain, err := Chain(loadStacks(t, fixture, "zeta"), "zeta")
+	chain, _, err := Chain(loadStacks(t, fixture, "zeta"), "zeta")
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}

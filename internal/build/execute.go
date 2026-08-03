@@ -29,10 +29,7 @@ func Execute(ctx context.Context, steps []Step, script Script, out io.Writer) er
 		path := ScriptPath(s.Stack)
 		info, err := os.Stat(path)
 		if err != nil {
-			return fmt.Errorf(
-				"stack %q: build script not found: %s — create it (den runs it unchanged, "+
-					"it is what produces image %s)",
-				s.Stack.Name, path, s.Stack.Image)
+			return missingScriptError(s.Stack)
 		}
 		// The EXECUTABLE BIT, not just existence. den runs the script directly
 		// (no `sh <path>`, so the shebang stays the script's own choice), which
@@ -40,6 +37,11 @@ func Execute(ctx context.Context, steps []Step, script Script, out io.Writer) er
 		// denied` — measured on the bench, 2026-08-03, and measured LATE: the
 		// chain had already built the stacks before it. Checking it here puts
 		// that failure where every other one already is, before the first build.
+		//
+		// The 0o111 test PRESUMES a POSIX filesystem: os.Stat never reports
+		// those bits on Windows, where this would therefore refuse every
+		// build.sh — which is not a case den has, since it only runs where sbx
+		// does, on darwin and linux.
 		if info.Mode()&0o111 == 0 {
 			return fmt.Errorf(
 				"stack %q: build script not executable: %s — `chmod +x %s` (den runs it directly, "+

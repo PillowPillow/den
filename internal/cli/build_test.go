@@ -146,6 +146,78 @@ func TestBuildNamesABrokenStackWithoutFailing(t *testing.T) {
 	}
 }
 
+// The other half of the doctrine above, and the defect measured on this branch
+// (2026-08-03): a broken stack used as a `parent:` made `den build` refuse and
+// build NOTHING. The healthy chain must still be built, and the stack whose
+// ancestry reaches the broken one must be named on stderr with the stack at
+// fault — otherwise it is a stack den silently forgot.
+func TestBuildNamesAStackWhoseParentIsBrokenWithoutFailing(t *testing.T) {
+	home := buildDenHome(t)
+	for _, s := range []struct{ name, yaml string }{
+		{"typo", "imag: nope\n"},
+		// A build.sh of its own, so that not being built can only come from its
+		// ancestry — never from den having nothing to run.
+		{"orphan", "image: orphan:v1\nparent: typo\n"},
+	} {
+		dir := filepath.Join(home, "stacks", s.name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "stack.yaml"), []byte(s.yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, "stacks", "orphan", build.ScriptName),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := &recordingBuild{}
+
+	_, stderr, err := runBuild(t, &sbx.Fake{}, script, "--den-home", home, "build")
+	if err != nil {
+		t.Fatalf("a broken PARENT must not fail the whole build: %v", err)
+	}
+	if got := strings.Join(script.ran, ","); got != "base,mid,leaf" {
+		t.Errorf("ran = %v, want the healthy chain built anyway", script.ran)
+	}
+	if !strings.Contains(stderr, "orphan") || !strings.Contains(stderr, "typo") {
+		t.Errorf("stderr = %q, want the excluded stack named with the ancestor at fault", stderr)
+	}
+}
+
+// Same for a `parent:` naming a stack that does not exist: the healthy chain is
+// built, the stack that cannot be is named — and here the remedy IS its own
+// `parent:` line, so the report names its file. `den build <that stack>` keeps
+// refusing; only the no-target form walks around it.
+func TestBuildNamesAStackWhoseParentDoesNotExistWithoutFailing(t *testing.T) {
+	home := buildDenHome(t)
+	dir := filepath.Join(home, "stacks", "orphan")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stack.yaml"),
+		[]byte("image: orphan:v1\nparent: nowhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, build.ScriptName), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := &recordingBuild{}
+
+	_, stderr, err := runBuild(t, &sbx.Fake{}, script, "--den-home", home, "build")
+	if err != nil {
+		t.Fatalf("a missing PARENT must not fail the whole build: %v", err)
+	}
+	if got := strings.Join(script.ran, ","); got != "base,mid,leaf" {
+		t.Errorf("ran = %v, want the healthy chain built anyway", script.ran)
+	}
+	for _, want := range []string{"orphan", "nowhere", "parent:", filepath.Join(dir, "stack.yaml")} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr = %q, want it to contain %q", stderr, want)
+		}
+	}
+}
+
 func TestBuildRefusesAnUnknownStack(t *testing.T) {
 	home := buildDenHome(t)
 	script := &recordingBuild{}
@@ -172,6 +244,32 @@ func TestBuildOnAnEmptyDenSaysWhereStacksGo(t *testing.T) {
 	}
 	if !strings.Contains(stdout, filepath.Join(home, "stacks")) {
 		t.Errorf("stdout = %q, want the stacks directory named", stdout)
+	}
+}
+
+// A den whose ONLY stack is broken produces an empty chain, and that used to
+// return before the report loop: the user was told "no stack declared" about a
+// stack they had just written. The two diagnoses are different — one says where
+// to create a stack, the other says which one to fix.
+func TestBuildOnADenWhoseOnlyStackIsBrokenSaysWhatToFix(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "stacks", "typo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stack.yaml"), []byte("imag: nope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, err := runBuild(t, &sbx.Fake{}, &recordingBuild{}, "--den-home", home, "build")
+	if err != nil {
+		t.Fatalf("a broken stack must not fail the build: %v", err)
+	}
+	if !strings.Contains(stderr, "typo") {
+		t.Errorf("stderr = %q, want the broken stack named even when nothing is left to build", stderr)
+	}
+	if strings.Contains(stdout, "no stack declared") {
+		t.Errorf("stdout = %q, want it not to claim the den declares nothing: typo is declared, it is broken", stdout)
 	}
 }
 

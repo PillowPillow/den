@@ -49,25 +49,47 @@ func newBuildCmd(denHome *string, runner sbx.Runner, script build.Script) *cobra
 				target = args[0]
 			}
 
-			chain, err := build.Chain(stacks, target)
+			chain, excluded, err := build.Chain(stacks, target)
 			if err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			if len(chain) == 0 {
-				// Only reachable without a target — a named one that does not
-				// exist was refused by Chain. So the diagnosis is "nothing is
-				// declared", and it names where to declare it.
-				fmt.Fprintf(out, "no stack declared in %s\n", stacks.Root)
-				return nil
-			}
 
 			// A stack present on disk but unreadable is reported and NOT built,
 			// on config.LoadStacks' own doctrine: it must not hide the healthy
 			// ones. Reported on stderr and by name — a `den build` that quietly
 			// skipped a broken stack would look like it built everything.
+			//
+			// BEFORE the empty-chain branch below, not after: a den whose only
+			// stacks are broken produces an empty chain, and returning early
+			// would have swallowed the only two lines that say why.
 			for _, b := range stacks.Broken {
 				fmt.Fprintf(cmd.ErrOrStderr(), "stack %s unreadable, not built: %v\n", b.Name, b.Err)
+			}
+			// And a stack whose `parent:` chain reaches a stack den cannot
+			// resolve is not built either — same doctrine, one level removed.
+			// The reason comes composed from internal/build, which is where the
+			// verdict is known: an unreadable ancestor and a `parent:` naming
+			// nothing send the user to two different files. Printed after the
+			// loop above, which carries the unreadable ancestor's own full
+			// diagnostic and its path.
+			for _, x := range excluded {
+				fmt.Fprintf(cmd.ErrOrStderr(), "stack %s not built: %s\n", x.Stack, x.Reason)
+			}
+
+			if len(chain) == 0 {
+				// Only reachable without a target — a named one that does not
+				// exist was refused by Chain. "declared" and "left to build" are
+				// two different diagnoses: an empty den needs to be told where
+				// stacks go, while a den whose stacks are all broken or excluded
+				// has just been told what to fix, and would read the absence
+				// message as den forgetting them.
+				if len(stacks.Broken) == 0 && len(excluded) == 0 {
+					fmt.Fprintf(out, "no stack declared in %s\n", stacks.Root)
+				} else {
+					fmt.Fprintf(out, "no stack left to build in %s\n", stacks.Root)
+				}
+				return nil
 			}
 
 			// The inventory is passed even when the plan will not consult it:

@@ -109,6 +109,28 @@ type Stacks struct {
 	Root string
 }
 
+// UnreadableStackError is Get's "declared but does not load" verdict, given a
+// TYPE so a caller can act on the distinction instead of matching the text.
+//
+// `den build` is what needs it: a `parent:` naming an unreadable stack and a
+// `parent:` naming a stack that does not exist call for two different files to
+// be edited — the parent's own for the first, the child's `parent:` line for
+// the second. Get stays the SOLE SOURCE of the verdict; this only makes the
+// verdict inspectable with errors.As.
+type UnreadableStackError struct {
+	Name string // the stack that is present on disk but does not load
+	Err  error  // LoadStack's own failure; it cites the full path of the file
+}
+
+// Error appends NO location: Err already cites the full path of the broken
+// stack.yaml, and it's multi-line — anything trailing it reads as belonging to
+// the last line of a YAML diagnostic.
+func (e *UnreadableStackError) Error() string {
+	return fmt.Sprintf("stack %q: unreadable: %v", e.Name, e.Err)
+}
+
+func (e *UnreadableStackError) Unwrap() error { return e.Err }
+
 // Get returns the named stack, or an error that DISTINGUISHES the two ways of
 // not having it: declared but unreadable, or not existing at all.
 //
@@ -121,9 +143,7 @@ func (s Stacks) Get(name string) (*Stack, error) {
 	}
 	for _, c := range s.Broken {
 		if c.Name == name {
-			// No location appended: the wrapped error already cites the full
-			// path of the broken stack.yaml, and it's multi-line.
-			return nil, fmt.Errorf("stack %q: unreadable: %w", name, c.Err)
+			return nil, &UnreadableStackError{Name: name, Err: c.Err}
 		}
 	}
 	if s.Root == "" {

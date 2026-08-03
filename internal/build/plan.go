@@ -96,10 +96,7 @@ func Plan(ctx context.Context, chain []*config.Stack, target string, force bool,
 		script := ScriptPath(s)
 		if _, err := os.Stat(script); err != nil {
 			if s.Name == target {
-				return nil, fmt.Errorf(
-					"stack %q: build script not found: %s — create it (den runs it unchanged, "+
-						"it is what would produce image %s)",
-					s.Name, script, s.Image)
+				return nil, missingScriptError(s)
 			}
 			steps = append(steps, Step{
 				Stack:   s,
@@ -141,4 +138,19 @@ func Plan(ctx context.Context, chain []*config.Stack, target string, force bool,
 		steps = append(steps, Step{Stack: s, Build: true})
 	}
 	return steps, nil
+}
+
+// missingScriptError is the refusal for a stack den is asked to build and whose
+// build.sh is not there.
+//
+// ONE definition for the two sites that produce it — Plan, on the stack the
+// user NAMED, and Execute's pre-flight guard — because they answer the same
+// fault and the two copies had already started to drift apart on a verb. The
+// message stays what it was: the script does not exist in either case, so it is
+// what WOULD produce the image, and the remedy is to write it.
+func missingScriptError(s *config.Stack) error {
+	return fmt.Errorf(
+		"stack %q: build script not found: %s — create it (den runs it unchanged, "+
+			"it is what would produce image %s)",
+		s.Name, ScriptPath(s), s.Image)
 }

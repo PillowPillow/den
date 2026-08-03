@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -395,6 +396,41 @@ func TestStacksGetDistinguishesUnreadableFromMissing(t *testing.T) {
 	// a fallback would send the user straight into a wall.
 	if strings.Contains(errMissing.Error(), "other") {
 		t.Errorf("the list of declared stacks must only propose healthy stacks; got: %v", errMissing)
+	}
+}
+
+// The same verdict, machine-readable. A caller that has to ACT on the
+// difference — `den build`, whose refusal for a broken `parent:` must name the
+// parent's file and not the child's — would otherwise match on the word
+// "unreadable", i.e. on a message anyone is free to reword.
+func TestStacksGetUnreadableVerdictIsTyped(t *testing.T) {
+	denHome := t.TempDir()
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeStack(t, denHome, "other", "image: other:v1\nimag: typo\n")
+	stacks, err := LoadStacks(denHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var unreadable *UnreadableStackError
+	_, errBroken := stacks.Get("other")
+	if !errors.As(errBroken, &unreadable) {
+		t.Fatalf("a broken stack must give an *UnreadableStackError; got %T: %v", errBroken, errBroken)
+	}
+	if unreadable.Name != "other" {
+		t.Errorf("Name = %q, want the stack that does not load", unreadable.Name)
+	}
+	// The cause stays reachable, and it is the one LoadStacks recorded: doctor
+	// and den build both relay it to name the file to fix.
+	if !strings.Contains(unreadable.Unwrap().Error(), filepath.Join("stacks", "other", "stack.yaml")) {
+		t.Errorf("Unwrap() = %v, want LoadStack's failure, which cites the file", unreadable.Unwrap())
+	}
+
+	// And "not found" is NOT that type: the two fixes stay distinguishable
+	// without reading either message.
+	_, errMissing := stacks.Get("never-declared")
+	if errors.As(errMissing, &unreadable) {
+		t.Errorf("a stack that does not exist must not read as unreadable; got: %v", errMissing)
 	}
 }
 
