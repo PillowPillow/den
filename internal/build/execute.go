@@ -313,7 +313,13 @@ func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out,
 //
 // Spec §6 promises this shape, verbatim:
 //
-//	stack "devx": step 2/3 ./provision/gh.sh failed: exit status 1
+//	stack "devx": step 2/3 $DEN_HOME/stacks/devx/provision/gh.sh failed: exit status 1
+//
+// The path is absolute because config.LoadStack resolves provision.steps
+// against the stack directory at load time; §6 showed a relative one until
+// issue #30 arbitrated the divergence in favour of what ships — the message
+// names the file to open. $DEN_HOME is the spec's stand-in for the expanded
+// prefix, nothing renders that literal.
 //
 // A plain `%w` around the *sbx.ExecError cannot produce it. ExecError.Error
 // renders `Bin + strings.Join(Args, " ")` first, and Args now holds the entire

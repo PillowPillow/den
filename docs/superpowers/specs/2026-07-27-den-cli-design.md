@@ -381,8 +381,16 @@ appliquée à la seule opération destructrice de la commande.
 `steps` est joué **un `sbx exec` par entrée**, ce qui donne le nommage de l'étape fautive :
 
 ```
-stack "devx": step 2/3 ./provision/gh.sh failed: exit status 1
+stack "devx": step 2/3 $DEN_HOME/stacks/devx/provision/gh.sh failed: exit status 1
 ```
+
+**Le chemin est ABSOLU, et c'est arbitré** (issue #30). Ce spec a longtemps montré
+`./provision/gh.sh`, un chemin relatif, alors que `config.LoadStack` résout `provision.steps` en
+chemins absolus dès le chargement (`resolveAgainst`) : den n'a jamais émis autre chose qu'un chemin
+absolu, et c'était **l'exemple** qui avait tort. Il est corrigé plutôt que le rendu, pour la doctrine
+du §2 — le message nomme le fichier à ouvrir, et un chemin cliquable dans un terminal qui les résout
+vaut mieux qu'un chemin court. `$DEN_HOME` est écrit ici pour que l'exemple ne dépende pas de la
+machine qui l'a rédigé ; le message réel porte le chemin expansé.
 
 Le prix de ce nommage est que chaque `exec` ouvre **un shell neuf**. Entre deux steps, **seul le
 système de fichiers de la VM persiste** : les paquets installés et les binaires posés restent, les
