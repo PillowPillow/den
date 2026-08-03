@@ -40,9 +40,10 @@ $EDITOR ~/.den/config.yaml
 ./den doctor
 ```
 
-On the first `den doctor`, two diagnostics are expected until you adapt the config: `sbx` missing
-if it is not installed, and the example repo `~/dev/my-project` not found. Both go away once
-`~/.den/config.yaml` and `~/.den/nests/example.yaml` are adjusted.
+On the first `den doctor`, one diagnostic is always expected until you adapt the config: the
+example repo `~/dev/my-project` not found. That one goes away once `~/.den/nests/example.yaml`
+points at a real repository. `sbx` missing is a second, machine-dependent one — only shown if it
+is not already installed.
 
 `~/.den/` is the single source of truth. The `DEN_HOME` variable (or the `--den-home` flag) lets
 you use a different one — that is what makes `den` testable and scriptable.
