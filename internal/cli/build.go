@@ -93,7 +93,12 @@ func newBuildCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return build.Execute(cmd.Context(), steps, build.Deps{Sbx: runner, DenHome: home}, out)
+			// errOut is cmd.ErrOrStderr(), not out: the teardown warning a
+			// failed `sbx rm --force` can print is a diagnostic, same kind as
+			// the two unreadable/excluded loops above it in this function —
+			// both already go to stderr, while out stays the build's own
+			// progress log.
+			return build.Execute(cmd.Context(), steps, build.Deps{Sbx: runner, DenHome: home}, out, cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false,

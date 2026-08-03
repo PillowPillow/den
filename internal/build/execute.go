@@ -56,7 +56,15 @@ type buildPlan struct {
 // of 5 must be caught before stack 1 is even created, not discovered after
 // stacks 1 and 2 have already spent minutes building — and one process beats
 // N regardless.
-func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
+//
+// errOut receives everything that is a DIAGNOSTIC rather than build progress —
+// today, only buildOne's teardown warning. A parameter, not a field on Deps:
+// out is already a parameter rather than living on Deps (Deps is the MACHINE
+// this needs — sbx, DenHome — while out/errOut are the two streams a caller
+// picks per invocation, cmd.OutOrStdout()/cmd.ErrOrStderr() in
+// internal/cli/build.go), so errOut sits next to the stream it is a sibling
+// of instead of a field two lines above.
+func Execute(ctx context.Context, steps []Step, d Deps, out, errOut io.Writer) error {
 	plans := make(map[string]buildPlan, len(steps))
 	for _, s := range steps {
 		if !s.Build {
@@ -139,9 +147,13 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 			// A pre-existing build sandbox is a REFUSAL, not a `rm --force`
 			// first. `<stack>-build` is a legal nest name (the component
 			// charset allows it), so a blind cleanup can destroy a real
-			// sandbox of the user's. The teardown in buildOne being deferred,
-			// a leftover only survives a den killed by SIGKILL: rare enough to
-			// deserve a human look.
+			// sandbox of the user's. The teardown in buildOne being deferred
+			// AND run on context.WithoutCancel(ctx) (see buildOne), a Ctrl-C
+			// or `kill` now tears down same as a clean failure — cli.Execute
+			// wires signal.NotifyContext so this ctx observes the interrupt
+			// in the first place. A leftover now survives only a SIGKILL
+			// (which no `defer` outruns) or den itself crashing: rare enough
+			// to deserve a human look.
 			name := plans[s.Stack.Name].sandbox
 			if sbx.Find(boxes, name) != nil {
 				return fmt.Errorf(
@@ -161,7 +173,7 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 			continue
 		}
 		fmt.Fprintf(out, "[%d/%d] %s: building %s...\n", i+1, len(steps), s.Stack.Name, s.Stack.Image)
-		if err := buildOne(ctx, d, s.Stack, plans[s.Stack.Name], out); err != nil {
+		if err := buildOne(ctx, d, s.Stack, plans[s.Stack.Name], out, errOut); err != nil {
 			return err
 		}
 	}
@@ -174,7 +186,7 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 // itself, which IS that side effect. A function of its own so the teardown
 // can be a `defer` — in a loop it would pile up until Execute returned, which
 // is exactly the leak it exists to prevent.
-func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out io.Writer) error {
+func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out, errOut io.Writer) error {
 	name, scratch := plan.sandbox, plan.scratch
 
 	// EMPTIED, not merely created. Spec §6 calls the scratch "un dossier **vide**
@@ -204,8 +216,22 @@ func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out 
 	// happens. This is the `trap` every build.sh had to write by hand, and that
 	// no test could verify.
 	defer func() {
-		if _, err := d.Sbx.Run(ctx, "rm", "--force", name); err != nil {
-			fmt.Fprintf(out, "warning: build sandbox %s could not be removed: %v\n", name, err)
+		// context.WithoutCancel(ctx), not ctx: whatever killed the step that
+		// made this defer necessary — a Ctrl-C the user typed, a SIGTERM,
+		// cli.Execute's signal.NotifyContext turning either into a canceled
+		// ctx — must not ALSO kill this cleanup. Passing ctx as-is would have
+		// os/exec refuse to even start the process (sbx.Exec.Run: Cmd.Start
+		// returns ctx.Err() without launching anything for an already-canceled
+		// context), leaving exactly the leftover this defer exists to
+		// prevent. Detaching from cancellation is NOT the same as bounding this
+		// call: runner.go's defaultDrainDelay comment is explicit that nothing
+		// times out a process still running, only the pipe drain after it
+		// exits — a genuinely hung `sbx rm` still hangs den on exit. That
+		// tradeoff is accepted here, not solved: a leftover VM the user can
+		// inspect is a smaller failure than a `rm --force` killed mid-flight
+		// against a VM already in whatever state it was left in.
+		if _, err := d.Sbx.Run(context.WithoutCancel(ctx), "rm", "--force", name); err != nil {
+			fmt.Fprintf(errOut, "warning: build sandbox %s could not be removed: %v\n", name, err)
 		}
 	}()
 

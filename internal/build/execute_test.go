@@ -40,7 +40,7 @@ func TestExecuteRunsTheWholeSequenceInOrder(t *testing.T) {
 		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
 	}}
 	if err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}); err != nil {
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -97,7 +97,7 @@ func TestExecuteBuildsADerivedStackFromItsParentImageAfterItsAncestor(t *testing
 	}}
 	if err := Execute(context.Background(),
 		[]Step{{Stack: root, Build: true}, {Stack: derived, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}); err != nil {
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestExecuteRefusesALeftoverBeforeBuildingAnyEarlierStack(t *testing.T) {
 	}}
 	err := Execute(context.Background(),
 		[]Step{{Stack: root, Build: true}, {Stack: derived, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{})
 	if err == nil {
 		t.Fatal("Execute built over a leftover build sandbox belonging to a later stack")
 	}
@@ -161,7 +161,7 @@ func TestExecuteNamesTheFailingStep(t *testing.T) {
 		"exec devx-build -- bash -lc echo two.sh\n": {Err: errors.New("exit status 1")},
 	}}
 	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{})
 	if err == nil {
 		t.Fatal("Execute succeeded over a failing step")
 	}
@@ -193,7 +193,7 @@ func TestExecuteNamesTheFailingStepWithoutInliningThePayload(t *testing.T) {
 		}},
 	}}
 	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{})
 	if err == nil {
 		t.Fatal("Execute succeeded over a failing step")
 	}
@@ -233,7 +233,7 @@ func TestExecuteDoesNotInlineTheCreateArgvOnAFailedCreate(t *testing.T) {
 		}},
 	}}
 	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{})
 	if err == nil {
 		t.Fatal("Execute succeeded over a failing create")
 	}
@@ -258,7 +258,7 @@ func TestExecuteWritesEveryStepsOutput(t *testing.T) {
 	}}
 	var out strings.Builder
 	if err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &out); err != nil {
+		Deps{Sbx: fake, DenHome: home}, &out, &strings.Builder{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	for _, want := range []string{"installing go", "installing node"} {
@@ -268,14 +268,15 @@ func TestExecuteWritesEveryStepsOutput(t *testing.T) {
 	}
 }
 
-// On FAILURE the log must still arrive, and arrive FIRST: the user reads what
-// the step was doing, then why it stopped. A log written after the error — or
-// not at all — makes the cause unreadable exactly when it matters.
+// On FAILURE the log must still arrive: the user reads what the step was
+// doing, then why it stopped. A log discarded on failure makes the cause
+// unreadable exactly when it matters.
 //
-// This also pins the teardown-failure path in the same run, because the two
-// share the ordering: the `rm --force` warning is emitted by a defer, so it
-// lands after the step log and before the returned error is ever rendered. And
-// a teardown that FAILS must not overwrite the error that caused the teardown —
+// This also pins the teardown-failure path in the same run, on its OWN
+// stream: the `rm --force` warning is a diagnostic, like the two
+// unreadable/excluded lines cli/build.go already sends to stderr, so it must
+// land on errOut and leave out carrying nothing but the step's own log. And a
+// teardown that FAILS must not overwrite the error that caused the teardown —
 // losing "step 1/1 failed" behind "could not remove the sandbox" would report
 // the consequence instead of the cause.
 func TestExecuteWritesTheFailingStepsOutputBeforeItsErrorAndWarnsOnAFailedTeardown(t *testing.T) {
@@ -288,23 +289,22 @@ func TestExecuteWritesTheFailingStepsOutputBeforeItsErrorAndWarnsOnAFailedTeardo
 		},
 		"rm --force devx-build": {Err: errors.New("sandbox is busy")},
 	}}
-	var out strings.Builder
+	var out, errOut strings.Builder
 	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &out)
+		Deps{Sbx: fake, DenHome: home}, &out, &errOut)
 	if err == nil {
 		t.Fatal("Execute succeeded over a failing step")
 	}
-	log := out.String()
-	if !strings.Contains(log, "Reading package lists...") {
-		t.Errorf("the failing step's output was discarded:\n%s", log)
+	if !strings.Contains(out.String(), "Reading package lists...") {
+		t.Errorf("the failing step's output was discarded:\n%s", out.String())
 	}
-	// The teardown warning goes to the SAME stream, after the step's log.
-	warn := strings.Index(log, "warning: build sandbox devx-build could not be removed")
-	if warn < 0 {
-		t.Fatalf("a teardown that failed was silent:\n%s", log)
+	// The teardown warning goes to errOut, NOT out: it is a diagnostic, same
+	// as every other diagnostic in this command, not build progress.
+	if !strings.Contains(errOut.String(), "warning: build sandbox devx-build could not be removed") {
+		t.Fatalf("a teardown that failed was silent on stderr:\n%s", errOut.String())
 	}
-	if warn < strings.Index(log, "Reading package lists...") {
-		t.Errorf("the teardown warning precedes the step log it should follow:\n%s", log)
+	if strings.Contains(out.String(), "warning: build sandbox") {
+		t.Errorf("the teardown warning leaked onto stdout, alongside build progress:\n%s", out.String())
 	}
 	// And the returned error is still the STEP's, not the teardown's: the
 	// teardown failure is a warning, it does not replace the cause.
@@ -325,12 +325,76 @@ func TestExecuteTearsDownAfterAFailedStep(t *testing.T) {
 		"exec devx-build -- bash -lc echo one.sh\n": {Err: errors.New("boom")},
 	}}
 	_ = Execute(context.Background(), []Step{{Stack: s, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{})
 	if !fake.HasCalled("rm", "--force", "devx-build") {
 		t.Error("no teardown after a failed step — the build VM leaks")
 	}
 	if fake.HasCalled("template", "save") {
 		t.Error("den saved an image over a failed build")
+	}
+}
+
+// ctxCapturingRunner wraps sbx.Fake to record the context a call actually
+// received, and to cancel the run mid-flight the moment the provisioning
+// step starts. sbx.Fake ignores its ctx parameter entirely — by design,
+// nothing before this test needed to tell two contexts apart — so both
+// behaviors have to be layered on here: this is the only way to prove
+// buildOne's teardown defer runs on context.WithoutCancel(ctx), not ctx
+// itself, without a real signal or a real sbx binary.
+type ctxCapturingRunner struct {
+	*sbx.Fake
+	// cancel stands in for signal.NotifyContext firing while a step is
+	// running — the timing a real Ctrl-C would have, not one fabricated
+	// before Execute is even called.
+	cancel func()
+	rmCtx  context.Context
+}
+
+func (r *ctxCapturingRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
+	if len(args) > 0 && args[0] == "exec" {
+		r.cancel()
+	}
+	if len(args) > 0 && args[0] == "rm" {
+		r.rmCtx = ctx
+	}
+	return r.Fake.Run(ctx, args...)
+}
+
+// THE regression this whole task exists to prevent: cli.Execute now wires
+// signal.NotifyContext, so a Ctrl-C during a build turns into a canceled
+// ctx flowing through cmd.Context() into here — exactly what this test
+// fabricates by canceling ctx mid-step (the provisioning `exec` call, via
+// ctxCapturingRunner). If buildOne's teardown defer used that same ctx for
+// its `rm --force`, sbx.Exec.Run documents the consequence: Cmd.Start
+// returns ctx.Err() without even launching the process, so the cleanup this
+// defer exists for would itself be skipped, and the leftover `<stack>-build`
+// this whole change is meant to stop would still happen — just one step
+// later than before. Asserting rmCtx.Err() == nil is what tells the two
+// apart; asserting rm was merely CALLED (as TestExecuteTearsDownAfterA
+// FailedStep does, on an uncanceled ctx) would not.
+func TestExecuteTearsDownWithAnUncanceledContextEvenWhenTheStepWasCanceled(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"exec devx-build -- bash -lc echo one.sh\n": {Err: context.Canceled},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := &ctxCapturingRunner{Fake: fake, cancel: cancel}
+
+	err := Execute(ctx, []Step{{Stack: s, Build: true}},
+		Deps{Sbx: runner, DenHome: home}, &strings.Builder{}, &strings.Builder{})
+	if err == nil {
+		t.Fatal("Execute succeeded over a step that failed on a canceled context")
+	}
+	if !runner.HasCalled("rm", "--force", "devx-build") {
+		t.Fatal("no teardown after the step's context was canceled — the build VM leaks")
+	}
+	if runner.rmCtx == nil {
+		t.Fatal("the capturing runner never observed the rm call")
+	}
+	if runner.rmCtx.Err() != nil {
+		t.Errorf("rm ran on a canceled ctx (Err() = %v), want context.WithoutCancel to have detached it",
+			runner.rmCtx.Err())
 	}
 }
 
@@ -343,7 +407,7 @@ func TestExecuteRefusesAPreexistingBuildSandbox(t *testing.T) {
 		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"devx-build","status":"running"}]}`)},
 	}}
 	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{})
 	if err == nil {
 		t.Fatal("Execute reused a pre-existing build sandbox")
 	}
@@ -370,7 +434,7 @@ func TestExecuteReadsEveryProvisionFileBeforeTheFirstCreate(t *testing.T) {
 	}}
 	err := Execute(context.Background(),
 		[]Step{{Stack: good, Build: true}, {Stack: broken, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{})
 	if err == nil {
 		t.Fatal("Execute started a chain with an unreadable step")
 	}
@@ -396,7 +460,7 @@ func TestExecuteEmptiesTheScratchBeforeEachBuild(t *testing.T) {
 		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
 	}}
 	if err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}); err != nil {
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if _, err := os.Stat(residue); !os.IsNotExist(err) {
@@ -425,7 +489,7 @@ func TestExecuteRefusesToDeriveAScratchFromAnEmptyDenHome(t *testing.T) {
 		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
 	}}
 	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
-		Deps{Sbx: fake, DenHome: ""}, &strings.Builder{})
+		Deps{Sbx: fake, DenHome: ""}, &strings.Builder{}, &strings.Builder{})
 	if err == nil {
 		t.Fatal("Execute derived a build scratch from an empty den home")
 	}
@@ -442,7 +506,7 @@ func TestExecuteAnnouncesSkippedSteps(t *testing.T) {
 	fake := &sbx.Fake{}
 	if err := Execute(context.Background(),
 		[]Step{{Stack: s, Skipped: "image devx:v1 already built (--force rebuilds it)"}},
-		Deps{Sbx: fake, DenHome: t.TempDir()}, &out); err != nil {
+		Deps{Sbx: fake, DenHome: t.TempDir()}, &out, &strings.Builder{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if !strings.Contains(out.String(), "already built") {
@@ -494,7 +558,7 @@ func TestExecuteSequenceGolden(t *testing.T) {
 	}}
 	if err := Execute(context.Background(),
 		[]Step{{Stack: devx, Build: true}, {Stack: dgdevx, Build: true}},
-		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}); err != nil {
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
