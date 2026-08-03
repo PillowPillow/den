@@ -6,8 +6,13 @@ microVM, without retyping mixin, kits and policy by hand.
 ## Installation
 
 ```bash
-go build -o den ./cmd/den
+make build
 ```
+
+It produces `./den` and stamps the version into it, so `den version` names the code it runs — a
+tag on a release build (`v1.0.0`), and where you stand relative to it otherwise
+(`v1.0.0-3-gabc1234-dirty`). That stamping is the whole reason the build goes through `make`: a
+binary built without it answers `dev` and names nothing.
 
 ## Bootstrapping
 
@@ -62,6 +67,11 @@ before any sandbox is created.
 
 Options of `den rm`: `--keep-worktrees` (keep the worktrees), `--force` (delete them even if they
 carry uncommitted changes; without it, den refuses **before** touching the VM).
+
+`den nest show` takes `--agent`, `--only` and `--without` — the same three as a spawn, and for the
+same reason: resolution is what they act on, so showing a nest under them is how you read what a
+spawn would do without spawning it. It has no `-w`: a worktree changes the sandbox name, not the
+resolved nest.
 
 A stopped sandbox — which `sbx` does on its own after a few minutes of inactivity — is not a
 failure: `den <nest>` and `den sh` pick it back up, with its state.
