@@ -172,6 +172,150 @@ func TestExecuteNamesTheFailingStep(t *testing.T) {
 	}
 }
 
+// THE message shape spec §6 promises, and what it must NOT contain.
+//
+// `%w` around the *sbx.ExecError rendered `Bin + strings.Join(Args, " ")`
+// first, and Args holds the whole includes+step text: a real failure printed
+// the entire provisioning script, then a lone `: `, and only on the last line
+// the one actionable fact. Spec §14.1 names that shape as a defect of the
+// pre-#8 experience; the payload made it worse. The cause now comes from
+// sbx.ExecError.Detail — the stderr — and the argv is gone.
+func TestExecuteNamesTheFailingStepWithoutInliningThePayload(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	payload := "echo one.sh\n"
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"exec devx-build -- bash -lc " + payload: {Err: &sbx.ExecError{
+			Bin:    "sbx",
+			Args:   []string{"exec", "devx-build", "--", "bash", "-lc", payload},
+			Stderr: "E: Unable to locate package ripgrep",
+			Err:    errors.New("exit status 1"),
+		}},
+	}}
+	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+	if err == nil {
+		t.Fatal("Execute succeeded over a failing step")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "echo one.sh") {
+		t.Errorf("the provisioning payload is inlined in the message, ahead of the cause:\n%s", msg)
+	}
+	if strings.Contains(msg, "-lc") {
+		t.Errorf("the sbx argv is still rendered in the message:\n%s", msg)
+	}
+	if !strings.Contains(msg, "E: Unable to locate package ripgrep") {
+		t.Errorf("message %q drops the stderr, which is the only actionable line", msg)
+	}
+	// The chain SURVIVES the reformatting: dropping the argv from the rendering
+	// must not drop the error from the chain, or every downstream errors.As on
+	// an exit code stops working.
+	var execErr *sbx.ExecError
+	if !errors.As(err, &execErr) {
+		t.Errorf("errors.As no longer reaches the *sbx.ExecError through %T", err)
+	}
+}
+
+// Same treatment for the CREATE failure, whose argv carries the scratch path
+// and, on a derived stack, the parent's `--template`. den has already named the
+// stack and the operation; the argv in front of the cause is the same defect at
+// a smaller scale.
+func TestExecuteDoesNotInlineTheCreateArgvOnAFailedCreate(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	scratch := ScratchDir(home, "devx")
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"create --name devx-build claude " + scratch: {Err: &sbx.ExecError{
+			Bin:    "sbx",
+			Args:   []string{"create", "--name", "devx-build", "claude", scratch},
+			Stderr: "ERROR: no space left on device",
+			Err:    errors.New("exit status 1"),
+		}},
+	}}
+	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+	if err == nil {
+		t.Fatal("Execute succeeded over a failing create")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, scratch) {
+		t.Errorf("the create argv (with its scratch path) is inlined ahead of the cause:\n%s", msg)
+	}
+	if !strings.Contains(msg, "no space left on device") {
+		t.Errorf("message %q drops the stderr", msg)
+	}
+}
+
+// The provisioning output reaches the user. Every step's bytes used to be
+// thrown away — `if _, err := d.Sbx.Run(...)` at all five call sites — leaving
+// four minutes of apt-get represented by a stack name and an exit code.
+func TestExecuteWritesEveryStepsOutput(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh", "two.sh")
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"exec devx-build -- bash -lc echo one.sh\n": {Output: []byte("installing go\n")},
+		"exec devx-build -- bash -lc echo two.sh\n": {Output: []byte("installing node\n")},
+	}}
+	var out strings.Builder
+	if err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &out); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"installing go", "installing node"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output %q does not carry %q", out.String(), want)
+		}
+	}
+}
+
+// On FAILURE the log must still arrive, and arrive FIRST: the user reads what
+// the step was doing, then why it stopped. A log written after the error — or
+// not at all — makes the cause unreadable exactly when it matters.
+//
+// This also pins the teardown-failure path in the same run, because the two
+// share the ordering: the `rm --force` warning is emitted by a defer, so it
+// lands after the step log and before the returned error is ever rendered. And
+// a teardown that FAILS must not overwrite the error that caused the teardown —
+// losing "step 1/1 failed" behind "could not remove the sandbox" would report
+// the consequence instead of the cause.
+func TestExecuteWritesTheFailingStepsOutputBeforeItsErrorAndWarnsOnAFailedTeardown(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"exec devx-build -- bash -lc echo one.sh\n": {
+			Output: []byte("Reading package lists...\n"),
+			Err:    &sbx.ExecError{Bin: "sbx", Stderr: "E: Unable to locate package ripgrep", Err: errors.New("exit status 1")},
+		},
+		"rm --force devx-build": {Err: errors.New("sandbox is busy")},
+	}}
+	var out strings.Builder
+	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &out)
+	if err == nil {
+		t.Fatal("Execute succeeded over a failing step")
+	}
+	log := out.String()
+	if !strings.Contains(log, "Reading package lists...") {
+		t.Errorf("the failing step's output was discarded:\n%s", log)
+	}
+	// The teardown warning goes to the SAME stream, after the step's log.
+	warn := strings.Index(log, "warning: build sandbox devx-build could not be removed")
+	if warn < 0 {
+		t.Fatalf("a teardown that failed was silent:\n%s", log)
+	}
+	if warn < strings.Index(log, "Reading package lists...") {
+		t.Errorf("the teardown warning precedes the step log it should follow:\n%s", log)
+	}
+	// And the returned error is still the STEP's, not the teardown's: the
+	// teardown failure is a warning, it does not replace the cause.
+	if !strings.Contains(err.Error(), "step 1/1") {
+		t.Errorf("error = %q, want the failing step, not the teardown", err)
+	}
+	if strings.Contains(err.Error(), "could not be removed") {
+		t.Errorf("the teardown failure replaced the cause: %q", err)
+	}
+}
+
 // Teardown is an INVARIANT, not a `trap` each script had to remember. A failed
 // build must not leave the VM behind, and it must not save an image either.
 func TestExecuteTearsDownAfterAFailedStep(t *testing.T) {
@@ -235,6 +379,56 @@ func TestExecuteReadsEveryProvisionFileBeforeTheFirstCreate(t *testing.T) {
 	}
 }
 
+// The scratch is EMPTY at every build, not merely present. Spec §6 calls it
+// "un dossier **vide** monté dans la VM de build"; the VM has it mounted
+// read-write, so after one build it is whatever that build left there, and the
+// next build would mount the residue. A build whose result depends on what a
+// previous build happened to write is the one property a reproducible image
+// must not have.
+func TestExecuteEmptiesTheScratchBeforeEachBuild(t *testing.T) {
+	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	scratch := ScratchDir(home, "devx")
+	// Stand in for what the previous build's VM wrote into the mount.
+	residue := filepath.Join(scratch, "leftover.tar.gz")
+	writeFile(t, residue, "from the last build\n")
+
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+	}}
+	if err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, err := os.Stat(residue); !os.IsNotExist(err) {
+		t.Errorf("%s survived the build: the next VM mounts the last build's residue", residue)
+	}
+	// Emptied, and still THERE: `sbx create` needs the path to exist.
+	if fi, err := os.Stat(scratch); err != nil || !fi.IsDir() {
+		t.Errorf("Stat(%s) = (%v, %v), want an existing directory", scratch, fi, err)
+	}
+}
+
+// The scratch path is derived from DenHome and the stack name, and an empty
+// either side collapses it — to the SHARED `cache/build` root, whose RemoveAll
+// would wipe every stack's scratch, or to a RELATIVE path under whatever
+// directory den runs from. Unreachable through the CLI, guarded anyway: Deps
+// and Step are exported bare structs, the doctrine sbx.CreateArgv states for
+// its own inputs.
+func TestExecuteRefusesToPrepareAScratchFromAnEmptyDenHome(t *testing.T) {
+	s, _ := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+	}}
+	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
+		Deps{Sbx: fake, DenHome: ""}, &strings.Builder{})
+	if err == nil {
+		t.Fatal("Execute prepared a build scratch from an empty den home")
+	}
+	if fake.HasCalled("create") {
+		t.Errorf("den created a VM over a scratch it should have refused; calls: %v", fake.Calls)
+	}
+}
+
 // A skipped step is ANNOUNCED, never silent: "already built" and "den forgot
 // it" must not look the same from the outside.
 func TestExecuteAnnouncesSkippedSteps(t *testing.T) {
@@ -259,6 +453,18 @@ func TestExecuteAnnouncesSkippedSteps(t *testing.T) {
 // so the ordering was only ever asserted piecemeal.
 //
 // Paths are rewritten to <scratch> so the golden does not carry a t.TempDir().
+//
+// THE BLANK LINES IN THE GOLDEN ARE LOAD-BEARING — do not "clean them up".
+// Each recorded call is one line, but the last argument of an `exec` is the
+// PAYLOAD, which contains newlines of its own, so one call spans several lines
+// of the file. devx's exec shows both sources at once: the blank line after
+// `common::go_tools() { :; }` is the separator Provisioning.Payload puts
+// between the includes and the step (the include's own trailing newline, then
+// the joining one), and the blank line after `common::go_tools` is the step
+// file's trailing newline followed by the line this loop adds per call.
+// Deleting either would assert a payload den does not send — a missing
+// separator welds the include's last line onto the step's first, and a missing
+// trailing newline shifts every line number a shell error reports.
 func TestExecuteSequenceGolden(t *testing.T) {
 	home := t.TempDir()
 	devxDir := filepath.Join(home, "stacks", "devx")

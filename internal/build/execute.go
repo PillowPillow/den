@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,12 +20,23 @@ type Deps struct {
 }
 
 // buildPlan is what the pre-flight loop below derives from a stack's config,
-// BEFORE the first `sbx create`: the provisioning text and the create argv.
-// Both come from pure functions over data den already has in hand — nothing
-// here touches sbx — so computing them up front, and caching them here rather
-// than recomputing inside buildOne, is what lets a chain reject everything
-// config alone can reject before its first side effect.
+// BEFORE the first `sbx create`: the provisioning text, the create argv, and
+// the two names the rest of the sequence is built on. All of it comes from pure
+// functions over data den already has in hand — nothing here touches sbx — so
+// computing it up front, and caching it here rather than recomputing inside
+// buildOne, is what lets a chain reject everything config alone can reject
+// before its first side effect.
+//
+// sandbox and scratch are FIELDS rather than two more calls to SandboxName and
+// ScratchDir at the point of use. They were derived twice, independently, and
+// the two derivations agreed only because they call the same pure function:
+// nothing tied the directory buildOne creates to the one CreateArgv tells sbx
+// to mount, and nothing tied the name the leftover check looks for to the name
+// the teardown removes. Deriving once and carrying it makes the agreement
+// structural instead of coincidental.
 type buildPlan struct {
+	sandbox      string
+	scratch      string
 	provisioning Provisioning
 	createArgv   []string
 }
@@ -68,11 +80,17 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 		// exactly what makes CreateArgv fall back to `base:` — and Execute was
 		// handed a flat chain precisely so it would not have to re-walk the
 		// graph to get it back.
-		argv, err := CreateArgv(s.Stack, s.Stack.ParentImage, ScratchDir(d.DenHome, s.Stack.Name))
+		scratch := ScratchDir(d.DenHome, s.Stack.Name)
+		argv, err := CreateArgv(s.Stack, s.Stack.ParentImage, scratch)
 		if err != nil {
 			return err
 		}
-		plans[s.Stack.Name] = buildPlan{provisioning: p, createArgv: argv}
+		plans[s.Stack.Name] = buildPlan{
+			sandbox:      SandboxName(s.Stack.Name),
+			scratch:      scratch,
+			provisioning: p,
+			createArgv:   argv,
+		}
 	}
 
 	// ONE `sbx ls --json` for the whole chain — see the doc above — skipped
@@ -83,7 +101,17 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 	if len(plans) > 0 {
 		boxes, err := sbx.Ls(ctx, d.Sbx)
 		if err != nil {
-			return fmt.Errorf("could not check for pre-existing build sandboxes: %w", err)
+			// Named like every other refusal in this file: what den was about to
+			// do, and where to go next. This one can name no single stack — it
+			// is the ONE call made for the whole chain — so the remedy carries
+			// the weight instead, the way Plan's inventory refusal names
+			// `--force`. `den doctor` is the right one here and not `--force`:
+			// an `sbx ls` that will not answer is a broken install, not an
+			// arbitration den could be told to skip.
+			return fmt.Errorf(
+				"den could not list the existing sandboxes, so it cannot tell whether a leftover "+
+					"`<stack>-build` from an interrupted build is in the way: %w — "+
+					"check your sbx setup with `den doctor`", err)
 		}
 		for _, s := range steps {
 			if !s.Build {
@@ -95,7 +123,7 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 			// sandbox of the user's. The teardown in buildOne being deferred,
 			// a leftover only survives a den killed by SIGKILL: rare enough to
 			// deserve a human look.
-			name := SandboxName(s.Stack.Name)
+			name := plans[s.Stack.Name].sandbox
 			if sbx.Find(boxes, name) != nil {
 				return fmt.Errorf(
 					"stack %q: a sandbox named %s already exists — den will not remove it for you, "+
@@ -128,15 +156,45 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 // can be a `defer` — in a loop it would pile up until Execute returned, which
 // is exactly the leak it exists to prevent.
 func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out io.Writer) error {
-	name := SandboxName(s.Name)
+	name, scratch := plan.sandbox, plan.scratch
 
-	scratch := ScratchDir(d.DenHome, s.Name)
+	// The ONE destructive operation in the whole command, so it is guarded like
+	// one. ScratchDir joins DenHome + "cache/build" + the stack name: an empty
+	// stack name collapses it to the SHARED root and the RemoveAll below would
+	// wipe every stack's scratch, an empty DenHome makes it the RELATIVE
+	// `cache/build/<stack>` under whatever directory den happens to run from.
+	// Neither is reachable through the CLI — but Deps and Step are exported bare
+	// structs anyone can fill, which is exactly the doctrine sbx.CreateArgv
+	// states for its own inputs, and "unreachable" is what the comment in
+	// CreateArgv said while a hole was open.
+	if d.DenHome == "" || s.Name == "" {
+		return fmt.Errorf(
+			"refusing to prepare a build scratch from an empty den home or stack name "+
+				"(den home %q, stack %q) — the path would be the shared build cache root, "+
+				"or relative to the current directory", d.DenHome, s.Name)
+	}
+	// EMPTIED, not merely created. Spec §6 calls the scratch "un dossier **vide**
+	// monté dans la VM de build", and after one build it is no longer: the VM has
+	// had it mounted read-write and may have written into it, so the next build
+	// would mount the residue of the last one — a build whose result depends on
+	// what a previous build happened to leave behind, which is the one property
+	// a reproducible image must not have. Safe to clear because it lives under
+	// `cache/`, which spec §3 declares reconstructible and never a source of
+	// truth; nothing else in den reads it.
+	if err := os.RemoveAll(scratch); err != nil {
+		return fmt.Errorf("stack %q: could not empty the build scratch %s: %w", s.Name, scratch, &config.FileError{Err: err})
+	}
 	if err := os.MkdirAll(scratch, 0o755); err != nil {
 		return fmt.Errorf("stack %q: could not create the build scratch %s: %w", s.Name, scratch, &config.FileError{Err: err})
 	}
 
 	if _, err := d.Sbx.Run(ctx, plan.createArgv...); err != nil {
-		return fmt.Errorf("stack %q: could not create the build sandbox: %w", s.Name, err)
+		// causeOf, not %w: the create argv carries the scratch path and, for a
+		// derived stack, the parent's `--template`. den has just named the stack
+		// and the operation in its own words; repeating the argv in front of the
+		// cause is the §14.1 defect on a smaller scale. The chain survives —
+		// see failureError.
+		return failureCause(fmt.Sprintf("stack %q: could not create the build sandbox", s.Name), err)
 	}
 	// From here on the VM exists: it must not outlive this function, whatever
 	// happens. This is the `trap` every build.sh had to write by hand, and that
@@ -148,9 +206,51 @@ func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out 
 	}()
 
 	for i := range plan.provisioning.Steps {
-		if _, err := d.Sbx.Run(ctx, "exec", name, "--", "bash", "-lc", plan.provisioning.Payload(i)); err != nil {
-			return fmt.Errorf("stack %q: step %d/%d %s failed: %w",
-				s.Name, i+1, len(plan.provisioning.Steps), plan.provisioning.Steps[i].Path, err)
+		// `-- bash -lc <payload>`, and every token earns its place:
+		//
+		//   - `--` ends sbx's own flag parsing before den's text begins. The
+		//     three sibling `sbx exec` call sites omit it and are right to:
+		//     agent.ReadFreshness sends `exec <n> cat <path>`, cli/ports sends
+		//     `exec <n> true`, spawn.Attach sends `exec -it <n> bash -l` — every
+		//     token after the sandbox name a fixed, dash-free literal. This one
+		//     passes a whole USER-AUTHORED script as the last argv element.
+		//     `sbx exec [flags] SANDBOX COMMAND [ARG...]` already stops reading
+		//     flags at SANDBOX (spawn.Attach documents the consequence for `-w`),
+		//     so `--` is belt-and-braces rather than strictly required; kept
+		//     because it costs one token and the failure it forecloses — an sbx
+		//     that keeps scanning, over text den does not control — would be
+		//     silent.
+		//   - `bash`, not `sh`: `includes` routinely carries `set -o pipefail`,
+		//     a bashism, and spec §6 measured exactly that in sbx-devbox's own
+		//     lib/common.sh.
+		//   - `-l`, a LOGIN shell. Required for the base image's PATH (go, node),
+		//     which arrives through /etc/profile.d and which a non-login shell
+		//     never reads. Spec §6 states it as the counterpart of den, rather
+		//     than the script's shebang, choosing the shell.
+		//   - `-c <payload>`: the text travels INSIDE the argv. Nothing is
+		//     written into the VM — see Provisioning.Payload, including the size
+		//     ceiling that carries.
+		//
+		// ATTESTED against a real sbx on 2026-08-03: `sbx exec <name> -- bash
+		// -lc '<payload>'` runs, `--` included. This repo attests sbx behaviour
+		// with its date rather than extrapolating it.
+		stdout, err := d.Sbx.Run(ctx, "exec", name, "--", "bash", "-lc", plan.provisioning.Payload(i))
+		// Relayed on SUCCESS AND ON FAILURE, and before the error is returned so
+		// the log reads above the cause rather than after it. A build that
+		// swallowed its own output left the user with a stack name and an exit
+		// code for four minutes of apt-get. Only the STEPS are relayed — they are
+		// the part the stack authored; `create`, `stop`, `save` and `rm` are
+		// den's own plumbing.
+		//
+		// After the step, not during: real-time streaming would need a new
+		// sbx.Runner method (Run captures to parse), and adding one is out of
+		// this change's scope. The whole step's log arrives at once.
+		out.Write(stdout)
+		if err != nil {
+			return failureCause(
+				fmt.Sprintf("stack %q: step %d/%d %s failed",
+					s.Name, i+1, len(plan.provisioning.Steps), plan.provisioning.Steps[i].Path),
+				err)
 		}
 	}
 
@@ -164,4 +264,53 @@ func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out 
 		return fmt.Errorf("stack %q: could not save image %s: %w", s.Name, s.Image, err)
 	}
 	return nil
+}
+
+// failureError is "what den was doing" followed by the CAUSE ALONE — the sbx
+// argv deliberately left out.
+//
+// Spec §6 promises this shape, verbatim:
+//
+//	stack "devx": step 2/3 ./provision/gh.sh failed: exit status 1
+//
+// A plain `%w` around the *sbx.ExecError cannot produce it. ExecError.Error
+// renders `Bin + strings.Join(Args, " ")` first, and Args now holds the entire
+// includes+step text: a real failure printed the whole shell script, a lone
+// `: `, and only then `E: Unable to locate package ripgrep` on the last line.
+// Spec §14.1 names that exact shape as a defect of the pre-#8 experience — "il
+// incruste l'argv complet de `sbx create` avant d'en venir à la cause" — and
+// the payload made it worse than it had been.
+//
+// Err is kept and Unwrap exposes it, so nothing downstream loses what the argv
+// was hiding: errors.As still reaches *sbx.ExecError and, through ITS Unwrap
+// slice, the *exec.ExitError and its code; errors.Is still recognizes
+// context.Canceled and exec.ErrNotFound. Only the RENDERING drops the argv.
+type failureError struct {
+	// What den was attempting, already naming the stack. Rendered as-is.
+	Doing string
+	// Cause is sbx.ExecError.Detail() when the failure came from a runner, and
+	// the error's own text otherwise.
+	Cause string
+	Err   error
+}
+
+func (e *failureError) Error() string { return e.Doing + ": " + e.Cause }
+
+func (e *failureError) Unwrap() error { return e.Err }
+
+// failureCause wraps a runner failure, taking the cause from
+// sbx.ExecError.Detail — which is the stderr sbx wrote, falling back to the
+// error itself when stderr was empty, and carrying the cancellation reason and
+// the missing-binary remedy that Detail owns.
+//
+// errors.As and not a type assertion: the runner is an interface, and a future
+// implementation wrapping its own failure must still be understood. An error
+// that is NOT an *sbx.ExecError renders as itself — a fake runner's plain
+// errors.New("boom") in the tests, and any non-sbx failure in production.
+func failureCause(doing string, err error) error {
+	var execErr *sbx.ExecError
+	if errors.As(err, &execErr) {
+		return &failureError{Doing: doing, Cause: execErr.Detail(), Err: err}
+	}
+	return &failureError{Doing: doing, Cause: err.Error(), Err: err}
 }

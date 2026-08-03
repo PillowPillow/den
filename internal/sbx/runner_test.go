@@ -68,6 +68,69 @@ func TestExecRunMissingBinaryProducesAnActionableMessage(t *testing.T) {
 	}
 }
 
+// Detail is the CAUSE without the argv, and Error is Detail behind the argv.
+// Stated as one table because that relation IS the reason Detail was split out:
+// internal/build renders the cause on its own (an `sbx exec` argv now carries a
+// whole provisioning script, and printing it ahead of the cause is the §14.1
+// defect), and the two renderings must not drift into disagreeing about what
+// the cause is.
+//
+// The missing-binary case is the one where they legitimately differ in shape
+// and not in content: Error short-circuits so the remedy is not prefixed by an
+// argv that never ran.
+func TestExecErrorDetailIsTheCauseWithoutTheArgv(t *testing.T) {
+	args := []string{"exec", "devx-build", "--", "bash", "-lc", "apt-get install -y ripgrep\n"}
+
+	for _, tc := range []struct {
+		name       string
+		err        *ExecError
+		wantDetail string
+	}{
+		{
+			name:       "stderr is the cause",
+			err:        &ExecError{Bin: "sbx", Args: args, Stderr: "E: Unable to locate package ripgrep", Err: errors.New("exit status 1")},
+			wantDetail: "E: Unable to locate package ripgrep",
+		},
+		{
+			// sbx wrote nothing: the exit status is all there is, and losing it
+			// would leave an empty cause.
+			name:       "empty stderr falls back to the error",
+			err:        &ExecError{Bin: "sbx", Args: args, Err: errors.New("exit status 1")},
+			wantDetail: "exit status 1",
+		},
+		{
+			// The reason comes BEFORE the detail and does not replace it.
+			name:       "a cancellation prefixes the cause",
+			err:        &ExecError{Bin: "sbx", Args: args, Stderr: "partial", Err: errors.New("signal: killed"), Cancellation: context.Canceled},
+			wantDetail: "interrupted (canceled): partial",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.err.Detail(); got != tc.wantDetail {
+				t.Errorf("Detail() = %q, want %q", got, tc.wantDetail)
+			}
+			// Error() is exactly "bin argv: " + Detail(): the argv is the ONLY
+			// difference, which is what makes dropping it a safe reformatting.
+			want := "sbx " + strings.Join(args, " ") + ": " + tc.wantDetail
+			if got := tc.err.Error(); got != want {
+				t.Errorf("Error() = %q, want %q", got, want)
+			}
+		})
+	}
+
+	// The missing binary is the deliberate exception: no argv on either side.
+	// Prefixing "sbx exec … :" onto "not found in the PATH" would name the
+	// binary twice and put a command that never ran ahead of the one fact that
+	// matters.
+	missing := &ExecError{Bin: "sbx", Args: args, Err: fmt.Errorf("looking up sbx: %w", exec.ErrNotFound)}
+	if got := missing.Detail(); got != missing.Error() {
+		t.Errorf("Detail() = %q and Error() = %q, want the same argv-free remedy", got, missing.Error())
+	}
+	if strings.Contains(missing.Error(), "-lc") {
+		t.Errorf("the argv leaked into the missing-binary message: %q", missing.Error())
+	}
+}
+
 // Same requirement on Attach: it's what `den sh` and the final attach of
 // `den <nest>` go through. There's no reason the message should read
 // differently on one side or the other.

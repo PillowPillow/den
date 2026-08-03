@@ -39,6 +39,16 @@ type Provisioning struct {
 // With no includes the step travels VERBATIM, with no separator prepended: a
 // stray leading newline would shift every line number a shell error reports,
 // which is the one thing a build log must get right.
+//
+// SIZE CEILING, recorded because it is invisible until it is hit: this string
+// becomes ONE argv element, and Linux caps a single argument at 128 KiB
+// (MAX_ARG_STRLEN, 32 pages, not raisable by ulimit — unlike the total argv
+// size). An includes+step pair crossing it dies as an opaque E2BIG from execve,
+// named after neither the stack nor the step. den does not check the length:
+// 128 KiB of shell is far outside anything a provision step plausibly is
+// (sbx-devbox's largest, measured 2026-08-03, is under 4 KiB), and a refusal
+// would be a limit den invented before anyone met it. This note is here so the
+// day someone does, the cause is written down rather than rediscovered.
 func (p Provisioning) Payload(i int) string {
 	if p.Includes == "" {
 		return p.Steps[i].Body

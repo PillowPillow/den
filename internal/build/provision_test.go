@@ -58,6 +58,75 @@ func TestPayloadWithoutIncludesIsTheStepVerbatim(t *testing.T) {
 	}
 }
 
+// TWO includes, the first WITHOUT a trailing newline. Every other test in this
+// file uses at most one include, already newline-terminated, so the weld this
+// separator exists to prevent was never exercised — and its failure mode is
+// silent: `common::gh() { :; }common::go() { :; }` is not a syntax error the
+// user sees named, it is a shell that quietly does not have the function the
+// step calls.
+//
+// The separator is added by den rather than demanded of the user, so this also
+// pins that a file that DOES end in a newline gains no second one: a blank line
+// between the two includes would be harmless, but the rule "one newline,
+// whoever wrote it" is what keeps the payload predictable.
+func TestReadProvisioningWeldsIncludesWithASingleNewline(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.sh"), "common::gh() { :; }") // no trailing newline
+	writeFile(t, filepath.Join(dir, "b.sh"), "common::go() { :; }\n")
+	writeFile(t, filepath.Join(dir, "one.sh"), "common::gh\n")
+
+	p, err := ReadProvisioning(&config.Stack{
+		Name: "devx", Dir: dir,
+		Provision: config.Provision{
+			Includes: []string{filepath.Join(dir, "a.sh"), filepath.Join(dir, "b.sh")},
+			Steps:    []string{filepath.Join(dir, "one.sh")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReadProvisioning: %v", err)
+	}
+	want := "common::gh() { :; }\ncommon::go() { :; }\n"
+	if p.Includes != want {
+		t.Errorf("Includes = %q, want %q — the first file's last line must not weld onto the second's first",
+			p.Includes, want)
+	}
+	if got, want := p.Payload(0), "common::gh() { :; }\ncommon::go() { :; }\n\ncommon::gh\n"; got != want {
+		t.Errorf("Payload(0) = %q, want %q", got, want)
+	}
+}
+
+// An unreadable `includes` entry is named just like an unreadable step. Both
+// lists are read before the first `sbx create`, and the message must say which
+// list the offending file came from: the two are declared in different keys and
+// fixed in different places.
+func TestReadProvisioningNamesAnUnreadableInclude(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "lib", "gone.sh")
+	writeFile(t, filepath.Join(dir, "one.sh"), "echo one\n")
+
+	_, err := ReadProvisioning(&config.Stack{
+		Name: "devx", Dir: dir,
+		Provision: config.Provision{
+			Includes: []string{missing},
+			Steps:    []string{filepath.Join(dir, "one.sh")},
+		},
+	})
+	if err == nil {
+		t.Fatal("ReadProvisioning accepted a missing include")
+	}
+	errStr := err.Error()
+	for _, want := range []string{"devx", "provision.includes", missing, "file does not exist"} {
+		if !strings.Contains(errStr, want) {
+			t.Errorf("error %q does not name %q", errStr, want)
+		}
+	}
+	// config.FileError suppresses the OS PathError's redundant path, so the
+	// path is named only in our own prefix.
+	if count := strings.Count(errStr, missing); count != 1 {
+		t.Errorf("path appears %d times in %q, want 1", count, errStr)
+	}
+}
+
 // A file that is not there is named with its full path — the reason the read
 // happens before the first `sbx create` at all (Task 6).
 func TestReadProvisioningNamesTheMissingFile(t *testing.T) {
