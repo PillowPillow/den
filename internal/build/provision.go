@@ -53,7 +53,7 @@ func ReadProvisioning(s *config.Stack) (Provisioning, error) {
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return Provisioning{}, fmt.Errorf(
-				"stack %q: unreadable `provision.includes` entry %s: %w", s.Name, path, err)
+				"stack %q: unreadable `provision.includes` entry %s: %w", s.Name, path, &config.FileError{Err: err})
 		}
 		includes.Write(body)
 		// A file that does not end in a newline would weld its last line onto
@@ -69,7 +69,7 @@ func ReadProvisioning(s *config.Stack) (Provisioning, error) {
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return Provisioning{}, fmt.Errorf(
-				"stack %q: unreadable `provision.steps` entry %s: %w", s.Name, path, err)
+				"stack %q: unreadable `provision.steps` entry %s: %w", s.Name, path, &config.FileError{Err: err})
 		}
 		p.Steps = append(p.Steps, StepScript{Path: path, Body: string(body)})
 	}

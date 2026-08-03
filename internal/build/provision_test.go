@@ -70,10 +70,20 @@ func TestReadProvisioningNamesTheMissingFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("ReadProvisioning accepted a missing step")
 	}
+	errStr := err.Error()
 	for _, want := range []string{"devx", missing} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name %q", err, want)
+		if !strings.Contains(errStr, want) {
+			t.Errorf("error %q does not name %q", errStr, want)
 		}
+	}
+	// The path appears exactly once: config.FileError suppresses the OS
+	// PathError's redundant path, so the path is named only in our prefix.
+	if count := strings.Count(errStr, missing); count != 1 {
+		t.Errorf("path appears %d times in %q, want 1", count, errStr)
+	}
+	// The error carries the translated reason, not the raw OS error.
+	if !strings.Contains(errStr, "file does not exist") {
+		t.Errorf("error %q does not contain translated reason 'file does not exist'", errStr)
 	}
 }
 
