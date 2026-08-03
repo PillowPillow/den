@@ -2272,15 +2272,20 @@ func branchOf(t *testing.T, path string) string {
 // is impossible (a real unauthorized pull returns the same 403), hence the
 // check BEFORE `sbx create`, against `sbx template ls --json`.
 
-// withBuildScript gives the test stack provision.steps, which is what makes den's
-// `den build devx` advice truthful — and therefore what arms the check.
-func withBuildScript(t *testing.T, denHome string) {
+// withBuildableStack gives the test stack `provision.steps`, which is what
+// makes den's `den build devx` advice truthful — and therefore what arms the
+// check.
+//
+// Buildability is a property of the stack YAML, never of a file on disk: den
+// no longer runs a `stacks/<n>/build.sh`, it plays each `provision.steps` entry
+// inside the build VM. Nothing needs to exist next to the stack.yaml for this
+// helper to arm the check — the spawn reads config.Stack.Buildable, which reads
+// the declaration.
+func withBuildableStack(t *testing.T, denHome string) {
 	t.Helper()
-	// With the new model, buildability is determined by provision.steps in the
-	// stack YAML, not by the presence of build.sh on disk.
 	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
 		"image: devx:v1\nbase: claude\nkits: [transverse]\nkit: devx-kit\n"+
-			"provision:\n  steps: [./build.sh]\n")
+			"provision:\n  steps: [./provision/setup.sh]\n")
 }
 
 // answerTemplates makes the fake sbx answer `template ls --json` with this
@@ -2291,7 +2296,7 @@ func answerTemplates(f *sbx.Fake, json string) {
 
 func TestSpawnRefusesAStackImageThatWasNeverBuilt(t *testing.T) {
 	denHome, _ := denTest(t)
-	withBuildScript(t, denHome)
+	withBuildableStack(t, denHome)
 	f, d := fakeDeps()
 	answerTemplates(f, `{"images":[]}`)
 
@@ -2316,7 +2321,7 @@ func TestSpawnRefusesAStackImageThatWasNeverBuilt(t *testing.T) {
 // up by hand.
 func TestSpawnRefusesAnUnbuiltImageBeforeCreatingAnyWorktree(t *testing.T) {
 	denHome, _ := denTest(t)
-	withBuildScript(t, denHome)
+	withBuildableStack(t, denHome)
 	f, d := fakeDeps()
 	answerTemplates(f, `{"images":[]}`)
 
@@ -2339,7 +2344,7 @@ func TestSpawnRefusesAnUnbuiltImageBeforeCreatingAnyWorktree(t *testing.T) {
 // this is sbx.NormalizeImageRef doing its job, seen from the spawn.
 func TestSpawnCreatesWhenTheImageIsBuilt(t *testing.T) {
 	denHome, _ := denTest(t)
-	withBuildScript(t, denHome)
+	withBuildableStack(t, denHome)
 	f, d := fakeDeps()
 	answerTemplates(f, `{"images":[{"repository":"docker.io/library/devx","tag":"v1"}]}`)
 
@@ -2351,10 +2356,14 @@ func TestSpawnCreatesWhenTheImageIsBuilt(t *testing.T) {
 	}
 }
 
-// A stack with NO build.sh is left alone, and not even asked about: `image:`
-// may name a registry image sbx will happily pull, and `den build` on a stack
-// with no script is not advice, it is a second error.
-func TestSpawnDoesNotCheckTheImageOfAStackWithoutABuildScript(t *testing.T) {
+// A stack with NO `provision.steps` is left alone, and not even asked about:
+// `image:` may name a registry image sbx will happily pull, and `den build` on
+// a stack den cannot build is not advice, it is a second error.
+//
+// The same silence as TestSpawnDoesNotCheckTheImageOfAPullableStack below,
+// reached through the WHOLE spawn rather than through checkStackImage in
+// isolation: this one proves no `template ls` process is spent on the way.
+func TestSpawnDoesNotCheckTheImageOfANotBuildableStack(t *testing.T) {
 	denHome, _ := denTest(t)
 	f, d := fakeDeps()
 	answerTemplates(f, `{"images":[]}`)
@@ -2374,14 +2383,14 @@ func TestSpawnDoesNotCheckTheImageOfAStackWithoutABuildScript(t *testing.T) {
 // the whole normalization exists to prevent.
 func TestSpawnDoesNotCheckADigestPinnedImage(t *testing.T) {
 	denHome, _ := denTest(t)
-	withBuildScript(t, denHome)
+	withBuildableStack(t, denHome)
 	// The provision.steps above arm the check; only the digest pin disarms it.
 	// Must include both provision: (to make the stack buildable) and the digest
 	// image: (to exercise the second silence), so the digest path is actually tested.
 	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
 		"image: devx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"+
 			"base: claude\nkits: [transverse]\nkit: devx-kit\n"+
-			"provision:\n  steps: [./build.sh]\n")
+			"provision:\n  steps: [./provision/setup.sh]\n")
 	f, d := fakeDeps()
 	answerTemplates(f, `{"images":[]}`)
 
@@ -2401,7 +2410,7 @@ func TestSpawnDoesNotCheckADigestPinnedImage(t *testing.T) {
 // absent, so a diagnostic that failed must not forbid a spawn.
 func TestSpawnCreatesAnywayWhenTheImageInventoryIsUnreadable(t *testing.T) {
 	denHome, _ := denTest(t)
-	withBuildScript(t, denHome)
+	withBuildableStack(t, denHome)
 	f, d := fakeDeps()
 	answerTemplates(f, `{"templates":[]}`) // the key sbx does NOT use
 
@@ -2417,7 +2426,7 @@ func TestSpawnCreatesAnywayWhenTheImageInventoryIsUnreadable(t *testing.T) {
 // created. Refusing here would refuse a `den <nest>` that works.
 func TestSpawnDoesNotCheckTheImageWhenAttaching(t *testing.T) {
 	denHome, repo := denTest(t)
-	withBuildScript(t, denHome)
+	withBuildableStack(t, denHome)
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
 		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
