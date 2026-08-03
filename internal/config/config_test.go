@@ -213,17 +213,43 @@ func TestLoadGlobalRejectsAnUnknownWorktreeLayout(t *testing.T) {
 	}
 }
 
-// T4-min-4: an empty `config_dir` becomes the empty string in `{config_dir}`
-// and REACHES the microVM. Validate already forbade it; the spawn path didn't call it.
-func TestLoadGlobalRejectsAnEmptyConfigDir(t *testing.T) {
-	denHome := writeConfig(t, "agents:\n  claude:\n    config_dir: \"\"\n    update: \"claude update\"\n"+
+// config_dir now behaves exactly like worktree_root (TestLoadGlobalDefaultsApplied):
+// an ABSENT value — and an explicit "" decodes to the same zero value — is
+// defaulted at load time against the CURRENT den home, not literally
+// ~/.den/agents/claude. T4-min-4's original concern (an empty config_dir
+// reaching the microVM as the empty string in `{config_dir}`) no longer
+// applies to this case: the default fills it before the value ever reaches
+// FreshnessCommand.
+func TestLoadGlobalConfigDirDefaultsToDenHome(t *testing.T) {
+	denHome := writeConfig(t, "agents:\n  claude:\n    update: \"claude update\"\n"+
+		"defaults:\n  agent: claude\n  stack: devx\n")
+	g, err := LoadGlobal(denHome)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := filepath.Join(denHome, "agents", "claude"); g.Agents["claude"].ConfigDir != want {
+		t.Errorf("ConfigDir = %q, want default %q", g.Agents["claude"].ConfigDir, want)
+	}
+}
+
+// What T4-min-4 still guards against: a config_dir that's blank but was
+// WRITTEN (not merely absent) must still be refused, or it reaches the
+// microVM as the empty string in `{config_dir}`. `== ""` in
+// LoadGlobalUnvalidated only catches the absent/empty-string case (defaulted
+// above); TrimSpace-only whitespace survives that check and must be caught
+// here instead.
+func TestLoadGlobalRejectsAWhitespaceOnlyConfigDir(t *testing.T) {
+	denHome := writeConfig(t, "agents:\n  claude:\n    config_dir: \"   \"\n    update: \"claude update\"\n"+
 		"defaults:\n  agent: claude\n  stack: devx\n")
 	_, err := LoadGlobal(denHome)
 	if err == nil {
-		t.Fatal("expected a rejection of an empty config_dir, got nil")
+		t.Fatal("expected a rejection of a whitespace-only config_dir, got nil")
 	}
-	if !strings.Contains(err.Error(), "agents.claude.config_dir") {
-		t.Errorf("error = %q, expected the offending key named", err.Error())
+	if !strings.Contains(err.Error(), "agents.claude.config_dir: blank") {
+		t.Errorf("error = %q, expected the offending key named and the blank wording", err.Error())
+	}
+	if strings.Contains(err.Error(), "required") {
+		t.Errorf("error = %q, must not say \"required\": the field has a default now", err.Error())
 	}
 }
 

@@ -107,7 +107,8 @@ parallèle** (approche A). Un cache reconstructible n'est ajouté que si un beso
 ```yaml
 agents:                                  # registre générique — Claude aujourd'hui, Codex demain
   claude:
-    config_dir: ~/.den/agents/claude
+    config_dir: ~/.den/agents/claude       # optionnel — défaut : <den home>/agents/<nom de l'agent>,
+                                           #   recalculé au CHARGEMENT contre le den home courant
     env: { CLAUDE_CONFIG_DIR: "{config_dir}" }   # {config_dir} résolu au chemin HÔTE — cf. A11 §14.1
     bin_dirs: ["$HOME/.local/bin", "$HOME/.claude/local"]  # cf. §9 (PATH du dispatcher)
     update: "claude update"                     # commande de fraîcheur, jouée au boot
@@ -123,7 +124,8 @@ ssh:
   mode: agent-forward                    # agent-forward (défaut) | mount | none
   dir: ~/.ssh_sbx                        # utilisé si mode=mount (clé dédiée révocable)
 worktree_layout: central                 # central | per-repo
-worktree_root: ~/.den/worktrees
+worktree_root: ~/.den/worktrees          # optionnel — défaut : <den home>/worktrees, même mécanique
+                                         #   que config_dir ci-dessus
 egress:                                  # allowlist baseline, TOUTES sandboxes
   - api.anthropic.com
   - github.com

@@ -81,6 +81,21 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 		return nil, err
 	}
 	for name, a := range g.Agents {
+		// Same shape as worktree_root above: defaulted here, against the LIVE
+		// denHome, rather than baked into the example file at `den init` time.
+		// Substituting the resolved home into config_dir when the file is
+		// written would freeze it — `den init --den-home /tmp/foo` would write
+		// `/tmp/foo/agents/claude` into config.yaml, and a later move of that
+		// home (or a changed DEN_HOME) would leave the agent profile pointing
+		// at the old, now-stale location, silently. A default recomputed on
+		// every load instead tracks whichever home is live.
+		//
+		// `== ""` exactly, not TrimSpace: this is what lets `config_dir: "   "`
+		// reach Validate() and be refused there, instead of being silently
+		// swapped for the default.
+		if a.ConfigDir == "" {
+			a.ConfigDir = filepath.Join(denHome, "agents", name)
+		}
 		if a.ConfigDir, err = ExpandPath(a.ConfigDir); err != nil {
 			return nil, fmt.Errorf("agent %s: %w", name, err)
 		}

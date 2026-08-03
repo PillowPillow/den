@@ -1505,13 +1505,40 @@ func TestSpawnStopsBeforeCreateWhenARepoIsMissing(t *testing.T) {
 	}
 }
 
-// The agent profile is mounted RW: an empty config_dir would mount an
-// empty path, and a bare MkdirAll("")'s error would name nothing. Checked
-// before any side effect, and the message names the file to fix.
-func TestSpawnRefusesAnAgentWithoutConfigDir(t *testing.T) {
+// An ABSENT config_dir is no longer a fault: internal/config defaults it to
+// <den home>/agents/<name> at load time (config.go). This locks down the
+// consequence at the spawn boundary — the profile still ends up mounted from
+// a real, existing directory, computed against THIS run's den home, not a
+// hardcoded one.
+func TestSpawnDefaultsConfigDirWhenAbsent(t *testing.T) {
 	denHome, _ := denTest(t)
 	write(t, filepath.Join(denHome, "config.yaml"), `agents:
   claude:
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+`)
+	_, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err != nil {
+		t.Errorf("the defaulted config_dir must exist: %v", err)
+	}
+}
+
+// The agent profile is mounted RW: a WRITTEN-but-blank config_dir would
+// mount an empty path, and a bare MkdirAll("")'s error would name nothing.
+// Unlike absence (above), this survives LoadGlobalUnvalidated's `== ""`
+// default and is refused by Validate — checked before any side effect, and
+// the message names the file to fix.
+func TestSpawnRefusesAWhitespaceOnlyConfigDir(t *testing.T) {
+	denHome, _ := denTest(t)
+	write(t, filepath.Join(denHome, "config.yaml"), `agents:
+  claude:
+    config_dir: "   "
     update: "claude update"
 defaults:
   agent: claude
@@ -1521,7 +1548,7 @@ defaults:
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d)
 	if err == nil {
-		t.Fatal("an agent without config_dir must fail the spawn")
+		t.Fatal("a blank config_dir must fail the spawn")
 	}
 	if !strings.Contains(err.Error(), filepath.Join(denHome, "config.yaml")) {
 		t.Errorf("the message must name the offending file; got: %v", err)
