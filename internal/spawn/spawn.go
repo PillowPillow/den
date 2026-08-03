@@ -273,6 +273,47 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// itself assertable from a test that sets nothing but its arguments.
 	warnEmptySSHAgent(d.Err, r.SSHMode, os.Getenv("SSH_AUTH_SOCK"), d.SSHAgent, d.goos())
 
+	// 2ter. Spawn-or-attach is decided HERE, before the first side effect, and
+	// the stack image is checked on the create branch (spec §11).
+	//
+	// The reading used to sit at step 6, next to the create/attach fork it
+	// feeds. It moved up because the image check has to be BOTH:
+	//
+	//   - conditional on creating. A live sandbox is attached to, and attaching
+	//     needs no image — refusing there would refuse a `den <nest>` that works,
+	//     over an image the VM stopped needing the moment it was created.
+	//   - upstream of the worktrees. A refusal at the old position would already
+	//     have created a git worktree per repo and left the user to clean them
+	//     up, which is the exact regression the ordering of this function exists
+	//     to prevent.
+	//
+	// Nothing between here and step 6 touches sbx, so no call order changed —
+	// only git work now happens after the reading instead of before it.
+	//
+	// What the move does widen is the window between this verdict and the `sbx
+	// create` at step 6, which the worktree operations now sit inside and which
+	// git can make slow. A concurrent `den` on the SAME sandbox name can create
+	// it meanwhile, and this one would then create where attaching was the
+	// correct answer; the duplicate then lands on sbx, which owns the name and
+	// is the only thing that can arbitrate it. Not verified: what `sbx create`
+	// answers on a name that already exists — den expects a refusal naming the
+	// collision, and even so this is the cheap side of the trade. The regression
+	// the old position produced was neither rare nor conditional on a race: one
+	// orphaned git worktree per repo, on EVERY refusal, left to clean up by hand.
+	//
+	// The found Sandbox is KEPT, not reduced to a bool: only it carries the
+	// real status and the workspaces the VM actually mounts.
+	boxes, err := sbx.Ls(ctx, d.Sbx)
+	if err != nil {
+		return err
+	}
+	live := sbx.Find(boxes, sandboxName)
+	if live == nil {
+		if err := checkStackImage(ctx, d, r.Stack); err != nil {
+			return err
+		}
+	}
+
 	// 3. Worktrees, if requested. The first workspace must stay the first
 	// repo: sbx.Sandbox.Workdir depends on it for attach, and nothing at
 	// its level can verify the list was built in this order.
@@ -372,15 +413,8 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	previous, previousErr := agent.ReadMixin(r.DenHome, sandboxName)
 
 	// 6. Spawn-or-attach: a name that's already live is not an error
-	// (spec §11).
-	//
-	// The found Sandbox is KEPT, not reduced to a bool: only it carries
-	// the real status and the workspaces the VM actually mounts.
-	boxes, err := sbx.Ls(ctx, d.Sbx)
-	if err != nil {
-		return err
-	}
-	live := sbx.Find(boxes, sandboxName)
+	// (spec §11). `live` was read at step 2ter — the image check needed the
+	// verdict before any worktree existed.
 
 	// The attach workdir: the config's on the create branch (the VM will
 	// mount exactly these workspaces), the VM's on the other.
@@ -742,6 +776,67 @@ func WarnEmptySSHAgentOnReentry(w io.Writer, sshMode, socket string, probe func(
 		return
 	}
 	warnEmptySSHAgent(w, sshMode, socket, probe, goos)
+}
+
+// checkStackImage refuses a create whose stack image has never been built, so
+// den can say what spec §11 promises — "run `den build <stack>`" — instead of
+// relaying sbx's own refusal.
+//
+// That refusal, MEASURED against sbx v0.35.0 on 2026-07-31, is:
+//
+//	ERROR: request failed: 403 Forbidden: pull failed for image "denghost:v1"
+//
+// sbx treats an unknown template as a REGISTRY PULL, so what reaches the user
+// speaks of authorization, never of a missing build. den cannot pattern-match
+// its way out of that — a 403 is also what a genuinely unauthorized pull
+// returns — which is why the check happens BEFORE `sbx create`, against
+// `sbx template ls --json` (spec §14.0). That command is what unblocked issue
+// #8; without it the only honest options were a container-runtime dependency
+// or no check at all.
+//
+// THREE deliberate silences, and each prevents a refusal den could not justify:
+//
+//   - A stack that is NOT BUILDABLE (no `provision.steps`) is left alone.
+//     `image:` may name a registry image sbx will happily pull, and den has no
+//     remedy to offer for it — `den build` on a stack den cannot build is not
+//     advice, it is a second error. Refusing there would turn a working
+//     `den <nest>` into a stop.
+//   - An `image:` pinned by DIGEST is left alone. `sbx template ls` reports a
+//     repository and a tag and no digest at all (sbx.IsDigestRef says so in
+//     full), so the inventory can neither confirm nor deny the pin — and
+//     reading its silence as "absent" would refuse a spawn over an image that
+//     is present.
+//   - A FAILING `sbx template ls` is fail-open. The check improves a message;
+//     it guards nothing. sbx still refuses the create by itself if the image
+//     really is absent, so turning den's inability to read an inventory into a
+//     refusal would forbid spawns over a diagnostic that failed.
+func checkStackImage(ctx context.Context, d Deps, s *config.Stack) error {
+	// Buildability comes from config, which is the SOLE source of the verdict
+	// (config.Stack.Buildable). It used to be a `os.Stat` on the stack's
+	// build.sh, from internal/build — an edge that existed only to answer this
+	// one question, and that made the spawn depend on the build package for a
+	// file test. Spec §6 requires this silence and `den build`'s skip to agree;
+	// reading the same method is what makes that structural.
+	if !s.Buildable() {
+		return nil
+	}
+	// Asked BEFORE the inventory is read, not after the lookup fails: a listing
+	// that carries no digests cannot answer the question, so den does not spend
+	// a process to be told nothing.
+	if sbx.IsDigestRef(s.Image) {
+		return nil
+	}
+	templates, err := sbx.Templates(ctx, d.Sbx)
+	if err != nil {
+		return nil
+	}
+	if sbx.FindTemplate(templates, s.Image) != nil {
+		return nil
+	}
+	return fmt.Errorf(
+		"stack %q: image %s is not built — run `den build %s`; "+
+			"`sbx template ls` lists the images sbx already has",
+		s.Name, s.Image, s.Name)
 }
 
 // reportDrift prints what changed between the mixin a sandbox received at

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PillowPillow/den/internal/agent"
+	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sshagent"
@@ -2259,4 +2260,203 @@ func branchOf(t *testing.T, path string) string {
 		t.Fatalf("git branch --show-current in %s: %v\n%s", path, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// --- The §11 stack-image check (issue #8) -------------------------------
+//
+// den refuses a create whose image was never built, so it can say what §11
+// promises — "run `den build <stack>`" — instead of relaying sbx's own refusal.
+// That refusal, measured on 2026-07-31, is a `403 Forbidden: pull failed for
+// image "X"`: sbx treats an unknown template as a registry pull, so the user
+// reads about authorization, never about a missing build. Pattern-matching it
+// is impossible (a real unauthorized pull returns the same 403), hence the
+// check BEFORE `sbx create`, against `sbx template ls --json`.
+
+// withBuildableStack gives the test stack `provision.steps`, which is what
+// makes den's `den build devx` advice truthful — and therefore what arms the
+// check.
+//
+// Buildability is a property of the stack YAML, never of a file on disk: den
+// no longer runs a `stacks/<n>/build.sh`, it plays each `provision.steps` entry
+// inside the build VM. Nothing needs to exist next to the stack.yaml for this
+// helper to arm the check — the spawn reads config.Stack.Buildable, which reads
+// the declaration.
+func withBuildableStack(t *testing.T, denHome string) {
+	t.Helper()
+	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
+		"image: devx:v1\nbase: claude\nkits: [transverse]\nkit: devx-kit\n"+
+			"provision:\n  steps: [./provision/setup.sh]\n")
+}
+
+// answerTemplates makes the fake sbx answer `template ls --json` with this
+// inventory, leaving every other call on the default.
+func answerTemplates(f *sbx.Fake, json string) {
+	f.Responses["template ls --json"] = sbx.Response{Output: []byte(json)}
+}
+
+func TestSpawnRefusesAStackImageThatWasNeverBuilt(t *testing.T) {
+	denHome, _ := denTest(t)
+	withBuildableStack(t, denHome)
+	f, d := fakeDeps()
+	answerTemplates(f, `{"images":[]}`)
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+	if err == nil {
+		t.Fatal("expected a refusal on an image no build ever produced")
+	}
+	msg := err.Error()
+	for _, want := range []string{"devx:v1", "den build devx"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message = %q, want it to contain %q", msg, want)
+		}
+	}
+	if f.HasCalled("create") {
+		t.Errorf("no create may follow the refusal; calls: %v", f.Calls)
+	}
+}
+
+// The refusal lands BEFORE the worktrees, which is the whole reason the
+// spawn-or-attach reading moved up in the sequence: at its old position den
+// would have created one git worktree per repo and left the user to clean them
+// up by hand.
+func TestSpawnRefusesAnUnbuiltImageBeforeCreatingAnyWorktree(t *testing.T) {
+	denHome, _ := denTest(t)
+	withBuildableStack(t, denHome)
+	f, d := fakeDeps()
+	answerTemplates(f, `{"images":[]}`)
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat"}, d)
+	if err == nil {
+		t.Fatal("expected a refusal on an image no build ever produced")
+	}
+	root := filepath.Join(denHome, "worktrees")
+	entries, statErr := os.ReadDir(root)
+	if statErr == nil && len(entries) != 0 {
+		t.Errorf("%s = %v, want no worktree created before the refusal", root, entries)
+	}
+	// Same guard on the agent profile, created midway through the sequence.
+	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
+		t.Error("the agent profile must not have been created before the refusal")
+	}
+}
+
+// The bare form a stack writes must find the qualified image sbx reports —
+// this is sbx.NormalizeImageRef doing its job, seen from the spawn.
+func TestSpawnCreatesWhenTheImageIsBuilt(t *testing.T) {
+	denHome, _ := denTest(t)
+	withBuildableStack(t, denHome)
+	f, d := fakeDeps()
+	answerTemplates(f, `{"images":[{"repository":"docker.io/library/devx","tag":"v1"}]}`)
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("`image: devx:v1` must match the `docker.io/library/devx` + `v1` sbx reports: %v", err)
+	}
+	if !f.HasCalled("create") {
+		t.Errorf("a create must have happened; calls: %v", f.Calls)
+	}
+}
+
+// A stack with NO `provision.steps` is left alone, and not even asked about:
+// `image:` may name a registry image sbx will happily pull, and `den build` on
+// a stack den cannot build is not advice, it is a second error.
+//
+// The same silence as TestSpawnDoesNotCheckTheImageOfAPullableStack below,
+// reached through the WHOLE spawn rather than through checkStackImage in
+// isolation: this one proves no `template ls` process is spent on the way.
+func TestSpawnDoesNotCheckTheImageOfANotBuildableStack(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	answerTemplates(f, `{"images":[]}`)
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("a stack den cannot build must not be refused over its image: %v", err)
+	}
+	if f.HasCalled("template", "ls", "--json") {
+		t.Errorf("the inventory must not even be read; calls: %v", f.Calls)
+	}
+}
+
+// An `image:` pinned by DIGEST is left alone, and not even asked about: `sbx
+// template ls --json` reports a repository and a tag and no digest, so the
+// inventory cannot confirm or deny the pin. Reading that silence as "absent"
+// would refuse a `den <nest>` over an image that is present — the false refusal
+// the whole normalization exists to prevent.
+func TestSpawnDoesNotCheckADigestPinnedImage(t *testing.T) {
+	denHome, _ := denTest(t)
+	withBuildableStack(t, denHome)
+	// The provision.steps above arm the check; only the digest pin disarms it.
+	// Must include both provision: (to make the stack buildable) and the digest
+	// image: (to exercise the second silence), so the digest path is actually tested.
+	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
+		"image: devx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"+
+			"base: claude\nkits: [transverse]\nkit: devx-kit\n"+
+			"provision:\n  steps: [./provision/setup.sh]\n")
+	f, d := fakeDeps()
+	answerTemplates(f, `{"images":[]}`)
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("a digest pin den cannot arbitrate must not be refused: %v", err)
+	}
+	if f.HasCalled("template", "ls", "--json") {
+		t.Errorf("an inventory that carries no digest cannot answer, so it must not be read; calls: %v", f.Calls)
+	}
+	if !f.HasCalled("create") {
+		t.Errorf("a create must have happened; calls: %v", f.Calls)
+	}
+}
+
+// A failing inventory is fail-open. The check improves a message; it guards
+// nothing — sbx still refuses the create by itself if the image really is
+// absent, so a diagnostic that failed must not forbid a spawn.
+func TestSpawnCreatesAnywayWhenTheImageInventoryIsUnreadable(t *testing.T) {
+	denHome, _ := denTest(t)
+	withBuildableStack(t, denHome)
+	f, d := fakeDeps()
+	answerTemplates(f, `{"templates":[]}`) // the key sbx does NOT use
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("an unreadable inventory must not refuse the spawn: %v", err)
+	}
+	if !f.HasCalled("create") {
+		t.Errorf("a create must have happened; calls: %v", f.Calls)
+	}
+}
+
+// Attaching needs no image: the VM stopped needing it the moment it was
+// created. Refusing here would refuse a `den <nest>` that works.
+func TestSpawnDoesNotCheckTheImageWhenAttaching(t *testing.T) {
+	denHome, repo := denTest(t)
+	withBuildableStack(t, denHome)
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	answerTemplates(f, `{"images":[]}`)
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("attaching to a live sandbox must not consult the image inventory: %v", err)
+	}
+	if f.HasCalled("template", "ls", "--json") {
+		t.Errorf("the inventory must not be read on the attach branch; calls: %v", f.Calls)
+	}
+	if !f.HasAttached("exec") {
+		t.Errorf("the attach must have happened; attaches: %v", f.Attaches)
+	}
+}
+
+// The spawn's image check keys off BUILDABILITY, not off a file on disk. A
+// stack whose image: is one sbx pulls is left alone — "run `den build`" on a
+// stack den cannot build is not advice, it is a second error.
+//
+// This test also pins the import-graph consequence: the verdict comes from
+// config, so internal/spawn no longer needs internal/build at all.
+func TestSpawnDoesNotCheckTheImageOfAPullableStack(t *testing.T) {
+	fake := &sbx.Fake{}
+	// A stack with no provision.steps: not buildable.
+	s := &config.Stack{Name: "pulled", Image: "ghcr.io/acme/base:v3"}
+	if err := checkStackImage(context.Background(), Deps{Sbx: fake}, s); err != nil {
+		t.Fatalf("checkStackImage refused a pullable stack: %v", err)
+	}
+	if fake.HasCalled("template", "ls") {
+		t.Error("den read the inventory for a stack it cannot build — it has no remedy to offer")
+	}
 }

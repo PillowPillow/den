@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -955,6 +956,8 @@ func (f *fakeFleetingHint) Run(_ context.Context, args ...string) ([]byte, error
 
 func (f *fakeFleetingHint) Attach(_ context.Context, _ ...string) error { return nil }
 
+func (f *fakeFleetingHint) Stream(_ context.Context, _ io.Writer, _ ...string) error { return nil }
+
 // fakeCanceling cancels the context DURING the pass, then fails as a killed
 // sbx would: a transport error wrapping no context reason.
 type fakeCanceling struct {
@@ -969,6 +972,8 @@ func (f *fakeCanceling) Run(_ context.Context, _ ...string) ([]byte, error) {
 }
 
 func (f *fakeCanceling) Attach(_ context.Context, _ ...string) error { return nil }
+
+func (f *fakeCanceling) Stream(_ context.Context, _ io.Writer, _ ...string) error { return nil }
 
 // fakeProgressive allows the host starting from the n-th call.
 type fakeProgressive struct {
@@ -985,6 +990,8 @@ func (f *fakeProgressive) Run(_ context.Context, _ ...string) ([]byte, error) {
 }
 
 func (f *fakeProgressive) Attach(_ context.Context, _ ...string) error { return nil }
+
+func (f *fakeProgressive) Stream(_ context.Context, _ io.Writer, _ ...string) error { return nil }
 
 // fakePerHost counts checks per host (the host is the argv's last argument)
 // and only allows each one starting from the n-th call CONCERNING IT. A host
@@ -1010,3 +1017,5 @@ func (f *fakePerHost) Run(_ context.Context, args ...string) ([]byte, error) {
 }
 
 func (f *fakePerHost) Attach(_ context.Context, _ ...string) error { return nil }
+
+func (f *fakePerHost) Stream(_ context.Context, _ io.Writer, _ ...string) error { return nil }

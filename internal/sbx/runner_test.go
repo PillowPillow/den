@@ -68,6 +68,69 @@ func TestExecRunMissingBinaryProducesAnActionableMessage(t *testing.T) {
 	}
 }
 
+// Detail is the CAUSE without the argv, and Error is Detail behind the argv.
+// Stated as one table because that relation IS the reason Detail was split out:
+// internal/build renders the cause on its own (an `sbx exec` argv now carries a
+// whole provisioning script, and printing it ahead of the cause is the §14.1
+// defect), and the two renderings must not drift into disagreeing about what
+// the cause is.
+//
+// The missing-binary case is the one where they legitimately differ in shape
+// and not in content: Error short-circuits so the remedy is not prefixed by an
+// argv that never ran.
+func TestExecErrorDetailIsTheCauseWithoutTheArgv(t *testing.T) {
+	args := []string{"exec", "devx-build", "--", "bash", "-lc", "apt-get install -y ripgrep\n"}
+
+	for _, tc := range []struct {
+		name       string
+		err        *ExecError
+		wantDetail string
+	}{
+		{
+			name:       "stderr is the cause",
+			err:        &ExecError{Bin: "sbx", Args: args, Stderr: "E: Unable to locate package ripgrep", Err: errors.New("exit status 1")},
+			wantDetail: "E: Unable to locate package ripgrep",
+		},
+		{
+			// sbx wrote nothing: the exit status is all there is, and losing it
+			// would leave an empty cause.
+			name:       "empty stderr falls back to the error",
+			err:        &ExecError{Bin: "sbx", Args: args, Err: errors.New("exit status 1")},
+			wantDetail: "exit status 1",
+		},
+		{
+			// The reason comes BEFORE the detail and does not replace it.
+			name:       "a cancellation prefixes the cause",
+			err:        &ExecError{Bin: "sbx", Args: args, Stderr: "partial", Err: errors.New("signal: killed"), Cancellation: context.Canceled},
+			wantDetail: "interrupted (canceled): partial",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.err.Detail(); got != tc.wantDetail {
+				t.Errorf("Detail() = %q, want %q", got, tc.wantDetail)
+			}
+			// Error() is exactly "bin argv: " + Detail(): the argv is the ONLY
+			// difference, which is what makes dropping it a safe reformatting.
+			want := "sbx " + strings.Join(args, " ") + ": " + tc.wantDetail
+			if got := tc.err.Error(); got != want {
+				t.Errorf("Error() = %q, want %q", got, want)
+			}
+		})
+	}
+
+	// The missing binary is the deliberate exception: no argv on either side.
+	// Prefixing "sbx exec … :" onto "not found in the PATH" would name the
+	// binary twice and put a command that never ran ahead of the one fact that
+	// matters.
+	missing := &ExecError{Bin: "sbx", Args: args, Err: fmt.Errorf("looking up sbx: %w", exec.ErrNotFound)}
+	if got := missing.Detail(); got != missing.Error() {
+		t.Errorf("Detail() = %q and Error() = %q, want the same argv-free remedy", got, missing.Error())
+	}
+	if strings.Contains(missing.Error(), "-lc") {
+		t.Errorf("the argv leaked into the missing-binary message: %q", missing.Error())
+	}
+}
+
 // Same requirement on Attach: it's what `den sh` and the final attach of
 // `den <nest>` go through. There's no reason the message should read
 // differently on one side or the other.
@@ -112,6 +175,209 @@ func TestExecRunPreservesExitCodeAndStderr(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Errorf("message = %q, must contain the stderr output (%q)", err.Error(), "boom")
+	}
+}
+
+// THE REGRESSION Stream exists for, and the proof of how it is wired.
+//
+// Run captures stderr and surfaces it ONLY inside ExecError — that is, only on
+// failure — so every apt/pip warning of a provisioning step that SUCCEEDED was
+// dropped without trace. Here the script exits 0 and the stderr line must still
+// be in the relay.
+//
+// The assertion is on the EXACT byte sequence, not on "contains both", and that
+// is deliberate: interleaving in the order the process produced it is the
+// property, and a `contains` pair would stay green if the two streams arrived
+// through two pipes and two copier goroutines racing to the same writer. This
+// test proves that ORDERING holds for Stream as wired today — it does not
+// prove the streamSink pointer wrapper is doing anything: `out` here is a
+// *strings.Builder, and passing it to both cmd.Stdout and cmd.Stderr directly
+// would already make interfaceEqual hold and the descriptors get shared, since
+// a *strings.Builder is a comparable dynamic type. streamSink's actual
+// justification is the case argued in runner.go — a caller's writer whose
+// dynamic type is NOT comparable, where the wrapper is what keeps the identity
+// structural instead of silently falling back to two pipes and a data race —
+// and no test in this package can cleanly observe that without engineering a
+// non-comparable io.Writer expressly to fail without the wrapper.
+//
+// The shell's own buffering is not left to chance either: `echo` is a builtin
+// in both shells /bin/sh can be here, and both flush it per command (dash's
+// evalbltin calls flushall(); bash's echo.def ends on sh_chkwrite). Without
+// that, a block-buffered stdout would legitimately emit "two" first and the
+// order asserted below would be the shell's, not Stream's.
+func TestExecStreamRelaysStdoutAndStderrInOrderIncludingOnSuccess(t *testing.T) {
+	var out strings.Builder
+	e := &Exec{Bin: "sh"}
+
+	if err := e.Stream(context.Background(), &out, "-c", "echo one; echo two >&2; echo three"); err != nil {
+		t.Fatalf("the script exits 0: Stream must not return an error; err = %v", err)
+	}
+	const want = "one\ntwo\nthree\n"
+	if got := out.String(); got != want {
+		t.Errorf("relayed = %q, want %q — stdout AND stderr, interleaved as produced", got, want)
+	}
+}
+
+// The exit code stays reachable, and the stderr is NOT folded into the message
+// a second time: Stream already wrote it to the caller's writer, so ExecError's
+// Stderr is left empty and Detail falls back to Err. That is what makes
+// internal/build render `step 2/3 ./provision/gh.sh failed: exit status 1`, the
+// shape spec §6 promises, instead of repeating the apt-get failure the user has
+// just read.
+//
+// Both halves are asserted, because either alone would pass on a broken
+// implementation: an empty message with the text nowhere, or the text in both
+// places.
+func TestExecStreamKeepsTheExitCodeAndDoesNotRepeatTheRelayedStderr(t *testing.T) {
+	var out strings.Builder
+	e := &Exec{Bin: "sh"}
+
+	err := e.Stream(context.Background(), &out, "-c", "echo boom >&2; exit 3")
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(out.String(), "boom") {
+		t.Errorf("relayed = %q: the failing process's stderr must still reach the writer", out.String())
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("errors.As(err, &exitErr) must succeed; err = %v (%T)", err, err)
+	}
+	if exitErr.ExitCode() != 3 {
+		t.Errorf("exit code = %d, want 3", exitErr.ExitCode())
+	}
+	var execErr *ExecError
+	if !errors.As(err, &execErr) {
+		t.Fatalf("Stream must return an *ExecError (the missing-binary remedy and Detail "+
+			"live there); err = %v (%T)", err, err)
+	}
+	if execErr.Stderr != "" {
+		t.Errorf("ExecError.Stderr = %q, want empty: the text already reached the writer, "+
+			"and folding it in makes the user read the same failure twice", execErr.Stderr)
+	}
+	if got := execErr.Detail(); got != "exit status 3" {
+		t.Errorf("Detail() = %q, want the exit status: with Stderr empty it must fall back "+
+			"to Err, which is what gives spec §6's message its shape", got)
+	}
+}
+
+// The first-contact failure, same requirement as on Run and Attach: `den build`
+// is as likely as `den ls` to be the command a new user types before sbx is
+// installed, and the remedy must not read differently there.
+func TestExecStreamMissingBinaryProducesAnActionableMessage(t *testing.T) {
+	const bin = "den-binary-that-does-not-exist-x7q"
+	e := &Exec{Bin: bin}
+
+	err := e.Stream(context.Background(), &strings.Builder{}, "exec", "devx-build", "true")
+	if err == nil {
+		t.Fatal("a missing binary must produce an error")
+	}
+	for _, want := range []string{bin, "not found in the PATH", "den doctor"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the message must contain %q; got: %s", want, err.Error())
+		}
+	}
+	// Asserted SEPARATELY from the presence above, for the reason Run's twin
+	// states: a message that added the remedy without dropping os/exec's line
+	// would stay green on the presence assertion alone.
+	for _, leftover := range []string{"executable file not found", "exec: "} {
+		if strings.Contains(err.Error(), leftover) {
+			t.Errorf("leftover os/exec wording %q in the message: %s", leftover, err.Error())
+		}
+	}
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Errorf("exec.ErrNotFound must stay detectable in the chain; err = %v", err)
+	}
+}
+
+// Ctrl-C DURING a build, which is now den's primary interrupt path: cli.Execute
+// wires signal.NotifyContext, and the process a signal finds running is a
+// provisioning step — a Stream call, not a Run one.
+//
+// The property does not come for free, and nothing else on Stream would notice
+// its loss. os/exec kills the process and Cmd.Wait PREFERS the process's error
+// to the context's, so cmd.Run returns an *exec.ExitError ("signal: killed")
+// wrapping no context reason at all; `Cancellation: ctx.Err()` is the only
+// thing putting Canceled back in the chain. Delete that line and every other
+// Stream test here stays green while `den build` starts reporting a Ctrl-C as
+// sbx having crashed.
+//
+// Only the IN-FLIGHT case is exercised: a context canceled before the process
+// starts is os/exec's own easy path (Cmd.Start returns ctx.Err() without
+// launching anything) and proves nothing about this one — see
+// TestExecRunContextCanceledBeforeStart. Hence the witness rather than a clock,
+// for the reason TestExecRunCancellationReasonSurvivesProcessDeath documents at
+// length: canceling on a fixed delay regularly beats the fork/exec, and the
+// test then measures the easy case while claiming the hard one.
+func TestExecStreamCancellationReasonSurvivesProcessDeath(t *testing.T) {
+	witness := filepath.Join(t.TempDir(), "started")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	// No deadline on this context: ctx.Err() can only be context.Canceled.
+	go func() {
+		waitForWitness(witness)
+		cancel()
+	}()
+
+	e := &Exec{Bin: "sh", DrainDelay: 50 * time.Millisecond}
+	// `exec sleep 5`, not `sleep 5`: without exec, dash forks and the
+	// grandchild keeps the pipe alive past the kill.
+	err := e.Stream(ctx, &strings.Builder{}, "-c", "touch "+witness+"; exec sleep 5")
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	// THE PRECONDITION, checked rather than assumed.
+	if _, errWitness := os.Stat(witness); errWitness != nil {
+		t.Fatalf("the process never started (witness %s absent): the cancellation beat the "+
+			"fork/exec, and this test measures the before-start case it does not claim", witness)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(err, context.Canceled) = false; err = %v", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("errors.Is(err, context.DeadlineExceeded) = true: the two reasons are "+
+			"conflated; err = %v", err)
+	}
+	// The message must SAY the interruption: a bare "signal: killed" reads like
+	// sbx crashing, which is the confusion the field exists to prevent.
+	if !strings.Contains(err.Error(), "interrupted (canceled)") {
+		t.Errorf("message = %q, want it to name the interruption", err.Error())
+	}
+	// Without this, joining the reason could have REPLACED the original chain
+	// instead of adding to it, and the exit-code property would slip away
+	// unnoticed.
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("the original *exec.ExitError was lost; err = %v (%T)", err, err)
+	}
+}
+
+// Stream's copy of the WaitDelay hazard, and it is not theoretical here: unlike
+// Run, Stream ALWAYS goes through a pipe and a copier goroutine (streamSink is
+// never an *os.File, by construction), so a descendant that inherits the pipe
+// and outlives the process makes exec.ErrWaitDelay surface on a SUCCESS every
+// time the case occurs. Without drainCutShortOnSuccess, a provisioning step
+// that worked would be reported as a failed build — and the whole VM torn down
+// over it.
+//
+// Same assumption as Run's twin test (spec §14.1): that sbx leaves such a
+// descendant behind has never been observed, the script below is `sh`.
+func TestExecStreamDoesNotFailWhenADescendantSurvivesAProcessSuccess(t *testing.T) {
+	var out strings.Builder
+	e := &Exec{Bin: "sh", DrainDelay: 50 * time.Millisecond}
+	start := time.Now()
+
+	if err := e.Stream(context.Background(), &out, "-c", "sleep 5 & echo created"); err != nil {
+		t.Fatalf("the process exited with SUCCESS: Stream must not return an error; err = %v", err)
+	}
+	if out.String() != "created\n" {
+		t.Errorf("relayed = %q, want %q: closing the pipe must not lose what the direct "+
+			"child wrote before exiting", out.String(), "created\n")
+	}
+	// Without the bound this test would pass by waiting out the descendant's
+	// 5 s, and would stop proving the success is returned WITHOUT waiting.
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Stream took %v: the wait bound no longer applies", elapsed)
 	}
 }
 
@@ -523,6 +789,26 @@ func TestExecRunTransmitsDenEnvironment(t *testing.T) {
 			"must inherit den's environment (cmd.Env left nil); without this inheritance, "+
 			"`ssh.mode: agent-forward`, the default, would give sandboxes no SSH access at all",
 			got, socket)
+	}
+}
+
+// Same property on Stream, the third process den launches this way. A
+// provisioning step is where an inherited SSH_AUTH_SOCK is most visibly load
+// bearing — `provision.steps` routinely clone over SSH — and the enumeration in
+// Exec's own comment ("cmd.Env is left nil in Run, Stream and Attach alike")
+// would be a claim with only two thirds of a test behind it without this.
+func TestExecStreamTransmitsDenEnvironment(t *testing.T) {
+	const socket = "/tmp/den-test-agent-ssh-stream.sock"
+	t.Setenv("SSH_AUTH_SOCK", socket)
+
+	var out strings.Builder
+	e := &Exec{Bin: "sh"}
+	if err := e.Stream(context.Background(), &out, "-c", `printf %s "$SSH_AUTH_SOCK"`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := out.String(); got != socket {
+		t.Errorf("SSH_AUTH_SOCK seen by the process = %q, want %q — the process Stream launches "+
+			"must inherit den's environment (cmd.Env left nil)", got, socket)
 	}
 }
 

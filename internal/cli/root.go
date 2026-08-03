@@ -3,8 +3,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/doctor"
@@ -123,6 +127,10 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// where a test can replace the real ones — which bind host sockets and spawn
 	// a browser — with doubles.
 	root.AddCommand(newPortsCmd(&denHome, deps.Sbx, deps.Scanner, deps.Open))
+	// `den build` reads the same single sbx: to learn which images already
+	// exist (SbxImages) AND to run the create/exec/stop/save/rm sequence
+	// itself (build.Execute) — there is no second runner to inject for it.
+	root.AddCommand(newBuildCmd(&denHome, deps.Sbx))
 
 	// spawn.Deps is ASSEMBLED here from the very fields newLsCmd just got:
 	// deps.Sbx is the single source. Out is left unset, configureSpawn
@@ -147,8 +155,48 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 }
 
 // Execute is the entry point called by main.
+//
+// signal.NotifyContext, not a bare context.Background(): without it a Ctrl-C
+// (or a `kill`) hits den's default disposition and the process dies on the
+// spot — every `defer` in flight, including buildOne's `sbx rm --force`
+// teardown (internal/build/execute.go), never runs, and a long `den build`
+// leaves its throwaway VM behind on every interruption. Wiring the signal
+// here, once, at the entry point, turns that into an ordinary cancellation
+// that propagates through cmd.Context() to every command.
+//
+// Safe for every command, not just build, for two reasons already documented
+// where they live: sbx.ExecError (internal/sbx/runner.go) carries the whole
+// cancellation chain — Run reads ctx.Err() itself because a killed process's
+// own error otherwise hides it — so any command that shells out through
+// Runner.Run already "recognizes a Ctrl-C" instead of just dying with it. And
+// Runner.Attach (the interactive `exec -it` path used by `den <nest>`, `den
+// sh`, spawn) deliberately sets cmd.Cancel = nil, so this context ending
+// does nothing to an attached shell — the tty driver delivers a Ctrl-C typed
+// inside it directly to the sandbox's foreground process, not through here.
+// Checked, not assumed: in both callers (internal/cli/sh.go, spawn.Spawn at
+// internal/spawn/spawn.go) the Attach call is the LAST use of ctx — nothing
+// runs after it that could see this context canceled by an in-shell Ctrl-C
+// the tty already delivered straight to den's own process group.
+//
+// No re-arm, deliberately: the textbook pattern — a goroutine that calls
+// stop() again once ctx.Done() fires, so a second signal escalates — is
+// rejected here. Attach's cmd.Cancel = nil exists precisely so that ctx
+// canceling does nothing to an attached shell; re-arming would undo that on
+// the very path it protects, making a second in-shell Ctrl-C during `den sh`
+// kill den outright while sbx still holds the tty. Bounding the teardown
+// instead (context.WithTimeout over the context.WithoutCancel(ctx) buildOne
+// already uses) was considered and rejected at buildOne's decision site, not
+// here. Without this paragraph the next reader "fixes" the swallowed second
+// Ctrl-C and breaks `den sh`.
+//
+// The wiring itself is an untestable one-liner, in the shape spawn.
+// StdinIsTerminal and ports.ListenScanner already are: sending a real signal
+// to the test binary is not something a hermetic suite does. No test exists
+// for this line; do not add one that sends signals.
 func Execute() error {
-	return NewRootCmd().Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return NewRootCmd().ExecuteContext(ctx)
 }
 
 // liveNames names the live sandboxes, for the "not found" messages of `den rm`

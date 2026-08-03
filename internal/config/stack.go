@@ -8,7 +8,29 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 )
+
+// Provision is what den plays INSIDE the build VM (spec §6). den owns the
+// sequence around it; a stack only says what to run.
+type Provision struct {
+	// Includes is concatenated ahead of EVERY step, and is never a step of its
+	// own. Order is significant. Relative to the stack directory in YAML,
+	// absolute after loading.
+	//
+	// The contract, which den cannot verify and the spec therefore states: it
+	// DEFINES, it does not act. Each `sbx exec` opens a fresh shell, so this
+	// text is re-emitted once per step — a side effect here runs N times, in
+	// silence.
+	Includes []string `yaml:"includes"`
+	// Steps is one `sbx exec` per entry, in order. Relative to the stack
+	// directory in YAML, absolute after loading.
+	//
+	// One exec per entry and not one big payload: it is what lets a failure
+	// name the step that produced it. The price is that nothing but the VM
+	// filesystem survives from one step to the next — hence Includes.
+	Steps []string `yaml:"steps"`
+}
 
 // Stack is a buildable image recipe (spec §4.2).
 type Stack struct {
@@ -24,7 +46,24 @@ type Stack struct {
 	Kits   []string `yaml:"kits"`
 	Egress []string `yaml:"egress"`
 
+	// Base is the sbx AGENT positional, and applies to ROOT stacks only — the
+	// ones with no `parent:`, which therefore get no `--template`. There the
+	// positional is load-bearing: it selects the starting image
+	// (`claude` → docker/sandbox-templates:claude-code-docker). With a
+	// `--template`, it is the image's flavor that decides and den passes
+	// `sbx.PositionalAgent` instead.
+	Base      string    `yaml:"base"`
+	Provision Provision `yaml:"provision"`
+
 	Dir string `yaml:"-"` // stack directory, filled in at load time
+
+	// ParentImage is Parent's own `image:`, filled in by build.Chain's walk —
+	// never decoded from YAML, hence `yaml:"-"`. A build derives from the
+	// parent's IMAGE, not its name (`sbx create --template` takes a
+	// reference), and Chain already holds the parent *Stack at the moment it
+	// resolves it; carrying the image here spares Execute a second walk of the
+	// graph over a chain it was handed as a flat, already-ordered slice.
+	ParentImage string `yaml:"-"`
 }
 
 // DeclaredKits returns the kits this stack declares, in sbx's LAYERING ORDER:
@@ -47,6 +86,16 @@ func (s *Stack) DeclaredKits() []string {
 	}
 	return kits
 }
+
+// Buildable reports whether den knows how to build this stack's image.
+//
+// SOLE SOURCE of that verdict, and it is read on BOTH sides: `den build` skips
+// a stack that is not buildable, and the spawn's image check stays silent on
+// it (internal/spawn, checkStackImage). Spec §6 requires the two to agree —
+// measured on 2026-08-03, they had already drifted once, and a `den build` on
+// a den holding a single pullable stack built NOTHING while demanding a script
+// for the stack den had already decided not to build.
+func (s *Stack) Buildable() bool { return len(s.Provision.Steps) > 0 }
 
 // LoadStack reads <denHome>/stacks/<name>/stack.yaml.
 func LoadStack(denHome, name string) (*Stack, error) {
@@ -76,12 +125,80 @@ func LoadStack(denHome, name string) (*Stack, error) {
 	if s.Kit != "" && !filepath.IsAbs(s.Kit) {
 		s.Kit = filepath.Join(dir, s.Kit)
 	}
-	for i, k := range s.Kits {
-		if k != "" && !filepath.IsAbs(k) {
-			s.Kits[i] = filepath.Join(dir, k)
+	resolveAgainst(dir, s.Kits)
+	resolveAgainst(dir, s.Provision.Includes)
+	resolveAgainst(dir, s.Provision.Steps)
+
+	// `image:` is checked UNCONDITIONALLY, ahead of the origin switch below —
+	// which concerns only a stack den would BUILD. Emptiness here travels
+	// further than any origin mistake, in three directions at once:
+	//
+	//   - a BUILDABLE stack builds in full, then `sbx template save <n>-build ""`
+	//     runs and den announces success. The next `den <nest>` answers
+	//     "image  is not built — run `den build devx`" — note the doubled space
+	//     where the image goes — which is what the user just did, successfully.
+	//     A closed loop whose two messages are individually exact: the precise
+	//     failure class the 2026-08-03 amendment of spec §6 exists to leave
+	//     nowhere to exist. den owning `template save` fixes the NAME; only this
+	//     fixes the name being empty.
+	//   - a stack used as a `parent:` hands its CHILD an empty ParentImage,
+	//     which build.CreateArgv reads as "root stack" and refuses with "no
+	//     origin — declare `base:` or `parent:`" naming the CHILD's stack.yaml.
+	//     That file already declares `parent:`: wrong file, and a remedy the
+	//     user has already applied. Worse, it fires in the whole-chain
+	//     pre-flight, so one stack missing `image:` refuses the entire
+	//     `den build`.
+	//   - a PULLABLE stack does reach sbx.CreateArgv's own empty-image guard,
+	//     but only at the spawn's `create` — after the worktrees and the agent
+	//     profile exist. Refusing at LOAD time is the ordering internal/spawn
+	//     states at length: everything rejectable from config alone is rejected
+	//     before the first side effect. That guard stays where it is; it becomes
+	//     the boundary guard its own doc says it is, rather than the only thing
+	//     between the user and a late, half-materialized refusal.
+	//
+	// TrimSpace and not `== ""`: sbx.CreateArgv guards the same question the
+	// same way, and two guards on one question must not disagree over
+	// `image: "  "`.
+	if strings.TrimSpace(s.Image) == "" {
+		return nil, fmt.Errorf(
+			"stack %q: no `image:` in %s — den has no reference to save the built image under, "+
+				"nor to spawn from. Declare `image: <name>:<tag>`; den saves a build under that "+
+				"exact string, and `den <nest>` looks for it there",
+			name, path)
+	}
+
+	// Checked only for a stack den would actually BUILD. A pullable stack
+	// declares no origin by design, and demanding one of it would refuse the
+	// configuration spec §6 calls legitimate.
+	if s.Buildable() {
+		switch {
+		case s.Base != "" && s.Parent != "":
+			return nil, fmt.Errorf(
+				"stack %q: `base:` and `parent:` are both set in %s — a stack has ONE origin: "+
+					"`parent:` builds FROM another stack's image, `base:` starts from an sbx agent. "+
+					"Two origins for one image is a contradiction, not a precedence den can arbitrate",
+				name, path)
+		case s.Base == "" && s.Parent == "":
+			return nil, fmt.Errorf(
+				"stack %q: `provision.steps` is declared but neither `base:` nor `parent:` is, in %s — "+
+					"den does not know what to build FROM. Add `base: claude` for a root stack, "+
+					"or `parent: <stack>` to derive from another",
+				name, path)
 		}
 	}
 	return &s, nil
+}
+
+// resolveAgainst rewrites the relative entries of a path list against dir, IN
+// PLACE. Sole definition of the rule stated once in §4.2 and applying to
+// `kits`, `provision.includes` and `provision.steps` alike: a blank entry is
+// left alone rather than turned into the stack directory itself.
+func resolveAgainst(dir string, paths []string) {
+	for i, p := range paths {
+		if p != "" && !filepath.IsAbs(p) {
+			paths[i] = filepath.Join(dir, p)
+		}
+	}
 }
 
 // BrokenStack is a stack present on disk but not loadable.
@@ -109,6 +226,28 @@ type Stacks struct {
 	Root string
 }
 
+// UnreadableStackError is Get's "declared but does not load" verdict, given a
+// TYPE so a caller can act on the distinction instead of matching the text.
+//
+// `den build` is what needs it: a `parent:` naming an unreadable stack and a
+// `parent:` naming a stack that does not exist call for two different files to
+// be edited — the parent's own for the first, the child's `parent:` line for
+// the second. Get stays the SOLE SOURCE of the verdict; this only makes the
+// verdict inspectable with errors.As.
+type UnreadableStackError struct {
+	Name string // the stack that is present on disk but does not load
+	Err  error  // LoadStack's own failure; it cites the full path of the file
+}
+
+// Error appends NO location: Err already cites the full path of the broken
+// stack.yaml, and it's multi-line — anything trailing it reads as belonging to
+// the last line of a YAML diagnostic.
+func (e *UnreadableStackError) Error() string {
+	return fmt.Sprintf("stack %q: unreadable: %v", e.Name, e.Err)
+}
+
+func (e *UnreadableStackError) Unwrap() error { return e.Err }
+
 // Get returns the named stack, or an error that DISTINGUISHES the two ways of
 // not having it: declared but unreadable, or not existing at all.
 //
@@ -121,9 +260,7 @@ func (s Stacks) Get(name string) (*Stack, error) {
 	}
 	for _, c := range s.Broken {
 		if c.Name == name {
-			// No location appended: the wrapped error already cites the full
-			// path of the broken stack.yaml, and it's multi-line.
-			return nil, fmt.Errorf("stack %q: unreadable: %w", name, c.Err)
+			return nil, &UnreadableStackError{Name: name, Err: c.Err}
 		}
 	}
 	if s.Root == "" {

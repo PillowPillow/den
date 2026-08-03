@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -16,27 +17,38 @@ import (
 // through it, which makes the rest of den testable without a microVM — sbx
 // isn't even installed on the development machine.
 //
-// Two methods, because the two uses are irreconcilable:
+// Three methods, because the three uses are irreconcilable:
 //   - Run captures stdout to parse it (`ls --json`, `policy check --json`).
+//   - Stream relays stdout AND stderr to a writer as they are produced. It is
+//     neither of the other two, and adding it was cheaper than bending either:
+//     against Run, there is nothing to PARSE — a provisioning step's log is
+//     addressed to the user, so capturing it would delay four minutes of
+//     apt-get to the end AND drop stderr entirely on success (Run only ever
+//     surfaces stderr inside ExecError, i.e. on failure); against Attach, no
+//     tty is handed over — nothing is typed into a build step — so Attach's
+//     deliberate "context cancellation does nothing" contract is exactly wrong
+//     here, where a Ctrl-C must kill the step.
 //   - Attach wires the current process's ttys to give the user an
 //     interactive shell (`exec -it ... bash -l`); there's nothing to capture,
 //     and capturing would break interactivity.
 type Runner interface {
 	Run(ctx context.Context, args ...string) ([]byte, error)
+	Stream(ctx context.Context, out io.Writer, args ...string) error
 	Attach(ctx context.Context, args ...string) error
 }
 
 // Exec is the real implementation, backed by the sbx binary from the PATH.
 //
-// ENVIRONMENT: cmd.Env is left nil in both Run and Attach, and that's a
-// decision, not an oversight. nil ⇒ the process inherits den's environment,
+// ENVIRONMENT: cmd.Env is left nil in Run, Stream and Attach alike, and that's
+// a decision, not an oversight. nil ⇒ the process inherits den's environment,
 // which is the ONLY support for `ssh.mode: agent-forward` — the config
 // default (internal/config/config.go), which adds neither an argv argument to
 // `sbx create` nor a mixin entry, and relies entirely on SSH_AUTH_SOCK
 // reaching the sbx process.
 //
 // Setting cmd.Env here, for any reason, would cut off SSH access for EVERY
-// sandbox. TestExec{Run,Attach}TransmitsDenEnvironment are what forbid it.
+// sandbox. TestExec{Run,Stream,Attach}TransmitsDenEnvironment are what forbid
+// it.
 //
 // What's proven stops at the process boundary: whether sbx then propagates
 // this socket INTO the microVM isn't verifiable without sbx, and remains a
@@ -113,7 +125,21 @@ func missingBinaryMessage(bin string) string {
 		"%q not found in the PATH — install it, then check your setup with `den doctor`", bin)
 }
 
-func (e *ExecError) Error() string {
+// Detail is the CAUSE alone — everything Error renders except the argv.
+//
+// It exists because the argv is not always worth what it costs. `sbx exec
+// <name> -- bash -lc "<the whole provisioning script>"` renders an entire shell
+// script before reaching `: E: Unable to locate package ripgrep`, which is the
+// only line the user can act on. Spec §14.1 names that exact shape as a defect
+// of the pre-#8 experience — "il incruste l'argv complet de `sbx create` avant
+// d'en venir à la cause" — so a caller that has already named the operation in
+// its own words needs the cause without the argv (internal/build/execute.go).
+//
+// SPLIT OUT of Error rather than reimplemented at the call site: the fallback
+// chain (stderr, then Err), the cancellation prefix and the missing-binary
+// remedy are one rendering decision, and two copies of it would drift. Error
+// calls it, so they cannot.
+func (e *ExecError) Detail() string {
 	// BEFORE the cancellation reason: a canceled context on a missing binary
 	// is still, for the user, a missing binary — the cancellation would be the
 	// consequence, never the cause.
@@ -128,10 +154,20 @@ func (e *ExecError) Error() string {
 		// The cancellation reason comes BEFORE the detail, and doesn't replace
 		// it: "signal: killed" alone reads like sbx crashing, but dropping it
 		// would lose whatever stderr sbx had time to write.
-		return fmt.Sprintf("%s %s: %s: %s",
-			e.Bin, strings.Join(e.Args, " "), cancellationReason(e.Cancellation), detail)
+		return fmt.Sprintf("%s: %s", cancellationReason(e.Cancellation), detail)
 	}
-	return fmt.Sprintf("%s %s: %s", e.Bin, strings.Join(e.Args, " "), detail)
+	return detail
+}
+
+func (e *ExecError) Error() string {
+	// The missing-binary case short-circuits HERE too, and not only in Detail:
+	// prefixing "sbx exec … :" onto "\"sbx\" not found in the PATH" would name
+	// the binary twice and put an argv that never ran in front of the one fact
+	// that matters. Same reason as in Detail, one rendering layer up.
+	if errors.Is(e.Err, exec.ErrNotFound) {
+		return missingBinaryMessage(e.Bin)
+	}
+	return fmt.Sprintf("%s %s: %s", e.Bin, strings.Join(e.Args, " "), e.Detail())
 }
 
 // cancellationReason renders the stdlib's two cancellation reasons in
@@ -249,6 +285,84 @@ func (e *Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 		}
 	}
 	return stdout.Bytes(), nil
+}
+
+// streamSink forwards to the caller's writer behind a POINTER, and that
+// indirection is the entire mechanism of Stream's interleaving guarantee.
+//
+// os/exec hands the child ONE descriptor for both streams only when
+// `interfaceEqual(cmd.Stderr, cmd.Stdout)` holds — a recover-guarded `==` on
+// the two interface values. One descriptor ⇒ the kernel orders the two streams
+// in the pipe and a SINGLE copier goroutine drains it, which is what makes
+// "interleaved as produced" true and what makes concurrent writes to the
+// caller's writer impossible.
+//
+// REJECTED: assigning `out` to both fields directly. It works for every writer
+// den passes today (all pointers: *os.File, *strings.Builder, *bytes.Buffer),
+// and degrades silently for a writer whose dynamic type is not comparable —
+// interfaceEqual returns false, os/exec opens TWO pipes and runs TWO copiers
+// writing to the same io.Writer, and the guarantee becomes a data race that no
+// test in this repo would observe. A pointer wrapper makes the identity
+// structural instead of dependent on what the caller happens to pass.
+//
+// No mutex, deliberately: one descriptor means one copier, so a second writer
+// never exists — a mutex here would assert the opposite of the comment above.
+//
+// The price is fd passthrough: an *os.File out would otherwise be handed to
+// the child directly, with no pipe and no copier. Paid knowingly — the copier
+// drains continuously, so real-time relay holds either way — and it buys back
+// the ErrWaitDelay-on-success case being genuinely reachable here, which is
+// what makes the drain guard below load-bearing rather than decorative.
+type streamSink struct{ w io.Writer }
+
+func (s *streamSink) Write(p []byte) (int, error) { return s.w.Write(p) }
+
+// Stream executes sbx and RELAYS its output to out — stdout and stderr both,
+// interleaved as produced — instead of collecting it. It exists for
+// internal/build's provisioning steps: text den does not parse, addressed to
+// the user, arriving over minutes.
+//
+// On failure the ExecError's Stderr is left EMPTY, which is not an omission but
+// the consequence of the relay: every byte sbx wrote has ALREADY reached out,
+// and folding it into the message a second time would print the same apt-get
+// failure twice. ExecError.Detail then falls back to Err, so a step failure
+// renders as `... failed: exit status 1` — the shape spec §6 promises, with the
+// diagnostic sitting in the log right above it.
+func (e *Exec) Stream(ctx context.Context, out io.Writer, args ...string) error {
+	cmd := exec.CommandContext(ctx, e.Bin, args...)
+	// ONE sink for both, through one pointer — see streamSink.
+	sink := &streamSink{w: out}
+	cmd.Stdout = sink
+	cmd.Stderr = sink
+	// cmd.Cancel is left at CommandContext's default (SIGKILL), unlike Attach
+	// forty lines below, which sets it to nil: there is no tty to leave in raw
+	// mode here, and a Ctrl-C during a four-minute provisioning step must
+	// actually stop it. Read Attach's comment before copying its `cmd.Cancel =
+	// nil` up here.
+	cmd.WaitDelay = effectiveDelay(e.DrainDelay)
+	if err := cmd.Run(); err != nil {
+		// Same guard, same three conditions, same reason as Run — none of them
+		// depends on where the output went. What changes is only the sentence
+		// about completeness: os/exec's copier drains the pipe CONTINUOUSLY, so
+		// whatever the direct child wrote before exiting has already been
+		// WRITTEN TO out (rather than collected into a buffer) by the time
+		// WaitDelay closes the pipe. Whatever a DESCENDANT writes after that
+		// close is lost, and that is intended — it isn't the step's output.
+		if drainCutShortOnSuccess(err, ctx.Err(), cmd.ProcessState) {
+			return nil
+		}
+		return &ExecError{
+			Bin:  e.Bin,
+			Args: slices.Clone(args),
+			// Stderr stays EMPTY on purpose — see the godoc. Not "there was
+			// none": there was, and the user already read it.
+			Err: err,
+			// Read HERE, as in Run: the only place where the failure and the
+			// cancellation are known to be concurrent.
+			Cancellation: ctx.Err(),
+		}
+	}
+	return nil
 }
 
 // Attach hands control to sbx over the current process's ttys.
