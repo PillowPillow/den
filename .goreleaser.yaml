@@ -1,0 +1,87 @@
+# goreleaser is the release twin of `make build`: both exist to keep one promise,
+# a shipped binary names the code it runs. The ldflags below MUST target the same
+# symbol as the Makefile (github.com/PillowPillow/den/internal/cli.Version) and
+# use {{ .Tag }} — not {{ .Version }} — because `git describe` (the Makefile
+# path) answers `v1.0.0` with the leading v, and two install paths answering
+# `v1.0.0` vs `1.0.0` for the same commit would look like two different builds
+# in a bug report.
+version: 2
+
+project_name: den
+
+# Pinned explicitly: goreleaser guesses the forge from ambient tokens, and a
+# GITLAB_TOKEN in the developer's shell (common here) makes a local snapshot
+# generate gitlab.com download URLs in the cask. The release lives on GitHub,
+# token or no token in the environment.
+release:
+  github:
+    owner: PillowPillow
+    name: den
+
+builds:
+  - main: ./cmd/den
+    binary: den
+    env:
+      # den shells out to sbx and git; nothing links C. CGO off keeps the
+      # binaries static and lets darwin/linux cross-compile from one runner.
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/PillowPillow/den/internal/cli.Version={{ .Tag }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  # `git` (not `github`) so a local `goreleaser release --snapshot` works
+  # against a private or offline clone — the GitHub API is only reachable once
+  # the repo is public and a token is around, and the changelog must not be the
+  # reason a dry run fails.
+  use: git
+  filters:
+    exclude:
+      - "^docs"
+      - "^test"
+      - "^chore"
+
+# homebrew_casks, not the deprecated `brews`: goreleaser v2 routes CLI binaries
+# through casks now. Casks are macOS-only — Linux users get the release
+# archives or `go install`, both of which answer `den version` correctly since
+# the ldflags/buildinfo arbitration in internal/cli/version.go.
+homebrew_casks:
+  - name: den
+    repository:
+      owner: PillowPillow
+      name: homebrew-tap
+      # The Actions-provided GITHUB_TOKEN cannot push to another repository, so
+      # the cask bump needs a PAT with write access to homebrew-tap, stored as
+      # the TAP_GITHUB_TOKEN secret. Without it a release still publishes
+      # archives — only the cask bump fails.
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/PillowPillow/den
+    description: "Spawn and drive sbx microVM sandboxes for multi-project dev environments"
+    # Same reason as the release block above: without an explicit template the
+    # cask URLs follow the forge goreleaser guessed from ambient tokens.
+    url:
+      template: "https://github.com/PillowPillow/den/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    hooks:
+      post:
+        # The binaries are not notarized: without stripping the quarantine
+        # attribute Gatekeeper blocks the first run with "cannot be opened".
+        # This is goreleaser's documented pattern for unsigned CLI casks.
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/den"]
+          end
+    commit_author:
+      name: goreleaser-bot
+      email: bot@goreleaser.com

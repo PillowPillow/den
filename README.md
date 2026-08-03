@@ -5,14 +5,32 @@ microVM, without retyping mixin, kits and policy by hand.
 
 ## Installation
 
+Homebrew (macOS):
+
+```bash
+brew install --cask PillowPillow/tap/den
+```
+
+Or with a Go toolchain, from anywhere:
+
+```bash
+go install github.com/PillowPillow/den/cmd/den@latest
+```
+
+Linux users can also grab a prebuilt archive from the
+[releases page](https://github.com/PillowPillow/den/releases).
+
+From a checkout:
+
 ```bash
 make build
 ```
 
-It produces `./den` and stamps the version into it, so `den version` names the code it runs — a
-tag on a release build (`v1.0.0`), and where you stand relative to it otherwise
-(`v1.0.0-3-gabc1234-dirty`). That stamping is the whole reason the build goes through `make`: a
-binary built without it answers `dev` and names nothing.
+Every path stamps the version into the binary, so `den version` names the code it runs — the
+release tag (`v1.0.0`) via Homebrew, `go install` and releases, and where you stand relative to
+it (`v1.0.0-3-gabc1234-dirty`) via `make build`. A plain `go build` in a checkout is the one
+build that names nothing: it answers `dev`, which is the documented tell that the build skipped
+`make`.
 
 ## Bootstrapping
 
