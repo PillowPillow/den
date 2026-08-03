@@ -260,6 +260,20 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 	}
 
+	// 2bis. In agent-forward, warn (never block) if the agent den is about to
+	// forward holds no key. sbx transmits the socket faithfully, but an empty
+	// agent forwards an empty agent: `git push` then dies on publickey inside
+	// the VM, far from the cause, with no ~/.ssh to fall back to. Same probe as
+	// `den doctor`; placed before `sbx create`, and applying to the attach
+	// branch too — the forwarded socket is a live proxy, so the warning is just
+	// as true when returning to a running sandbox.
+	//
+	// The socket is read HERE and passed in, rather than inside the warning:
+	// os.Getenv is world access, and this function already owns the other two
+	// (the repo and ssh.dir Stat probes above). It also keeps the warning
+	// itself assertable from a test that sets nothing but its arguments.
+	warnEmptySSHAgent(d.Err, r.SSHMode, os.Getenv("SSH_AUTH_SOCK"), d.SSHAgent, d.goos())
+
 	// 2ter. Spawn-or-attach is decided HERE, before the first side effect, and
 	// the stack image is checked on the create branch (spec §11).
 	//
@@ -289,20 +303,6 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			return err
 		}
 	}
-
-	// 2bis. In agent-forward, warn (never block) if the agent den is about to
-	// forward holds no key. sbx transmits the socket faithfully, but an empty
-	// agent forwards an empty agent: `git push` then dies on publickey inside
-	// the VM, far from the cause, with no ~/.ssh to fall back to. Same probe as
-	// `den doctor`; placed before `sbx create`, and applying to the attach
-	// branch too — the forwarded socket is a live proxy, so the warning is just
-	// as true when returning to a running sandbox.
-	//
-	// The socket is read HERE and passed in, rather than inside the warning:
-	// os.Getenv is world access, and this function already owns the other two
-	// (the repo and ssh.dir Stat probes above). It also keeps the warning
-	// itself assertable from a test that sets nothing but its arguments.
-	warnEmptySSHAgent(d.Err, r.SSHMode, os.Getenv("SSH_AUTH_SOCK"), d.SSHAgent, d.goos())
 
 	// 3. Worktrees, if requested. The first workspace must stay the first
 	// repo: sbx.Sandbox.Workdir depends on it for attach, and nothing at

@@ -34,24 +34,8 @@ func (r *recordingScript) Run(_ context.Context, s *config.Stack, out io.Writer)
 	return r.fail[s.Name]
 }
 
-// withScripts drops an executable build.sh into each named stack directory.
-// The file only has to EXIST — nothing here runs it.
-func withScripts(t *testing.T, steps []Step, names ...string) {
-	t.Helper()
-	for _, s := range steps {
-		if len(names) > 0 && !slices.Contains(names, s.Stack.Name) {
-			continue
-		}
-		path := ScriptPath(s.Stack)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
 func TestExecuteRunsTheStepsInOrder(t *testing.T) {
 	steps := plan(t, fixture, "delta", true, &fakeImages{})
-	withScripts(t, steps)
 
 	script := &recordingScript{}
 	var out bytes.Buffer
@@ -67,7 +51,6 @@ func TestExecuteRunsTheStepsInOrder(t *testing.T) {
 // it: a silent skip and a forgotten stack look identical from the outside.
 func TestExecuteAnnouncesASkippedStepWithoutRunningIt(t *testing.T) {
 	steps := plan(t, fixture, "delta", false, &fakeImages{present: []string{"alpha:v1"}})
-	withScripts(t, steps, "gamma", "delta")
 
 	script := &recordingScript{}
 	var out bytes.Buffer
@@ -89,14 +72,26 @@ func TestExecuteAnnouncesASkippedStepWithoutRunningIt(t *testing.T) {
 // built its base image for four minutes and only then found dgdevx has no
 // build.sh would have burned that time to reach a refusal den could have made
 // instantly.
+//
+// The plan is built BY HAND here, because Plan can no longer produce this
+// shape: it turns a missing script into a skip, or — for the stack the user
+// named — into its own refusal. What stays under test is the guard, in the
+// shape agent.RenderMixin's freshness guard takes.
 func TestExecuteChecksEveryScriptBeforeRunningAny(t *testing.T) {
-	steps := plan(t, fixture, "delta", true, &fakeImages{})
-	withScripts(t, steps, "alpha", "gamma") // delta has none
+	stacks := loadStacks(t, fixture, "delta") // delta gets no build.sh
+	chain, err := Chain(stacks, "delta")
+	if err != nil {
+		t.Fatalf("building the chain: %v", err)
+	}
+	steps := make([]Step, 0, len(chain))
+	for _, s := range chain {
+		steps = append(steps, Step{Stack: s, Build: true})
+	}
 
 	script := &recordingScript{}
-	err := Execute(context.Background(), steps, script, io.Discard)
+	err = Execute(context.Background(), steps, script, io.Discard)
 	if err == nil {
-		t.Fatal("expected a refusal on a stack with no build.sh")
+		t.Fatal("expected a refusal on a step whose build.sh does not exist")
 	}
 	if len(script.ran) != 0 {
 		t.Errorf("ran = %v, want nothing run before the refusal", script.ran)
@@ -113,8 +108,7 @@ func TestExecuteChecksEveryScriptBeforeRunningAny(t *testing.T) {
 // would refuse a `den build dgdevx` whose base image is a prebuilt one nobody
 // rebuilds locally.
 func TestExecuteDoesNotDemandAScriptForASkippedStep(t *testing.T) {
-	steps := plan(t, fixture, "delta", false, &fakeImages{present: []string{"alpha:v1"}})
-	withScripts(t, steps, "gamma", "delta") // alpha has none, and is skipped
+	steps := planScriptless(t, fixture, "delta", false, &fakeImages{}, "alpha")
 
 	if err := Execute(context.Background(), steps, &recordingScript{}, io.Discard); err != nil {
 		t.Fatalf("a skipped step must not need a build.sh: %v", err)
@@ -126,7 +120,6 @@ func TestExecuteDoesNotDemandAScriptForASkippedStep(t *testing.T) {
 // to learn which stack died.
 func TestExecuteNamesTheStackWhoseScriptFailed(t *testing.T) {
 	steps := plan(t, fixture, "delta", true, &fakeImages{})
-	withScripts(t, steps)
 
 	script := &recordingScript{fail: map[string]error{"gamma": errors.New("exit status 2")}}
 	err := Execute(context.Background(), steps, script, io.Discard)
@@ -150,7 +143,6 @@ func TestExecuteNamesTheStackWhoseScriptFailed(t *testing.T) {
 // wrongly.
 func TestExecuteWritesTheScriptOutputOnTheSameStream(t *testing.T) {
 	steps := plan(t, fixture, "zeta", false, &fakeImages{})
-	withScripts(t, steps)
 
 	script := &recordingScript{emit: "layer 1/3\n"}
 	var out bytes.Buffer
@@ -172,5 +164,30 @@ func TestScriptPathIsUnderTheStackDirectory(t *testing.T) {
 	s := &config.Stack{Name: "devx", Dir: filepath.Join("home", "stacks", "devx")}
 	if got, want := ScriptPath(s), filepath.Join("home", "stacks", "devx", ScriptName); got != want {
 		t.Errorf("ScriptPath = %q, want %q", got, want)
+	}
+}
+
+// A build.sh committed without +x dies on `fork/exec: permission denied`, and
+// it used to die LATE — measured on the bench 2026-08-03, after the chain had
+// already built the stacks before it. den runs the script directly (so its
+// shebang stays its own choice), which makes the bit part of "is this
+// buildable".
+func TestExecuteRefusesANonExecutableScriptUpFront(t *testing.T) {
+	steps := plan(t, fixture, "delta", true, &fakeImages{})
+	path := ScriptPath(steps[len(steps)-1].Stack) // delta, the LAST step
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	script := &recordingScript{}
+	err := Execute(context.Background(), steps, script, io.Discard)
+	if err == nil {
+		t.Fatal("expected a refusal on a build.sh that is not executable")
+	}
+	if len(script.ran) != 0 {
+		t.Errorf("ran = %v, want nothing run — the refusal must land before the first build", script.ran)
+	}
+	if !strings.Contains(err.Error(), "chmod +x") {
+		t.Errorf("message = %q, want it to name the remedy", err)
 	}
 }

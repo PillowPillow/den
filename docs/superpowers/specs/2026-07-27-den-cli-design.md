@@ -243,10 +243,18 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
   `devx:v1` ↔ `docker.io/library/devx` + `v1`, `library/devx` est un *namespace*, `ghcr.io/…` et
   `localhost[:port]/…` sont des *registres*, un `:` avant le dernier `/` est un port et non un tag,
   et un tag vide (`devx:`) n'est pas complété en `latest` (il ne doit apparier aucune image).
+- **Une stack sans `build.sh` n'est pas constructible, et c'est une configuration déclarée** : son
+  `image:` peut nommer une image de registre que `sbx` tire. Elle est **sautée et nommée**, jamais
+  un refus — c'est la même réponse que le contrôle d'image du spawn (§14.1), et les deux doivent
+  s'accorder. Mesuré le 2026-08-03 : elles ne s'accordaient pas, et un `den build` sur un den
+  comportant une seule stack tirable ne construisait **rien** en exigeant un `build.sh` pour la
+  stack que den avait déjà décidé de ne pas construire. **Seule exception** : la stack *nommée* par
+  l'utilisateur, qui est un refus — une ligne « sauté » se lirait comme un succès.
 - **Tous les `build.sh` sont contrôlés avant que le premier ne tourne.** Bâtir quatre minutes
-  d'image de base pour découvrir ensuite que la cible n'a pas de script, c'est dépenser ce temps
-  pour atteindre un refus immédiat. Une étape **sautée** n'exige aucun script : elle ne sera pas
-  lancée.
+  d'image de base pour découvrir ensuite qu'un maillon n'a pas de script, c'est dépenser ce temps
+  pour atteindre un refus immédiat. `Plan` tranchant déjà le cas, ce contrôle est un **garde-fou**
+  (forme du garde de `agent.RenderMixin`) : `Step` est une structure exportée nue, et un plan
+  construit à la main ne doit pas atteindre la moitié de la chaîne avant de découvrir le trou.
 - **Une stack cassée ne coule pas le build** (doctrine `config.LoadStacks`) : nommée sur stderr, non
   construite. Elle n'est un refus que si elle est la cible ou un ancêtre de la cible.
 

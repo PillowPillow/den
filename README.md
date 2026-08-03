@@ -163,6 +163,9 @@ den build dgdevx --force  # rebuild devx too
   is already there, and every skip is printed, with the `--force` that overrides it.
 - "Already there" is read from `sbx template ls --json`, which is also why `den build` (everything)
   and `--force` never call it: those forms rebuild by definition.
+- A stack with **no `build.sh`** is not something den builds: its `image:` is one sbx pulls. It is
+  skipped and named, never a refusal — unless you ask for it by name, which den does refuse rather
+  than answer with a skip line that reads as success.
 - A `parent:` cycle is refused with the whole cycle spelled out (`a → b → a`), a `parent:` that does
   not exist names the file to fix, and every `build.sh` is checked to exist **before the first one
   runs** — a four-minute base image should not be built to reach a refusal den could make instantly.

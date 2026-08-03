@@ -29,7 +29,15 @@ func (f *fakeImages) Has(_ context.Context, image string) (bool, error) {
 // plan is the whole `den build [target]` pipeline, minus the execution.
 func plan(t *testing.T, files map[string]string, target string, force bool, images Images) []Step {
 	t.Helper()
-	chain, err := Chain(loadStacks(t, files), target)
+	return planScriptless(t, files, target, force, images)
+}
+
+// planScriptless is plan with some stacks deprived of their build.sh — the
+// "declared but not buildable" shape.
+func planScriptless(t *testing.T, files map[string]string, target string, force bool, images Images,
+	scriptless ...string) []Step {
+	t.Helper()
+	chain, err := Chain(loadStacks(t, files, scriptless...), target)
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}
@@ -92,7 +100,8 @@ func TestPlanSkipsAnAncestorWhoseImageIsBuilt(t *testing.T) {
 	// The skipped step STAYS in the plan, and says why: a `den build delta`
 	// that printed one line would leave "alpha was already built" and "den
 	// forgot alpha" indistinguishable.
-	if len(steps) != 3 || !strings.Contains(steps[0].Skipped, "alpha:v1") {
+	if len(steps) != 3 || !strings.Contains(steps[0].Skipped, "alpha:v1") ||
+		!strings.Contains(steps[0].Skipped, "--force") {
 		t.Errorf("steps = %+v, want the skipped alpha kept and its reason naming its image", steps)
 	}
 }
@@ -226,3 +235,64 @@ func TestPlanBuildsAStackWithoutAnImage(t *testing.T) {
 
 var _ Images = (*fakeImages)(nil)
 var _ Images = (*SbxImages)(nil)
+
+// THE DEFECT THIS SPLIT EXISTS FOR, measured on the bench 2026-08-03: a den
+// holding one pullable stack (`image:` and no build.sh) plus buildable ones
+// answered `den build` with a refusal naming the pullable one, and built
+// NOTHING. den had already decided, in the spawn's own image check, that such a
+// stack is not its business; Execute's pre-flight said the opposite.
+func TestPlanSkipsAStackWithNoBuildScript(t *testing.T) {
+	steps := planScriptless(t, fixture, "", false, &fakeImages{}, "zeta")
+
+	if got := strings.Join(built(steps), ","); got != "alpha,beta,gamma,delta" {
+		t.Errorf("built = %v, want every buildable stack", built(steps))
+	}
+	if got := strings.Join(skipped(steps), ","); got != "zeta" {
+		t.Errorf("skipped = %v, want zeta — declared, not buildable", skipped(steps))
+	}
+	// And the reason does NOT offer --force, which would change nothing here.
+	for _, s := range steps {
+		if s.Stack.Name == "zeta" {
+			if !strings.Contains(s.Skipped, ScriptName) || strings.Contains(s.Skipped, "--force") {
+				t.Errorf("zeta skipped for %q, want it to name %s and not offer --force", s.Skipped, ScriptName)
+			}
+		}
+	}
+}
+
+// Same for an ANCESTOR: `den build delta` must not demand a build.sh for a base
+// image that is only ever pulled.
+func TestPlanSkipsAScriptlessAncestor(t *testing.T) {
+	steps := planScriptless(t, fixture, "delta", false, &fakeImages{}, "alpha")
+
+	if got := strings.Join(built(steps), ","); got != "gamma,delta" {
+		t.Errorf("built = %v, want gamma,delta", built(steps))
+	}
+	// It is skipped before any inventory question: there is nothing to build
+	// whatever the answer would have been.
+	images := &fakeImages{}
+	planScriptless(t, fixture, "delta", false, images, "alpha")
+	if slices.Contains(images.asked, "alpha:v1") {
+		t.Errorf("inventory asked about a stack den cannot build (%v)", images.asked)
+	}
+}
+
+// The one exception: the stack the user NAMED. `den build zeta` on a stack den
+// cannot build is a request to refuse, not to answer with a skip line — doing
+// nothing silently would read as success.
+func TestPlanRefusesANamedTargetWithNoBuildScript(t *testing.T) {
+	chain, err := Chain(loadStacks(t, fixture, "zeta"), "zeta")
+	if err != nil {
+		t.Fatalf("building the chain: %v", err)
+	}
+	_, err = Plan(context.Background(), chain, "zeta", false, &fakeImages{})
+	if err == nil {
+		t.Fatal("expected a refusal on a target den has no build for")
+	}
+	msg := err.Error()
+	for _, want := range []string{`"zeta"`, ScriptName, "zeta:v1"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message = %q, want it to contain %q", msg, want)
+		}
+	}
+}

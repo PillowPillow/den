@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/sbx"
@@ -79,6 +80,34 @@ type Step struct {
 func Plan(ctx context.Context, chain []*config.Stack, target string, force bool, images Images) ([]Step, error) {
 	steps := make([]Step, 0, len(chain))
 	for _, s := range chain {
+		// A stack with NO build.sh is not buildable, and that is a declared
+		// configuration rather than a mistake: its `image:` may name a registry
+		// image sbx will pull, which is exactly why the spawn's own image check
+		// (internal/spawn, checkStackImage) leaves such a stack alone. This
+		// branch is what keeps the two answers the same. Without it `den build`
+		// on a den holding one pullable base and three buildable stacks built
+		// NOTHING and demanded a build.sh for the one stack den had already
+		// decided was not its business (measured on the bench, 2026-08-03).
+		//
+		// The one exception is the stack the user NAMED. `den build beta` on a
+		// stack den cannot build is a request den must refuse rather than
+		// answer with a skip line — the user asked for that build specifically,
+		// and silently doing nothing would read as success.
+		script := ScriptPath(s)
+		if _, err := os.Stat(script); err != nil {
+			if s.Name == target {
+				return nil, fmt.Errorf(
+					"stack %q: build script not found: %s — create it (den runs it unchanged, "+
+						"it is what would produce image %s)",
+					s.Name, script, s.Image)
+			}
+			steps = append(steps, Step{
+				Stack:   s,
+				Skipped: fmt.Sprintf("no %s, nothing for den to build", ScriptName),
+			})
+			continue
+		}
+
 		// Only an ANCESTOR is a candidate for skipping — see the godoc. With no
 		// target every stack is a root, so nothing is an ancestor and nothing is
 		// consulted.
@@ -101,8 +130,11 @@ func Plan(ctx context.Context, chain []*config.Stack, target string, force bool,
 		}
 		if present {
 			steps = append(steps, Step{
-				Stack:   s,
-				Skipped: fmt.Sprintf("image %s already built", s.Image),
+				Stack: s,
+				// The remedy travels WITH the reason, because it is not the same
+				// for every skip: --force rebuilds an image that is already
+				// there, and does nothing at all for a stack with no build.sh.
+				Skipped: fmt.Sprintf("image %s already built (--force rebuilds it)", s.Image),
 			})
 			continue
 		}

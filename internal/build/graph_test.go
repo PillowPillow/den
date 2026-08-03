@@ -3,6 +3,7 @@ package build
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -23,11 +24,23 @@ func writeStack(t *testing.T, denHome, name, content string) {
 
 // loadStacks writes a set of stacks and loads them, the way `den build` does.
 // The map is name → stack.yaml content.
-func loadStacks(t *testing.T, files map[string]string) config.Stacks {
+//
+// Every stack gets a build.sh, because that is the nominal shape — a stack den
+// can build. The stacks named in scriptless get none instead: `image:` alone is
+// a declared configuration (a registry image sbx pulls), not a mistake, and
+// both Plan and the spawn's own image check treat it as such.
+func loadStacks(t *testing.T, files map[string]string, scriptless ...string) config.Stacks {
 	t.Helper()
 	denHome := t.TempDir()
 	for name, content := range files {
 		writeStack(t, denHome, name, content)
+		if slices.Contains(scriptless, name) {
+			continue
+		}
+		path := filepath.Join(denHome, "stacks", name, ScriptName)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	stacks, err := config.LoadStacks(denHome)
 	if err != nil {

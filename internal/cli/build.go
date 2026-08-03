@@ -28,6 +28,13 @@ func newBuildCmd(denHome *string, runner sbx.Runner, script build.Script) *cobra
 			"which den runs unchanged.",
 		Args: atMostOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Nil is a clean refusal, not a panic — the doctrine every other
+			// injected field of cli.Deps states for itself. The wiring tests
+			// build Deps by hand and leave this one unset; without the guard the
+			// first `den build` through such a tree would dereference it.
+			if script == nil {
+				return fmt.Errorf("den build: no build runner wired — this is a den bug, report it")
+			}
 			home, err := config.Home(*denHome)
 			if err != nil {
 				return err

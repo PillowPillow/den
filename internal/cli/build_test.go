@@ -185,3 +185,67 @@ func TestBuildRejectsTwoArguments(t *testing.T) {
 		t.Errorf("a rejected argument count must reach sbx for nothing; calls: %v", f.Calls)
 	}
 }
+
+// The bench defect (2026-08-03): a den holding one stack den cannot build —
+// `image:` and no build.sh, i.e. an image sbx pulls — made `den build` refuse
+// and build NOTHING. den's own spawn check already treats that shape as
+// legitimate; the two must agree.
+func TestBuildSkipsAStackItCannotBuildInsteadOfRefusing(t *testing.T) {
+	home := buildDenHome(t)
+	dir := filepath.Join(home, "stacks", "pulled")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stack.yaml"),
+		[]byte("image: docker/sandbox-templates:shell-docker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := &recordingBuild{}
+
+	stdout, _, err := runBuild(t, &sbx.Fake{}, script, "--den-home", home, "build")
+	if err != nil {
+		t.Fatalf("a stack den cannot build must not refuse the whole command: %v", err)
+	}
+	if got := strings.Join(script.ran, ","); got != "base,mid,leaf" {
+		t.Errorf("ran = %v, want every buildable stack", script.ran)
+	}
+	if !strings.Contains(stdout, "pulled") || !strings.Contains(stdout, build.ScriptName) {
+		t.Errorf("stdout = %q, want the skipped stack named with the reason", stdout)
+	}
+}
+
+// Naming it explicitly is the other half: the user asked for that build, and a
+// skip line would read as success.
+func TestBuildRefusesANamedStackItCannotBuild(t *testing.T) {
+	home := buildDenHome(t)
+	dir := filepath.Join(home, "stacks", "pulled")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stack.yaml"), []byte("image: pulled:v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := &recordingBuild{}
+
+	_, _, err := runBuild(t, &sbx.Fake{}, script, "--den-home", home, "build", "pulled")
+	if err == nil {
+		t.Fatal("expected a refusal on a named stack with no build.sh")
+	}
+	if !strings.Contains(err.Error(), build.ScriptName) {
+		t.Errorf("message = %q, want it to name the missing script", err)
+	}
+	if len(script.ran) != 0 {
+		t.Errorf("ran = %v, want nothing built", script.ran)
+	}
+}
+
+// A Deps with no build runner takes a clean refusal, never a nil dereference —
+// the doctrine every other injected field of cli.Deps states for itself. The
+// wiring tests in root_deps_test.go build Deps by hand and leave it unset.
+func TestBuildWithoutABuildRunnerRefusesCleanly(t *testing.T) {
+	home := buildDenHome(t)
+	_, _, err := runBuild(t, &sbx.Fake{}, nil, "--den-home", home, "build")
+	if err == nil {
+		t.Fatal("expected a refusal when no build runner is wired")
+	}
+}
