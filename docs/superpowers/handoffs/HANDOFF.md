@@ -147,14 +147,25 @@ Deux avertissements qui coûtent cher si on les oublie :
 
 ## 8. Ce qui reste pour taguer v1
 
-Ordre imposé, la première étape bloque la dernière :
+**Une seule étape, et elle n'est plus bloquée.**
 
-1. **#31 — smoke réel n°3 sur `den build`.** Le maillon qui produit l'image (`sbx stop`,
-   `sbx template save <sandbox> <image>`) n'a jamais touché un `sbx` réel. Exige la machine de
-   l'utilisateur : aucun agent ne peut le produire. Il porte aussi la seule chose que la suite ne
-   peut pas prouver de la porte du §9.1 sur `den sh` : qu'un journal se **remplit** pendant
-   l'attente (le double rend toujours les mêmes octets).
-2. **#10** — `-ldflags` remplissant `Version`, README final, tag `v1.0.0`. Strictement dernier.
+**#10** — `-ldflags` remplissant `Version`, README final, tag `v1.0.0`.
+
+**#31 est FAIT** (2026-08-03, `docs/superpowers/handoffs/2026-08-03-smoke-reel-3.md`). Le smoke réel
+n°3 a tourné sur la machine de l'utilisateur contre `sbx` v0.35.0 : `sbx stop` et
+`sbx template save <sandbox> <image>` ont répondu, leur argv est bien celui qu'`execute.go` envoie,
+la référence nue s'apparie des deux côtés (la boucle ouverte de #8 est fermée), la chaîne parent et
+`--force` reconstruisent ce qu'il faut, et les quatre chemins d'échec — step en échec, `^C` en plein
+step, `S-build` préexistant, streaming live — se comportent comme le §6 les décrit. Relevé versé au
+§14.0 sous « Les commandes relevées le 2026-08-03 ».
+
+Deux choses que ce smoke a laissées ouvertes, et qui ne bloquent pas le tag :
+
+- la **gouvernance active** (§6) : `governance.active` valait encore `false`, aucun banc n'existe
+  ici. La question reste écrite ouverte plutôt que fermée par absence de banc ;
+- la porte du §9.1 sur `den sh` : qu'un journal se **remplisse** pendant l'attente reste non prouvé
+  (le double rend toujours les mêmes octets, et le smoke n°3 ne visait pas cette surface). Pour un
+  prochain smoke, pas pour v1.
 
 ## 9. Docs de référence
 

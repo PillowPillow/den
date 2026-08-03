@@ -369,6 +369,20 @@ poser un kit egress sur la VM de build, et lequel — une stack déclare déjà 
 paquets que le runtime n'a plus besoin de joindre). Tant que ce n'est pas mesuré, ce n'est pas écrit
 ici : ce dépôt atteste le comportement de `sbx` avec sa date, il ne l'extrapole pas.
 
+**Le smoke réel n°3 du 2026-08-03 (issue #31) n'a pas fermé cette question, et l'a laissée ouverte
+délibérément.** `sbx policy check network deb.debian.org --json` y rendait encore
+`"governance": {"active": false}` : aucun banc à gouvernance active n'existe sur cette machine, et
+l'absence de banc ne ferme pas une question. Ce que ce smoke a fermé est le RESTE de la séquence —
+`stop`, `template save`, l'appariement des références nues, la chaîne parent, les chemins d'échec
+(relevé au §14.0 « commandes relevées le 2026-08-03 », détail dans
+`docs/superpowers/handoffs/2026-08-03-smoke-reel-3.md`).
+
+Un fait mesuré ce jour-là que toute stack doit connaître, et qui appartient à l'image de base et non
+à den : **la VM de build joue son propre `apt-get` au démarrage.** Un step qui appelle `apt-get`
+immédiatement court dessus et sort en `100` (`Could not get lock /var/lib/apt/lists/lock`). Le step
+doit attendre le verrou. den rapporte l'échec correctement — il ne le masque pas — mais il ne peut
+pas l'éviter à la place de la stack.
+
 **Une sandbox `S-build` préexistante est un refus, pas un `rm --force` préalable.** `S-build` est un
 nom de nest parfaitement légal — le charset des composants (§2) l'autorise — donc un nettoyage
 aveugle peut détruire une vraie sandbox de l'utilisateur. Le teardown étant différé, un résidu ne
@@ -933,7 +947,9 @@ sbx rm --force NAME
 ### Les commandes relevées le 2026-07-31
 
 `sbx template ls --json` **est utilisée par den v1** depuis #8 (`den build`, et le contrôle d'image
-du spawn au §11). Les autres ci-dessous ne le sont pas.
+du spawn au §11). `template save` l'est aussi, et est attestée depuis le **2026-08-03** — voir
+« Les commandes relevées le 2026-08-03 » plus bas. `template rm` et `template load` ne le sont
+toujours pas : den ne les appelle pas.
 
 ```
 sbx template {ls,save,rm,load}
@@ -955,6 +971,53 @@ sbx ssh setup
   provisionne ~/.ssh/config avec un bloc `Host *.sbx` routé par sandboxd — c'est SSH *vers* la
   sandbox, sans rapport avec le tunnel hôte du §8. NON EXÉCUTÉ au smoke : ça écrit dans le vrai
   fichier de l'utilisateur.
+```
+
+### Les commandes relevées le 2026-08-03 (smoke réel n°3, v0.35.0 inchangée)
+
+Ce sont les **deux maillons du milieu** de la séquence de build du §6 : ceux qui produisent
+réellement l'image, et qui n'avaient jamais touché un `sbx` réel avant ce relevé (issue #31). Relevé
+complet : `docs/superpowers/handoffs/2026-08-03-smoke-reel-3.md`.
+
+`sbx version` rend **v0.35.0**, la version même contre laquelle tout le §14.0 a été attesté : le
+re-relevé annoncé plus haut n'est **pas** dû, la v0.37.1 n'est toujours pas installée.
+
+```
+sbx stop SANDBOX [SANDBOX...]
+  positionnel, variadique. « Sandbox 'NAME' stopped », sortie 0.
+  ⚠️ REJOUÉE sur une sandbox DÉJÀ arrêtée : même message, même sortie 0 — c'est un NO-OP, pas un
+     refus. C'est la propriété dont dépend le teardown différé de `buildOne` : le chemin heureux
+     arrête la VM avant de sauver puis `rm --force` par-dessus, un build interrompu atteint le
+     teardown SANS `stop` préalable, et les deux ordres sont légaux.
+
+sbx template save SANDBOX TAG [-o/--output FICHIER]
+  POSITIONNEL. Pas de `--tag`, pas de `-t`. C'est l'argv que `internal/build/execute.go` envoie.
+  Succès : « Snapshotting image in sandbox … » puis « Save complete. To use the image as a
+  template: sbx run -t docker.io/library/<TAG qualifié> AGENT [WORKSPACE] », sortie 0.
+
+  ⚠️ REFUSE une sandbox qui TOURNE, et refuse en posant D'ABORD une question interactive :
+       « Sandbox NAME is running and must be stopped before saving. Stop it now? (y/N): »
+       puis, sans tty, « ERROR: cannot save a running sandbox; stop it first with: sbx stop NAME »
+     Le `stop` avant `save` du §6 n'est donc pas de l'hygiène, il est OBLIGATOIRE — et plus
+     fortement que supposé : sans lui den ne récolterait pas une erreur propre, il injecterait une
+     invite `(y/N)` dans un build non interactif, dont le sink n'est pas un tty (`sbx.Exec.Stream`).
+
+  ⚠️ RÉFÉRENCE NUE : `save … den-smoke3:v1` produit `docker.io/library/den-smoke3:v1` dans
+     `template ls --json`. Les deux côtés complètent IDENTIQUEMENT — l'hypothèse de
+     `sbx.NormalizeImageRef` est mesurée, pas extrapolée. C'était la mesure dont dépendait la boucle
+     ouverte de #8 : si les complétions avaient divergé, `den build` aurait réussi et `den <nest>`
+     aurait réclamé un build à perpétuité. Le `flavor` est HÉRITÉ de la base, pas recalculé.
+
+  ⚠️ ÉCRASEMENT d'un `TAG` existant : succès SILENCIEUX, sortie 0, et un `id` NEUF. Pas de refus,
+     pas d'invite, pas de `--force` propre. L'ancien `id` disparaît de `template ls --json` — il n'y
+     figure pas comme « untagged », il n'y figure plus. Conséquence pour den : `--force` n'a PAS
+     besoin d'un `template rm` préalable, `execute.go` a raison de sauver par-dessus le nom. Le prix
+     est un jeu de calques orphelins par reconstruction, que `sbx template ls` ne montre pas et que
+     den ne se propose pas de réclamer.
+
+sbx policy check network TARGET   — correction d'argv
+  ⚠️ TARGET est OBLIGATOIRE : sans lui, « ERROR: accepts 1 arg(s), received 0 ». Le relevé du
+     2026-07-28 plus haut le donne entre crochets par sa position, pas par son caractère optionnel.
 ```
 
 **Schéma de kit réel** (relevé sur `sbx-devbox/lib/*/spec.yaml`, pas sur la documentation) :
