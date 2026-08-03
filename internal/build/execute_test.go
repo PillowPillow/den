@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -250,5 +251,55 @@ func TestExecuteAnnouncesSkippedSteps(t *testing.T) {
 	}
 	if len(fake.Calls) != 0 {
 		t.Errorf("a skipped step touched sbx: %v", fake.Calls)
+	}
+}
+
+// The whole argv sequence of a two-stack chain, in one artefact. It is what
+// the previous model could not have: running a real build.sh is not testable,
+// so the ordering was only ever asserted piecemeal.
+//
+// Paths are rewritten to <scratch> so the golden does not carry a t.TempDir().
+func TestExecuteSequenceGolden(t *testing.T) {
+	home := t.TempDir()
+	devxDir := filepath.Join(home, "stacks", "devx")
+	writeFile(t, filepath.Join(devxDir, "go.sh"), "common::go_tools\n")
+	writeFile(t, filepath.Join(home, "lib", "common.sh"), "common::go_tools() { :; }\n")
+	devx := &config.Stack{
+		Name: "devx", Image: "devx:v1", Base: "claude", Dir: devxDir,
+		Provision: config.Provision{
+			Includes: []string{filepath.Join(home, "lib", "common.sh")},
+			Steps:    []string{filepath.Join(devxDir, "go.sh")},
+		},
+	}
+	dgdevxDir := filepath.Join(home, "stacks", "dgdevx")
+	writeFile(t, filepath.Join(dgdevxDir, "glab.sh"), "echo glab\n")
+	dgdevx := &config.Stack{
+		Name: "dgdevx", Image: "dgdevx:v1", Parent: "devx", ParentImage: "devx:v1", Dir: dgdevxDir,
+		Provision: config.Provision{Steps: []string{filepath.Join(dgdevxDir, "glab.sh")}},
+	}
+
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+	}}
+	if err := Execute(context.Background(),
+		[]Step{{Stack: devx, Build: true}, {Stack: dgdevx, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var got strings.Builder
+	for _, call := range fake.Calls {
+		line := strings.Join(call, " ")
+		line = strings.ReplaceAll(line, ScratchDir(home, "devx"), "<scratch:devx>")
+		line = strings.ReplaceAll(line, ScratchDir(home, "dgdevx"), "<scratch:dgdevx>")
+		got.WriteString(line + "\n")
+	}
+	golden := filepath.Join("testdata", "sequence-two-stacks.golden")
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("reading %s: %v — there is no -update flag, write it by hand", golden, err)
+	}
+	if got.String() != string(want) {
+		t.Errorf("sequence mismatch\n--- got ---\n%s\n--- want (%s) ---\n%s", got.String(), golden, want)
 	}
 }

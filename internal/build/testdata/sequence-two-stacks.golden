@@ -1,0 +1,15 @@
+ls --json
+create --name devx-build claude <scratch:devx>
+exec devx-build -- bash -lc common::go_tools() { :; }
+
+common::go_tools
+
+stop devx-build
+template save devx-build devx:v1
+rm --force devx-build
+create --name dgdevx-build --template devx:v1 shell <scratch:dgdevx>
+exec dgdevx-build -- bash -lc echo glab
+
+stop dgdevx-build
+template save dgdevx-build dgdevx:v1
+rm --force dgdevx-build

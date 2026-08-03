@@ -1,11 +1,12 @@
-// Package build orders the stack images (spec §6, "Build DAG").
+// Package build orders the stack images and runs them (spec §6, "Build DAG").
 //
 // It lives outside internal/cli for the reason internal/spawn does: the graph,
-// the cycle detection and the "is this image already there?" arbitration are
-// the only parts worth testing, and none of them needs cobra. The one thing
-// that cannot be tested — actually running a `build.sh` — is isolated behind
-// the Script interface, exactly as internal/ports isolates the socket bind
-// behind Scanner.
+// the cycle detection, the "is this image already there?" arbitration and the
+// build sequence itself are all worth testing on their own, and none of them
+// needs cobra. Nothing here spawns a process: den runs each stack's
+// provisioning through sbx.Runner (Execute), an interface injected exactly as
+// internal/ports isolates the socket bind behind Scanner — so the whole argv
+// sequence is asserted against a recorder, never against a real VM.
 package build
 
 import (

@@ -32,9 +32,10 @@ func (f *fakeImages) Has(_ context.Context, image string) (bool, error) {
 // makes a stack buildable under the new model: `provision.steps` plus an
 // origin (`base:` for the two roots, `parent:` already there for the rest).
 //
-// Kept SEPARATE from `fixture` rather than edited in place: `fixture` is also
-// what execute_test.go arms the OLD way, through loadStacks's `scriptless`
-// parameter — that file belongs to Task 6, untouched here.
+// Kept SEPARATE from `fixture` rather than edited in place: `fixture` (Chain's
+// own tests, in graph_test.go) exercises the walk and its ordering only, and
+// must stay exactly as spare as that question needs — none of Chain's tests
+// consult Buildable.
 //
 //	alpha ← beta
 //	      ← gamma ← delta
@@ -47,25 +48,13 @@ var buildableFixture = map[string]string{
 	"zeta":  "image: zeta:v1\nbase: claude\nprovision:\n  steps: [./build.sh]\n",
 }
 
-// plan is the whole `den build [target]` pipeline, minus the execution.
+// plan is the whole `den build [target]` pipeline, minus the execution: load,
+// Chain, Plan. A stack den cannot build says so directly in its YAML (no
+// `provision.steps`) — see TestPlanSkipsANotBuildableStackAmongBuildableSiblings
+// and its neighbours — there is no separate "scriptless" fixture shape to arm.
 func plan(t *testing.T, files map[string]string, target string, force bool, images Images) []Step {
 	t.Helper()
-	return planScriptless(t, files, target, force, images)
-}
-
-// planScriptless is plan with some stacks deprived of their build.sh.
-//
-// KEPT, unlike the rest of this split: execute_test.go (Task 6's file) still
-// calls it directly, on `fixture`, to arm the OLD "no build.sh on disk" shape
-// its own tests exercise. Under THIS file's new model a build.sh on disk means
-// nothing — buildability comes from `provision.steps` in the YAML, which
-// `scriptless` does not touch — so no test added here relies on it; the tests
-// that need a stack den cannot build say so in the YAML instead (see
-// TestPlanSkipsANotBuildableStackAmongBuildableSiblings and its neighbours).
-func planScriptless(t *testing.T, files map[string]string, target string, force bool, images Images,
-	scriptless ...string) []Step {
-	t.Helper()
-	chain, _, err := Chain(loadStacks(t, files, scriptless...), target)
+	chain, _, err := Chain(loadStacks(t, files), target)
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}

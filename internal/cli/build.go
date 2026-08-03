@@ -12,10 +12,11 @@ import (
 // newBuildCmd wires `den build [<stack>] [--force]` (spec §6, issue #8).
 //
 // Wiring and display only, like every other command here: the graph, the
-// deterministic order, the cycle refusal and the "is the image already there?"
-// arbitration all live in internal/build, and the two system accesses — sbx,
-// and running a build.sh — arrive as parameters.
-func newBuildCmd(denHome *string, runner sbx.Runner, script build.Script) *cobra.Command {
+// deterministic order, the cycle refusal, the "is the image already there?"
+// arbitration and the create/exec/stop/save/rm sequence itself all live in
+// internal/build. The one system access — sbx — arrives as a parameter, same
+// as `den ls` and `den sh` share the very Runner this one gets.
+func newBuildCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 	var force bool
 
 	cmd := &cobra.Command{
@@ -24,17 +25,10 @@ func newBuildCmd(denHome *string, runner sbx.Runner, script build.Script) *cobra
 		Long: "Build stack images in `parent` order.\n\n" +
 			"Without an argument, every declared stack is built. With one, its ancestors " +
 			"are built only if their image is missing, then the stack itself — --force " +
-			"rebuilds the ancestors too. Each stack is built by its own stacks/<name>/build.sh, " +
-			"which den runs unchanged.",
+			"rebuilds the ancestors too. den builds each stack in a throwaway sandbox: it " +
+			"runs the stack's `provision.steps` inside it, then saves the result as `image:`.",
 		Args: atMostOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Nil is a clean refusal, not a panic — the doctrine every other
-			// injected field of cli.Deps states for itself. The wiring tests
-			// build Deps by hand and leave this one unset; without the guard the
-			// first `den build` through such a tree would dereference it.
-			if script == nil {
-				return fmt.Errorf("den build: no build runner wired — this is a den bug, report it")
-			}
 			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
@@ -99,7 +93,7 @@ func newBuildCmd(denHome *string, runner sbx.Runner, script build.Script) *cobra
 			if err != nil {
 				return err
 			}
-			return build.Execute(cmd.Context(), steps, script, out)
+			return build.Execute(cmd.Context(), steps, build.Deps{Sbx: runner, DenHome: home}, out)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false,
