@@ -10,6 +10,18 @@ import (
 	"github.com/PillowPillow/den/internal/config"
 )
 
+// insideExampleHome reports whether p is home or a descendant of it, using
+// filepath.Rel rather than strings.HasPrefix: a raw prefix check on unclean
+// paths would treat "examples/den-home-evil" as inside "examples/den-home"
+// merely because the string starts the same way.
+func insideExampleHome(home, p string) bool {
+	rel, err := filepath.Rel(home, p)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // TestRunExampleDenHomeOnlyFailsOnTheNestRepo locks down README.md's promise
 // right after `cp -R examples/den-home ~/.den`: the placeholder nest repo
 // (~/dev/my-project) is the only diagnostic a fresh copy must fail on. The
@@ -18,10 +30,18 @@ import (
 // once; this is what stops it from happening silently again, since go:embed
 // (a later task) inherits whatever examples/den-home contains byte for byte.
 //
-// Stat is rigged to fail on the placeholder repo ONLY, everything else comes
-// from FakeDeps (every other path exists, sbx is on PATH, git is recent
-// enough, the agent has keys) — so a failure here can only be the example
-// itself regressing, never the machine running the suite.
+// Stat is scoped, not fully faked nor fully real:
+//   - the placeholder nest repo fails, unconditionally — that's the one
+//     diagnostic this test exists to prove stays alone.
+//   - any path INSIDE examples/den-home (kit paths, stack paths, ...) goes
+//     to the REAL os.Stat: those files are checked into git, so their
+//     existence is a fact about the repository, identical on every machine
+//     running this suite from this checkout — reading them is what makes a
+//     resurrected `kit: ./kit` actually fail the test again.
+//   - everything else falls back to FakeDeps' "exists" — this is what keeps
+//     the example's OTHER machine-relative paths (worktree_root, ssh.dir,
+//     both under ~/.den or $HOME) from depending on whatever happens to sit
+//     on the disk of whoever runs the suite.
 func TestRunExampleDenHomeOnlyFailsOnTheNestRepo(t *testing.T) {
 	home, err := filepath.Abs(filepath.Join("..", "..", "examples", "den-home"))
 	if err != nil {
@@ -41,6 +61,9 @@ func TestRunExampleDenHomeOnlyFailsOnTheNestRepo(t *testing.T) {
 	d.Stat = func(p string) (os.FileInfo, error) {
 		if p == placeholderRepo {
 			return nil, errors.New("not found")
+		}
+		if insideExampleHome(home, p) {
+			return os.Stat(p)
 		}
 		return nil, nil
 	}
