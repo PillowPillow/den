@@ -31,23 +31,28 @@ func insideExampleHome(home, p string) bool {
 // (a later task) inherits whatever examples/den-home contains byte for byte.
 //
 // Stat is scoped, not fully faked nor fully real:
-//   - the placeholder nest repo fails, unconditionally — that's the one
-//     diagnostic this test exists to prove stays alone.
+//   - the placeholder nest repo fails, unconditionally — named explicitly so
+//     the assertions below can check ITS name and detail, even though the
+//     branch below already covers it for the verdict (it's outside home).
 //   - any path INSIDE examples/den-home (kit paths, stack paths, ...) goes
 //     to the REAL os.Stat: those files are checked into git, so their
 //     existence is a fact about the repository, identical on every machine
 //     running this suite from this checkout — reading them is what makes a
 //     resurrected `kit: ./kit` actually fail the test again.
-//   - everything else falls back to FakeDeps' "exists". Today that scope is
-//     provably equivalent to a blanket `os.Stat` fallthrough: Run's only
-//     other Stat call is ssh.dir (doctor.go), gated on `ssh.mode == "mount"`,
-//     and the example uses "agent-forward" — but ssh.dir resolves under the
-//     real $HOME, so the day the example's config.yaml switches to "mount"
-//     (one line), a blanket fallthrough would silently start reading
-//     ~/.ssh_sbx on whatever machine runs the suite, and this test's verdict
-//     would depend on whether that path happens to exist there. Scoping the
-//     fallthrough to paths inside examples/den-home keeps the test correct
-//     under both configurations, at no extra cost.
+//   - everything else — anything outside examples/den-home — is "not
+//     found": FAIL-CLOSED, not fail-open. Two reasons, both load-bearing:
+//     (1) the runner's real disk stays out of the verdict either way (a
+//     path outside the repo, like ~/dev/my-project, must not depend on
+//     what happens to sit on the machine running the suite), and a
+//     fail-closed default gets that for free without an allowlist; (2) it
+//     closes the exact regression class this test exists to catch — a
+//     future nest pointing at a SECOND placeholder repo would sit outside
+//     home too, and a fail-open default would silently pass it, one hole
+//     in the promise for every path this test doesn't yet know about. If
+//     `doctor.Run` ever grows a new Stat site outside examples/den-home
+//     (say, worktree_root), this test breaks LOUDLY and asks for review,
+//     rather than drifting green — the same refuse-over-silence doctrine
+//     the rest of den applies to config (spec §2).
 func TestRunExampleDenHomeOnlyFailsOnTheNestRepo(t *testing.T) {
 	home, err := filepath.Abs(filepath.Join("..", "..", "examples", "den-home"))
 	if err != nil {
@@ -71,7 +76,8 @@ func TestRunExampleDenHomeOnlyFailsOnTheNestRepo(t *testing.T) {
 		if insideExampleHome(home, p) {
 			return os.Stat(p)
 		}
-		return nil, nil
+		// Fail-closed: see the fallthrough comment above.
+		return nil, errors.New("not found (outside examples/den-home)")
 	}
 
 	checks := Run(home, d)
