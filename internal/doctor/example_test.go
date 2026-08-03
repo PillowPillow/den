@@ -38,10 +38,16 @@ func insideExampleHome(home, p string) bool {
 //     existence is a fact about the repository, identical on every machine
 //     running this suite from this checkout — reading them is what makes a
 //     resurrected `kit: ./kit` actually fail the test again.
-//   - everything else falls back to FakeDeps' "exists" — this is what keeps
-//     the example's OTHER machine-relative paths (worktree_root, ssh.dir,
-//     both under ~/.den or $HOME) from depending on whatever happens to sit
-//     on the disk of whoever runs the suite.
+//   - everything else falls back to FakeDeps' "exists". Today that scope is
+//     provably equivalent to a blanket `os.Stat` fallthrough: Run's only
+//     other Stat call is ssh.dir (doctor.go), gated on `ssh.mode == "mount"`,
+//     and the example uses "agent-forward" — but ssh.dir resolves under the
+//     real $HOME, so the day the example's config.yaml switches to "mount"
+//     (one line), a blanket fallthrough would silently start reading
+//     ~/.ssh_sbx on whatever machine runs the suite, and this test's verdict
+//     would depend on whether that path happens to exist there. Scoping the
+//     fallthrough to paths inside examples/den-home keeps the test correct
+//     under both configurations, at no extra cost.
 func TestRunExampleDenHomeOnlyFailsOnTheNestRepo(t *testing.T) {
 	home, err := filepath.Abs(filepath.Join("..", "..", "examples", "den-home"))
 	if err != nil {
