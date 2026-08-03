@@ -825,6 +825,16 @@ func TestPortsPublishesEveryRepeatedAdd(t *testing.T) {
 			t.Errorf("every added pair must have its own row; %q missing from:\n%s", url, stdout)
 		}
 	}
+	// The NAME column distinguishes them. A bare "added" on both rows was what
+	// issue #21 measured, and the row that needs the name most is the one on a
+	// nest with no `ports:` at all, where the added pairs are the WHOLE table.
+	// The container port names the pair because it is a property of the pair;
+	// the host port is what the window may move.
+	for _, name := range []string{"added:3000", "added:4000"} {
+		if !strings.Contains(stdout, name) {
+			t.Errorf("the NAME column must distinguish the added pairs; %q missing from:\n%s", name, stdout)
+		}
+	}
 }
 
 // The duplicate-host refusal of ports.Resolve, reached the ONLY way a user can

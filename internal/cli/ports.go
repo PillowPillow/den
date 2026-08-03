@@ -408,8 +408,22 @@ func renderPorts(cmd *cobra.Command, sandbox string, res *ports.Resolution) erro
 	// to be pasted into the user's OWN shell, where $(hostname) expands on the
 	// machine that will run the tunnel — and `you` is the one thing den cannot
 	// know, since the remote account is not the local one.
+	//
+	// The second line is the precondition the first one hides (issue #20): the
+	// tunnel needs an SSH SERVER on den's own host, and on macOS — where this
+	// was measured — Remote Login is off by default, so the command as printed
+	// cannot connect. den states the requirement instead of PROBING it: a probe
+	// would open a socket from internal/cli, which the import guard of
+	// internal/ports/hermeticity_test.go forbids outright, and a reachable sshd
+	// still would not mean this account may log in through it.
+	//
+	// It also disowns `sbx ssh`, which v0.35.0 exposes and which routes INTO a
+	// sandbox through sandboxd (spec §14.0). Same two letters, opposite
+	// direction: a reader who reaches for it gets a shell where they wanted a
+	// forwarded port.
 	fmt.Fprintf(out, "  remote?  ssh -L %d:%s:%d you@$(hostname)\n",
 		res.Window.Base, ports.Loopback, res.Window.Base)
+	fmt.Fprintf(out, "           run it FROM the other machine; needs an SSH server on this host (not `sbx ssh`)\n")
 	return nil
 }
 

@@ -341,7 +341,7 @@ func TestResolveReportsItsOwnPublicationsInSkippedBlocks(t *testing.T) {
 // #22 in the pure layer: an identical `--add` is recognised, not republished.
 func TestResolveMarksAnExtraPairTheSandboxAlreadyPublishes(t *testing.T) {
 	n := nestWith("api", 9100, nest.PortDecl{Name: "vite", Container: 5173})
-	extra := Port{Name: addName, Host: 9801, Container: 8081}
+	extra := Port{Name: addName(8081), Host: 9801, Container: 8081}
 
 	r, err := Resolve(n, Options{
 		Extra:     []Port{extra},
@@ -362,7 +362,7 @@ func TestResolveMarksAnExtraPairTheSandboxAlreadyPublishes(t *testing.T) {
 // shape `--add` exists for is the one that still 409s.
 func TestResolveMarksAnExtraPairOfAPortlessNest(t *testing.T) {
 	n := nestWith("beta", 0)
-	extra := Port{Name: addName, Host: 9601, Container: 8080}
+	extra := Port{Name: addName(8080), Host: 9601, Container: 8080}
 
 	r, err := Resolve(n, Options{
 		Extra:     []Port{extra},
@@ -384,7 +384,7 @@ func TestResolveRefusesAnExtraPairOnAHostPortPublishedElsewhere(t *testing.T) {
 	n := nestWith("api", 9100, nest.PortDecl{Name: "vite", Container: 5173})
 
 	_, err := Resolve(n, Options{
-		Extra:     []Port{{Name: addName, Host: 9801, Container: 9999}},
+		Extra:     []Port{{Name: addName(9999), Host: 9801, Container: 9999}},
 		Published: []Published{{Host: 9801, Container: 8081}},
 	}, refusingScanner{t: t})
 	if err == nil {

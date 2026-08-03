@@ -119,7 +119,17 @@ func (p Port) PublishSpec() string {
 // invent one from the ports: a made-up "vite" would read exactly like a
 // declaration, and the one thing the table must keep straight is which rows the
 // nest promises and which the command line added for this run alone.
-const addName = "added"
+//
+// The container port is appended because the bare "added" stopped distinguishing
+// anything the moment a second `--add` appeared, and the nest where `--add` is
+// the ONLY thing displayed — one with no `ports:`, the contract #6 locked — is
+// exactly where every row then carried the same name (issue #21). The container
+// port is a PROPERTY of the pair, so it survives reordering; an index
+// (added-1, added-2) would have named the command line's argument order
+// instead, which is not what the row is.
+func addName(container int) string {
+	return fmt.Sprintf("added:%d", container)
+}
 
 // ParseAdd reads ONE `--add` value into the Port the caller hands to
 // Options.Extra.
@@ -172,7 +182,7 @@ func ParseAdd(value string) (Port, error) {
 	}
 	// No Open, no LoopbackLock: those are DECLARATIONS, and a pair added on the
 	// command line declares nothing — it is published, listed, and that is all.
-	return Port{Name: addName, Container: container, Host: host}, nil
+	return Port{Name: addName(container), Container: container, Host: host}, nil
 }
 
 // malformedAdd is the single sentence every shape refusal of ParseAdd speaks.
