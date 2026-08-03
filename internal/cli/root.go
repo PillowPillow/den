@@ -120,7 +120,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// forwarded agent has been emptied fails `git push` exactly as a fresh
 	// `den <nest>` would, and this is the surface that re-enters most often.
 	// runtime.GOOS is named here, at the wiring site, like the spawn's below.
-	root.AddCommand(newShCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS))
+	root.AddCommand(newShCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS, deps.Freshness))
 	root.AddCommand(newRmCmd(&denHome, deps.Sbx, deps.Git))
 	// `den ports` reads the SAME sbx as `den ls` and `den sh` (deps.Sbx is the
 	// single runner) and gets its port scanner AND its browser opener from Deps,

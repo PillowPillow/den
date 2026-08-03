@@ -650,10 +650,17 @@ Quatre verdicts, et ce qu'ils coûtent :
   sur cette même sandbox (§11). Rien n'est perdu — le dispatcher **rejoue** au redémarrage suivant
   (mesuré, §14.0), donc la porte est réévaluée exactement quand la sandbox revient.
 
-- **`den sh <sandbox>`** → il **lit une fois**, comme `--detach`, et pour la même raison inversée :
-  la sandbox est déjà debout, le journal porte donc déjà le verdict qui existe, et faire patienter
-  une ré-entrée ordinaire pour un verdict qui n'est pas arrivé la taxerait sans rien attraper. Un
-  verdict **échoué** refuse, exactement comme sur le chemin du §6.
+- **`den sh <sandbox>` sur une sandbox qui TOURNE** → il **lit une fois**, comme `--detach` et pour
+  la raison inverse : la sandbox est déjà debout, le journal porte donc déjà le verdict qui existe,
+  et faire patienter une ré-entrée ordinaire pour un verdict non arrivé la taxerait sans rien
+  attraper. Un verdict **échoué** refuse, exactement comme sur le chemin du §6 ;
+- **`den sh <sandbox>` sur une sandbox ARRÊTÉE** → il **attend**, en l'annonçant, parce que la
+  première règle de cette liste s'applique telle quelle : den attache un shell, et il démarre la VM
+  pour le faire. Lire une seule fois y serait pire qu'inutile — le `sbx exec … cat` redémarre la
+  VM, le dispatcher **rejoue**, et `ParseKitLog` ne lit que le **dernier** bloc : la lecture unique
+  tomberait donc sur un bloc qui vient de commencer et n'a rien rendu, imprimerait une `note:` et
+  ouvrirait un shell pendant que l'agent se met à jour, le `fail` du bloc précédent devenu
+  invisible. C'est le silence de #18 reconstitué à l'intérieur du correctif de #27.
 
 **La porte tient sur les DEUX chemins depuis l'issue #27.** Elle ne tenait d'abord que sur
 `den <nest>` : `den sh` est une commande à part, qui ne passe pas par la séquence du §6, et sur le

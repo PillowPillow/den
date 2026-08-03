@@ -151,12 +151,10 @@ Ordre imposé, la première étape bloque la dernière :
 
 1. **#31 — smoke réel n°3 sur `den build`.** Le maillon qui produit l'image (`sbx stop`,
    `sbx template save <sandbox> <image>`) n'a jamais touché un `sbx` réel. Exige la machine de
-   l'utilisateur : aucun agent ne peut le produire.
-2. **#27** — `den sh` n'interroge pas la porte de fraîcheur du §9.1, que `den <nest>` tient. Une
-   garantie tenue par une porte sur deux. Arbitré : faire lire la porte à `den sh`.
-3. **#20, #21** — cosmétiques du tableau de `den ports` (la ligne `ssh -L` ne dit pas qu'elle exige
-   un `sshd` sur l'hôte ; toutes les lignes `--add` s'appellent `added`).
-4. **#10** — `-ldflags` remplissant `Version`, README final, tag `v1.0.0`. Strictement dernier.
+   l'utilisateur : aucun agent ne peut le produire. Il porte aussi la seule chose que la suite ne
+   peut pas prouver de la porte du §9.1 sur `den sh` : qu'un journal se **remplit** pendant
+   l'attente (le double rend toujours les mêmes octets).
+2. **#10** — `-ldflags` remplissant `Version`, README final, tag `v1.0.0`. Strictement dernier.
 
 ## 9. Docs de référence
 

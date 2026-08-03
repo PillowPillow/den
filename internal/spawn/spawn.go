@@ -612,23 +612,44 @@ func checkFreshness(ctx context.Context, d Deps, sandboxName string, detach bool
 // A guarantee held by one door is worse than none: it teaches the user that den
 // checks, on a path where it did not.
 //
-// It READS rather than waits, for the reason ReadFreshness documents: this
-// caller re-enters a sandbox that is already up, so the journal already holds
-// whatever verdict exists, and standing at a prompt for one that has not
-// arrived would tax the ordinary re-entry to catch nothing. The case #27
-// measured — a gate proven failed — is precisely a journal that carries its
-// verdict already.
+// starting says whether this re-entry is STARTING the sandbox — `den sh` on a
+// stopped one — and it decides between waiting and reading once. §9.2's
+// arbitration is already written and applies unchanged: "il attache un shell →
+// il attend, en l'annonçant".
 //
-// The read is `sbx exec … cat`, which RESTARTS a stopped sandbox. That is not a
-// side effect here but the point: `den sh` on a stopped sandbox restarts it,
-// which is exactly the "a sandbox starts" §9.1 speaks about, and the caller has
-// already told the user so before reaching this.
-func CheckFreshnessOnReentry(ctx context.Context, r sbx.Runner, out io.Writer, sandboxName string) error {
-	verdict, err := agent.ReadFreshness(ctx, r, sandboxName)
+//   - **stopped**: den WAITS. The read is `sbx exec … cat`, which restarts the
+//     VM, and the dispatcher RE-RUNS on restart (measured, agent.KitLogPath).
+//     ParseKitLog reads only the LAST block, so the fresh block is empty and a
+//     single read would answer GatePending — a `note:` and a shell — while the
+//     agent is mid-update, on a sandbox whose gate may be about to fail again.
+//     That is #18's silence rebuilt inside the fix for #27, and it is the case
+//     #27's own body names as the real one.
+//   - **already running**: den reads ONCE. The journal already holds whatever
+//     verdict exists, so standing at a prompt for one that has not arrived
+//     would tax the ordinary re-entry to catch nothing.
+//
+// o is only consulted on the waiting branch; a caller that never starts a
+// sandbox may pass a zero value, which agent.WaitFreshness would refuse rather
+// than quietly complete.
+func CheckFreshnessOnReentry(ctx context.Context, r sbx.Runner, out io.Writer, sandboxName string,
+	starting bool, o agent.GateOptions) error {
+	if !starting {
+		verdict, err := agent.ReadFreshness(ctx, r, sandboxName)
+		if err != nil {
+			return err
+		}
+		return reportFreshness(out, sandboxName, verdict, reentryPending)
+	}
+	verdict, err := agent.WaitFreshness(ctx, r, sandboxName, o, func() {
+		fmt.Fprintf(out, "waiting for agent freshness (spec §9.1)...\n")
+	})
 	if err != nil {
 		return err
 	}
-	return reportFreshness(out, sandboxName, verdict, reentryPending)
+	// pendingBecause(false): a budget that ran out here means the same thing it
+	// means on the spawn attach path — the dispatcher is slower than den's
+	// patience — and the two are the same wait, announced the same way.
+	return reportFreshness(out, sandboxName, verdict, pendingBecause(false))
 }
 
 // reportFreshness turns a gate verdict into den's behaviour: what each verdict
