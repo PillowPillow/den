@@ -61,10 +61,23 @@ func CreateArgv(s *config.Stack, parentImage, scratch string) ([]string, error) 
 		positional = sbx.PositionalAgent
 	}
 	if positional == "" {
-		// Unreachable through LoadStack, which refuses a buildable stack with
-		// no origin. Kept as a BOUNDARY guard: CreateArgv is exported and takes
-		// a struct anyone can fill, the doctrine sbx.CreateArgv states for its
-		// own inputs.
+		// Unreachable through LoadStack — but only since it started refusing an
+		// empty `image:` UNCONDITIONALLY, and that is worth recording, because
+		// this comment claimed unreachability while the hole was open.
+		//
+		// LoadStack refuses a BUILDABLE stack with no origin, which covers the
+		// direct shape. It did not cover the indirect one: a stack with no
+		// `image:` used as a `parent:` handed its child an empty ParentImage,
+		// read one line above as "root stack", so the positional fell back to
+		// the child's `base:` — which a stack declaring `parent:` does not have.
+		// This refusal then fired on the CHILD, naming the child's stack.yaml,
+		// which already declares the `parent:` the message asks for. Wrong file,
+		// remedy already applied — and it fired in Execute's whole-chain
+		// pre-flight, so one stack missing `image:` refused the entire
+		// `den build`. Measured 2026-08-03, closed in config.LoadStack.
+		//
+		// Kept as a BOUNDARY guard: CreateArgv is exported and takes a struct
+		// anyone can fill, the doctrine sbx.CreateArgv states for its own inputs.
 		return nil, notBuildableOriginError(s)
 	}
 	return append(argv, positional, scratch), nil

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 // Provision is what den plays INSIDE the build VM (spec §6). den owns the
@@ -127,6 +128,44 @@ func LoadStack(denHome, name string) (*Stack, error) {
 	resolveAgainst(dir, s.Kits)
 	resolveAgainst(dir, s.Provision.Includes)
 	resolveAgainst(dir, s.Provision.Steps)
+
+	// `image:` is checked UNCONDITIONALLY, ahead of the origin switch below —
+	// which concerns only a stack den would BUILD. Emptiness here travels
+	// further than any origin mistake, in three directions at once:
+	//
+	//   - a BUILDABLE stack builds in full, then `sbx template save <n>-build ""`
+	//     runs and den announces success. The next `den <nest>` answers
+	//     "image  is not built — run `den build devx`" — note the doubled space
+	//     where the image goes — which is what the user just did, successfully.
+	//     A closed loop whose two messages are individually exact: the precise
+	//     failure class the 2026-08-03 amendment of spec §6 exists to leave
+	//     nowhere to exist. den owning `template save` fixes the NAME; only this
+	//     fixes the name being empty.
+	//   - a stack used as a `parent:` hands its CHILD an empty ParentImage,
+	//     which build.CreateArgv reads as "root stack" and refuses with "no
+	//     origin — declare `base:` or `parent:`" naming the CHILD's stack.yaml.
+	//     That file already declares `parent:`: wrong file, and a remedy the
+	//     user has already applied. Worse, it fires in the whole-chain
+	//     pre-flight, so one stack missing `image:` refuses the entire
+	//     `den build`.
+	//   - a PULLABLE stack does reach sbx.CreateArgv's own empty-image guard,
+	//     but only at the spawn's `create` — after the worktrees and the agent
+	//     profile exist. Refusing at LOAD time is the ordering internal/spawn
+	//     states at length: everything rejectable from config alone is rejected
+	//     before the first side effect. That guard stays where it is; it becomes
+	//     the boundary guard its own doc says it is, rather than the only thing
+	//     between the user and a late, half-materialized refusal.
+	//
+	// TrimSpace and not `== ""`: sbx.CreateArgv guards the same question the
+	// same way, and two guards on one question must not disagree over
+	// `image: "  "`.
+	if strings.TrimSpace(s.Image) == "" {
+		return nil, fmt.Errorf(
+			"stack %q: no `image:` in %s — den has no reference to save the built image under, "+
+				"nor to spawn from. Declare `image: <name>:<tag>`; den saves a build under that "+
+				"exact string, and `den <nest>` looks for it there",
+			name, path)
+	}
 
 	// Checked only for a stack den would actually BUILD. A pullable stack
 	// declares no origin by design, and demanding one of it would refuse the

@@ -146,9 +146,21 @@ func Plan(ctx context.Context, chain []*config.Stack, target string, force bool,
 // user NAMED, and Execute's pre-flight guard — because they answer the same
 // fault, and the two copies of the previous version had already started to
 // drift apart on a verb.
+//
+// The last clause is the WHOLE backward-compatibility story, in a dozen words.
+// A user whose `~/.den` predates this change has a `stacks/<n>/build.sh` sitting
+// right there, and every message den can produce is otherwise individually
+// correct while never mentioning that the file is no longer read: `den build`
+// skips the stack ("no `provision.steps`"), `den build <stack>` lands here, and
+// `den <nest>` silently stops warning about the missing image. Three true
+// answers, none naming the cause — the same closed loop, one level up. Naming
+// the dead file here is what breaks it, and this is the message the user reaches
+// by asking for the build explicitly.
 func notBuildableError(s *config.Stack) error {
 	return fmt.Errorf(
 		"stack %q: nothing to build — declare `provision.steps` in %s "+
-			"(den runs each entry in the build VM, in order, and saves the result as %s)",
-		s.Name, filepath.Join(s.Dir, "stack.yaml"), s.Image)
+			"(den runs each entry in the build VM, in order, and saves the result as %s). "+
+			"A `stacks/%s/build.sh` is no longer run: den owns the sequence now, and a stack "+
+			"declares what to run instead of how to run it",
+		s.Name, filepath.Join(s.Dir, "stack.yaml"), s.Image, s.Name)
 }

@@ -41,11 +41,11 @@ func (f *fakeImages) Has(_ context.Context, image string) (bool, error) {
 //	      ← gamma ← delta
 //	zeta
 var buildableFixture = map[string]string{
-	"alpha": "image: alpha:v1\nbase: claude\nprovision:\n  steps: [./build.sh]\n",
-	"beta":  "image: beta:v1\nparent: alpha\nprovision:\n  steps: [./build.sh]\n",
-	"gamma": "image: gamma:v1\nparent: alpha\nprovision:\n  steps: [./build.sh]\n",
-	"delta": "image: delta:v1\nparent: gamma\nprovision:\n  steps: [./build.sh]\n",
-	"zeta":  "image: zeta:v1\nbase: claude\nprovision:\n  steps: [./build.sh]\n",
+	"alpha": "image: alpha:v1\nbase: claude\nprovision:\n  steps: [./provision/setup.sh]\n",
+	"beta":  "image: beta:v1\nparent: alpha\nprovision:\n  steps: [./provision/setup.sh]\n",
+	"gamma": "image: gamma:v1\nparent: alpha\nprovision:\n  steps: [./provision/setup.sh]\n",
+	"delta": "image: delta:v1\nparent: gamma\nprovision:\n  steps: [./provision/setup.sh]\n",
+	"zeta":  "image: zeta:v1\nbase: claude\nprovision:\n  steps: [./provision/setup.sh]\n",
 }
 
 // plan is the whole `den build [target]` pipeline, minus the execution: load,
@@ -235,15 +235,25 @@ func TestSbxImagesRemembersAFailure(t *testing.T) {
 	}
 }
 
-// A stack with no `image:` is simply built: nothing can report an empty
-// reference as present, so there is nothing to arbitrate and no special case
-// to write.
-func TestPlanBuildsAStackWithoutAnImage(t *testing.T) {
+// The complement of TestPlanSkipsAnAncestorWhoseImageIsBuilt: an ancestor
+// whose image is NOT in the inventory is built, ahead of the target that
+// derives from it.
+//
+// This test used to read "a stack with no `image:` is simply built — nothing
+// can report an empty reference as present, so there is nothing to arbitrate
+// and no special case to write", over a `base` fixture declaring no `image:`.
+// True of Plan in isolation, false end-to-end: the empty reference then reached
+// `sbx template save <n>-build ""` and, as a `parent:`, refused the CHILD over
+// the child's own file. config.LoadStack now refuses an empty `image:`
+// outright, so the shape that sentence described can no longer be loaded — and
+// the assertion underneath it, which never depended on the emptiness, keeps its
+// job under a name that says what it proves.
+func TestPlanBuildsAnAncestorWhoseImageIsMissing(t *testing.T) {
 	files := map[string]string{
-		"base":  "base: claude\nprovision:\n  steps: [./build.sh]\n",
-		"child": "image: child:v1\nparent: base\nprovision:\n  steps: [./build.sh]\n",
+		"base":  "image: base:v1\nbase: claude\nprovision:\n  steps: [./provision/base.sh]\n",
+		"child": "image: child:v1\nparent: base\nprovision:\n  steps: [./provision/child.sh]\n",
 	}
-	images := &fakeImages{}
+	images := &fakeImages{} // an empty inventory: neither image is built
 	steps := plan(t, files, "child", false, images)
 	if got := strings.Join(built(steps), ","); got != "base,child" {
 		t.Errorf("built = %v, want base,child", built(steps))
@@ -296,10 +306,10 @@ func TestPlanRefusesANamedStackItCannotBuild(t *testing.T) {
 // SHARING A CHAIN with buildable ones.
 func TestPlanSkipsANotBuildableStackAmongBuildableSiblings(t *testing.T) {
 	files := map[string]string{
-		"alpha": "image: alpha:v1\nbase: claude\nprovision:\n  steps: [./build.sh]\n",
-		"beta":  "image: beta:v1\nparent: alpha\nprovision:\n  steps: [./build.sh]\n",
-		"gamma": "image: gamma:v1\nparent: alpha\nprovision:\n  steps: [./build.sh]\n",
-		"delta": "image: delta:v1\nparent: gamma\nprovision:\n  steps: [./build.sh]\n",
+		"alpha": "image: alpha:v1\nbase: claude\nprovision:\n  steps: [./provision/setup.sh]\n",
+		"beta":  "image: beta:v1\nparent: alpha\nprovision:\n  steps: [./provision/setup.sh]\n",
+		"gamma": "image: gamma:v1\nparent: alpha\nprovision:\n  steps: [./provision/setup.sh]\n",
+		"delta": "image: delta:v1\nparent: gamma\nprovision:\n  steps: [./provision/setup.sh]\n",
 		"zeta":  "image: zeta:v1\n", // no provision.steps: declared, not buildable
 	}
 	steps := plan(t, files, "", false, &fakeImages{})
@@ -325,8 +335,8 @@ func TestPlanSkipsANotBuildableStackAmongBuildableSiblings(t *testing.T) {
 func TestPlanSkipsANotBuildableAncestor(t *testing.T) {
 	files := map[string]string{
 		"alpha": "image: alpha:v1\n", // no provision.steps: declared, not buildable
-		"gamma": "image: gamma:v1\nparent: alpha\nprovision:\n  steps: [./build.sh]\n",
-		"delta": "image: delta:v1\nparent: gamma\nprovision:\n  steps: [./build.sh]\n",
+		"gamma": "image: gamma:v1\nparent: alpha\nprovision:\n  steps: [./provision/setup.sh]\n",
+		"delta": "image: delta:v1\nparent: gamma\nprovision:\n  steps: [./provision/setup.sh]\n",
 	}
 	steps := plan(t, files, "delta", false, &fakeImages{})
 

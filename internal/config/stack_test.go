@@ -109,15 +109,80 @@ func TestLoadStackRejectsAnUnknownKey(t *testing.T) {
 	}
 }
 
-func TestLoadStackEmptyFile(t *testing.T) {
+// An empty stack.yaml USED to load: name from the directory, everything else
+// zero. It no longer does, and the change is deliberate — a stack with no
+// `image:` has no reference to build into or spawn from, whichever way it is
+// used (see LoadStack's own comment for the three directions).
+//
+// What this test pins is the SHAPE of that refusal, which is the part that
+// matters: it is a named load error citing the file, not a crash and not a
+// silently healthy stack. LoadStacks then routes it to Broken, so an empty
+// draft directory still does not sink a den full of working stacks — see
+// TestLoadStacksABrokenStackDoesNotHideTheHealthyOnes.
+func TestLoadStackRefusesAnEmptyFile(t *testing.T) {
 	denHome := t.TempDir()
 	writeStack(t, denHome, "devx", "")
-	s, err := LoadStack(denHome, "devx")
-	if err != nil {
-		t.Fatalf("an empty stack.yaml must not be a load error: %v", err)
+	_, err := LoadStack(denHome, "devx")
+	if err == nil {
+		t.Fatal("LoadStack accepted a stack.yaml declaring nothing at all")
 	}
-	if s.Name != "devx" {
-		t.Errorf("Name = %q, want %q derived from the directory", s.Name, "devx")
+	for _, want := range []string{`"devx"`, "image:", filepath.Join("stacks", "devx", "stack.yaml")} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q — it must name the fault and the file", err, want)
+		}
+	}
+}
+
+// THE closed diagnostic loop this whole branch exists to eliminate, caught one
+// stage earlier than the loop itself: a BUILDABLE stack with no `image:` used
+// to build in full, run `sbx template save <n>-build ""`, and report success —
+// after which `den <nest>` demanded the `den build` that had just succeeded.
+// den owning `template save` makes the name correct by construction; only this
+// refusal makes it non-empty.
+func TestLoadStackRefusesABuildableStackWithNoImage(t *testing.T) {
+	home := t.TempDir()
+	writeStack(t, home, "devx", "base: claude\nprovision:\n  steps: [./provision/go.sh]\n")
+	_, err := LoadStack(home, "devx")
+	if err == nil {
+		t.Fatal("LoadStack accepted a buildable stack with no image: to save into")
+	}
+	for _, want := range []string{`"devx"`, "image:", filepath.Join("stacks", "devx", "stack.yaml")} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// UNCONDITIONAL, and this is the case that decides it: gating the check on
+// Buildable() — the shape the two sibling refusals below take — would let a
+// PULLABLE stack with no `image:` through. It then hands any child declaring
+// `parent:` an empty ParentImage, which build.CreateArgv reads as "root stack"
+// and refuses with "no origin — declare `base:` or `parent:`" naming the
+// CHILD's stack.yaml. That file already declares `parent:`: the wrong file, and
+// a remedy the user has already applied. Verified against build.CreateArgv on
+// 2026-08-03 before choosing the unconditional form.
+func TestLoadStackRefusesAPullableStackWithNoImage(t *testing.T) {
+	home := t.TempDir()
+	writeStack(t, home, "base", "kit: ./kit\n") // no provision.steps: not buildable
+	_, err := LoadStack(home, "base")
+	if err == nil {
+		t.Fatal("LoadStack accepted a pullable stack with no image: — a `parent:` of it would " +
+			"then be refused over ITS own file")
+	}
+	if !strings.Contains(err.Error(), "image:") {
+		t.Errorf("error %q does not name the missing key", err)
+	}
+}
+
+// Whitespace is not a reference. sbx.CreateArgv guards the same question with
+// the same TrimSpace, and two guards on one question must not disagree: an
+// `image: "  "` that LoadStack let through would reach `sbx template save` as
+// a blank argument.
+func TestLoadStackRefusesAWhitespaceOnlyImage(t *testing.T) {
+	home := t.TempDir()
+	writeStack(t, home, "devx", "image: \"   \"\nbase: claude\nprovision:\n  steps: [./go.sh]\n")
+	if _, err := LoadStack(home, "devx"); err == nil {
+		t.Fatal("LoadStack accepted `image: \"   \"` as a reference")
 	}
 }
 
