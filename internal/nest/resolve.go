@@ -25,8 +25,9 @@ type Options struct {
 // That this is useful INSIDE the VM is an unverified HYPOTHESIS — spec §14.1
 // A11: that sbx mounts each workspace at the same absolute path in the VM as
 // on the host. Project convention: anything about sbx's actual behavior is a
-// hypothesis to document, never an assertion. It cannot be settled here (sbx
-// is not installed on this machine).
+// hypothesis to document, never an assertion. Three real smokes have run
+// against sbx since (the last on 2026-08-03, v0.35.0) and none aimed at this
+// surface: A11 is open for want of a measurement, not for want of a binary.
 //
 // If it is false, CLAUDE_CONFIG_DIR points nowhere inside the VM and the
 // agent starts from scratch on every spawn, silently — see A11 for what would
