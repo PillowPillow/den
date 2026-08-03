@@ -112,6 +112,11 @@ func TestBuildForcePropagatesToTheAncestors(t *testing.T) {
 	home := buildDenHome(t)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": noPriorSandboxes,
+		// Deliberately AVAILABLE BUT UNREAD: --force takes the
+		// `force || s.Name == target` branch in Plan before `images.Has` is
+		// ever called, so this response proves --force ignores the inventory
+		// even when it says the ancestors are already built — not merely that
+		// den never asked in the first place.
 		"template ls --json": {Output: []byte(
 			`{"images":[{"repository":"docker.io/library/base","tag":"v1"},
 			            {"repository":"docker.io/library/mid","tag":"v1"}]}`)},
