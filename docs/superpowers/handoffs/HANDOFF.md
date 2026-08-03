@@ -155,9 +155,10 @@ Deux avertissements qui coûtent cher si on les oublie :
 n°3 a tourné sur la machine de l'utilisateur contre `sbx` v0.35.0 : `sbx stop` et
 `sbx template save <sandbox> <image>` ont répondu, leur argv est bien celui qu'`execute.go` envoie,
 la référence nue s'apparie des deux côtés (la boucle ouverte de #8 est fermée), la chaîne parent et
-`--force` reconstruisent ce qu'il faut, et les quatre chemins d'échec — step en échec, `^C` en plein
-step, `S-build` préexistant, streaming live — se comportent comme le §6 les décrit. Relevé versé au
-§14.0 sous « Les commandes relevées le 2026-08-03 ».
+`--force` reconstruisent ce qu'il faut, `den build` sans argument fan-oute sur toutes les stacks
+déclarées en ordre parent et **s'arrête au premier échec**, et les chemins d'échec — `exit 1`
+délibéré au step 2 sur 3, `^C` en plein step, `S-build` préexistant, streaming live — se comportent
+comme le §6 les décrit. Relevé versé au §14.0 sous « Les commandes relevées le 2026-08-03 ».
 
 Deux choses que ce smoke a laissées ouvertes, et qui ne bloquent pas le tag :
 

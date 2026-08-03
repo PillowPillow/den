@@ -1015,9 +1015,10 @@ sbx template save SANDBOX TAG [-o/--output FICHIER]
      est un jeu de calques orphelins par reconstruction, que `sbx template ls` ne montre pas et que
      den ne se propose pas de réclamer.
 
-sbx policy check network TARGET   — correction d'argv
-  ⚠️ TARGET est OBLIGATOIRE : sans lui, « ERROR: accepts 1 arg(s), received 0 ». Le relevé du
-     2026-07-28 plus haut le donne entre crochets par sa position, pas par son caractère optionnel.
+sbx policy check network TARGET
+  TARGET est OBLIGATOIRE : sans lui, « ERROR: accepts 1 arg(s), received 0 ». Le relevé du
+  2026-07-28 plus haut l'écrivait déjà HORS crochets — il était juste, ceci ne le corrige pas, ça
+  mesure le message exact du refus.
 ```
 
 **Schéma de kit réel** (relevé sur `sbx-devbox/lib/*/spec.yaml`, pas sur la documentation) :
