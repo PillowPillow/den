@@ -232,7 +232,7 @@ func TestExecuteNamesTheFailingStepWithoutInliningThePayload(t *testing.T) {
 // The spec's own example names a RELATIVE path (./provision/gh.sh); config
 // resolves provision.steps to an ABSOLUTE path at load time, so den emits and
 // this test asserts an absolute one instead. That divergence is left open —
-// spec-vs-shipped arbitration, tracked in a follow-up issue — and what this
+// spec-vs-shipped arbitration, tracked in issue #30 — and what this
 // test actually pins down is the FRAME around it: `stack %q: step i/n <path>
 // failed: <cause>`, no argv, and the cause reaching Detail() through the Err
 // fallback rather than Stderr.
