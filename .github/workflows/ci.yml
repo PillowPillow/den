@@ -1,0 +1,22 @@
+# The same three gates a local dev runs (make lint / typecheck / test), on every
+# push and PR. The suite is hermetic by construction — no socket, no process, no
+# real sbx — so a bare ubuntu runner with a Go toolchain is enough; anything
+# more (services, sbx install) would contradict the repo's own test conventions.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make lint
+      - run: make typecheck
+      - run: make test

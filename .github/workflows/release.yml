@@ -1,0 +1,44 @@
+# Pushing a v* tag is the release trigger. The test job re-runs the same gates
+# as ci.yml on the tagged commit — a tag can land on a commit that never went
+# through a PR, and goreleaser must not ship what the suite has not vouched for.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make lint
+      - run: make typecheck
+      - run: make test
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # goreleaser derives the changelog from git history and refuses a
+          # shallow clone; fetch-depth 0 is its documented requirement.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
