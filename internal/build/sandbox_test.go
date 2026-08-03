@@ -52,8 +52,9 @@ func TestCreateArgvCarriesNoSpawnMachinery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateArgv: %v", err)
 	}
-	if slices.Contains(got, "--kit") {
-		t.Errorf("argv carries a --kit: %v", got)
+	want := []string{"create", "--name", "devx-build", "claude", "/scratch/devx"}
+	if !slices.Equal(got, want) {
+		t.Errorf("argv =\n  %v\nwant\n  %v", got, want)
 	}
 }
 
