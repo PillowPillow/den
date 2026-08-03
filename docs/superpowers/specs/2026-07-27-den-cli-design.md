@@ -225,6 +225,31 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
 - Chaque nœud lance son `stacks/<n>/build.sh` (inchangé). `--force` reconstruit aussi les ancêtres.
   `versions.lock` tenu à jour par les `build.sh`.
 
+**Ce que l'implémentation (#8) fixe en plus, et pourquoi** :
+
+- **La cible est toujours reconstruite.** L'utilisateur l'a nommée ; seuls ses ancêtres sont un
+  moyen. Corollaire : l'inventaire n'est **jamais** interrogé sur l'image de la cible.
+- **`den build` (tout) et `--force` ne lisent aucun inventaire.** Ils reconstruisent par définition,
+  donc ils ne peuvent pas être mis en échec par un `sbx template ls` cassé. Seule la forme qui
+  arbitre réellement paie l'appel — `SbxImages` le lit **au plus une fois** par plan.
+- **Un inventaire illisible est un refus, pas un fail-open** (contrairement au contrôle d'image du
+  spawn, §14.1, qui n'améliore qu'un message) : sauter un build non justifié produit exactement le
+  403 que la commande existe pour éviter, et construire quand même dépense des minutes non
+  demandées. Le message nomme `den build <cible> --force`.
+- **Ordre déterministe** : racines triées par nom, ancêtres émis avant leurs descendants. Un `parent`
+  étant unique, il ne reste aucune égalité sous les racines — d'où le golden
+  `internal/build/testdata/order-all.golden`.
+- **Appariement de l'image** : `sbx.NormalizeImageRef` qualifie des deux côtés avant comparaison —
+  `devx:v1` ↔ `docker.io/library/devx` + `v1`, `library/devx` est un *namespace*, `ghcr.io/…` et
+  `localhost[:port]/…` sont des *registres*, un `:` avant le dernier `/` est un port et non un tag,
+  et un tag vide (`devx:`) n'est pas complété en `latest` (il ne doit apparier aucune image).
+- **Tous les `build.sh` sont contrôlés avant que le premier ne tourne.** Bâtir quatre minutes
+  d'image de base pour découvrir ensuite que la cible n'a pas de script, c'est dépenser ce temps
+  pour atteindre un refus immédiat. Une étape **sautée** n'exige aucun script : elle ne sera pas
+  lancée.
+- **Une stack cassée ne coule pas le build** (doctrine `config.LoadStacks`) : nommée sur stderr, non
+  construite. Elle n'est un refus que si elle est la cible ou un ancêtre de la cible.
+
 ---
 
 ## 7. Policy réseau & settle-loop (douleur #1)
@@ -482,7 +507,7 @@ nest. Cache `~/.den/cache/` reconstructible, jamais source de vérité.
 
 | Situation | Comportement |
 |---|---|
-| Image stack absente | Stop → « lance `den build <stack>` » |
+| Image stack absente | Stop → « lance `den build <stack>` ». Lu sur `sbx template ls --json` **avant** `sbx create`, et **seulement** si la stack a un `build.sh` (sinon den n'a pas de remède à proposer). Un inventaire en échec est fail-open : `sbx` refuse de lui-même |
 | Chemin repo introuvable | Stop **avant** tout create |
 | Worktree `<wt>` déjà pris par une autre branche | Stop → propose `--attach-worktree` ou autre nom |
 | Policy non settled dans le timeout | **Fail-closed**, n'attache pas, liste les hôtes bloqués |
@@ -652,7 +677,10 @@ sbx policy check network [--sandbox SANDBOX] [--json] [--verbose] TARGET
 sbx rm --force NAME
 ```
 
-### Les commandes relevées le 2026-07-31, non utilisées par den v1
+### Les commandes relevées le 2026-07-31
+
+`sbx template ls --json` **est utilisée par den v1** depuis #8 (`den build`, et le contrôle d'image
+du spawn au §11). Les autres ci-dessous ne le sont pas.
 
 ```
 sbx template {ls,save,rm,load}
@@ -662,7 +690,9 @@ sbx template {ls,save,rm,load}
         "flavor":"claude-code-docker", "created_at":"2026-07-27T06:44:57Z", "size":6477492753 }
   ⚠️ `repository` et `tag` sont SÉPARÉS, là où une stack écrit `image: docker.io/library/devx:v1`
      d'un seul tenant, et rien n'oblige à qualifier — `devx:v1` doit s'apparier à
-     `docker.io/library/devx` + `v1`. C'est la seule vraie question de design restante de #8.
+     `docker.io/library/devx` + `v1`. C'était la seule vraie question de design restante de #8 :
+     tranchée par `sbx.NormalizeImageRef`, qui qualifie les DEUX côtés avant comparaison (règles et
+     cas limites au §6).
 
 sbx policy {allow,deny,init,inspect,log,ls,profile,reset}   (en plus de `check`)
   sbx policy ls [--wide]
@@ -949,3 +979,17 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
   Les **deux critiques de l'enveloppe de den** ci-dessus, elles, sont confirmées contre un binaire
   réel : le message ne dit pas quoi faire, et il incruste l'argv complet de `sbx create` avant d'en
   venir à la cause.
+
+  **FERMÉE par #8** (`internal/spawn/spawn.go`, `checkStackImage`) : den lit
+  `sbx template ls --json` **avant** `sbx create` et refuse en nommant le remède du §11 — « lance
+  `den build <stack>` ». Le contrôle est placé à l'étape 2ter de la séquence, ce qui a fait
+  **remonter la lecture `sbx ls --json`** (le verdict créer-ou-attacher) au-dessus des worktrees :
+  refuser plus bas aurait laissé un worktree git par dépôt derrière soi. Deux silences délibérés,
+  chacun évitant un refus que den ne saurait justifier :
+
+  - une stack **sans `build.sh`** n'est pas contrôlée du tout. Son `image:` peut nommer une image de
+    registre que `sbx` sait tirer, et « lance `den build` » sur une stack sans script n'est pas un
+    conseil mais une deuxième erreur ;
+  - un `sbx template ls` **en échec** est fail-open. Le contrôle améliore un message, il ne garde
+    rien : `sbx` refuse toujours le create de lui-même si l'image manque vraiment, donc un
+    diagnostic en panne ne doit pas interdire un spawn.

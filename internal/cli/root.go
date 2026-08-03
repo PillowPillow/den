@@ -7,6 +7,7 @@ import (
 	"runtime"
 
 	"github.com/PillowPillow/den/internal/agent"
+	"github.com/PillowPillow/den/internal/build"
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/ports"
@@ -28,6 +29,12 @@ type Deps struct {
 	Sbx    sbx.Runner
 	Git    worktree.Git
 	Policy policy.Options
+	// Build runs a stack's build.sh for `den build`. Injected for the sharpest
+	// reason in this struct after Scanner: the real one (build.ExecScript)
+	// EXECUTES A USER SCRIPT, so a test tree that inherited it would run
+	// arbitrary shell on the machine running the suite. Issue #8 asks for it
+	// explicitly — no test may launch a real script.
+	Build build.Script
 	// Freshness is the patience of the §9.1 agent-freshness gate, injected for
 	// the reason Policy is: its clock is real (time.Sleep, time.Now), so a test
 	// tree that inherited it would stand and wait for a dispatcher no fake will
@@ -66,6 +73,7 @@ func SystemDeps() Deps {
 		Sbx:       sbx.NewExec(""),
 		Git:       worktree.NewGit(),
 		Policy:    policy.DefaultOptions(),
+		Build:     build.ExecScript{},
 		Freshness: agent.DefaultGateOptions(),
 		Scanner:   ports.ListenScanner{},
 		Open:      ports.OpenURL,
@@ -123,6 +131,10 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// where a test can replace the real ones — which bind host sockets and spawn
 	// a browser — with doubles.
 	root.AddCommand(newPortsCmd(&denHome, deps.Sbx, deps.Scanner, deps.Open))
+	// `den build` reads the same single sbx (to learn which images exist) and
+	// gets its script runner from Deps, where a test replaces the real one —
+	// which executes a user's build.sh — with a recorder.
+	root.AddCommand(newBuildCmd(&denHome, deps.Sbx, deps.Build))
 
 	// spawn.Deps is ASSEMBLED here from the very fields newLsCmd just got:
 	// deps.Sbx is the single source. Out is left unset, configureSpawn

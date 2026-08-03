@@ -33,6 +33,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den sh <name>` | opens a shell in an existing sandbox |
 | `den ports <name>` | publishes the nest's declared ports into that sandbox and prints where they land on the host |
 | `den rm <name>` | destroys a sandbox and cleans up the worktrees den created (the agent profile persists) |
+| `den build [<stack>]` | builds stack images in `parent` order, by running each stack's own `build.sh` |
 | `den nest ls` | lists the declared nests |
 | `den nest show <n>` | shows a fully resolved nest (stack, agent, egress, repos) |
 | `den doctor` | diagnoses the configuration and the environment |
@@ -145,7 +146,33 @@ for the verdict (tens of seconds on a fresh spawn) because you are about to run 
 `--detach` it reads once and moves on with a note, because nobody is at a prompt and the next attach
 catches it.
 
-Not shipped yet: `den build` (the image DAG). See `docs/superpowers/plans/`.
+## Building images
+
+A stack names an image and, optionally, a `parent:`. That is the whole DAG.
+
+```
+den build                 # every declared stack, in dependency order
+den build dgdevx          # devx first if its image is missing, then dgdevx
+den build dgdevx --force  # rebuild devx too
+```
+
+- Each stack is built by its own `stacks/<name>/build.sh`, which den runs **unchanged**, from the
+  stack directory, with your environment. den orders the builds; it does not rewrite them, and
+  `versions.lock` stays whatever the scripts maintain.
+- The **target** is always rebuilt — you named it. Only its ancestors are skipped when their image
+  is already there, and every skip is printed, with the `--force` that overrides it.
+- "Already there" is read from `sbx template ls --json`, which is also why `den build` (everything)
+  and `--force` never call it: those forms rebuild by definition.
+- A `parent:` cycle is refused with the whole cycle spelled out (`a → b → a`), a `parent:` that does
+  not exist names the file to fix, and every `build.sh` is checked to exist **before the first one
+  runs** — a four-minute base image should not be built to reach a refusal den could make instantly.
+
+`den <nest>` uses the same inventory: if the stack has a `build.sh` and its image was never built,
+den stops and tells you to run `den build <stack>`. Without that check the failure surfaces as
+sbx's own `403 Forbidden: pull failed for image "X"` — sbx treats an unknown template as a registry
+pull, so the message talks about authorization rather than about a missing build. A stack with no
+`build.sh` is left alone: its `image:` may well be one sbx can pull, and den has no build to
+suggest.
 
 ## Design
 
