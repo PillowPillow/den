@@ -150,6 +150,109 @@ func TestShRefusesASandboxThatIsNotRunning(t *testing.T) {
 	}
 }
 
+// shGateLog renders a dispatcher journal whose LAST run reports on den's own
+// mixin for this sandbox. `verdict` is the whole verdict line's leading token —
+// `ok` or `fail … exit=1` — because what agent.ParseKitLog reads is that token
+// and the path that follows it.
+//
+// The path carries the `002-` prefix sbx assigns, which agent.MixinName
+// deliberately does NOT match on: writing the realistic form here is what keeps
+// this fixture a sample of the measured journal rather than a restatement of
+// the parser.
+func shGateLog(sandbox, verdict string) []byte {
+	path := "/etc/durable-startup.d/002-startup-den-" + strings.ReplaceAll(sandbox, ".", "-") + "/000-cmd.sh"
+	return []byte("=== dispatcher run 2026-08-03T10:00:00Z ===\n" +
+		"> " + path + "\n" +
+		verdict + " " + path + "\n")
+}
+
+// shGateRead is the key of the ONE `sbx exec` agent.ReadFreshness makes.
+func shGateRead(sandbox string) string {
+	return "exec " + sandbox + " cat /var/log/sbx-kit-startup.log"
+}
+
+// #18's hole, entered through the other door. `den <nest>` holds the §9.1 gate
+// since PR #26 — it refuses a sandbox whose agent den KNOWS was not updated —
+// but `den sh` does not go through spawn.Spawn at all, and on the bench the
+// very same sandbox that `den <nest>` refused handed out a shell in silence.
+//
+// A guarantee held by one door out of two is more misleading than no guarantee:
+// §9.1 says "a sandbox never starts with a stale agent", and `den sh` on a
+// STOPPED sandbox starts one.
+func TestShRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+		shGateRead("api"): {Output: shGateLog("api", "fail")},
+	}}
+
+	_, err := executeCmdWithSbx(t, f, "sh", "api")
+	if err == nil {
+		t.Fatal("a failed §9.1 gate must not lead to a shell")
+	}
+	for _, want := range []string{"api", "§9.1", "/var/log/sbx-kit-startup.log"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must contain %q; got: %v", want, err)
+		}
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("a refused gate must attach nowhere; attaches: %v", f.Attaches)
+	}
+}
+
+// The other half: a gate that PASSED costs the user nothing — no line, and the
+// shell they asked for. Asserted together with the refusal above, because a
+// `den sh` that refused everything would satisfy that test alone.
+func TestShAttachesAndStaysSilentWhenTheFreshnessGatePassed(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+		shGateRead("api"): {Output: shGateLog("api", "ok")},
+	}}
+
+	stdout, err := executeCmdWithSbx(t, f, "sh", "api")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+		t.Errorf("a passing gate must not cost the shell; attaches: %v", f.Attaches)
+	}
+	if strings.Contains(stdout, "§9.1") {
+		t.Errorf("a passing gate is the ordinary outcome and says nothing; got: %q", stdout)
+	}
+}
+
+// The gate is read BEFORE the attach, not alongside it. Read after, its refusal
+// would arrive behind a shell that already owns the terminal — which is the
+// exact defect the ordering of warnEmptyAgentOnReentry already avoids.
+func TestShReadsTheFreshnessGateBeforeAttaching(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+		shGateRead("api"): {Output: shGateLog("api", "ok")},
+	}}
+
+	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	read, attach := -1, -1
+	for i, c := range f.Calls {
+		if strings.Join(c, " ") == shGateRead("api") {
+			read = i
+		}
+		if slices.Contains(c, "-it") {
+			attach = i
+		}
+	}
+	if read < 0 {
+		t.Fatalf("den sh must read the §9.1 journal; calls: %v", f.Calls)
+	}
+	if attach < 0 || read > attach {
+		t.Errorf("the journal must be read before the attach; read=%d attach=%d, calls: %v",
+			read, attach, f.Calls)
+	}
+}
+
 // runShWithAgent runs `den sh` through the REAL command tree — NewRootCmdWith,
 // not a hand-built sh command — with an injected sbx.Runner and SSH probe, on a
 // given den home.

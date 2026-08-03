@@ -598,7 +598,46 @@ func checkFreshness(ctx context.Context, d Deps, sandboxName string, detach bool
 	if err != nil {
 		return err
 	}
+	return reportFreshness(d.Out, sandboxName, verdict, pendingBecause(detach))
+}
 
+// CheckFreshnessOnReentry holds the §9.1 gate for a caller that re-enters an
+// EXISTING sandbox and configures no spawn — `den sh` (internal/cli/sh.go).
+//
+// It exists because §9.1's promise is about a sandbox starting, not about the
+// command that starts it, and den had been keeping that promise on one door out
+// of two. `den <nest>` refused a sandbox whose freshness command failed; the
+// same sandbox handed out a shell in silence through `den sh`, which does not
+// route through Spawn at all — measured on the bench after PR #26, issue #27.
+// A guarantee held by one door is worse than none: it teaches the user that den
+// checks, on a path where it did not.
+//
+// It READS rather than waits, for the reason ReadFreshness documents: this
+// caller re-enters a sandbox that is already up, so the journal already holds
+// whatever verdict exists, and standing at a prompt for one that has not
+// arrived would tax the ordinary re-entry to catch nothing. The case #27
+// measured — a gate proven failed — is precisely a journal that carries its
+// verdict already.
+//
+// The read is `sbx exec … cat`, which RESTARTS a stopped sandbox. That is not a
+// side effect here but the point: `den sh` on a stopped sandbox restarts it,
+// which is exactly the "a sandbox starts" §9.1 speaks about, and the caller has
+// already told the user so before reaching this.
+func CheckFreshnessOnReentry(ctx context.Context, r sbx.Runner, out io.Writer, sandboxName string) error {
+	verdict, err := agent.ReadFreshness(ctx, r, sandboxName)
+	if err != nil {
+		return err
+	}
+	return reportFreshness(out, sandboxName, verdict, reentryPending)
+}
+
+// reportFreshness turns a gate verdict into den's behaviour: what each verdict
+// costs the user, in one place, so the spawn door and the `den sh` door cannot
+// answer the same journal differently.
+//
+// pendingClause names why den stopped waiting — the one thing the two callers
+// genuinely differ on.
+func reportFreshness(out io.Writer, sandboxName string, verdict agent.GateVerdict, pendingClause string) error {
 	switch verdict.State {
 	case agent.GatePassed:
 		// Silent. The gate passing is the ordinary outcome, and announcing it
@@ -621,7 +660,7 @@ func checkFreshness(ctx context.Context, d Deps, sandboxName string, detach bool
 		// with den's environment (the SSH-agent warning), true of the host
 		// before this spawn existed. reportDrift and reportMissingGitDirs, the
 		// two other sandbox-level warnings, land here for the same reason.
-		fmt.Fprintf(d.Out,
+		fmt.Fprintf(out,
 			"warning: sandbox %s: %s — its agent is whatever the image carries, and den cannot say "+
 				"how old that is; `den rm %s` and relaunch to get the §9.1 gate\n",
 			sandboxName, verdict.Reason, sandboxName)
@@ -636,12 +675,12 @@ func checkFreshness(ctx context.Context, d Deps, sandboxName string, detach bool
 		// and teach the reader to skip the ones that mean something — including
 		// the refusal three lines above. Nothing is wrong here: den has no
 		// verdict yet, says so, and says when it will have one.
-		fmt.Fprintf(d.Out,
+		fmt.Fprintf(out,
 			"note: sandbox %s: the agent-freshness gate of spec §9.1 has not reported yet — "+
 				"den did not wait for it%s, so the agent may still be updating (or may have failed "+
 				"to). den re-reads the verdict on the next attach; the journal is "+
 				"`sbx exec %s cat %s`\n",
-			sandboxName, pendingBecause(detach), sandboxName, agent.KitLogPath)
+			sandboxName, pendingClause, sandboxName, agent.KitLogPath)
 	}
 	return nil
 }
@@ -656,6 +695,14 @@ func pendingBecause(detach bool) string {
 	}
 	return " beyond its budget"
 }
+
+// reentryPending is pendingBecause's third case, for the door that re-enters an
+// existing sandbox. It is a constant rather than a branch of pendingBecause
+// because nothing about it is a choice den made at that moment: a re-entry has
+// no budget to exceed and no `--detach` to honour, it simply takes the journal
+// as it stands.
+const reentryPending = " on re-entry, where the sandbox is already up and the journal already " +
+	"holds whatever verdict exists"
 
 // warnEmptySSHAgent warns, on stderr, when `ssh.mode: agent-forward` would
 // forward nothing usable: no socket at all, an SSH agent that holds no key

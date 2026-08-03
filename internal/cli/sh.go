@@ -13,10 +13,13 @@ import (
 
 // newShCmd opens a shell in an already live sandbox.
 //
-// What `den sh` DECIDES comes only from what `sbx ls --json` reports: the den
-// home is read for exactly one advisory purpose — ssh.mode, for the empty-agent
-// warning below — and every failure to read it is swallowed, so a broken ~/.den
-// still never costs the user their shell.
+// What `den sh` DECIDES comes from the SANDBOX and nothing else: `sbx ls --json`
+// for its status, and the kit dispatcher's own journal for the §9.1 freshness
+// gate. The den home is read for exactly one advisory purpose — ssh.mode, for
+// the empty-agent warning below — and every failure to read it is swallowed, so
+// a broken ~/.den still never costs the user their shell. A refused gate does
+// cost it, deliberately: that one is a fact about the sandbox being entered,
+// not about den's configuration.
 //
 // denHome is a POINTER for the reason newRmCmd's is: --den-home is a persistent
 // flag, and its value only exists once cobra has parsed it, after this
@@ -46,6 +49,21 @@ func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Resul
 				if b.IsStopped() {
 					fmt.Fprintf(cmd.OutOrStdout(),
 						"sandbox %s is stopped: it restarts on attach (its state is kept)\n", b.Name)
+				}
+				// The §9.1 gate, on the door spawn does not own. `den <nest>`
+				// refuses a sandbox whose agent den knows to be stale; this
+				// command reached the same sandbox and said nothing (issue #27).
+				// It runs AFTER the stopped-sandbox line above, which is what
+				// tells the user the read below will restart the VM, and BEFORE
+				// the attach, because a refusal behind a shell that owns the
+				// terminal is a refusal nobody reads.
+				//
+				// The verdict handling — refuse, warn, note — belongs to spawn:
+				// two doors answering the same journal differently is exactly
+				// the defect being closed.
+				if err := spawn.CheckFreshnessOnReentry(
+					cmd.Context(), runner, cmd.OutOrStdout(), b.Name); err != nil {
+					return err
 				}
 				// Before the attach, never after: once the shell has the terminal,
 				// a warning printed behind it is a line the user scrolls past on

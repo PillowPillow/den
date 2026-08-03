@@ -650,8 +650,20 @@ Quatre verdicts, et ce qu'ils coûtent :
   sur cette même sandbox (§11). Rien n'est perdu — le dispatcher **rejoue** au redémarrage suivant
   (mesuré, §14.0), donc la porte est réévaluée exactement quand la sandbox revient.
 
-**Portée connue et non couverte** : `den sh <sandbox>` n'interroge pas la porte — c'est une commande
-à part, qui ne passe pas par la séquence du §6. Le trou est mesuré et suivi (issue #27), pas ignoré.
+- **`den sh <sandbox>`** → il **lit une fois**, comme `--detach`, et pour la même raison inversée :
+  la sandbox est déjà debout, le journal porte donc déjà le verdict qui existe, et faire patienter
+  une ré-entrée ordinaire pour un verdict qui n'est pas arrivé la taxerait sans rien attraper. Un
+  verdict **échoué** refuse, exactement comme sur le chemin du §6.
+
+**La porte tient sur les DEUX chemins depuis l'issue #27.** Elle ne tenait d'abord que sur
+`den <nest>` : `den sh` est une commande à part, qui ne passe pas par la séquence du §6, et sur le
+banc la sandbox `gamma` dont la porte venait d'être prouvée fermée (`fail … exit=1`) refusait
+`den <nest> --agent broken` **et** donnait un shell en silence à `den sh gamma`. Une garantie tenue
+par une porte sur deux est plus trompeuse que pas de garantie du tout, d'autant que `den sh` sur une
+sandbox **arrêtée** la redémarre — c'est-à-dire exactement le « une sandbox démarre » dont parle le
+§9.1. L'arbitrage du verdict vit désormais dans **une seule fonction** (`spawn.reportFreshness`) :
+deux portes qui liraient le même journal et en tireraient des conclusions différentes seraient la
+même classe de défaut, reconstituée.
 
 ---
 
