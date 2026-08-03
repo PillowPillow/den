@@ -2375,11 +2375,13 @@ func TestSpawnDoesNotCheckTheImageOfAStackWithoutABuildScript(t *testing.T) {
 func TestSpawnDoesNotCheckADigestPinnedImage(t *testing.T) {
 	denHome, _ := denTest(t)
 	withBuildScript(t, denHome)
-	// The build.sh above arms the check; only the pin disarms it. Same stack as
-	// denTest writes, image apart, so the kit directories it created still hold.
+	// The provision.steps above arm the check; only the digest pin disarms it.
+	// Must include both provision: (to make the stack buildable) and the digest
+	// image: (to exercise the second silence), so the digest path is actually tested.
 	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
 		"image: devx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"+
-			"kits: [transverse]\nkit: devx-kit\n")
+			"base: claude\nkits: [transverse]\nkit: devx-kit\n"+
+			"provision:\n  steps: [./build.sh]\n")
 	f, d := fakeDeps()
 	answerTemplates(f, `{"images":[]}`)
 
