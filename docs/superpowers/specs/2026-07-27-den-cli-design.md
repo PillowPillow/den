@@ -252,17 +252,56 @@ Objectif : **URLs stables bookmarkables** en usage courant **et** anti-collision
 sandboxes tournent.
 
 - **Fenêtre déterministe par nest** : `base = 9000 + hash(nest.name) % 900 * 10` → **10 ports par
-  nest**, stable pour ce nom. Surchargeable via `ports.base`.
+  nest**, stable pour ce nom. Surchargeable via `ports.base`. La plage couverte est **9000–17990**
+  (900 blocs de 10) : la formule est juste, mais un lecteur qui en déduit « un port à quatre
+  chiffres » se trompe — `gamma` tombe sur 11340 (mesuré au smoke n°2).
 - **Offset par ordre de déclaration** : port déclaré *i* → `host = base + i`.
-- **Publication à la demande** : `den ports <nest>` calcule la fenêtre, **scanne** `127.0.0.1:base..base+9` ;
-  si libre → publie via `sbx ports --publish 127.0.0.1:H:C` (cas courant, URL canonique) ;
-  si occupée (2e instance) → **décale la fenêtre entière** au bloc de 10 suivant + **avertit**
-  (non-canonique, cette instance seulement). La 1re instance garde toujours l'URL canonique.
+- **L'argument est un nom de SANDBOX**, pas de nest : `den ports <sandbox>`, comme `den sh` et
+  `den rm`. Les ports sont publiés dans une VM vivante, et seul un nom de sandbox dit laquelle. La
+  **fenêtre**, elle, est semée par le **nest** auquel ce nom appartient (`sbx.SplitName`) : §8 promet
+  une URL bookmarkable *par nest*, et une fenêtre hachée depuis `api.feat12` donnerait à chaque
+  worktree sa propre base.
+- **Publication à la demande, et d'abord une LECTURE** : `den ports <sandbox>` lit ce que cette
+  sandbox **publie déjà** (champ `ports` de `sbx ls --json`, §14.0), puis :
+  - elle est déjà publiée sur une fenêtre du nest → **den la réutilise** et ne publie que ce qui
+    manque. Le bloc le plus bas gagne, donc une sandbox polluée revient d'elle-même sur sa fenêtre
+    canonique ;
+  - sinon → il **scanne** `127.0.0.1:base..base+9` ; si libre, il publie via
+    `sbx ports --publish 127.0.0.1:H:C` (cas courant, URL canonique) ; si occupée, il **décale la
+    fenêtre entière** au bloc de 10 suivant et **avertit** (non-canonique, cette instance
+    seulement).
+
+  **La lecture vient avant le scan, et ce n'est pas un détail d'implémentation.** Le scan lit
+  l'hôte, un port lié ne nomme personne, et la publication de l'exécution *précédente de den* est
+  exactement ce qui rendait le bloc canonique occupé : relire le tableau décalait la fenêtre à
+  chaque fois et empilait les publications (3 ports déclarés → 9 publications en 3 exécutions,
+  échec dur à la 11ᵉ), et une relance `--add` à l'identique échouait en `409 … already published`
+  après avoir lié une fenêtre de plus. `sbx ports --publish` **n'est pas idempotent** : republier
+  par-dessus n'est pas une option, il faut savoir ce qui est déjà là. Issues #15 et #22.
+- **La sandbox doit tourner.** Une sandbox **arrêtée** ne porte pas le champ `ports` du tout alors
+  que ses publications reviennent à la reprise, et `sbx ports --publish` n'y redémarre rien (là où
+  `sbx exec` le fait) : `den ports` **démarre** donc la sandbox arrêtée, l'annonce, et **relit**
+  avant de résoudre. Voir §11 pour la décision d'ensemble.
 - **Éphémères** (docker compose, ports non déclarés) : OS-assigned, affichés mais jamais « stables ».
-- **Sécurité — non négociable** : toujours `127.0.0.1`, **jamais `0.0.0.0`**. Un port `loopback_lock`
-  (CDP/Playwright, non authentifié) est **refusé** hors loopback même si forcé. « Accès depuis
+- **Sécurité — non négociable** : toujours `127.0.0.1`, **jamais `0.0.0.0`**. « Accès depuis
   l'extérieur » → **pas** de bind LAN ; `den` imprime un **tunnel SSH prêt-à-coller**
   (`ssh -L H:127.0.0.1:H you@hôte`), l'auth déléguée à SSH.
+
+  Sur `loopback_lock`, ce spec disait « **refusé** hors loopback même si forcé ». La v1 **n'offre
+  aucun moyen de forcer**, et c'est le texte qui est corrigé, pas le code (issue #19). Le refus
+  existe (`ports.Resolve`, derrière `Options.HostIP`), mais **aucun chemin CLI ne renseigne ce
+  champ** : la seule chose non-loopback qu'un utilisateur peut taper, `--add 0.0.0.0:H:C`, est
+  rejetée plus tôt par `ParseAdd`. La garde est donc un **contrôle de frontière sur une structure
+  exportée à champs publics**, délibérément inatteignable depuis la CLI — pas un oubli, et pas une
+  raison d'ajouter un drapeau qui élargirait la surface v1 pour satisfaire une phrase. Le marqueur
+  `[loopback-locked]` du tableau reste **informatif** : il dit ce que le nest a déclaré.
+- **Deux contrats réglés par #6, à ne pas reperdre** :
+  - un nest **sans `ports:`** ne place aucune fenêtre : ni en-tête `window:`, ni ligne `remote?`, ni
+    scan de l'hôte. Le tableau se rend quand même (les paires `--add` sont tout l'intérêt de la
+    commande sur un tel nest) ;
+  - `--add` a un **contrat d'abort honnête** : den publie une paire à la fois, donc un refus de
+    `sbx` en cours de route s'arrête là — ce qui était publié le reste, aucun tableau n'est rendu, et
+    l'erreur nomme le port. Un argv groupé n'aurait pas pu le nommer.
 
 **Affichage type :**
 ```
@@ -270,9 +309,13 @@ nest: web   sandbox: web.feat123   window: 9100-9109 (canonical)
   NAME  CONTAINER  URL
   vite  5173       http://127.0.0.1:9100   [opened]
   api   3000       http://127.0.0.1:9101
-  cdp   9223       ws://127.0.0.1:9102     [loopback-locked]
+  cdp   9223       http://127.0.0.1:9102   [loopback-locked]
   remote?  ssh -L 9100:127.0.0.1:9100 you@$(hostname)
 ```
+
+`http://` sur **toutes** les lignes, y compris CDP — ce spec écrivait `ws://` et c'est l'exemple qui
+avait tort. `ports.publish` ne déclare aucun protocole : den devinerait depuis le nom d'un port, et
+devinerait faux sur la ligne que l'utilisateur est le plus susceptible de coller.
 
 ---
 
@@ -317,6 +360,47 @@ du journal qui a rendu le bug de 2026-07-27 diagnosticable.
 comportement (nominal / binaire absent / échec permanent / échec transitoire puis succès) = **script
 testable hors VM**, exécuté sous `su` non-login pour reproduire le contexte réel. Un `den doctor`
 signale un agent périmé.
+
+### 9.2 Comment la porte est TENUE (et non seulement promise)
+
+Écrit après le smoke réel n°2 (issue #18) : jusque-là, **aucun code ne portait la promesse
+ci-dessus**. den attendait la policy réseau et rien du dispatcher de kits — il annonçait `ready` et
+sortait 0 environ **35 s avant** la fin de la commande de fraîcheur, et quand celle-ci **échouait**
+il ne le disait ni alors ni jamais, pas même à la ré-attache. L'agent n'avait jamais été mis à jour.
+
+La porte est observable parce que le journal du dispatcher est **lisible par machine**
+(`/var/log/sbx-kit-startup.log`, format relevé au §14.0). den y lit le verdict de **son propre
+mixin**, identifié par le nom de kit qu'il génère lui-même (`den-<sandbox>`, les `.` aplatis en
+`-`) — **une seule fonction** pour les deux usages, sans quoi la porte surveillerait un kit que
+personne ne génère.
+
+Quatre verdicts, et ce qu'ils coûtent :
+
+| verdict | ce que den fait |
+|---|---|
+| **passé** (`ok <chemin>`) | rien : c'est le cas ordinaire, et l'annoncer à chaque spawn enterrerait les lignes qui comptent |
+| **échoué** (`fail <chemin> exit=<n>`, ou un kit **antérieur** qui a fait avorter la passe) | **refuse**, sur les deux chemins, en portant la ligne du journal. Le §9.1 dit fail-closed ; c'est la même discipline que la settle-loop, qui refuse déjà d'attacher sur une policy non posée |
+| **pas encore rendu** | une `note:` — pas un `warning:` : sous `--detach` elle s'imprime sur presque chaque spawn, et un avertissement sur le chemin heureux apprend à sauter ceux qui comptent |
+| **absent** (passe complète sans jamais nommer le mixin de den) | un `warning:` : ce n'est pas un agent périmé mais une VM sans mixin den — ce à quoi ressemble une sandbox créée par un den plus ancien. Attendre n'y changerait rien |
+
+**Où den ATTEND — l'arbitrage.** Attendre coûte la différence entre un spawn de 7,6 s et un de
+~42 s (mesuré), donc l'endroit a été tranché, pas supposé :
+
+- **il attache un shell** → il **attend**, en l'annonçant. L'utilisateur est sur le point de lancer
+  l'agent : c'est à ça que sert la sandbox, et lui en donner un périmé est exactement l'échec que
+  le §9.1 existe pour empêcher ;
+- **`--detach`** → il **lit une fois** et continue. Personne n'est devant un prompt, l'appelant est
+  en général un script qui ne touchera pas à l'agent, et la prochaine attache rattrape. Un verdict
+  **déjà** rendu refuse quand même : la ré-attache est précisément un journal qui en porte un ;
+- **budget épuisé sans verdict** → une `note:`, jamais un refus : den a attendu ce qu'il promettait,
+  et un dispatcher encore au travail n'est pas une preuve d'agent périmé ;
+- **sandbox laissée arrêtée sous `--detach`** → porte **sautée**. Lire le journal est un `sbx exec`,
+  qui redémarre la VM : la réveiller pour l'inspecter contredirait la ligne que `--detach` imprime
+  sur cette même sandbox (§11). Rien n'est perdu — le dispatcher **rejoue** au redémarrage suivant
+  (mesuré, §14.0), donc la porte est réévaluée exactement quand la sandbox revient.
+
+**Portée connue et non couverte** : `den sh <sandbox>` n'interroge pas la porte — c'est une commande
+à part, qui ne passe pas par la séquence du §6. Le trou est mesuré et suivi (issue #27), pas ignoré.
 
 ---
 
@@ -403,8 +487,29 @@ nest. Cache `~/.den/cache/` reconstructible, jamais source de vérité.
 | Worktree `<wt>` déjà pris par une autre branche | Stop → propose `--attach-worktree` ou autre nom |
 | Policy non settled dans le timeout | **Fail-closed**, n'attache pas, liste les hôtes bloqués |
 | `sbx` absent / pas loggé | Message doctor-style (`den doctor`) |
-| Mise à jour de l'agent impossible au boot | **Fail-closed** après 3 tentatives (§9.1) : le kit sort non-zéro. Layeré en dernier → aucun autre kit lésé. Diagnostic dans `/var/log/sbx-kit-startup.log` |
+| Mise à jour de l'agent impossible au boot | **Fail-closed** après 3 tentatives (§9.1) : le kit sort non-zéro. Layeré en dernier → aucun autre kit lésé. Diagnostic dans `/var/log/sbx-kit-startup.log` — que **den lit** : il **refuse** d'ouvrir la sandbox et cite la ligne (§9.2) |
 | Nom de sandbox déjà vivant | **Spawn-or-attach** (pas une erreur) : attache |
+| Sandbox **arrêtée**, et l'opération exige une VM vivante (`den ports`) | den la **démarre**, l'annonce sur stderr, puis **relit** son état. Voir la décision ci-dessous |
+| Sandbox **arrêtée** sous `den <nest> --detach` | den ne démarre rien et **ne dit pas `ready`** : il dit qu'elle reste arrêtée, que son état est préservé, et quelles commandes la relancent |
+
+**Une décision, deux situations** (issues #16 et #17, écrite ici parce qu'elle gouverne deux
+commandes) :
+
+> den réveille une sandbox **seulement si l'opération elle-même exige une VM vivante**, et il
+> **n'annonce jamais un état qu'il n'a pas vérifié**.
+
+Le §2 (« den refuse plutôt que de normaliser en silence ») porte sur l'**intention** de
+l'utilisateur — une clé mal tapée, une contradiction de drapeaux. Publier un port n'a rien
+d'ambigu : ça exige un endpoint. Un refus nommerait bien l'état et le remède, mais la seule suite
+possible serait de lancer une commande qui démarre la VM — celle que den refusait de faire. F2 avait
+déjà tranché dans ce sens pour `den sh` et `den <nest>`, où `sbx exec` redémarre de façon
+transparente ; `sbx ports` ne partage pas ce comportement, d'où un `500 Internal Server Error: … no
+container endpoint with IP address found` qui ne nommait ni la cause ni le remède.
+
+Le même principe appliqué à `--detach` donne le geste **inverse** : la vérité qu'achèterait un
+réveil vivrait ~45 s (sbx range les sandboxes inactives à cette vitesse, mesuré), et le contrat de
+`--detach` est précisément de **ne pas** entrer dans la VM. L'opération n'exige pas de VM vivante ;
+c'est la phrase qui doit être vraie.
 
 ---
 
@@ -472,7 +577,31 @@ internal/
 Sondée sur la machine de l'utilisateur. **C'est le seul relevé de référence du dépôt** : ce qui
 n'y figure pas n'est pas attesté, et ne doit être ni suggéré à l'utilisateur dans un message, ni
 tenu pour acquis dans le code. Étendre cette liste demande un **relevé**, pas une intuition.
-(Recopié ici depuis le plan 2, qui n'est pas un fichier suivi — la trace, elle, doit l'être.)
+
+**Deux dates.** Le relevé initial est du 2026-07-28 ; le **smoke réel n°2 du 2026-07-31** l'a
+complété et en a corrigé une affirmation. Chaque entrée ci-dessous porte sa date quand elle n'est
+pas de la première.
+
+### La liste des commandes (2026-07-31, `sbx --help` sur v0.35.0)
+
+```
+completion  cp  create  daemon  diagnose  exec  help  kit  login  logout  ls  policy
+ports  reset  rm  run  secret  setup  ssh  stop  template  tui  version
+```
+
+⚠️ **Correction du relevé du 2026-07-28**, qui affirmait « `sbx-devbox` ajoute `stop`, `template
+save`, `secret`, `inspect`, `login` » : **`stop`, `secret`, `login` et `template` sont dans le `sbx`
+de BASE**, pas ajoutés par `sbx-devbox`. Et `inspect` n'est pas une commande de premier niveau du
+tout : c'est `sbx policy inspect`.
+
+**`sbx start` n'apparaît toujours dans aucun relevé** — c'est la raison pour laquelle la
+remédiation de `internal/sbx/ls.go` ne le propose pas (tenue par
+`TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees`). C'est `sbx exec` qui redémarre.
+
+**`sbx version`** rend `sbx version: v0.35.0 <sha>` ; **il n'existe pas de drapeau `--version`**.
+v0.35.0 annonce **v0.37.1** comme disponible : tout ce qui suit est à re-relever au passage.
+
+### Les commandes que den utilise
 
 ```
 sbx create [flags] AGENT PATH [PATH...]
@@ -481,28 +610,69 @@ sbx create [flags] AGENT PATH [PATH...]
   PATH accepte le suffixe `:ro`
   --name : « letters, numbers, hyphens, periods, plus signs and minus signs only »
   ⚠️ AUCUN --label. La décision verrouillée n°10 (état par labels) est FALSIFIÉE → identité par le nom.
+  échec sur template inconnu (2026-07-31) :
+    ERROR: request failed: 403 Forbidden: pull failed for image "<image>"   (stderr, exit 1, aucun résidu)
 
 sbx ls [--json] [-q]
-  {"sandboxes":[{"name","id","agent","status","workspaces":["/p","/p:ro"]}]}
+  {"sandboxes":[{"name","id","agent","status","ports":[…],"workspaces":["/p","/p:ro"]}]}
   ⚠️ aucun champ de date/création → la colonne « âge » du §5 est INFAISABLE.
+  `ports` (2026-07-31) : {"host_ip","host_port","sandbox_port","protocol"}
+    — présent UNIQUEMENT si status vaut "running". Une sandbox arrêtée ne porte pas la clé du tout,
+      alors que ses publications reviennent à la reprise. Une lecture sur sandbox arrêtée dit donc
+      « ne publie rien » d'une VM qui publie : c'est un piège, pas une réponse (#16).
 
 sbx exec [flags] SANDBOX COMMAND [ARG...]
   flags utiles : -i/--interactive -t/--tty -d/--detach -w/--workdir -u/--user
+  REDÉMARRE une sandbox arrêtée (« Sandbox <name> started successfully » sur stderr, puis la
+  commande tourne). Mesuré à 1,4 s pour un `sbx exec <name> true`. `sbx ports` ne le fait PAS —
+  c'est cette asymétrie qui a produit l'issue #16.
 
 sbx ports SANDBOX [--publish spec] [--unpublish spec] [--json]
-  spec : [[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]
+  spec  : [[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]   (unpublish : HOST_IP optionnel, HOST_PORT requis)
+  HOST_PORT omis → port hôte éphémère alloué automatiquement.
+  HOST_IP omis (2026-07-31) → loopback, ÉTENDU selon le protocole : tcp/udp lient à la fois
+    127.0.0.1 ET ::1 (ou 127.0.0.1 seul si la sandbox est IPv4-only) ; tcp4/udp4 → 127.0.0.1 seul ;
+    tcp6/udp6 → ::1 seul. Protocoles : tcp, tcp4, tcp6, udp, udp4, udp6 ; défaut tcp.
+    → écrire l'adresse EN ENTIER (ce que den fait) est ce qui garde ::1 hors du bind.
+  sans drapeau → liste ; `--json` (2026-07-31) rend un TABLEAU JSON NU (pas un objet), même schéma
+    que le champ `ports` ci-dessus. Sur sandbox arrêtée : « No published ports ».
+  N'EST PAS IDEMPOTENT (2026-07-31). Deux 409 sous le même code, de causes différentes :
+    409 Conflict: port <IP>:<P>/tcp is already published        ← cette sandbox publie déjà ce port hôte
+    409 Conflict: … failed to bind host port <IP>:<P>: address already in use   ← un process de l'hôte
+  Le premier est clé sur le PORT HÔTE SEUL, quel que soit le port conteneur visé : `9500:8080`
+    publié, `--publish 9500:9999` échoue aussi ; `--publish 9503:8080` passe (même conteneur, autre
+    port hôte : autorisé).
+  Sur sandbox ARRÊTÉE : 500 Internal Server Error: … no container endpoint with IP address found.
 
 sbx policy check network [--sandbox SANDBOX] [--json] [--verbose] TARGET
   « Bare hosts and IP literals are evaluated with port 443. »
   → une entrée egress nue est cohérente entre le mixin et le check, sans normalisation.
+  Répond AUSSI sur une sandbox arrêtée (2026-07-31).
 
 sbx rm --force NAME
 ```
 
-`sbx-devbox` ajoute `stop`, `template save`, `secret`, `inspect`, `login`. **`sbx start`
-n'apparaît dans aucun relevé** — c'est la raison pour laquelle la remédiation de
-`internal/sbx/ls.go` ne le propose pas (tenue par
-`TestVerifieEnMarcheNeSuggereQueDesCommandesAttestees`).
+### Les commandes relevées le 2026-07-31, non utilisées par den v1
+
+```
+sbx template {ls,save,rm,load}
+  sbx template ls [--json]
+  { "images": [ { "id", "repository", "tag", "flavor", "created_at", "size" }, … ] }
+  ex. { "id":"11a2e5ef4234", "repository":"docker.io/library/devx", "tag":"v1",
+        "flavor":"claude-code-docker", "created_at":"2026-07-27T06:44:57Z", "size":6477492753 }
+  ⚠️ `repository` et `tag` sont SÉPARÉS, là où une stack écrit `image: docker.io/library/devx:v1`
+     d'un seul tenant, et rien n'oblige à qualifier — `devx:v1` doit s'apparier à
+     `docker.io/library/devx` + `v1`. C'est la seule vraie question de design restante de #8.
+
+sbx policy {allow,deny,init,inspect,log,ls,profile,reset}   (en plus de `check`)
+  sbx policy ls [--wide]
+  sbx policy inspect <policy-id|policy-name|rule-id|rule-name>  → chaque ressource et sa décision
+
+sbx ssh setup
+  provisionne ~/.ssh/config avec un bloc `Host *.sbx` routé par sandboxd — c'est SSH *vers* la
+  sandbox, sans rapport avec le tunnel hôte du §8. NON EXÉCUTÉ au smoke : ça écrit dans le vrai
+  fichier de l'utilisateur.
+```
 
 **Schéma de kit réel** (relevé sur `sbx-devbox/lib/*/spec.yaml`, pas sur la documentation) :
 
@@ -567,19 +737,29 @@ ok /etc/durable-startup.d/002-startup-den-alpha/000-cmd.sh
   `sbx exec` — c'est la réserve n°6 laissée ouverte par le smoke réel n°2, mesurée ici. Seul le
   **dernier** bloc décrit la sandbox telle qu'elle est.
 
-**Champ `ports` de `sbx ls --json`** (relevé le 2026-07-31) :
-`{"host_ip","host_port","sandbox_port","protocol"}`, présent **uniquement si `status` vaut
-`running`** — une sandbox arrêtée ne porte pas la clé du tout, alors que ses publications
-reviennent à la reprise. `sbx ports SANDBOX --json` dit la même chose sous forme de **tableau JSON
-nu**. Le `409 Conflict: port <IP>:<P>/tcp is already published` est clé sur le **port hôte** seul,
-quel que soit le port conteneur visé ; `sbx ports SANDBOX --unpublish <IP>:<H>:<C>` le libère.
-Réveil mesuré d'une sandbox arrêtée par `sbx exec <name> true` : **1,4 s**.
-
 ### Questions ouvertes et risques restants
 
-- **Surface `sbx` figée le 2026-07-28** (v0.35.0), ci-dessus : `policy check network [--sandbox S]
-  [--json] TARGET` confirmé (`--sandbox` existe, l'évaluation scopée est donc possible) ; `--label`
-  **n'existe pas** → identité par le nom. À revalider si sbx passe en v0.37+.
+- **Surface `sbx` relevée le 2026-07-28 puis complétée le 2026-07-31** (v0.35.0), ci-dessus :
+  `policy check network [--sandbox S] [--json] TARGET` confirmé **contre un `sbx` réel** ; `--label`
+  **n'existe pas** → identité par le nom. v0.35.0 annonce v0.37.1 : **tout le §14.0 est à re-relever
+  au passage**, pas à extrapoler.
+- **Portée de la policy egress d'un nest (F5) — la phrase juste.** L'`egress:` d'un nest est un
+  **élargissement** de la policy de la machine, **jamais un rétrécissement**. den ne peut pas rendre
+  une sandbox *moins* connectée que la `local-policy` de l'hôte ne l'autorise déjà (197 règles sur
+  la machine de mesure, dont `fs-read-allow-all` et `fs-write-allow-all`, et beaucoup de jokers :
+  `**.github.com:443`, `**.amazonaws.com:443`, `**.googleapis.com:443`, `**.docker.io:443`).
+
+  **Mais elle est réellement appliquée, et scopée à la sandbox** — mesuré dans les deux sens le
+  2026-07-31, ce que le smoke n°1 avait conclu trop vite. Un même hôte, deux sandboxes, deux
+  verdicts, décidés par ce que le nest a déclaré : `example.com` est **refusé** pour un nest qui ne
+  le déclare pas (`"allowed": false, "deny_kind": "implicit"`, exit 1) et **autorisé** pour celui
+  qui le déclare (exit 0). Ce que `egress:` achète vraiment, c'est donc l'accès à ce qui est
+  **en dehors** de la baseline — une base de projet sur `10.22.11.54:27017`, un hôte interne — et
+  cette part-là est bel et bien enforced.
+
+  Corollaire à ne pas reperdre : `sbx policy inspect` **n'est pas un miroir** du mixin de den. La
+  policy de kit observée portait **quatre** allows là où le mixin en déclarait trois (`openrouter.ai`
+  ajouté par sbx). Aucune détection de dérive ne doit se construire sur cette différence.
 - **Nettoyage des worktrees au `rm`** : par défaut `den` retire les worktrees qu'il a créés ;
   `--keep-worktrees` pour conserver.
 
@@ -633,10 +813,45 @@ Réveil mesuré d'une sandbox arrêtée par `sbx exec <name> true` : **1,4 s**.
 ## 14.1 Hypothèses non vérifiées contre un `sbx` réel (inventaire A1→A11)
 
 **Versé le 2026-07-28** (tâche 17b), depuis l'inventaire dressé en tâche 11 ; **A10 versée le
-2026-07-29** (tâche 18), **A11 le 2026-07-29** (revue finale). Ces affirmations sont
-**invérifiables contre un `sbx` réel** : il n'est pas installé sur la machine de développement, et
-aucune ne peut être tranchée sans lui. Elles ne sont **pas** des bugs connus — ce sont les endroits
-où la suite ne prouve rien.
+2026-07-29** (tâche 18), **A11 le 2026-07-29** (revue finale). Ces affirmations étaient
+**invérifiables contre un `sbx` réel** : il n'était pas installé sur la machine de développement.
+Elles ne sont **pas** des bugs connus — ce sont les endroits où la suite ne prouve rien.
+
+> ### ✅ Ce que les smokes réels ont FERMÉ (2026-07-31)
+>
+> Le tableau ci-dessous est conservé **tel qu'il a été écrit**, parce qu'il documente le raisonnement
+> qui a rendu la plupart de ces hypothèses non bloquantes. Ce qui suit est le verdict.
+>
+> | # | Verdict | Preuve |
+> |---|---|---|
+> | **A1** | **fermée** | `policy check network` sort en **1** sur un hôte refusé (`example.com`), en 0 sur un hôte autorisé |
+> | **A2** | **fermée** | Le verdict part bien sur **stdout** ; stderr est vide |
+> | **A3** | **fermée** | stdout porte le JSON comme **première et unique** valeur : ni bannière, ni préambule. (La bannière de mise à jour apparaît dans `sbx ls` nu, jamais sous `--json`.) |
+> | **A4** | **fermée — c'était le trou le plus lourd de l'inventaire** | L'argv exact `sbx policy check network --sandbox S --json TARGET` fonctionne, le champ s'appelle bien `allowed`, le code de sortie est 1 sur refus. Mesuré, pas doublé |
+> | **A8** | **fermée, et au-delà** | `policy check` répond **aussi sur une sandbox arrêtée** : la settle-loop de den a tourné jusqu'au bout contre une VM à l'arrêt |
+> | **A11** | **fermée, deux fois** | Le chemin hôte EST le chemin in-VM : un fichier marqueur écrit sur l'hôte avant le spawn est lisible dans la VM à `$CLAUDE_CONFIG_DIR`, pour le profil par défaut comme pour celui sélectionné par `--agent`. Et `sbx exec -w <chemin hôte>` dépose bien le shell dans le bon dossier (pty réel, `pwd` = premier workspace de `sbx ls --json`) |
+> | **ordre des `--kit`** | **fermée** | `/var/log/sbx-kit-startup.log` : `001-startup-claude`, `001-startup-shell`, puis `002-startup-den-<sandbox>` **en dernier**. sbx applique bien les `--kit` dans l'ordre de la ligne de commande ; l'invariant « le mixin en dernier » tient |
+>
+> **Non fermé, et pourquoi ce n'est pas un oubli.** **A5** (`ctx` honoré), **A6** (`policy check`
+> répond vite), **A7** (pas de réponse transitoire) et **A9** (`allowed:false` jamais rendu pour une
+> raison étrangère à la policy) portent toutes sur ce que den fait **quand `sbx` se comporte mal**.
+> Aucune n'est atteignable **en usage normal** : il faut *provoquer* la panne — une annulation en
+> pleine passe (`^C` pendant `waiting for network policy`), un nest à ~20 hôtes egress lents pour
+> voir si le budget de 60 s est réellement respecté, un `policy check` contre une sandbox détruite en
+> cours de boucle. Utiliser den correctement ne les traverse jamais. Elles restent donc ouvertes par
+> **construction du banc**, pas par négligence — et la colonne « den y survit » du tableau explique
+> pourquoi aucune n'est bloquante : leur conséquence a été neutralisée en tâche 11 plutôt qu'attendue.
+>
+> **A10** reste **partiellement** ouverte au même titre : le socket est bien présent dans la VM
+> (`SSH_AUTH_SOCK=/run/ssh-agent.sock`), mais le `git push` de bout en bout sur un remote SSH n'a pas
+> été rejoué au smoke n°2 (il l'avait été au n°1 au niveau des clés listées).
+>
+> Deux autres points du tableau ci-dessous, à lire avec la même prudence :
+> - **la liste blanche de statut** : les seuls statuts que `sbx ls --json` a produits sont `running`
+>   et `stopped`. Aucune valeur transitoire n'a jamais été observée — mais rien n'oblige une à
+>   apparaître : c'est un **point de donnée**, pas une fermeture ;
+> - **la borne de drainage de 2 s** : `den <nest> --detach` rend la main en 6 à 7,6 s, jamais à une
+>   valeur épinglée sur 2,0 s, donc la borne ne s'est jamais déclenchée. Ni confirmée ni falsifiée.
 
 **A1→A9 d'une part, A10 et A11 de l'autre, ne sont pas de la même espèce.** A1→A9 portent sur le
 **contrat CLI** de `sbx` — argv, forme de la sortie, codes de retour — que le double de test
@@ -714,5 +929,23 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
   `den build`), et il **incruste l'argv complet** de `sbx create` avant d'en venir à la cause. Aucun
   contrôle n'est ajouté ici : il exigerait d'interroger sbx sur ses templates, et retomberait sous
   **A4**.
-  *Falsifié par :* un premier spawn sur une stack jamais construite, avec un `sbx` réel — qui dira
-  autre chose que « template … not found », le libellé ci-dessus étant inventé par le double.
+
+  **FALSIFIÉE le 2026-07-31, et dans les deux moitiés.** Le vrai refus de `sbx` n'est pas un
+  « not found » :
+
+  ```
+  $ sbx create --name X --template denghost:v1 shell <repo>
+  ERROR: request failed: 403 Forbidden: pull failed for image "denghost:v1"      (stderr, exit 1)
+  ```
+
+  sbx traite un template inconnu comme un **pull de registre** sur un nom non qualifié, donc le
+  message que l'utilisateur voit parle d'**autorisation**, pas de build manquant. Deux conséquences
+  pour #8 : (1) den **ne peut pas** filtrer sur « not found » pour décider s'il doit suggérer
+  `den build` ; (2) il n'a plus à essayer — **`sbx template ls [--json]` existe** (§14.0), donc
+  contrôler l'image **avant** `sbx create` est possible sans dépendance à un runtime de conteneurs,
+  et c'est le seul moyen honnête de dire « lance `den build <stack>` » plutôt que de relayer un 403.
+  Aucune sandbox résiduelle n'est laissée par ce refus (`sbx ls --json` → `{"sandboxes":[]}`).
+
+  Les **deux critiques de l'enveloppe de den** ci-dessus, elles, sont confirmées contre un binaire
+  réel : le message ne dit pas quoi faire, et il incruste l'argv complet de `sbx create` avant d'en
+  venir à la cause.

@@ -75,8 +75,8 @@ reapplied to a live VM — den warns about mixin drift and missing git dirs inst
 
 ## Stale artifacts — don't trust these
 
-- `README.md` says `den ports` is "not shipped yet". It shipped (`4f8ecf2`, `d3646e1`); the README
-  lags the code.
+- `README.md` no longer lags on `den ports` (that note was itself stale — the row and the section
+  are there). What it still says is that `den build` is "not shipped yet", which is true (#8).
 - `docs/superpowers/handoffs/HANDOFF.md` says Plan 2 is unexecuted and nothing is pushed. Both are
   false (PRs #12–#14 merged). Handoffs and plans are historical; the spec
   `docs/superpowers/specs/2026-07-27-den-cli-design.md` is the source of truth.

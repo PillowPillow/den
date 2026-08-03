@@ -102,16 +102,48 @@ nest: web   sandbox: web.feat123   window: 9100-9109 (canonical)
   must never leave the loopback (an unauthenticated CDP/Playwright socket, typically).
 - Remote access is the printed `ssh -L` line, never a LAN bind. `you@$(hostname)` is literal: paste
   it in your own shell, where it expands on the machine that runs the tunnel.
-- If the canonical window is already taken, den moves the **whole** block to the next free one and
-  warns on stderr that these addresses hold for this instance only. It does not say *who* holds the
-  canonical window: a bound port names no owner. It may be another instance of the nest, or an
-  earlier `den ports` run of this same sandbox — `sbx ports <name>` settles it.
-- `--add H:C` (repeatable) publishes a pair the nest does not declare. Added pairs are never
-  scanned, so re-running the command re-reads the same table instead of fighting its own
-  publication. A nest that declares no port prints no window and scans nothing — only the added
-  pairs are published.
+- **Re-running the command re-reads the same table.** den first reads what that sandbox already
+  publishes and reuses the window it is on, publishing only what is missing. Without that step the
+  scan finds den's own previous publication holding the canonical block, calls it busy, and binds
+  ten more host ports — which is what it used to do, on every run.
+- If the canonical window really is taken, den moves the **whole** block to the next free one and
+  warns on stderr that these addresses hold for this instance only. It does not say *who* holds it:
+  a bound port names no owner, and den only knows it is not this sandbox. `sbx ports <name>` lists
+  what a sandbox publishes; `lsof -nP -iTCP:<port> -sTCP:LISTEN` names a process.
+- `--add H:C` (repeatable) publishes a pair the nest does not declare. Re-running an identical
+  `--add` succeeds and changes nothing. A nest that declares no port prints no window and scans
+  nothing — only the added pairs are published.
+- A **stopped** sandbox is started first, and said so on stderr: publishing a port needs a live
+  endpoint in the VM, and `sbx ports` — unlike `sbx exec` — does not restart one.
 
 The table goes to stdout, every warning to stderr: what a pipe reads is the table alone.
+
+## Egress
+
+A nest's `egress:` is a **widening** of the machine's policy, never a narrowing.
+
+den cannot make a sandbox *less* connected than the host's own `sbx` policy already permits — on a
+stock machine that baseline is broad (measured: 197 rules, including filesystem read and write
+allow-all, and wildcards like `**.github.com:443` or `**.amazonaws.com:443`, so most package
+registries, cloud endpoints and AI services are reachable whether or not a nest declares them).
+
+What `egress:` genuinely buys is everything **outside** that baseline — a project database at
+`10.22.11.54:27017`, an internal host — and that part is enforced, scoped to the sandbox. Measured
+both ways: the same host is allowed for the nest that declared it and denied for the one that did
+not (`No matching allow rule (default deny)`).
+
+Treat `egress:` as *access you would not otherwise have*, not as a sandbox firewall.
+
+## Agent freshness
+
+The agent is updated **at boot**, not baked into the image, through the `update:` command of the
+registry. den watches that gate: it reads the sandbox's kit-startup journal and **refuses to open a
+sandbox whose agent it knows was never updated**, quoting the failing line.
+
+Where it waits is a trade-off, and den takes the two sides differently: attaching a shell, it waits
+for the verdict (tens of seconds on a fresh spawn) because you are about to run that agent; under
+`--detach` it reads once and moves on with a note, because nobody is at a prompt and the next attach
+catches it.
 
 Not shipped yet: `den build` (the image DAG). See `docs/superpowers/plans/`.
 
