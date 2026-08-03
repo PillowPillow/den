@@ -16,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/PillowPillow/den/internal/agent"
-	"github.com/PillowPillow/den/internal/build"
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
@@ -797,10 +796,11 @@ func WarnEmptySSHAgentOnReentry(w io.Writer, sshMode, socket string, probe func(
 //
 // THREE deliberate silences, and each prevents a refusal den could not justify:
 //
-//   - A stack with NO build.sh is left alone. `image:` may name a registry
-//     image sbx will happily pull, and den has no remedy to offer for it —
-//     `den build` on a stack with no script is not advice, it is a second
-//     error. Refusing there would turn a working `den <nest>` into a stop.
+//   - A stack that is NOT BUILDABLE (no `provision.steps`) is left alone.
+//     `image:` may name a registry image sbx will happily pull, and den has no
+//     remedy to offer for it — `den build` on a stack den cannot build is not
+//     advice, it is a second error. Refusing there would turn a working
+//     `den <nest>` into a stop.
 //   - An `image:` pinned by DIGEST is left alone. `sbx template ls` reports a
 //     repository and a tag and no digest at all (sbx.IsDigestRef says so in
 //     full), so the inventory can neither confirm nor deny the pin — and
@@ -811,8 +811,13 @@ func WarnEmptySSHAgentOnReentry(w io.Writer, sshMode, socket string, probe func(
 //     really is absent, so turning den's inability to read an inventory into a
 //     refusal would forbid spawns over a diagnostic that failed.
 func checkStackImage(ctx context.Context, d Deps, s *config.Stack) error {
-	script := build.ScriptPath(s)
-	if _, err := os.Stat(script); err != nil {
+	// Buildability comes from config, which is the SOLE source of the verdict
+	// (config.Stack.Buildable). It used to be a `os.Stat` on the stack's
+	// build.sh, from internal/build — an edge that existed only to answer this
+	// one question, and that made the spawn depend on the build package for a
+	// file test. Spec §6 requires this silence and `den build`'s skip to agree;
+	// reading the same method is what makes that structural.
+	if !s.Buildable() {
 		return nil
 	}
 	// Asked BEFORE the inventory is read, not after the lookup fails: a listing
@@ -829,9 +834,9 @@ func checkStackImage(ctx context.Context, d Deps, s *config.Stack) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"stack %q: image %s is not built — run `den build %s`, which runs %s; "+
+		"stack %q: image %s is not built — run `den build %s`; "+
 			"`sbx template ls` lists the images sbx already has",
-		s.Name, s.Image, s.Name, script)
+		s.Name, s.Image, s.Name)
 }
 
 // reportDrift prints what changed between the mixin a sandbox received at

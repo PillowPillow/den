@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PillowPillow/den/internal/agent"
+	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sshagent"
@@ -2271,11 +2272,15 @@ func branchOf(t *testing.T, path string) string {
 // is impossible (a real unauthorized pull returns the same 403), hence the
 // check BEFORE `sbx create`, against `sbx template ls --json`.
 
-// withBuildScript gives the test stack a build.sh, which is what makes den's
+// withBuildScript gives the test stack provision.steps, which is what makes den's
 // `den build devx` advice truthful — and therefore what arms the check.
 func withBuildScript(t *testing.T, denHome string) {
 	t.Helper()
-	write(t, filepath.Join(denHome, "stacks", "devx", "build.sh"), "#!/bin/sh\n")
+	// With the new model, buildability is determined by provision.steps in the
+	// stack YAML, not by the presence of build.sh on disk.
+	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
+		"image: devx:v1\nbase: claude\nkits: [transverse]\nkit: devx-kit\n"+
+			"provision:\n  steps: [./build.sh]\n")
 }
 
 // answerTemplates makes the fake sbx answer `template ls --json` with this
@@ -2295,7 +2300,7 @@ func TestSpawnRefusesAStackImageThatWasNeverBuilt(t *testing.T) {
 		t.Fatal("expected a refusal on an image no build ever produced")
 	}
 	msg := err.Error()
-	for _, want := range []string{"devx:v1", "den build devx", "build.sh"} {
+	for _, want := range []string{"devx:v1", "den build devx"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message = %q, want it to contain %q", msg, want)
 		}
@@ -2424,5 +2429,23 @@ func TestSpawnDoesNotCheckTheImageWhenAttaching(t *testing.T) {
 	}
 	if !f.HasAttached("exec") {
 		t.Errorf("the attach must have happened; attaches: %v", f.Attaches)
+	}
+}
+
+// The spawn's image check keys off BUILDABILITY, not off a file on disk. A
+// stack whose image: is one sbx pulls is left alone — "run `den build`" on a
+// stack den cannot build is not advice, it is a second error.
+//
+// This test also pins the import-graph consequence: the verdict comes from
+// config, so internal/spawn no longer needs internal/build at all.
+func TestSpawnDoesNotCheckTheImageOfAPullableStack(t *testing.T) {
+	fake := &sbx.Fake{}
+	// A stack with no provision.steps: not buildable.
+	s := &config.Stack{Name: "pulled", Image: "ghcr.io/acme/base:v3"}
+	if err := checkStackImage(context.Background(), Deps{Sbx: fake}, s); err != nil {
+		t.Fatalf("checkStackImage refused a pullable stack: %v", err)
+	}
+	if fake.HasCalled("template", "ls") {
+		t.Error("den read the inventory for a stack it cannot build — it has no remedy to offer")
 	}
 }
