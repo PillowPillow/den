@@ -2,6 +2,7 @@ package sbx
 
 import (
 	"context"
+	"io"
 	"slices"
 	"strings"
 )
@@ -52,6 +53,31 @@ func (f *Fake) Run(_ context.Context, args ...string) ([]byte, error) {
 		return slices.Clone(r.Output), r.Err
 	}
 	return slices.Clone(f.Default.Output), f.Default.Err
+}
+
+// Stream records the call in Calls exactly as Run does — the argv sequence a
+// test reads is the sequence of CALLS, and which method carried one is not
+// something the golden or the ordering assertions should have to know — and
+// WRITES the scripted output to out instead of returning it, which is the one
+// behavioural difference the real Stream has.
+//
+// That difference is also what makes the method a test double can discriminate
+// on without a Streams slice next to Attaches: a caller that went back to Run
+// would leave out empty, since Run hands the bytes back rather than writing
+// them. Attaches exists for a confusion Calls alone cannot resolve; this is not
+// one, and Fake is a production type three packages share.
+//
+// A write error is deliberately ignored: out is a test's buffer, and the real
+// Stream cannot report one either (os/exec's copier swallows it into the
+// process's own outcome).
+func (f *Fake) Stream(_ context.Context, out io.Writer, args ...string) error {
+	f.Calls = append(f.Calls, slices.Clone(args))
+	r, ok := f.Responses[strings.Join(args, " ")]
+	if !ok {
+		r = f.Default
+	}
+	_, _ = out.Write(r.Output)
+	return r.Err
 }
 
 func (f *Fake) Attach(_ context.Context, args ...string) error {
