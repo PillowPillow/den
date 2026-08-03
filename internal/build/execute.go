@@ -18,17 +18,34 @@ type Deps struct {
 	DenHome string
 }
 
+// buildPlan is what the pre-flight loop below derives from a stack's config,
+// BEFORE the first `sbx create`: the provisioning text and the create argv.
+// Both come from pure functions over data den already has in hand — nothing
+// here touches sbx — so computing them up front, and caching them here rather
+// than recomputing inside buildOne, is what lets a chain reject everything
+// config alone can reject before its first side effect.
+type buildPlan struct {
+	provisioning Provisioning
+	createArgv   []string
+}
+
 // Execute runs the plan, in order.
 //
-// EVERY provision file of the whole chain is read BEFORE the first create —
-// the ordering internal/spawn states at length: anything rejectable up front is
-// rejected before the first side effect. Here the side effect is expensive
-// rather than messy: a chain that built four minutes of base image and only
-// then discovered a missing step would have spent that time to reach a refusal
-// den could make instantly. Nothing is read twice; the text is what the
-// payloads are composed from.
+// EVERYTHING rejectable from config alone runs BEFORE the first create — the
+// ordering internal/spawn states at length: anything rejectable up front is
+// rejected before the first side effect. That is not just ReadProvisioning:
+// CreateArgv's own two guards (ValidateSandboxName; "no origin" for a stack
+// with neither `base:` nor a resolved parent image) are just as cheap to run
+// here and just as expensive to discover after several stacks have already
+// built — so this loop runs CreateArgv too and keeps the resulting argv
+// rather than throwing it away and reassembling it later. And whether a
+// `<stack>-build` already exists is checked ONCE for the WHOLE chain, with a
+// SINGLE `sbx ls --json`, rather than once per stack: a leftover for stack 3
+// of 5 must be caught before stack 1 is even created, not discovered after
+// stacks 1 and 2 have already spent minutes building — and one process beats
+// N regardless.
 func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
-	provisioned := make(map[string]Provisioning, len(steps))
+	plans := make(map[string]buildPlan, len(steps))
 	for _, s := range steps {
 		if !s.Build {
 			continue
@@ -46,7 +63,46 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		provisioned[s.Stack.Name] = p
+		// s.Stack.ParentImage, not a re-derived value, and read UNCONDITIONALLY:
+		// build.Chain already resolved it, empty for a root stack — which is
+		// exactly what makes CreateArgv fall back to `base:` — and Execute was
+		// handed a flat chain precisely so it would not have to re-walk the
+		// graph to get it back.
+		argv, err := CreateArgv(s.Stack, s.Stack.ParentImage, ScratchDir(d.DenHome, s.Stack.Name))
+		if err != nil {
+			return err
+		}
+		plans[s.Stack.Name] = buildPlan{provisioning: p, createArgv: argv}
+	}
+
+	// ONE `sbx ls --json` for the whole chain — see the doc above — skipped
+	// entirely when plans is empty: an all-skipped chain builds no `<stack>
+	// -build` sandbox at all, so there is no name that could collide, and the
+	// check below would loop over zero candidates. Not an optimization; the
+	// call would be for nothing.
+	if len(plans) > 0 {
+		boxes, err := sbx.Ls(ctx, d.Sbx)
+		if err != nil {
+			return fmt.Errorf("could not check for pre-existing build sandboxes: %w", err)
+		}
+		for _, s := range steps {
+			if !s.Build {
+				continue
+			}
+			// A pre-existing build sandbox is a REFUSAL, not a `rm --force`
+			// first. `<stack>-build` is a legal nest name (the component
+			// charset allows it), so a blind cleanup can destroy a real
+			// sandbox of the user's. The teardown in buildOne being deferred,
+			// a leftover only survives a den killed by SIGKILL: rare enough to
+			// deserve a human look.
+			name := SandboxName(s.Stack.Name)
+			if sbx.Find(boxes, name) != nil {
+				return fmt.Errorf(
+					"stack %q: a sandbox named %s already exists — den will not remove it for you, "+
+						"because that name is also a legal nest name. Inspect it, then `sbx rm --force %s`",
+					s.Stack.Name, name, name)
+			}
+		}
 	}
 
 	for i, s := range steps {
@@ -58,51 +114,28 @@ func Execute(ctx context.Context, steps []Step, d Deps, out io.Writer) error {
 			continue
 		}
 		fmt.Fprintf(out, "[%d/%d] %s: building %s...\n", i+1, len(steps), s.Stack.Name, s.Stack.Image)
-		if err := buildOne(ctx, d, s.Stack, provisioned[s.Stack.Name], out); err != nil {
+		if err := buildOne(ctx, d, s.Stack, plans[s.Stack.Name], out); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// buildOne is one stack's whole sequence. A function of its own so the
-// teardown can be a `defer` — in a loop it would pile up until Execute
-// returned, which is exactly the leak it exists to prevent.
-func buildOne(ctx context.Context, d Deps, s *config.Stack, p Provisioning, out io.Writer) error {
+// buildOne is one stack's whole sequence — everything rejectable from config
+// alone has already run in Execute's pre-flight loop, so the only thing left
+// here that can fail before the first side effect is the scratch directory
+// itself, which IS that side effect. A function of its own so the teardown
+// can be a `defer` — in a loop it would pile up until Execute returned, which
+// is exactly the leak it exists to prevent.
+func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out io.Writer) error {
 	name := SandboxName(s.Name)
-
-	// A pre-existing build sandbox is a REFUSAL, not a `rm --force` first.
-	// `<stack>-build` is a legal nest name (the component charset allows it),
-	// so a blind cleanup can destroy a real sandbox of the user's. The teardown
-	// below being deferred, a leftover only survives a den killed by SIGKILL:
-	// rare enough to deserve a human look.
-	boxes, err := sbx.Ls(ctx, d.Sbx)
-	if err != nil {
-		return fmt.Errorf("stack %q: could not check whether %s already exists: %w", s.Name, name, err)
-	}
-	if sbx.Find(boxes, name) != nil {
-		return fmt.Errorf(
-			"stack %q: a sandbox named %s already exists — den will not remove it for you, "+
-				"because that name is also a legal nest name. Inspect it, then `sbx rm --force %s`",
-			s.Name, name, name)
-	}
 
 	scratch := ScratchDir(d.DenHome, s.Name)
 	if err := os.MkdirAll(scratch, 0o755); err != nil {
 		return fmt.Errorf("stack %q: could not create the build scratch %s: %w", s.Name, scratch, &config.FileError{Err: err})
 	}
 
-	// The parent's IMAGE, not its name: `--template` takes a reference. Empty
-	// for a root stack, which is what makes CreateArgv use `base:` instead.
-	parentImage := ""
-	if s.Parent != "" {
-		parentImage = s.ParentImage
-	}
-	argv, err := CreateArgv(s, parentImage, scratch)
-	if err != nil {
-		return err
-	}
-	if _, err := d.Sbx.Run(ctx, argv...); err != nil {
+	if _, err := d.Sbx.Run(ctx, plan.createArgv...); err != nil {
 		return fmt.Errorf("stack %q: could not create the build sandbox: %w", s.Name, err)
 	}
 	// From here on the VM exists: it must not outlive this function, whatever
@@ -114,10 +147,10 @@ func buildOne(ctx context.Context, d Deps, s *config.Stack, p Provisioning, out 
 		}
 	}()
 
-	for i := range p.Steps {
-		if _, err := d.Sbx.Run(ctx, "exec", name, "--", "bash", "-lc", p.Payload(i)); err != nil {
+	for i := range plan.provisioning.Steps {
+		if _, err := d.Sbx.Run(ctx, "exec", name, "--", "bash", "-lc", plan.provisioning.Payload(i)); err != nil {
 			return fmt.Errorf("stack %q: step %d/%d %s failed: %w",
-				s.Name, i+1, len(p.Steps), p.Steps[i].Path, err)
+				s.Name, i+1, len(plan.provisioning.Steps), plan.provisioning.Steps[i].Path, err)
 		}
 	}
 

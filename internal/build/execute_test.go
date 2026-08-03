@@ -63,6 +63,94 @@ func TestExecuteRunsTheWholeSequenceInOrder(t *testing.T) {
 	}
 }
 
+// derivedStackChain is a two-step chain — a root stack, then a stack derived
+// FROM it — shared by the two tests below that need a real chain rather than
+// one stack in isolation: the derived-argv assertion and the leftover-before-
+// the-first-create assertion both need devx built (or refused) ahead of
+// dgdevx.
+func derivedStackChain(t *testing.T) (root, derived *config.Stack, home string) {
+	t.Helper()
+	root, home = buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
+	dir := filepath.Join(home, "stacks", "dgdevx")
+	step := filepath.Join(dir, "one.sh")
+	writeFile(t, step, "echo one.sh\n")
+	derived = &config.Stack{
+		Name: "dgdevx", Image: "dgdevx:v1", Parent: "devx", ParentImage: "devx:v1", Dir: dir,
+		Provision: config.Provision{Steps: []string{step}},
+	}
+	return root, derived, home
+}
+
+// The derived path — a stack built FROM another stack's image, via
+// `--template` — is untested by every test above: buildableStack only ever
+// sets Base. It is also the multi-stack case the single-`ls` hoist changes
+// the observable sequence for: ONE `ls --json` for the WHOLE chain, at the
+// very top, not one interleaved before each stack's own create. And ancestors
+// build FIRST: dgdevx's `--template` argument is devx's IMAGE, which only
+// exists once devx's own sequence — including `template save` — has already
+// run.
+func TestExecuteBuildsADerivedStackFromItsParentImageAfterItsAncestor(t *testing.T) {
+	root, derived, home := derivedStackChain(t)
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+	}}
+	if err := Execute(context.Background(),
+		[]Step{{Stack: root, Build: true}, {Stack: derived, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	rootScratch := ScratchDir(home, "devx")
+	derivedScratch := ScratchDir(home, "dgdevx")
+	want := [][]string{
+		{"ls", "--json"}, // ONE call for the whole chain, not one per stack
+		{"create", "--name", "devx-build", "claude", rootScratch},
+		{"exec", "devx-build", "--", "bash", "-lc", "echo one.sh\n"},
+		{"stop", "devx-build"},
+		{"template", "save", "devx-build", "devx:v1"},
+		{"rm", "--force", "devx-build"},
+		{"create", "--name", "dgdevx-build", "--template", "devx:v1", sbx.PositionalAgent, derivedScratch},
+		{"exec", "dgdevx-build", "--", "bash", "-lc", "echo one.sh\n"},
+		{"stop", "dgdevx-build"},
+		{"template", "save", "dgdevx-build", "dgdevx:v1"},
+		{"rm", "--force", "dgdevx-build"},
+	}
+	if len(fake.Calls) != len(want) {
+		t.Fatalf("calls =\n  %v\nwant %d calls", fake.Calls, len(want))
+	}
+	for i := range want {
+		if !slices.Equal(fake.Calls[i], want[i]) {
+			t.Errorf("call %d =\n  %v\nwant\n  %v", i, fake.Calls[i], want[i])
+		}
+	}
+}
+
+// THE payoff of hoisting the pre-existing-sandbox check to a SINGLE ls for
+// the whole chain: a leftover belonging to the LAST stack of a two-stack
+// chain must be caught before the FIRST stack is even created. Before the
+// hoist, this check lived inside buildOne and ran once per stack — right
+// before that stack's own create — so devx would have been built in full
+// (minutes of work) before dgdevx's own turn ever discovered the leftover.
+func TestExecuteRefusesALeftoverBeforeBuildingAnyEarlierStack(t *testing.T) {
+	root, derived, home := derivedStackChain(t)
+	fake := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"dgdevx-build","status":"running"}]}`)},
+	}}
+	err := Execute(context.Background(),
+		[]Step{{Stack: root, Build: true}, {Stack: derived, Build: true}},
+		Deps{Sbx: fake, DenHome: home}, &strings.Builder{})
+	if err == nil {
+		t.Fatal("Execute built over a leftover build sandbox belonging to a later stack")
+	}
+	if !strings.Contains(err.Error(), "sbx rm --force dgdevx-build") {
+		t.Errorf("error %q does not name the offending sandbox", err)
+	}
+	if fake.HasCalled("create") {
+		t.Error("den created devx's build sandbox before discovering dgdevx-build's leftover — " +
+			"the whole-chain ls hoist is not doing its job")
+	}
+}
+
 // The failing step is NAMED. Without it the user sees a wall of build log and
 // an exit code, and has to count the stages to learn which script died.
 func TestExecuteNamesTheFailingStep(t *testing.T) {
