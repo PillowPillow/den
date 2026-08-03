@@ -103,6 +103,7 @@ const (
 //	devx                        → docker.io/library/devx      latest
 //	ghcr.io/acme/devx:v2        → ghcr.io/acme/devx           v2
 //	localhost:5000/devx:v1      → localhost:5000/devx         v1
+//	devx@sha256:e3b0c442…       → devx@sha256:e3b0c442…       (no tag)
 //
 // A first component is a REGISTRY when it contains a `.` or a `:`, or is
 // exactly `localhost` — the same rule every OCI client applies, and the reason
@@ -112,6 +113,17 @@ const (
 // image that is present.
 func NormalizeImageRef(ref string) (repository, tag string) {
 	repository, tag = ref, defaultTag
+
+	// A DIGEST pin travels back as written, with NO tag, before anything else
+	// looks at a colon. Its `:` sits after the last `/` — precisely the tag
+	// split's trigger below — but it opens the digest's algorithm, so splitting
+	// there would read `devx@sha256` plus the hex and compare that against an
+	// inventory in which neither side has ever existed. An empty tag matches no
+	// Template (their Ref() always carries one), which is the honest verdict
+	// here: see IsDigestRef.
+	if IsDigestRef(ref) {
+		return ref, ""
+	}
 
 	// The tag separator is the LAST `:` that comes after the last `/`. Placed
 	// before it, a colon belongs to a registry's port (`localhost:5000/devx`)
@@ -138,6 +150,33 @@ func NormalizeImageRef(ref string) (repository, tag string) {
 	}
 	return repository, tag
 }
+
+// IsDigestRef reports whether a reference pins an image by DIGEST
+// (`devx@sha256:e3b0c442…`) rather than by tag.
+//
+// It exists because den cannot arbitrate such a reference AT ALL, and admitting
+// that is the whole point: `sbx template ls --json` reports `repository` and
+// `tag` and no digest whatsoever (schema surveyed 2026-07-31, spec §14.0), so
+// no inventory entry can ever confirm or deny a digest pin. NormalizeImageRef
+// therefore leaves it un-matchable, and the callers that must act on the fact
+// ask HERE rather than re-deriving it from an empty tag — which a mistyped
+// `devx:` also produces, for an entirely different reason.
+//
+// The two callers read the same fact and answer differently, on purpose:
+//
+//   - `den build <stack>`: an ancestor pinned by digest reads as absent and is
+//     REBUILT (build.Plan, via Images.Has). Spending a build den could not
+//     justify skipping is the cheap direction of that uncertainty.
+//   - the spawn's checkStackImage: there, "absent" would be a FALSE REFUSAL on
+//     an image that may well be present — the exact failure this file's
+//     normalization exists to prevent — so it stays silent and lets `sbx
+//     create` be the one to answer.
+//
+// The `@` is looked for anywhere in the reference rather than parsed further: a
+// well-formed pin carries `@<algorithm>:<hex>`, and no registry, namespace or
+// repository component may contain an `@` at all — so its mere presence already
+// means "not a plain repository:tag", which is all any caller needs to know.
+func IsDigestRef(ref string) bool { return strings.Contains(ref, "@") }
 
 // isRegistry reports whether a reference's first component names a registry
 // host rather than a namespace.

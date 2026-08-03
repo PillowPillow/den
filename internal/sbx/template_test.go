@@ -141,6 +141,74 @@ func TestNormalizeImageRefDoesNotCompleteAnEmptyTag(t *testing.T) {
 	}
 }
 
+// A digest, spelled in full: the hex length is what makes the `:` after the
+// `@` look exactly like a tag separator to the split NormalizeImageRef does.
+const digest = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+// ONE CASE PER FORM again, for the pin: `image:` can legitimately carry a
+// digest, and the tag split would turn every one of these into a repository
+// and a tag that exist nowhere.
+func TestNormalizeImageRefLeavesADigestPinUnmatchable(t *testing.T) {
+	cases := []struct {
+		ref string
+		why string
+	}{
+		{"devx@" + digest,
+			"the `:` sits after the last `/`, which is the tag split's exact trigger — but it opens the algorithm"},
+		{"ghcr.io/acme/devx@" + digest,
+			"a qualified pin is no more splittable: `acme/devx@sha256` is not a repository"},
+		{"devx:v1@" + digest,
+			"tag AND digest is a legal form, and the pin still decides which image is meant"},
+	}
+	for _, c := range cases {
+		t.Run(c.ref, func(t *testing.T) {
+			repo, tag := NormalizeImageRef(c.ref)
+			// Untouched and tagless: sbx reports no digest, so den must not
+			// name a repository/tag pair it cannot compare against anything.
+			if repo != c.ref || tag != "" {
+				t.Errorf("NormalizeImageRef(%q) = (%q, %q), want the reference back untouched with no tag — %s",
+					c.ref, repo, tag, c.why)
+			}
+			if !IsDigestRef(c.ref) {
+				t.Errorf("IsDigestRef(%q) = false, want true — %s", c.ref, c.why)
+			}
+		})
+	}
+}
+
+// The negative side of the predicate, on the forms most likely to be confused
+// with a pin: a colon alone never makes a digest.
+func TestIsDigestRefOnTagReferences(t *testing.T) {
+	for _, ref := range []string{"devx", "devx:v1", "ghcr.io/acme/devx:v2", "localhost:5000/devx:v1", "devx:"} {
+		if IsDigestRef(ref) {
+			t.Errorf("IsDigestRef(%q) = true, want false — no `@`, so it is a plain repository:tag", ref)
+		}
+	}
+}
+
+// Where the mis-parse would have bitten: `devx@sha256:…` split into the
+// repository `devx@sha256` and the tag `<hex>` matched nothing either, but by
+// accident. It must match nothing BY CONSTRUCTION, including on an inventory
+// holding that very repository — sbx reports no digest, so a match would be den
+// asserting an identity it never checked.
+func TestFindTemplateNeverMatchesADigestPin(t *testing.T) {
+	list := []Template{
+		{Repository: "docker.io/library/devx", Tag: "v1"},
+		{Repository: "ghcr.io/acme/dgdevx", Tag: "v2"},
+	}
+	for _, ref := range []string{
+		"devx@" + digest,
+		"docker.io/library/devx@" + digest,
+		"ghcr.io/acme/dgdevx@" + digest,
+		"devx:v1@" + digest,
+	} {
+		if got := FindTemplate(list, ref); got != nil {
+			t.Errorf("FindTemplate(%q) = %+v, want nil — the inventory carries no digest to match it against",
+				ref, got)
+		}
+	}
+}
+
 // The point of the normalization, stated as one assertion: the bare form a
 // stack writes finds the qualified image sbx reports.
 func TestFindTemplateMatchesAnUnqualifiedReference(t *testing.T) {

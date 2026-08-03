@@ -291,6 +291,17 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// Nothing between here and step 6 touches sbx, so no call order changed —
 	// only git work now happens after the reading instead of before it.
 	//
+	// What the move does widen is the window between this verdict and the `sbx
+	// create` at step 6, which the worktree operations now sit inside and which
+	// git can make slow. A concurrent `den` on the SAME sandbox name can create
+	// it meanwhile, and this one would then create where attaching was the
+	// correct answer; the duplicate then lands on sbx, which owns the name and
+	// is the only thing that can arbitrate it. Not verified: what `sbx create`
+	// answers on a name that already exists — den expects a refusal naming the
+	// collision, and even so this is the cheap side of the trade. The regression
+	// the old position produced was neither rare nor conditional on a race: one
+	// orphaned git worktree per repo, on EVERY refusal, left to clean up by hand.
+	//
 	// The found Sandbox is KEPT, not reduced to a bool: only it carries the
 	// real status and the workspaces the VM actually mounts.
 	boxes, err := sbx.Ls(ctx, d.Sbx)
@@ -784,12 +795,17 @@ func WarnEmptySSHAgentOnReentry(w io.Writer, sshMode, socket string, probe func(
 // #8; without it the only honest options were a container-runtime dependency
 // or no check at all.
 //
-// TWO deliberate silences, and each prevents a refusal den could not justify:
+// THREE deliberate silences, and each prevents a refusal den could not justify:
 //
 //   - A stack with NO build.sh is left alone. `image:` may name a registry
 //     image sbx will happily pull, and den has no remedy to offer for it —
 //     `den build` on a stack with no script is not advice, it is a second
 //     error. Refusing there would turn a working `den <nest>` into a stop.
+//   - An `image:` pinned by DIGEST is left alone. `sbx template ls` reports a
+//     repository and a tag and no digest at all (sbx.IsDigestRef says so in
+//     full), so the inventory can neither confirm nor deny the pin — and
+//     reading its silence as "absent" would refuse a spawn over an image that
+//     is present.
 //   - A FAILING `sbx template ls` is fail-open. The check improves a message;
 //     it guards nothing. sbx still refuses the create by itself if the image
 //     really is absent, so turning den's inability to read an inventory into a
@@ -797,6 +813,12 @@ func WarnEmptySSHAgentOnReentry(w io.Writer, sshMode, socket string, probe func(
 func checkStackImage(ctx context.Context, d Deps, s *config.Stack) error {
 	script := build.ScriptPath(s)
 	if _, err := os.Stat(script); err != nil {
+		return nil
+	}
+	// Asked BEFORE the inventory is read, not after the lookup fails: a listing
+	// that carries no digests cannot answer the question, so den does not spend
+	// a process to be told nothing.
+	if sbx.IsDigestRef(s.Image) {
 		return nil
 	}
 	templates, err := sbx.Templates(ctx, d.Sbx)

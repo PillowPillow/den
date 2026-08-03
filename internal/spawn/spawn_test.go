@@ -2362,6 +2362,33 @@ func TestSpawnDoesNotCheckTheImageOfAStackWithoutABuildScript(t *testing.T) {
 	}
 }
 
+// An `image:` pinned by DIGEST is left alone, and not even asked about: `sbx
+// template ls --json` reports a repository and a tag and no digest, so the
+// inventory cannot confirm or deny the pin. Reading that silence as "absent"
+// would refuse a `den <nest>` over an image that is present — the false refusal
+// the whole normalization exists to prevent.
+func TestSpawnDoesNotCheckADigestPinnedImage(t *testing.T) {
+	denHome, _ := denTest(t)
+	withBuildScript(t, denHome)
+	// The build.sh above arms the check; only the pin disarms it. Same stack as
+	// denTest writes, image apart, so the kit directories it created still hold.
+	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
+		"image: devx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"+
+			"kits: [transverse]\nkit: devx-kit\n")
+	f, d := fakeDeps()
+	answerTemplates(f, `{"images":[]}`)
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("a digest pin den cannot arbitrate must not be refused: %v", err)
+	}
+	if f.HasCalled("template", "ls", "--json") {
+		t.Errorf("an inventory that carries no digest cannot answer, so it must not be read; calls: %v", f.Calls)
+	}
+	if !f.HasCalled("create") {
+		t.Errorf("a create must have happened; calls: %v", f.Calls)
+	}
+}
+
 // A failing inventory is fail-open. The check improves a message; it guards
 // nothing — sbx still refuses the create by itself if the image really is
 // absent, so a diagnostic that failed must not forbid a spawn.
