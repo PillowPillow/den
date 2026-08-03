@@ -434,6 +434,129 @@ func TestStacksGetUnreadableVerdictIsTyped(t *testing.T) {
 	}
 }
 
+func write(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Buildability is read off `provision.steps` and nothing else. It is the SOLE
+// source of the verdict, consumed by `den build` and by the spawn's image
+// check, which spec §6 requires to agree.
+func TestStackBuildableFollowsProvisionSteps(t *testing.T) {
+	var pullable Stack
+	if pullable.Buildable() {
+		t.Error("a stack with no provision.steps is not buildable — its image: is one sbx pulls")
+	}
+	buildable := Stack{Provision: Provision{Steps: []string{"./provision/go.sh"}}}
+	if !buildable.Buildable() {
+		t.Error("a stack declaring provision.steps is buildable")
+	}
+}
+
+// The paths follow the rule `kit`/`kits` already follow: relative in YAML,
+// absolute after loading, resolved against the STACK directory — not against
+// the directory the user happened to run den from.
+func TestLoadStackResolvesProvisionPathsAgainstTheStackDirectory(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "stacks", "devx")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "stack.yaml"), `
+image: devx:v1
+base: claude
+provision:
+  includes:
+    - ../../lib/common.sh
+  steps:
+    - ./provision/go-tools.sh
+`)
+	s, err := LoadStack(home, "devx")
+	if err != nil {
+		t.Fatalf("LoadStack: %v", err)
+	}
+	wantInclude := filepath.Join(home, "lib", "common.sh")
+	if got := s.Provision.Includes[0]; got != wantInclude {
+		t.Errorf("includes[0] = %q, want %q", got, wantInclude)
+	}
+	wantStep := filepath.Join(dir, "provision", "go-tools.sh")
+	if got := s.Provision.Steps[0]; got != wantStep {
+		t.Errorf("steps[0] = %q, want %q", got, wantStep)
+	}
+}
+
+// Two origins for one image is a contradiction, not a precedence to arbitrate:
+// den refuses rather than silently preferring one.
+func TestLoadStackRefusesBaseAndParentTogether(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "stacks", "devx")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "stack.yaml"), `
+image: devx:v1
+base: claude
+parent: other
+provision:
+  steps: [./provision/go.sh]
+`)
+	_, err := LoadStack(home, "devx")
+	if err == nil {
+		t.Fatal("LoadStack accepted both base: and parent: — want a refusal")
+	}
+	for _, want := range []string{"base:", "parent:", "stack.yaml"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q — it must name the fault and the file", err, want)
+		}
+	}
+}
+
+// A buildable stack with NO origin cannot be built: den does not know what to
+// start from. The message offers both remedies, because which one is right
+// depends on whether the stack is a root.
+func TestLoadStackRefusesBuildableStackWithNoOrigin(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "stacks", "devx")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "stack.yaml"), `
+image: devx:v1
+provision:
+  steps: [./provision/go.sh]
+`)
+	_, err := LoadStack(home, "devx")
+	if err == nil {
+		t.Fatal("LoadStack accepted provision.steps with neither base: nor parent:")
+	}
+	for _, want := range []string{"base:", "parent:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not offer the remedy %q", err, want)
+		}
+	}
+}
+
+// The mirror case, and the one a naive validation breaks: a stack with no
+// provision.steps declares no origin BY DESIGN — its image: is one sbx pulls.
+// Demanding an origin of it would refuse a configuration §6 calls legitimate.
+func TestLoadStackAcceptsAPullableStackWithNoOrigin(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "stacks", "pulled")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "stack.yaml"), "image: ghcr.io/acme/base:v3\n")
+	s, err := LoadStack(home, "pulled")
+	if err != nil {
+		t.Fatalf("LoadStack refused a pullable stack: %v", err)
+	}
+	if s.Buildable() {
+		t.Error("a stack with no provision.steps must not be buildable")
+	}
+}
+
 // The stacks directory only has value on "not found", and it must land on
 // the RIGHT line.
 //

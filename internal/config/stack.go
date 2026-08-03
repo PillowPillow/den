@@ -10,6 +10,27 @@ import (
 	"slices"
 )
 
+// Provision is what den plays INSIDE the build VM (spec §6). den owns the
+// sequence around it; a stack only says what to run.
+type Provision struct {
+	// Includes is concatenated ahead of EVERY step, and is never a step of its
+	// own. Order is significant. Relative to the stack directory in YAML,
+	// absolute after loading.
+	//
+	// The contract, which den cannot verify and the spec therefore states: it
+	// DEFINES, it does not act. Each `sbx exec` opens a fresh shell, so this
+	// text is re-emitted once per step — a side effect here runs N times, in
+	// silence.
+	Includes []string `yaml:"includes"`
+	// Steps is one `sbx exec` per entry, in order. Relative to the stack
+	// directory in YAML, absolute after loading.
+	//
+	// One exec per entry and not one big payload: it is what lets a failure
+	// name the step that produced it. The price is that nothing but the VM
+	// filesystem survives from one step to the next — hence Includes.
+	Steps []string `yaml:"steps"`
+}
+
 // Stack is a buildable image recipe (spec §4.2).
 type Stack struct {
 	// Name comes from the directory name, NEVER from the content: an object
@@ -23,6 +44,15 @@ type Stack struct {
 	// ORDER IS SIGNIFICANT: it's an sbx layering order, not a set — never sort it.
 	Kits   []string `yaml:"kits"`
 	Egress []string `yaml:"egress"`
+
+	// Base is the sbx AGENT positional, and applies to ROOT stacks only — the
+	// ones with no `parent:`, which therefore get no `--template`. There the
+	// positional is load-bearing: it selects the starting image
+	// (`claude` → docker/sandbox-templates:claude-code-docker). With a
+	// `--template`, it is the image's flavor that decides and den passes
+	// `sbx.PositionalAgent` instead.
+	Base      string    `yaml:"base"`
+	Provision Provision `yaml:"provision"`
 
 	Dir string `yaml:"-"` // stack directory, filled in at load time
 }
@@ -47,6 +77,16 @@ func (s *Stack) DeclaredKits() []string {
 	}
 	return kits
 }
+
+// Buildable reports whether den knows how to build this stack's image.
+//
+// SOLE SOURCE of that verdict, and it is read on BOTH sides: `den build` skips
+// a stack that is not buildable, and the spawn's image check stays silent on
+// it (internal/spawn, checkStackImage). Spec §6 requires the two to agree —
+// measured on 2026-08-03, they had already drifted once, and a `den build` on
+// a den holding a single pullable stack built NOTHING while demanding a script
+// for the stack den had already decided not to build.
+func (s *Stack) Buildable() bool { return len(s.Provision.Steps) > 0 }
 
 // LoadStack reads <denHome>/stacks/<name>/stack.yaml.
 func LoadStack(denHome, name string) (*Stack, error) {
@@ -76,12 +116,42 @@ func LoadStack(denHome, name string) (*Stack, error) {
 	if s.Kit != "" && !filepath.IsAbs(s.Kit) {
 		s.Kit = filepath.Join(dir, s.Kit)
 	}
-	for i, k := range s.Kits {
-		if k != "" && !filepath.IsAbs(k) {
-			s.Kits[i] = filepath.Join(dir, k)
+	resolveAgainst(dir, s.Kits)
+	resolveAgainst(dir, s.Provision.Includes)
+	resolveAgainst(dir, s.Provision.Steps)
+
+	// Checked only for a stack den would actually BUILD. A pullable stack
+	// declares no origin by design, and demanding one of it would refuse the
+	// configuration spec §6 calls legitimate.
+	if s.Buildable() {
+		switch {
+		case s.Base != "" && s.Parent != "":
+			return nil, fmt.Errorf(
+				"stack %q: `base:` and `parent:` are both set in %s — a stack has ONE origin: "+
+					"`parent:` builds FROM another stack's image, `base:` starts from an sbx agent. "+
+					"Two origins for one image is a contradiction, not a precedence den can arbitrate",
+				name, path)
+		case s.Base == "" && s.Parent == "":
+			return nil, fmt.Errorf(
+				"stack %q: `provision.steps` is declared but neither `base:` nor `parent:` is, in %s — "+
+					"den does not know what to build FROM. Add `base: claude` for a root stack, "+
+					"or `parent: <stack>` to derive from another",
+				name, path)
 		}
 	}
 	return &s, nil
+}
+
+// resolveAgainst rewrites the relative entries of a path list against dir, IN
+// PLACE. Sole definition of the rule stated once in §4.2 and applying to
+// `kits`, `provision.includes` and `provision.steps` alike: a blank entry is
+// left alone rather than turned into the stack directory itself.
+func resolveAgainst(dir string, paths []string) {
+	for i, p := range paths {
+		if p != "" && !filepath.IsAbs(p) {
+			paths[i] = filepath.Join(dir, p)
+		}
+	}
 }
 
 // BrokenStack is a stack present on disk but not loadable.
