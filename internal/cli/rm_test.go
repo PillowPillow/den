@@ -92,6 +92,19 @@ func createTestRepo(t *testing.T, dir string) {
 	}
 }
 
+// gitOutput runs git in dir and returns its combined output, for assertions on
+// what the repository still knows.
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
 func TestRmDestroysTheSandbox(t *testing.T) {
 	denHome := t.TempDir()
 	writeConfig(t, denHome, minimalConfig)
@@ -710,5 +723,165 @@ func TestRmGivesAFreshDeadlineToEachRepo(t *testing.T) {
 	if secondRemaining < gitProbeTimeout-400*time.Millisecond {
 		t.Errorf("the second repo inherits a spent budget (%v remaining out of %v): "+
 			"the deadline is not set for each repo", secondRemaining, gitProbeTimeout)
+	}
+}
+
+// Issue #46. `den api -w feat ~/dev/hotfix` gives hotfix a worktree, but a
+// positional is deliberately NOT part of the sandbox identity, so `den rm`
+// cannot find it in the nest. It is recovered from the directory instead.
+//
+// This is ALSO the ORDERING test, and the only one: it holds one declared repo
+// AND one orphan, so an implementation that removed before enumerating would
+// see removeParentDir empty <root>/<wt> and lose the orphan. Do not "simplify"
+// it down to a single repo — that silently drops the coverage.
+func TestRmCleansUpAWorktreeNoRepoDeclares(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, minimalConfig+"worktree_layout: central\nworktree_root: "+root+"\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+
+	declared := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, declared)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+declared+" }\n")
+
+	// The ad-hoc repo: mounted on the command line at spawn time, declared
+	// nowhere.
+	adhoc := filepath.Join(t.TempDir(), "hotfix")
+	createTestRepo(t, adhoc)
+
+	var paths []string
+	for _, repo := range []string{declared, adhoc} {
+		p, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+			"central", root, worktree.Name{Dir: "feat12", Branch: "feat12"}, repo)
+		if err != nil {
+			t.Fatalf("preparing the worktree of %s: %v", repo, err)
+		}
+		paths = append(paths, p)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s must have been moved to the trash; stat: %v", p, err)
+		}
+	}
+	// executeCmdWithSbx MERGES stdout and stderr, so this count sees warnings
+	// too: no later task may introduce a warning containing "moved to trash"
+	// (Task 5's per-repo message deliberately does not).
+	if strings.Count(out, "moved to trash") != 2 {
+		t.Errorf("both worktrees must be announced; got:\n%s", out)
+	}
+	// The registration must be gone too, otherwise `git branch -d feat12` in
+	// the user's own repository still refuses with "already checked out".
+	if reg := gitOutput(t, adhoc, "worktree", "list", "--porcelain"); strings.Contains(reg, "feat12") {
+		t.Errorf("the registration survives in %s:\n%s", adhoc, reg)
+	}
+}
+
+// An orphan is not a licence to delete work: the uncommitted-changes refusal
+// applies to a RECOVERED entry exactly as to a declared one — which is why
+// orphans go through the same worktree.Remove and not a second removal path.
+func TestRmRefusesADirtyOrphanWorktree(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, minimalConfig+"worktree_layout: central\nworktree_root: "+root+"\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+
+	adhoc := filepath.Join(t.TempDir(), "hotfix")
+	createTestRepo(t, adhoc)
+	p, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"central", root, worktree.Name{Dir: "feat12", Branch: "feat12"}, adhoc)
+	if err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(p, "wip.txt"), []byte("work in progress"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	_, err = executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err == nil {
+		t.Fatal("a dirty recovered worktree must stop den rm, like a declared one")
+	}
+	if !strings.Contains(err.Error(), "wip.txt") {
+		t.Errorf("error = %q, expected the uncommitted file to be named", err.Error())
+	}
+	if _, statErr := os.Stat(p); statErr != nil {
+		t.Errorf("the worktree must still be there: %v", statErr)
+	}
+	if f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must NOT be destroyed while work is at stake; calls: %v", f.Calls)
+	}
+}
+
+// ...and --force applies to a recovered entry too: the same flag, on the same
+// code path.
+func TestRmForceRemovesADirtyOrphanWorktree(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, minimalConfig+"worktree_layout: central\nworktree_root: "+root+"\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+
+	adhoc := filepath.Join(t.TempDir(), "hotfix")
+	createTestRepo(t, adhoc)
+	p, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"central", root, worktree.Name{Dir: "feat12", Branch: "feat12"}, adhoc)
+	if err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(p, "wip.txt"), []byte("work in progress"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12", "--force")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(p); !os.IsNotExist(statErr) {
+		t.Errorf("--force must move the recovered worktree; stat: %v", statErr)
+	}
+	// den never deletes: the user must be told where their work went.
+	if !strings.Contains(out, "moved to trash") {
+		t.Errorf("the trash path must be announced; got:\n%s", out)
+	}
+}
+
+// Best-effort on RESOLUTION (doctrine T13/T16): an orphan whose repository has
+// been deleted since the spawn cannot be recovered. den says so and carries on
+// — refusing here would leave the user with a live VM they can no longer
+// destroy, over a directory.
+func TestRmWarnsAboutAnUnrecoverableOrphanAndStillDestroys(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, minimalConfig+"worktree_layout: central\nworktree_root: "+root+"\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+
+	// A directory that is not a git worktree at all: recovery is impossible.
+	stray := filepath.Join(root, "feat12", "hotfix")
+	if err := os.MkdirAll(stray, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("an unrecoverable orphan must not fail den rm: %v", err)
+	}
+	if !strings.Contains(out, stray) {
+		t.Errorf("the warning must name the directory left behind; got:\n%s", out)
+	}
+	if _, statErr := os.Stat(stray); statErr != nil {
+		t.Errorf("den must not have touched %s: %v", stray, statErr)
+	}
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
 	}
 }
