@@ -12,10 +12,16 @@ import (
 	"github.com/PillowPillow/den/internal/doctor"
 )
 
-// runInit runs `den init` against a given den home, the same shape as
-// runDoctor (doctor_test.go): the whole command, not deninit.Run directly, so
-// the assertions cover cobra's wiring (--den-home, RunE's error becoming a
-// non-zero Execute) too.
+// runInit builds newInitCmd DIRECTLY (bypassing the root tree entirely), the
+// same shape as runDoctor (doctor_test.go). This covers RunE's error becoming
+// a non-zero Execute, and nothing more: --den-home here is a local variable
+// handed straight to newInitCmd, never parsed off a command line, and
+// root.AddCommand(newInitCmd(&denHome)) (root.go) is not exercised at all.
+// TestInitIsWiredIntoTheRootTree below is what covers that; the tests through
+// THIS helper exist so the rest of this file's assertions (T2's config_dir
+// link, the doctor round-trip, the refusal's untouched-file check) don't
+// have to fight NewRootCmd's real SystemDeps() for something init needs
+// none of.
 func runInit(t *testing.T, home string) (string, error) {
 	t.Helper()
 	cmd := newInitCmd(&home)
@@ -25,6 +31,32 @@ func runInit(t *testing.T, home string) (string, error) {
 	cmd.SetArgs(nil)
 	err := cmd.Execute()
 	return out.String(), err
+}
+
+// TestInitIsWiredIntoTheRootTree covers what runInit's helper deliberately
+// does not: root.AddCommand(newInitCmd(&denHome)) (root.go) and the
+// --den-home PERSISTENT FLAG actually being parsed off a real command line,
+// through NewRootCmd — the literal reading of acceptance criterion #1
+// (`den init --den-home <tmp>`). Same shape as TestDoctorIsWiredIntoTheRootTree
+// (doctor_test.go): go through run(), not a hand-built command.
+//
+// Unlike that doctor test, this one CAN assert the exit code and the exact
+// files written: init makes no system call (no LookPath, no exec.Command,
+// no socket) and so, unlike doctor, owes nothing to whatever machine runs
+// the suite — a fresh home must deterministically succeed everywhere.
+func TestInitIsWiredIntoTheRootTree(t *testing.T) {
+	home := t.TempDir()
+
+	out, err := run(t, "init", "--den-home", home)
+	if err != nil {
+		t.Fatalf("den init --den-home %s: %v\n%s", home, err, out)
+	}
+	if !strings.Contains(out, "config.yaml") {
+		t.Errorf("output = %q, expected it to mention config.yaml", out)
+	}
+	if _, statErr := os.Stat(config.GlobalPath(home)); statErr != nil {
+		t.Fatalf("config.yaml missing after `den init --den-home %s`: %v", home, statErr)
+	}
 }
 
 // TestInitCreatesALoadableDenHome is the link to T2: config_dir and

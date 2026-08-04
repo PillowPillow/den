@@ -109,6 +109,45 @@ func TestRunCreatesTheHomeDirectoryWhenItDoesNotExistYet(t *testing.T) {
 	}
 }
 
+// TestAPartialRunLeavesTheHomeReRunnable locks down the write order in Run:
+// config.yaml (the sentinel Run's own refusal probe checks) must be written
+// LAST, so a failure partway through never leaves a home holding ONLY the
+// sentinel — which a retry would then refuse as "already initialized"
+// despite never having actually completed.
+//
+// The obstruction is a stray FILE at <home>/nests: fakeSrc's alphabetical
+// order (after the sentinel is moved to the end) writes nests/example.yaml
+// before stacks/devx/stack.yaml and before config.yaml, so MkdirAll(<home>/
+// nests, ...) fails on the FIRST file, before Run ever reaches the sentinel.
+func TestAPartialRunLeavesTheHomeReRunnable(t *testing.T) {
+	home := t.TempDir()
+	strayFile := filepath.Join(home, "nests")
+	if err := os.WriteFile(strayFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seeding the stray file at %s: %v", strayFile, err)
+	}
+	var out bytes.Buffer
+
+	if err := Run(home, fakeSrc, &out); err == nil {
+		t.Fatal("expected Run to fail: nests/ can't be created where a file already sits")
+	}
+	if _, statErr := os.Stat(config.GlobalPath(home)); !os.IsNotExist(statErr) {
+		t.Fatalf("config.yaml must NOT exist after a failed Run — it would wrongly refuse the retry below, stat err = %v", statErr)
+	}
+
+	// Fix the obstruction and retry: THIS is the property under test — a
+	// home left behind by a failed Run must still be completable, not
+	// permanently bricked behind "already initialized".
+	if err := os.Remove(strayFile); err != nil {
+		t.Fatalf("removing the stray file: %v", err)
+	}
+	if err := Run(home, fakeSrc, &out); err != nil {
+		t.Fatalf("retry after fixing the obstruction: %v", err)
+	}
+	if _, statErr := os.Stat(config.GlobalPath(home)); statErr != nil {
+		t.Fatalf("config.yaml missing after the successful retry: %v", statErr)
+	}
+}
+
 func TestRunRefusesWhenConfigYamlAlreadyExists(t *testing.T) {
 	home := t.TempDir()
 	existing := "defaults:\n  agent: mine\n"

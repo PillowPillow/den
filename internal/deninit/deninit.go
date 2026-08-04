@@ -60,6 +60,30 @@ func Run(denHome string, src fs.FS, out io.Writer) error {
 	// test asserting on it) independent of that implementation detail.
 	sort.Strings(files)
 
+	// The sentinel — config.yaml, the file Run's OWN refusal probe above
+	// checks — is moved to the END of the write order, so it is the LAST
+	// thing written, not whatever a plain alphabetical sort would put first
+	// ("config.yaml" sorts before "nests/…" and "stacks/…"). This is what
+	// makes a partial failure re-runnable rather than a permanent brick: if
+	// MkdirAll or WriteFile fails partway through (a stray FILE sitting where
+	// "nests" should be a directory, a full disk on a later write), the
+	// sentinel was never written, so a retry sees no config.yaml and
+	// proceeds normally. Sentinel-first would instead leave a home holding
+	// ONLY config.yaml, and every retry would refuse with "already
+	// initialized: <path>" — a message with no remedy for a home that was
+	// never actually complete. The write order is therefore load-bearing:
+	// do NOT "simplify" this back to a plain sort for determinism, and do
+	// not reintroduce it by writing in fs.WalkDir order either — both
+	// silently put the sentinel first again.
+	sentinel := filepath.Base(config.GlobalPath(denHome)) // "config.yaml" — always a top-level name, per paths.go
+	for i, rel := range files {
+		if rel == sentinel {
+			files = append(files[:i], files[i+1:]...)
+			files = append(files, sentinel)
+			break
+		}
+	}
+
 	// No traversal guard on `rel` below. `src` being a PARAMETER does not
 	// reopen this: fs.WalkDir only ever yields names src itself reports for
 	// ".", and every real caller is a compile-time go:embed (rooted through
