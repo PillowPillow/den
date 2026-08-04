@@ -371,8 +371,45 @@ func Run(denHome string, d Deps) []Check {
 			add("nest "+n.Name, false, "%v", err)
 		}
 		for _, r := range n.Repos {
-			if _, err := d.Stat(r.Path); err != nil {
-				add("nest "+n.Name, false, "repo not found: %s", r.Path)
+			if r.Key == "" {
+				// path: repo — r.Path is already the concrete machine path
+				// nest.LoadNest expanded.
+				if _, err := d.Stat(r.Path); err != nil {
+					add("nest "+n.Name, false, "repo not found: %s", r.Path)
+				}
+				continue
+			}
+			// key: repo — nest.LoadNest leaves r.Path empty on purpose;
+			// nest.Resolve is what fills it, by looking r.Key up in
+			// g.Repos. doctor does not call Resolve (it stays a
+			// non-resolving diagnostic, matching the rest of this
+			// function), so it must do that same lookup itself here —
+			// otherwise d.Stat("") "fails" against a blank path and the
+			// report names nothing, the opposite of den's doctrine that a
+			// refusal always names the thing to fix.
+			path, ok := g.Repos[r.Key]
+			if !ok {
+				// Same wording family as resolveRepoKeys's own
+				// unmapped-key refusal (internal/nest/resolve.go): the
+				// remedy the user is sent to is the same file either way,
+				// and a diverging message here would just be a second
+				// dialect for the same fix.
+				hint := ""
+				if r.URL != "" {
+					hint = fmt.Sprintf(" (clone: %s)", r.URL)
+				}
+				add("nest "+n.Name, false,
+					"repo key %q is not mapped on this machine — add `%s: <local path>` under "+
+						"`repos:` in %s%s", r.Key, r.Key, config.GlobalPath(denHome), hint)
+				continue
+			}
+			if _, err := d.Stat(path); err != nil {
+				// Same "repo not found: <path>" prefix the path: branch
+				// above prints, with the key appended: both are named, so
+				// the user knows which `repos:` entry in config.yaml
+				// points at the wrong place, not just that some path is
+				// missing.
+				add("nest "+n.Name, false, "repo not found: %s (key %q)", path, r.Key)
 			}
 		}
 	}

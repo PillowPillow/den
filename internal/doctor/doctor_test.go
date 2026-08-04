@@ -2,12 +2,14 @@ package doctor
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/sshagent"
 )
 
@@ -168,6 +170,138 @@ func TestRunNestRepoNotFound(t *testing.T) {
 	}
 	if _, ok := find(checks, "/dev/api"); !ok {
 		t.Error("the failing check should name the missing repo")
+	}
+}
+
+// --- key-typed repos (repos: entries resolved via config.yaml's `repos:` map) ---
+//
+// nest.LoadNest leaves Repo.Path empty for a `key:` entry — only nest.Resolve
+// fills it, by looking the key up in Global.Repos (internal/nest/resolve.go).
+// doctor does not call Resolve; it must do the same lookup itself against g,
+// already in scope, or a key-typed repo gets Stat-ed on its blank Path and
+// reported as "repo not found: " — a message that names nothing.
+
+// keyRepoDenHome builds a den home whose only nest ("api") declares a single
+// key-typed repo. An empty mappedPath omits the `repos:` mapping entirely,
+// to exercise the unmapped-key case.
+func keyRepoDenHome(t *testing.T, key, mappedPath string) string {
+	t.Helper()
+	dir := validDenHome(t)
+	reposBlock := ""
+	if mappedPath != "" {
+		reposBlock = fmt.Sprintf("repos:\n  %s: %s\n", key, mappedPath)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+`+reposBlock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nests", "api.yaml"),
+		[]byte(fmt.Sprintf("stack: devx\nrepos:\n  - { key: %s }\n", key)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// A key mapped to a path that exists must report nothing. The Stat double
+// fails on the EMPTY path and on it alone (same technique as
+// TestRunIgnoresAnEmptyEntryInKits): with an always-OK okDeps a check that
+// never resolved the key and left Path blank would pass this test unnoticed,
+// since Stat("") would also return nil.
+func TestRunKeyRepoMappedAndPresent(t *testing.T) {
+	dir := keyRepoDenHome(t, "myrepo", "/dev/myrepo")
+	d := okDeps()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "" {
+			return nil, errors.New("empty path")
+		}
+		return nil, nil
+	}
+	checks := Run(dir, d)
+	if !allOK(checks) {
+		t.Errorf("a mapped, present key repo must report nothing; checks: %+v", checks)
+	}
+}
+
+// A key mapped to a path that does NOT exist: the message must name BOTH the
+// key and the mapped path, so the user knows which mapping (config.yaml's
+// `repos:` entry) points at the wrong place.
+func TestRunKeyRepoMappedButMissing(t *testing.T) {
+	dir := keyRepoDenHome(t, "myrepo", "/dev/myrepo")
+	d := okDeps()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/dev/myrepo" {
+			return nil, errors.New("not found")
+		}
+		return nil, nil
+	}
+	checks := Run(dir, d)
+	if allOK(checks) {
+		t.Error("expected a failure when a mapped key's path does not exist")
+	}
+	c, ok := find(checks, "myrepo")
+	if !ok {
+		t.Fatal("the failing check should name the key")
+	}
+	if !c.Blocking() {
+		t.Errorf("a missing mapped repo must be a failure; got %+v", c)
+	}
+	if !strings.Contains(c.Detail, "/dev/myrepo") {
+		t.Errorf("detail = %q, must also name the mapped path — otherwise the user "+
+			"can't tell which mapping is wrong", c.Detail)
+	}
+}
+
+// A key with no mapping at all: the message must name the key and the
+// remedy — add it under `repos:` in the global config — in the same wording
+// family as nest.Resolve's own unmapped-key refusal (resolveRepoKeys in
+// internal/nest/resolve.go).
+func TestRunKeyRepoUnmapped(t *testing.T) {
+	dir := keyRepoDenHome(t, "myrepo", "") // no `repos:` mapping at all
+	checks := Run(dir, okDeps())
+	if allOK(checks) {
+		t.Error("expected a failure when a key repo has no mapping")
+	}
+	c, ok := find(checks, "myrepo")
+	if !ok {
+		t.Fatal("the failing check should name the unmapped key")
+	}
+	if !c.Blocking() {
+		t.Errorf("an unmapped key repo must be a failure; got %+v", c)
+	}
+	if !strings.Contains(c.Detail, "repos:") {
+		t.Errorf("detail = %q, must name the remedy (`repos:` in config.yaml)", c.Detail)
+	}
+	if !strings.Contains(c.Detail, config.GlobalPath(dir)) {
+		t.Errorf("detail = %q, must name the file to fix, like nest.Resolve's own "+
+			"unmapped-key refusal does", c.Detail)
+	}
+}
+
+// An unmapped key whose repo entry also declares `url:` must surface the
+// clone hint, exactly like resolveRepoKeys's own refusal does — the entry
+// exists precisely to point at the clone command an unmapped key most likely
+// needs next.
+func TestRunKeyRepoUnmappedNamesTheCloneURL(t *testing.T) {
+	dir := keyRepoDenHome(t, "myrepo", "")
+	if err := os.WriteFile(filepath.Join(dir, "nests", "api.yaml"),
+		[]byte("stack: devx\nrepos:\n  - { key: myrepo, url: git@example.com:acme/myrepo.git }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	checks := Run(dir, okDeps())
+	c, ok := find(checks, "myrepo")
+	if !ok {
+		t.Fatal("the failing check should name the unmapped key")
+	}
+	if !strings.Contains(c.Detail, "git@example.com:acme/myrepo.git") {
+		t.Errorf("detail = %q, must carry the clone hint from `url:`", c.Detail)
 	}
 }
 
