@@ -23,7 +23,14 @@ jobs:
       # otherwise installs whatever is newest, and a task v4 released on a
       # Tuesday would break a CI whose code has not moved. `repo-token` is what
       # keeps the release lookup off the unauthenticated GitHub API rate limit.
-      - uses: arduino/setup-task@v2
+      #
+      # The action's own major is `@v3` — unrelated to the `version: 3.x` below,
+      # which is go-task's. v2.0.0 is the last node20 tag and was the one action
+      # still tripping the deprecation warning after #44 bumped the other three;
+      # v3.0.0 (2026-06-30) moves the runtime to node24 and changes nothing else
+      # that matters here — `version` and `repo-token` are declared identically
+      # at both tags, read out of action.yml, not out of the release notes.
+      - uses: arduino/setup-task@v3
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
