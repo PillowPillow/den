@@ -141,17 +141,27 @@ func DecodeSandboxNest(denHome, component string) (SandboxNest, error) {
 		//
 		// The local-origin case has no spelling at all, so the honest remedy
 		// is that the sandbox has to go. --keep-worktrees, because den cannot
-		// attribute its worktrees to a nest either. The lasting fix is the
-		// rename, and the LOCAL file is the one to rename: a rename inside a
-		// source's clone is reverted by its next `den source update`.
+		// attribute its worktrees to a nest either.
+		//
+		// THE RENAME IS SAID TO COME AFTER THE DESTROY, and the order is not
+		// stylistic. Renaming the local file while the sandbox is still LIVE
+		// makes localExists false, so the decode stops refusing and resolves
+		// to the source nest — and `den ports <name>` then succeeds, publishing
+		// the source nest's declared ports into a sandbox the local nest
+		// spawned. That is the very outcome this refusal exists to prevent, so
+		// the message must not describe a path that walks into it.
+		//
+		// The LOCAL file is the one to rename: a rename inside a source's
+		// clone is reverted by its next `den source update`.
 		return SandboxNest{}, fmt.Errorf(
 			"sandbox %q: two nests produce this name — the local nest %s and the source nest %s — "+
 				"and a sandbox name records neither, so den will not guess which one declares its "+
 				"repos. If it was spawned from the SOURCE nest, address it as `%s`, which always "+
 				"resolves there. If it was spawned from the LOCAL nest, no spelling reaches it: "+
-				"destroy it with `den rm %s --keep-worktrees` and re-spawn it once the names no "+
-				"longer collide. Either way the lasting fix is to rename %s (renaming inside a "+
-				"source is reverted by its next `den source update`)",
+				"destroy it with `den rm %s --keep-worktrees`. Then — once no sandbox carries this "+
+				"name any more, never before, or den would silently resolve the survivor to the "+
+				"source nest — rename %s so the two stop colliding (renaming inside a source is "+
+				"reverted by its next `den source update`)",
 			component, local, found[0].Path, found[0].Ref(), component, local)
 
 	case len(found) > 1:

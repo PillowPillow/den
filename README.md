@@ -386,8 +386,8 @@ den performs itself. Local nests can use `key:` too — it is one mechanism, not
 Keys are resolved **after** `--without`/`--only`, so an unmapped key on an *optional* repo is
 escapable: a teammate who simply does not have the front-end checkout runs `den corp:backend
 --without front-app` and spawns without it. The refusal says so itself when the repo is optional.
-A key on a repo that is still selected always refuses — den never drops a repo on its own — and a
-*required* one is never offered the escape, since `--without` refuses required repos outright.
+A key on a repo that is still selected always refuses — den never drops a repo on its own — and
+a *required* one is never offered the escape, since `--without` refuses required repos outright.
 
 ### Addressing
 
@@ -438,11 +438,14 @@ hint: source "corp" was last fetched more than 7 days ago — den source update 
 The same validation `source add`/`source update` run: strict YAML, `parent:` resolvable and
 acyclic, declared paths (`kit`, `kits`, `provision.includes`/`steps`) existing and confined to the
 checkout, bare (never prefixed) internal references, a nest with no `stack:`, and a nest whose
-`repos:` carries a `path:` instead of a `key:` — a work repo lives outside the checkout, so no
-path could travel to a colleague's machine anyway. It reports every finding at once, not one per
-push. A stack's illegal name, missing `image:`, or a repo entry with both (or neither) `path:`
-and `key:` are refused too — those surface as the load error on the offending file, which can end the report early on that one file rather than join the itemized list
-above. Point it at a checkout to run it standalone, e.g. from the team repo's own CI:
+`repos:` carries an **absolute** `path:` (`/Users/alice/dev/x`, or a `~/` that expands to one) —
+that names a directory only the authoring machine has. Declare `key:` instead and let each
+teammate map it. A *relative* `path:` is not currently refused, though it is no more shareable:
+treat `key:` as the only form that travels. It reports every finding at once, not one per push.
+A stack's illegal name, missing `image:`, or a repo entry with both (or neither) `path:` and
+`key:` are refused too — those surface as the load error on the offending file, which can end the
+report early on that one file rather than join the itemized list above. Point it at a checkout to
+run it standalone, e.g. from the team repo's own CI:
 
 ```bash
 den lint .

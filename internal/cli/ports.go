@@ -91,8 +91,15 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 			if err := b.CheckAttachable(); err != nil {
 				return err
 			}
-			// EVERYTHING THIS COMMAND CAN REFUSE IS REFUSED BEFORE THE WAKE
-			// BELOW. The den home and the nest used to be read after it, on
+			// NO CONFIGURATION REFUSAL LANDS AFTER THE WAKE BELOW — which is
+			// the guarantee this ordering buys, and not the broader "nothing
+			// can fail after the wake": `ports.Resolve` and `publishPorts`
+			// both still return errors further down, and they must, since
+			// scanning the host and publishing into the VM are the work the
+			// command exists to do and neither is knowable beforehand. What
+			// moved up is everything answerable from FILES ALONE.
+			//
+			// The den home and the nest used to be read after it, on
 			// the argument that `sbx ls --json` alone should answer a sandbox
 			// that does not exist — and half of that still holds, which is why
 			// this sits BELOW sbx.Find and CheckAttachable: an absent sandbox
