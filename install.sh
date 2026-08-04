@@ -23,6 +23,12 @@ fail() {
 
 command -v curl >/dev/null 2>&1 || fail "curl is required — install it with your package manager and re-run"
 command -v tar >/dev/null 2>&1 || fail "tar is required — install it with your package manager and re-run"
+command -v mktemp >/dev/null 2>&1 || fail "mktemp is required — install it with your package manager and re-run"
+# install(1) is a coreutils/busybox binary, never a shell builtin, so it can be
+# missing from a stripped image exactly like curl or tar. Guarded here so the
+# remedy path is the same sentence for every missing tool, instead of a bare
+# "install: not found" surfacing 80 lines later after a download already ran.
+command -v install >/dev/null 2>&1 || fail "install is required — install it with your package manager and re-run"
 
 case "$(uname -s)" in
     Darwin) os=darwin ;;
@@ -76,7 +82,18 @@ archive="den_${tag#v}_${os}_${arch}.tar.gz"
 base_url="https://github.com/$REPO/releases/download/$tag"
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT INT TERM
+# The second command covers the staging file of the two-step install below: it
+# exists only between `install` and `mv`, but a signal landing in that window —
+# or an `mv` that fails after `install` succeeded — would otherwise leave a
+# stray .den.new.<pid> sitting in the user's bin directory forever.
+#
+# `rm -f`, not `rm -rf`, and deliberately a separate command: $INSTALL_DIR comes
+# from the caller's DEN_INSTALL_DIR, so this is the one path in the trap that is
+# user-controlled. The staging path is always a regular file, `-r` would buy
+# nothing, and keeping it off means no interpolation of a caller-supplied value
+# can turn cleanup into a recursive delete. $tmp keeps -rf: it is a directory,
+# and it comes from mktemp.
+trap 'rm -rf "$tmp"; rm -f "$INSTALL_DIR/.den.new.$$"' EXIT INT TERM
 
 printf 'Downloading den %s (%s/%s)...\n' "$tag" "$os" "$arch"
 curl -fsSL -o "$tmp/$archive" "$base_url/$archive" \
@@ -90,20 +107,35 @@ case "$checksum_tool" in
     sha256sum) (cd "$tmp" && sha256sum -c expected.txt >/dev/null 2>&1) ;;
     shasum) (cd "$tmp" && shasum -a 256 -c expected.txt >/dev/null 2>&1) ;;
 # checksums.txt travels the same unsigned TLS channel as the archive, so this
-# catches a corrupted or truncated download and a bad mirror — it cannot catch
-# a compromised release. The message claims only what the check proves.
-esac || fail "checksum mismatch for $archive — the download is corrupted or was served by a bad mirror; re-run, and report it if this persists"
+# proves integrity, never authenticity: it catches a corrupted or truncated
+# download, and cannot catch a compromised release. The message claims only
+# what the check proves.
+esac || fail "checksum mismatch for $archive — the download is corrupted or incomplete; re-run, and report it if this persists"
 
 tar -xzf "$tmp/$archive" -C "$tmp" den \
     || fail "could not extract 'den' from $archive — the release layout changed; report this at https://github.com/$REPO/issues"
 
 mkdir -p "$INSTALL_DIR" || fail "cannot create $INSTALL_DIR — pick another destination with DEN_INSTALL_DIR"
-# `mkdir -p` succeeds on a directory that already exists but is not writable —
-# /usr/local/bin without sudo is exactly that — so the guard above cannot cover
-# the most common failure. Without this one, it surfaces as a bare install(1)
-# error naming no remedy.
-install -m 755 "$tmp/den" "$INSTALL_DIR/den" \
-    || fail "cannot write $INSTALL_DIR/den — check the directory's permissions, or pick another destination with DEN_INSTALL_DIR"
+# Two steps, not one. `install` straight onto $INSTALL_DIR/den writes into the
+# live file: a reinstall while `den` is running fails with ETXTBSY on Linux, and
+# an interrupt mid-copy leaves a truncated binary on PATH. Installing beside it
+# and renaming makes the swap a single atomic rename(2) — the reader either gets
+# the old den or the new one, never half of either.
+#
+# The failure message names the destination and a remedy but not a cause:
+# `mkdir -p` succeeds on a directory that already exists but is not writable
+# (/usr/local/bin without sudo is exactly that), so permissions are the *likely*
+# reason and not the only one — a full filesystem and a read-only mount land
+# here too. Asserting "permission denied" would send a full-disk user to chmod.
+#
+# SC2015 warns that `A && B || C` is not if-then-else because C also runs when A
+# succeeded and B failed. That is precisely the wiring wanted here: a failed
+# `install` and a failed `mv` are both "den did not reach its destination", and
+# both must reach the same refusal.
+# shellcheck disable=SC2015
+install -m 755 "$tmp/den" "$INSTALL_DIR/.den.new.$$" \
+    && mv -f "$INSTALL_DIR/.den.new.$$" "$INSTALL_DIR/den" \
+    || fail "cannot install to $INSTALL_DIR/den — check the directory's permissions, or pick another destination with DEN_INSTALL_DIR"
 
 printf 'Installed %s/den\n' "$INSTALL_DIR"
 case ":$PATH:" in

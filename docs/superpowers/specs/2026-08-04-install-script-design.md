@@ -24,6 +24,10 @@ Variables d'environnement, toutes optionnelles :
 | `DEN_VERSION` | latest release | Pinner une version exacte (`v1.0.0`) — rollback, CI |
 | `DEN_INSTALL_DIR` | `~/.local/bin` | Destination du binaire |
 
+`DEN_VERSION` doit porter le `v` initial : `1.0.1` est **refusé**, pas normalisé. Sans le
+`v`, le nom d'archive resterait valide sous une URL de download inexistante, et le 404
+accuserait la release d'une faute qui est dans l'environnement de l'appelant.
+
 En invocation pipe, l'assignation se place sur `sh`, pas sur `curl` — chaque commande d'un
 pipeline reçoit son propre environnement, donc `DEN_VERSION=… curl … | sh` laisserait `sh`
 sans la variable : `curl -fsSL … | DEN_VERSION=v1.0.0 sh`.
@@ -36,8 +40,9 @@ release (script figé jusqu'à la release suivante).
 
 ### 1. Résolution de la version
 
-Sans `DEN_VERSION` : `curl -sI https://github.com/PillowPillow/den/releases/latest`, le
-tag est lu dans le header `Location` de la redirection. Rejeté : l'API
+Sans `DEN_VERSION` : `curl -fsSLI -o /dev/null -w '%{url_effective}'
+https://github.com/PillowPillow/den/releases/latest` — curl suit la redirection et le tag
+est lu dans le dernier segment de l'URL finale. Rejeté : l'API
 `api.github.com/releases/latest`, qui plafonne à 60 requêtes/h non authentifiées et
 imposerait un parsing JSON sans `jq` (dépendance qu'on refuse d'exiger).
 
@@ -61,7 +66,11 @@ normalisation silencieuse.
 
 ### 4. Installation
 
-- `install -m 755 den "$DEN_INSTALL_DIR/den"`, `mkdir -p` de la destination si absente.
+- `mkdir -p` de la destination si absente, puis installation en deux temps :
+  `install -m 755 den "$DEN_INSTALL_DIR/.den.new.$$"` suivi d'un `mv -f` sur
+  `$DEN_INSTALL_DIR/den`. Le remplacement est ainsi un `rename(2)` atomique — jamais de
+  binaire tronqué sur le PATH — et une réinstallation pendant que `den` tourne n'échoue
+  pas en ETXTBSY. Le fichier de staging est couvert par le `trap`.
 - Pas de sudo : `~/.local/bin` est le standard XDG, présent dans le PATH des distribs
   récentes. Rejeté : `/usr/local/bin` + sudo (un `curl | sh` qui demande sudo mérite la
   méfiance qu'il inspire) ; auto-détection de la destination (comportement variable selon

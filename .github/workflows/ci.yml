@@ -29,6 +29,12 @@ jobs:
   # archive-name contract — nothing else tests it. This job is also the one
   # deliberate exception to "no network in the suite": the thing under test
   # IS the network path.
+  #
+  # Two known spurious-failure vectors, so a red run here is not automatically a
+  # regression: (a) /releases/latest can redirect to a new tag while its assets
+  # are still uploading, which 404s the smoke's download — re-run the job;
+  # (b) shellcheck ships with ubuntu-latest, so its version floats and a new
+  # release can raise a check that passed yesterday on unchanged code.
   install-script:
     runs-on: ubuntu-latest
     steps:
@@ -44,3 +50,15 @@ jobs:
             echo "den version answered '$got', expected 'den $tag'"
             exit 1
           fi
+      # The smoke above only proves the happy path. install.sh's whole stance is
+      # fail-closed — refuse an unresolvable tag, a checksum mismatch, an
+      # unverifiable binary — and nothing else in the repo exercises that side,
+      # so a refusal silently degrading into a partial install would ship. This
+      # step is that guard: the script must exit non-zero AND leave nothing
+      # behind on the destination.
+      - name: refusal paths
+        run: |
+          if DEN_INSTALL_DIR="$RUNNER_TEMP/neg" DEN_VERSION=v9.9.9 sh install.sh; then
+            echo "expected a refusal for a nonexistent tag"; exit 1
+          fi
+          test ! -e "$RUNNER_TEMP/neg/den"
