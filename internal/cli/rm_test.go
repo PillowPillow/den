@@ -875,3 +875,50 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	}
 	_ = stdout
 }
+
+// The prefixed spelling WITH cleanup enabled — the path nothing exercised:
+// TestRmAcceptsAWorktreedSourceReference passes --keep-worktrees (so
+// cleanWorktrees never runs) and the two cleanup tests use the bare
+// "corp-api.feat12". Here nestOfSandbox's explicit-reference branch decides
+// which repos' directories get removed, so a wrong nest means removing the
+// wrong ones.
+func TestRmCleansTheWorktreeOfAPrefixedSourceReference(t *testing.T) {
+	denHome := t.TempDir()
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeConfig(t, denHome, `agents:
+  claude:
+    config_dir: /profile/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+worktree_layout: central
+worktree_root: `+filepath.Join(denHome, "worktrees")+`
+`)
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+
+	if _, err := worktree.Ensure(context.Background(), worktree.NewGit(), "central",
+		filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp:api.feat12")
+	if err != nil {
+		t.Fatalf("den rm corp:api.feat12: %v", err)
+	}
+	if !strings.Contains(out, "moved to trash") {
+		t.Errorf("the source nest's worktree must be cleaned up; got:\n%s", out)
+	}
+	// The trash entry is named <timestamp>-<sandbox>-<repo>: asserting the
+	// repo suffix is what proves the SOURCE nest's `repos:` were read, not
+	// merely that something was moved.
+	if !strings.Contains(out, "corp-api.feat12-api") {
+		t.Errorf("the trash entry must name the source nest's declared repo; got:\n%s", out)
+	}
+	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+}

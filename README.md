@@ -468,9 +468,13 @@ name alone, and are therefore shared between them:
   others this one is author-chosen rather than derived, so it is avoidable — give a team stack a
   distinctive tag (`corp-devx:v1`) and the collision cannot arise.
 
-One more, created by the ambiguity refusal above: once a local nest file shares a live source
-sandbox's flattened name, that flattened name is no longer addressable and `den sh`/`rm`/`ports`
-need the prefixed spelling (`corp:backend`) until you rename one of the two nests.
+One more, and it is the collision arriving late: a local nest named `corp-backend` spawns without
+any check (den only tests a flattening collision when the reference it was given carried a source
+prefix), so a live `corp-backend` may have come from either nest. den refuses the flattened name
+rather than guess. `corp:backend` still works if that is where the sandbox came from; if it came
+from the local nest, nothing reaches it and it has to be destroyed and re-spawned once the names
+no longer collide. Renaming the local nest is the lasting fix — a rename inside a source is
+reverted by its next `den source update`.
 
 ## Design
 

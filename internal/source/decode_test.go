@@ -153,3 +153,36 @@ func TestDecodeSandboxNestWithNoSourcesInstalled(t *testing.T) {
 		t.Errorf("decoded %+v, want the local fallback", got)
 	}
 }
+
+// The ambiguity refusal must be honest about BOTH origins. spawn's collision
+// block sits entirely inside `if srcName != ""`, so `den corp-api` on a LOCAL
+// nest is never checked against source decompositions: a live "corp-api" may
+// genuinely have come from either side, and a flattened sandbox name carries
+// no record of which.
+//
+// A refusal offering only `corp:api` would therefore be the I3 shape again —
+// a suggested command that SUCCEEDS and does the wrong thing, publishing the
+// source nest's declared ports into a sandbox spawned from the local one.
+func TestDecodeSandboxNestAmbiguityRefusalAddressesBothOrigins(t *testing.T) {
+	home := t.TempDir()
+	writeNest(t, home, "corp-api")
+	writeNest(t, Dir(home, "corp"), "api")
+
+	_, err := DecodeSandboxNest(home, "corp-api")
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	msg := err.Error()
+	// The spelling that works IF the sandbox came from the source, said to be
+	// conditional rather than offered flatly.
+	if !strings.Contains(msg, "corp:api") {
+		t.Errorf("message %q lacks the source-side spelling", msg)
+	}
+	// And the only honest remedy when it came from the LOCAL nest: no spelling
+	// reaches it, so the sandbox has to go and be re-spawned uncollided.
+	for _, want := range []string{"den rm corp-api --keep-worktrees", "rename"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q lacks %q — the local-origin case has no other remedy", msg, want)
+		}
+	}
+}
