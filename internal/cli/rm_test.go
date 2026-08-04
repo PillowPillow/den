@@ -241,7 +241,7 @@ func TestRmRejectsANonCanonicalSandboxName(t *testing.T) {
 
 // Best-effort on RESOLUTION: a nest removed from ~/.den/nests since the spawn
 // must not prevent destroying a genuinely live sandbox — and the warning must
-// say where the abandoned worktree was left.
+// say where den looked for the worktrees it could not name.
 func TestRmUnreadableNestDoesNotPreventDestruction(t *testing.T) {
 	denHome := t.TempDir()
 	writeConfig(t, denHome, minimalConfig)
@@ -256,7 +256,9 @@ func TestRmUnreadableNestDoesNotPreventDestruction(t *testing.T) {
 		t.Errorf("the output must report the unreadable nest; got:\n%s", out)
 	}
 	// Default worktree_layout/worktree_root (minimalConfig declares neither):
-	// central, under <denHome>/worktrees.
+	// central, under <denHome>/worktrees. Nothing was ever created there in
+	// this test, so there is nothing to recover — the assertion is on den
+	// naming where it looked, not on an abandoned directory.
 	expectedWhere := filepath.Join(denHome, "worktrees", "feat12")
 	if !strings.Contains(out, expectedWhere) {
 		t.Errorf("the output must say where the abandoned worktree was left (%s); got:\n%s",
@@ -360,6 +362,41 @@ func TestRmUnreadableNestWritesToStderr(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "destroyed") {
 		t.Errorf("the success message must appear on stdout; got stdout:\n%s", stdout)
+	}
+}
+
+// The nest yaml is gone, so den knows NO repo — and recovers the worktree
+// anyway, from the directory itself. Same mechanism as issue #46's ad-hoc
+// repos: the enumeration needs no declared list.
+func TestRmUnreadableNestStillCleansUpUnderCentralLayout(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, minimalConfig+"worktree_layout: central\nworktree_root: "+root+"\n")
+	// No writeNest("api", ...): the nest is absent from ~/.den/nests.
+
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	p, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"central", root, worktree.Name{Dir: "feat12", Branch: "feat12"}, repo)
+	if err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(p); !os.IsNotExist(statErr) {
+		t.Errorf("%s must have been recovered and moved despite the unreadable nest; stat: %v", p, statErr)
+	}
+	// The failed resolution is still reported: the user must know den read no
+	// nest, even though it cleaned up.
+	if !strings.Contains(out, "unreadable") {
+		t.Errorf("the unreadable nest must still be reported; got:\n%s", out)
+	}
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
 	}
 }
 
