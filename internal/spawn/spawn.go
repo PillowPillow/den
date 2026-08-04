@@ -518,6 +518,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// stays silent. Without this, the user reattaches to a VM where
 		// git is dead and only finds out on their first git command.
 		reportMissingGitDirs(d.Out, sandboxName, live.Workspaces, gitDirs)
+		// The repos are the FIRST len(r.Repos) workspaces — step 3 appends
+		// exactly one per repo, before the git dirs, the agent profile and
+		// ssh.dir. Slicing there rather than recomputing keeps the comparison on
+		// the paths the VM would actually have received, worktrees included.
+		reportUnmountedRepos(d.Out, sandboxName, workdir, live.Workspaces, workspaces[:len(r.Repos)])
 
 		// A SINGLE status line, naming which of the two cases this is.
 		// "restarts on attach", not "resumed": under --detach den runs no
@@ -1051,6 +1056,79 @@ func reportMissingGitDirs(out io.Writer, sandboxName string, mounted, expected [
 	fmt.Fprintf(out,
 		"  this sandbox predates the fix; nothing remounts a running VM: "+
 			"`den rm %s` then relaunch.\n", sandboxName)
+}
+
+// reportUnmountedRepos warns that the sandbox does not mount every repo this
+// command asked for, OR that the shell will not start in the one this command
+// named first — TWO INDEPENDENT conditions, deliberately not one gating the
+// other.
+//
+// The mount half is presence: is each expected path anywhere in what the VM
+// mounts. The start-directory half is Decision 4 — the FIRST repo this
+// invocation named wins the attach's `-w` — and it can fail on its own even
+// when nothing is missing: `den scratch ~/dev/a ~/dev/b` creates a VM with
+// Workspaces = [a, b, …] and Workdir() = a; the next day, `den scratch
+// ~/dev/b` resolves to expected = [b], which the VM already mounts — nothing
+// "missing" — yet the attach still runs with workdir = a, frozen at the
+// original create. A presence-only check goes silent on exactly that ordinary
+// "ask for a subset of what's already mounted" gesture, which is the harm
+// this function exists to name in the first place: the user typed "I have
+// come to work in b" and lands in a, told nothing.
+//
+// On a live sandbox NEITHER promise can be kept: `sbx create` takes
+// workspaces as positionals, and den reapplies NOTHING to a running VM.
+//
+// Warn, never refuse, and never recreate: the same doctrine as reportDrift.
+// Refusing would break a `den <nest>` that worked yesterday over a path added
+// today, and recreating would destroy work in progress in the VM.
+//
+// The mount half also covers a case that was silent before: a `repos:` entry
+// added to the yaml after the sandbox was created. The mixin drift comparison
+// cannot see it — workspaces are argv, not mixin content.
+//
+// ONE warning block covers both conditions — the header and the `den rm`
+// remedy print at most once even when both fire together.
+//
+// workdir == "" (a VM that mounts nothing) suppresses the start-directory
+// line specifically: den does not invent a directory to name. It does NOT
+// suppress the mount half, which has nothing to do with where the shell
+// starts.
+func reportUnmountedRepos(out io.Writer, sandboxName, workdir string, mounted, expected []string) {
+	present := make(map[string]bool, len(mounted))
+	for _, w := range mounted {
+		// The ":ro" suffix is a mount option, not part of the path — same
+		// treatment as Sandbox.Workdir.
+		present[strings.TrimSuffix(w, ":ro")] = true
+	}
+	var missing []string
+	for _, p := range expected {
+		if !present[p] {
+			missing = append(missing, p)
+		}
+	}
+	// movedStart is independent of `missing`: it can be true when every
+	// expected repo IS mounted (the subset/reorder case above), and it must
+	// stay false on an empty workdir — that is den's "nothing mounted" case,
+	// not a moved start directory, and inventing one there would be worse
+	// than staying silent.
+	movedStart := workdir != "" && len(expected) > 0 && workdir != expected[0]
+	if len(missing) == 0 && !movedStart {
+		return // a permanent warning stops being read
+	}
+	// "does not fully match", not "does not mount every repo": the
+	// movedStart-only case (every expected repo IS mounted, only the start
+	// directory is stale) makes the narrower claim false, and this header
+	// covers both triggers, together or alone.
+	fmt.Fprintf(out,
+		"warning: sandbox %s does not fully match what this command asked for — mounts and "+
+			"start directory are both fixed at create time:\n", sandboxName)
+	for _, p := range missing {
+		fmt.Fprintf(out, "  - %s is not mounted\n", p)
+	}
+	if movedStart {
+		fmt.Fprintf(out, "  the shell starts in %s, as it did at create time\n", workdir)
+	}
+	fmt.Fprintf(out, "  `den rm %s` then relaunch to change either.\n", sandboxName)
 }
 
 // Attach opens an interactive shell in the sandbox.
