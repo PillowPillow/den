@@ -369,3 +369,76 @@ func TestResolveEnvNeverNil(t *testing.T) {
 		t.Error("Env must be an empty map, never nil: the mixin iterates over it without a guard")
 	}
 }
+
+// The spec's own §2.4 nest: one required key, one OPTIONAL key, and only the
+// required one mapped. Before this, key resolution ran before selection, so
+// `optional:` meant something for a `path:` entry (--without could drop a
+// missing one) and nothing at all for a `key:` entry — the very axis the
+// marker exists for.
+func deselectableKeyNest() (*config.Global, *Nest) {
+	g := globalTest()
+	g.Repos = map[string]string{"review-mgmt": "/dev/review-mgmt"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{
+		{Key: "review-mgmt"},
+		{Key: "front-app", Optional: true, URL: "git@gitlab.corp:front/app.git"},
+	}}
+	return g, n
+}
+
+func TestResolveWithoutEscapesAnUnmappedOptionalKey(t *testing.T) {
+	g, n := deselectableKeyNest()
+	r, err := Resolve("/d", g, stacksTest(), n, Options{Without: []string{"front-app"}})
+	if err != nil {
+		t.Fatalf("--without must escape an unmapped OPTIONAL key: %v", err)
+	}
+	if got := names(r.Repos); len(got) != 1 || got[0] != "review-mgmt" {
+		t.Errorf("Repos = %v, expected [review-mgmt]", got)
+	}
+	if r.Repos[0].Path != "/dev/review-mgmt" {
+		t.Errorf("Repos[0].Path = %q, expected the mapped path", r.Repos[0].Path)
+	}
+}
+
+func TestResolveOnlyEscapesAnUnmappedOptionalKey(t *testing.T) {
+	g, n := deselectableKeyNest()
+	r, err := Resolve("/d", g, stacksTest(), n, Options{Only: []string{"review-mgmt"}})
+	if err != nil {
+		t.Fatalf("--only must escape an unmapped OPTIONAL key: %v", err)
+	}
+	if got := names(r.Repos); len(got) != 1 || got[0] != "review-mgmt" {
+		t.Errorf("Repos = %v, expected [review-mgmt]", got)
+	}
+}
+
+// Fail-loud stays: a key that is still SELECTED refuses, and because this one
+// is optional the refusal must hand over the escape rather than leave the
+// teammate who simply does not have that repo to guess it.
+func TestResolveUnmappedSelectedOptionalKeyNamesWithout(t *testing.T) {
+	g, n := deselectableKeyNest()
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal: front-app is selected and unmapped")
+	}
+	for _, want := range []string{"front-app", "--without front-app", "git@gitlab.corp:front/app.git"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
+// A REQUIRED unmapped key is not escapable and must not be told it is:
+// --without refuses required repos outright.
+func TestResolveUnmappedRequiredKeyDoesNotOfferWithout(t *testing.T) {
+	g, n := deselectableKeyNest()
+	g.Repos = nil
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "review-mgmt") {
+		t.Errorf("error %q must name the required key", err)
+	}
+	if strings.Contains(err.Error(), "--without review-mgmt") {
+		t.Errorf("error %q offers --without on a REQUIRED repo, which selectRepos refuses", err)
+	}
+}

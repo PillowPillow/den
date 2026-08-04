@@ -101,6 +101,13 @@ repos:
 
 - Clé non mappée au spawn = refus **avant tout effet de bord** (phase de résolution, spec mère §6) :
   « add `review-mgmt:` under `repos:` in ~/.den/config.yaml (clone: git@gitlab.corp:...) ».
+- La résolution des clés se fait **après** `--without`/`--only`, jamais avant. Sinon `optional:`
+  ne voudrait rien dire sur une entrée `key:` : le refus tomberait avant la sélection, et le
+  coéquipier qui n'a tout simplement pas le repo front n'aurait aucune échappatoire — alors qu'une
+  entrée `path:` optionnelle absente, elle, se retire avec `--without`. La doctrine fail-loud ne
+  bouge pas : une clé non mappée sur un repo **encore sélectionné** refuse, et den ne retire
+  jamais rien de lui-même. Le refus nomme en plus `--without <nom>` quand le repo est optionnel —
+  et seulement là, puisque `selectRepos` refuse `--without` sur un repo requis.
 - `url:` est purement indicative — elle enrichit le message de refus, den ne clone jamais un repo
   de travail. Rejeté : proposer le clone à l'interactif — du confort contre un mécanisme de plus
   (choix du chemin, mode non-TTY), YAGNI en v1.
