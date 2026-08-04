@@ -135,21 +135,35 @@ creating anything otherwise.
 command line is dropped by not typing it. Naming an undeclared repo on either flag is not a no-op:
 den refuses the whole spawn with `repo "<name>" unknown in this nest`.
 
-**`den rm` does not clean the worktree of a repo given on the command line.** A positional is not
-part of the sandbox identity, so den persists it nowhere and `den rm` — which recovers what to
-clean from the sandbox name alone, through the nest's `repos:` — cannot know it existed. After
-`den api -w feat ~/dev/hotfix`, `den rm api.feat` leaves `worktree_root/feat/hotfix` and its git
-registration behind. Remove it yourself, naming the worktree — `git worktree remove` takes its path
-and refuses a dirty one without `-f`:
+**`den rm` cleans up the worktrees of repos it was never told about.** A positional is not part
+of the sandbox identity, so den persists it nowhere — but the worktree itself remembers: each
+directory carries a `.git` pointing back at its repository. Under the default `central` layout
+`den rm` enumerates `worktree_root/<wt>/` and recovers what the nest's `repos:` does not explain,
+so `den api -w feat ~/dev/hotfix` then `den rm api.feat` leaves neither `worktree_root/feat/hotfix`
+nor its git registration behind. The same now holds for a repo deleted from `repos:` before the
+teardown.
+
+A directory den cannot vouch for is **left in place**, named in a warning: a repository parked
+under `worktree_root`, a directory that is not a worktree, a repo whose directory name does not
+match. den removes what it placed, not what merely looks like it.
+
+So is **another nest's worktree**, and that one den did place: `worktree_root/<wt>` has no nest
+component, so `den api -w feat` and `den web -w feat` sit side by side under `worktree_root/feat`.
+`den rm api.feat` removes the worktrees of *that* sandbox — a directory accounted for by another
+nest's `repos:` is left alone and the warning names the nest that owns it. Two nests that both
+mount a repo **on the command line** under the same `-w` are the one case den cannot tell apart:
+nothing on disk says which sandbox a positional belonged to, so the first teardown cleans up both.
+
+Under the `per-repo` layout there is nothing to enumerate — the worktree lives at `<repo>/.den/<wt>`
+and without the repo path den has nowhere to look. `den rm` cleans up the declared repos and warns
+where to look for the rest:
 
 ```bash
-git -C ~/dev/hotfix worktree remove ~/.den/worktrees/feat/hotfix
+git -C ~/dev/hotfix worktree remove ~/dev/hotfix/.den/feat
 ```
 
-The same is true of a repo deleted from `repos:` before the teardown. Under the `per-repo` layout
-the leftover sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den added
-to that repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to
-remove.
+The `.den/` line den added to that repo's `.git/info/exclude` stays either way — harmless, local,
+never committed, but yours to remove.
 
 Options of `den rm`: `--keep-worktrees` (keep the worktrees), `--force` (delete them even if they
 carry uncommitted changes; without it, den refuses **before** touching the VM).

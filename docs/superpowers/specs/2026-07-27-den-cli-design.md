@@ -283,17 +283,24 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
    pour la remplacer, et son `-- ARGS` ne fait qu'*ajouter* des arguments. **Les ports ne sont PAS
    publiés au spawn** → `den ports <nest>` à la demande.
 
-**Limite connue du teardown.** `den rm` ne nettoie PAS le worktree d'un repo passé en positionnel.
-Un positionnel ne fait pas partie de l'identité (décision 7) : den ne le persiste nulle part, et
-`den rm` reconstruit ce qu'il doit nettoyer à partir du seul nom de sandbox, via les `repos:` du
-nest — il ne peut donc pas savoir que ce worktree a existé. Le répertoire et son enregistrement git
-restent en place ; en layout `per-repo` l'orphelin atterrit sous `<repo>/.den/<wt>`, dans le repo de
-l'utilisateur, avec la ligne `.den/` que den a ajoutée à son `.git/info/exclude`. Le cas préexistait
-pour un repo retiré de `repos:` avant le teardown ; les positionnels en font le chemin ordinaire.
-Le correctif tient en deux moitiés asymétriques : en layout central, énumérer `worktree_root/<wt>/*`
-et traiter les entrées que `repos:` n'explique pas ; en `per-repo`, l'énumération est impossible
-faute du chemin du repo, et il ne reste qu'à avertir. Cette asymétrie mérite son propre changement
-plutôt qu'un passager sur celui-ci.
+**Teardown des worktrees non déclarés.** `den rm` nettoie aussi le worktree d'un repo passé en
+positionnel. Un positionnel ne fait pas partie de l'identité (décision 7) et den ne le persiste
+nulle part — mais le répertoire, lui, se souvient : son `.git` désigne son dépôt. En layout
+`central`, `den rm` énumère donc `worktree_root/<wt>/*` et récupère les entrées que les `repos:` du
+nest n'expliquent pas ; le cas préexistant du repo retiré de `repos:` avant le teardown est corrigé
+du même geste. Une entrée dont den ne peut pas répondre — un dépôt garé sous `worktree_root`, un
+répertoire qui n'est pas un worktree, un repo dont le nom de répertoire diffère — est **laissée en
+place** et nommée dans un avertissement. **Le worktree d'un AUTRE nest aussi** : `worktree_root/<wt>`
+n'a pas de composante de nest, donc `den api -w feat` et `den web -w feat` cohabitent sous
+`worktree_root/feat`. `den rm api.feat` retire les worktrees de *cette* sandbox — un répertoire
+expliqué par les `repos:` d'un autre nest est laissé en place, avec un avertissement qui nomme le
+nest propriétaire. Deux nests qui montent tous deux un repo **en positionnel** sous le même `-w`
+restent indiscernables : rien sur le disque ne dit à quelle sandbox appartenait un positionnel.
+En `per-repo` l'énumération reste impossible faute du
+chemin du repo : den nettoie les repos déclarés et avertit pour le reste, sous `<repo>/.den/<wt>`.
+`--force` et le refus sur modifications non commitées s'appliquent aux entrées récupérées comme aux
+autres. Mécanisme :
+`docs/superpowers/specs/2026-08-04-den-rm-orphan-worktrees-design.md` ; historique : issue #46.
 
 ### Build DAG — `den build [stack] [--force]`
 - Parse tous les `stacks/*/stack.yaml` → graphe via `parent`.
