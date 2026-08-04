@@ -38,17 +38,20 @@ Prebuilt archives also sit on the
 [releases page](https://github.com/PillowPillow/den/releases) if you'd rather
 not pipe a script into your shell.
 
-From a checkout:
+From a checkout — the build runs through [go-task](https://taskfile.dev), so it comes first:
 
 ```bash
-make build
+brew install go-task/tap/go-task   # or, with a Go toolchain already there:
+go install github.com/go-task/task/v3/cmd/task@latest
+
+task build
 ```
 
 Every path stamps the version into the binary, so `den version` names the code it runs — the
-release tag (`v1.0.0`) via Homebrew, `go install` and releases (including `install.sh`), and where you stand relative to
-it (`v1.0.0-3-gabc1234-dirty`) via `make build`. A plain `go build` in a checkout is the one
-build that names nothing: it answers `dev`, which is the documented tell that the build skipped
-`make`.
+release tag (`v1.0.0`) via Homebrew, `go install …/cmd/den@v1.0.0` and releases (including
+`install.sh`), and where you stand relative to it (`v1.0.0-3-gabc1234-dirty`) via `task build`.
+Building from a checkout without the runner — a plain `go build`, or a `go install ./cmd/den` —
+is what names nothing: it answers `dev`, the documented tell that the build skipped `task`.
 
 ## Bootstrapping
 

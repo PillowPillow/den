@@ -19,12 +19,12 @@
 
 - **Les quatre plans sont livrés et mergés sur `main`.** Fondations, spawn, ports, build DAG.
   `origin` est `git@github.com:PillowPillow/den.git` et `main` y est poussé.
-- **699 fonctions de test, 12 paquets testés sur 13, vert** (`make test`, qui passe `-count=1` : un `go test` nu
+- **699 fonctions de test, 12 paquets testés sur 13, vert** (`task test`, qui passe `-count=1` : un `go test` nu
   peut passer sur du cache périmé).
 - **La suite est hermétique et n'invoque jamais `sbx`.** Elle ne prouve donc rien sur le binaire.
   Ce qui est attesté contre un `sbx` réel l'est par des **smokes datés** et consigné au spec §14.0
   et §14.1, avec sa date. Ce dépôt atteste le comportement de `sbx` ; il ne l'extrapole pas.
-- **v1.0.0 est taguée** (2026-08-03, tag annoté sur `e964606`). `make build` stampe
+- **v1.0.0 est taguée** (2026-08-03, tag annoté sur `e964606`). `task build` stampe
   `git describe --tags --always --dirty` dans `cli.Version` : un binaire construit en suivant le
   README répond `den v1.0.0`, plus `den dev`. **Toutes les issues v1 sont fermées.** Ce qui reste
   ouvert et pourquoi ça ne bloquait pas le tag est au §8 ci-dessous.
@@ -161,11 +161,12 @@ message reprend le périmètre du §1 — runtime + build, interactif d'abord �
 non-objectifs mot pour mot : pas de flux autonome, pas de `den sync`, pas de snapshot de plugins
 agent, pas de sécurisation d'infra partagée, pas de registry ni de CI de distribution.
 
-**#10 est FAIT** (PR #34). `make build` stampe `git describe --tags --always --dirty` dans
+**#10 est FAIT** (PR #34). `task build` stampe `git describe --tags --always --dirty` dans
 `cli.Version`, et le README ne donne plus que cette commande — deux façons documentées de builder,
 c'est ainsi que celle sans version survit. Le contrôle qui tranche n'est pas « la sortie n'est pas
-`dev` » : un `Version` vide, ce que produit un `$(...)` non échappé dans une recette make, n'est pas
-`dev` non plus. C'est l'**accord** de `./den version` et de `git describe` qui vaut preuve.
+`dev` » : un `Version` vide, ce que produit un `{{.VERSION}}` mal orthographié dans le Taskfile —
+Task rend une variable inconnue comme chaîne vide, sans erreur et en sortie 0 — n'est pas `dev`
+non plus. C'est l'**accord** de `./den version` et de `git describe` qui vaut preuve.
 
 **#21, #27 et #30 étaient faits depuis la PR #32** et sont restés ouverts trois jours : sa
 description disait `Closes #20, #21, #27, #30`, et GitHub n'honore le mot-clé que devant le
