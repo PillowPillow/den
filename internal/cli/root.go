@@ -113,6 +113,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 			return nil
 		},
 	})
+	root.AddCommand(newInitCmd(&denHome))
 	root.AddCommand(newNestCmd(&denHome))
 	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor))
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
