@@ -135,6 +135,10 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// `den source` reads the SAME injected Git as `den rm` (deps.Git) — the
 	// whole tree tests against file:// remotes, never the real network.
 	root.AddCommand(newSourceCmd(&denHome, deps.Git))
+	// `den lint` validates an arbitrary checkout: stacks, nests, references,
+	// confinement. Deliberately den-home-agnostic, so a CI runner needs no
+	// den home at all.
+	root.AddCommand(newLintCmd())
 
 	// spawn.Deps is ASSEMBLED here from the very fields newLsCmd just got:
 	// deps.Sbx is the single source. Out is left unset, configureSpawn
