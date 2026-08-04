@@ -321,6 +321,38 @@ func TestResolveRefusesRelativeDenHome(t *testing.T) {
 	}
 }
 
+// A key-typed repo's Path is filled from the personal mapping before repo
+// selection runs.
+func TestResolveRepoKeys(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"api": "/home/u/dev/api"}
+	n := &Nest{Name: "n", Stack: "devx", Repos: []Repo{{Key: "api"}}}
+	r, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r.Repos[0].Path != "/home/u/dev/api" {
+		t.Errorf("Path = %q", r.Repos[0].Path)
+	}
+}
+
+// A key with no local mapping is a refusal BEFORE any side effect, naming
+// the file to fix and — when the nest declared one — the clone command.
+func TestResolveRepoKeyMissing(t *testing.T) {
+	g := globalTest()
+	n := &Nest{Name: "n", Stack: "devx",
+		Repos: []Repo{{Key: "api", URL: "git@gitlab.corp:a/api.git"}}}
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	for _, want := range []string{"api", "repos:", "config.yaml", "git@gitlab.corp:a/api.git"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
 func TestResolveEnvNeverNil(t *testing.T) {
 	g := &config.Global{
 		Agents:         map[string]config.Agent{"claude": {ConfigDir: "/p", Update: "u"}},

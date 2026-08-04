@@ -14,14 +14,29 @@ import (
 	"github.com/PillowPillow/den/internal/config"
 )
 
-// Repo is a repository co-mounted in the sandbox.
+// Repo is a repository co-mounted in the sandbox. Exactly one of Path and Key
+// is set (LoadNest refuses both and neither-with-url): Path is a machine
+// path, Key is an indirection through the personal `repos:` mapping of
+// config.yaml — the one thing that lets a TEAM nest travel between machines
+// (spec 2026-08-04 §2.4).
 type Repo struct {
-	Path     string `yaml:"path"`
+	Path string `yaml:"path"`
+	Key  string `yaml:"key"`
+	// URL is INDICATIVE only: it enriches the unmapped-key refusal with the
+	// clone command the user probably wants. den never clones a work repo.
+	URL      string `yaml:"url"`
 	Optional bool   `yaml:"optional"`
 }
 
-// Name is the repo's short name (basename), used by --without/--only.
-func (r Repo) Name() string { return filepath.Base(r.Path) }
+// Name is the repo's short name, used by --without/--only and as the
+// worktree directory component. The KEY when set — it is the shareable
+// identity — else the path basename.
+func (r Repo) Name() string {
+	if r.Key != "" {
+		return r.Key
+	}
+	return filepath.Base(r.Path)
+}
 
 // PortDecl is a port declared by the nest (spec §8).
 type PortDecl struct {
@@ -115,8 +130,24 @@ func LoadNest(denHome, name string) (*Nest, error) {
 
 	n.Name = name // the filename is authoritative, unconditionally
 	for i, r := range n.Repos {
-		if n.Repos[i].Path, err = config.ExpandPath(r.Path); err != nil {
-			return nil, fmt.Errorf("nest %q, repo %q: %w", n.Name, r.Path, err)
+		switch {
+		case r.Path != "" && r.Key != "":
+			return nil, fmt.Errorf(
+				"nest %q: repo entry %d sets both `path:` and `key:` — a repo has ONE identity: "+
+					"`path:` is a machine path, `key:` resolves through `repos:` in config.yaml. "+
+					"Two identities is a contradiction, not a precedence den can arbitrate", name, i)
+		case r.Path == "" && r.Key == "":
+			return nil, fmt.Errorf(
+				"nest %q: repo entry %d sets neither `path:` nor `key:` — den has nothing to mount", name, i)
+		case r.URL != "" && r.Key == "":
+			return nil, fmt.Errorf(
+				"nest %q: repo entry %d sets `url:` without `key:` — url exists only to enrich the "+
+					"unmapped-key message; on a `path:` entry it would never be read", name, i)
+		}
+		if r.Path != "" {
+			if n.Repos[i].Path, err = config.ExpandPath(r.Path); err != nil {
+				return nil, fmt.Errorf("nest %q, repo %q: %w", n.Name, r.Path, err)
+			}
 		}
 	}
 	// After expansion: two differently-written paths can converge.

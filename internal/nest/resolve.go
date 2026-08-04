@@ -106,6 +106,32 @@ func resolveAgent(g *config.Global, n *Nest, flagAgent string) (string, config.A
 	return name, a, configDir, nil
 }
 
+// resolveRepoKeys fills the Path of every key-typed repo from the personal
+// mapping. Refusal BEFORE any side effect, naming the exact file and line to
+// add — and the clone command when the nest declared one (spec 2026-08-04
+// §2.4). denHome locates config.yaml through GlobalPath: the message and the
+// reader must never disagree on where that file lives.
+func resolveRepoKeys(denHome string, mapping map[string]string, repos []Repo) ([]Repo, error) {
+	out := slices.Clone(repos)
+	for i, r := range out {
+		if r.Key == "" {
+			continue
+		}
+		path, ok := mapping[r.Key]
+		if !ok {
+			hint := ""
+			if r.URL != "" {
+				hint = fmt.Sprintf(" (clone: %s)", r.URL)
+			}
+			return nil, fmt.Errorf(
+				"repo key %q is not mapped on this machine — add `%s: <local path>` under `repos:` "+
+					"in %s%s", r.Key, r.Key, config.GlobalPath(denHome), hint)
+		}
+		out[i].Path = path
+	}
+	return out, nil
+}
+
 // Resolve applies the full global ← stack ← nest ← flags cascade.
 //
 // stacks is a config.Stacks rather than a map: the verdict "is this stack
@@ -140,7 +166,11 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
 
-	repos, err := selectRepos(n.Repos, o.Without, o.Only)
+	repos, err := resolveRepoKeys(denHome, g.Repos, n.Repos)
+	if err != nil {
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
+	}
+	repos, err = selectRepos(repos, o.Without, o.Only)
 	if err != nil {
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}

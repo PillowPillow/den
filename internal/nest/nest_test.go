@@ -480,3 +480,33 @@ func namesOf(nests []*Nest) []string {
 	}
 	return out
 }
+
+// A repo has ONE identity: `path:` is a machine path, `key:` resolves
+// through `repos:` in config.yaml. Both set is a contradiction den refuses
+// to arbitrate.
+func TestLoadNestRepoKeyAndPathExclusive(t *testing.T) {
+	denHome := t.TempDir()
+	writeNest(t, denHome, "n", "stack: devx\nrepos:\n  - { path: /a, key: api }\n")
+	_, err := LoadNest(denHome, "n")
+	if err == nil || !strings.Contains(err.Error(), "path") || !strings.Contains(err.Error(), "key") {
+		t.Fatalf("expected a path/key exclusivity refusal, got: %v", err)
+	}
+}
+
+// `url:` only enriches the unmapped-key refusal — on a `path:` entry it
+// would never be read, so it must not appear without `key:`.
+func TestLoadNestURLRequiresKey(t *testing.T) {
+	denHome := t.TempDir()
+	writeNest(t, denHome, "n", "stack: devx\nrepos:\n  - { path: /a, url: git@x:y.git }\n")
+	_, err := LoadNest(denHome, "n")
+	if err == nil || !strings.Contains(err.Error(), "url") {
+		t.Fatalf("expected a url-without-key refusal, got: %v", err)
+	}
+}
+
+func TestRepoNameFromKey(t *testing.T) {
+	r := Repo{Key: "api"}
+	if r.Name() != "api" {
+		t.Errorf("Name() = %q, want api", r.Name())
+	}
+}
