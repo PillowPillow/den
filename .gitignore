@@ -1,6 +1,15 @@
 /den
 /staging/
+# `.claude/` is also excluded by .git/info/exclude, which is local and reaches no clone.
+# .gitignore outranks info/exclude, so this line is what lets git descend at all — without
+# it the negations below are never even evaluated, because git does not walk into an
+# excluded directory. The contents stay ignored by the pattern that follows.
+!.claude/
 .claude/**
 .superpowers
 !.claude/settings.json
+# The slash commands are project tooling, not local state: they must reach a clone. The
+# directory needs its own negation for the same descend reason as above.
+!.claude/commands/
+!.claude/commands/*.md
 /dist/
