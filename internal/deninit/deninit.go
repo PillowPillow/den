@@ -115,6 +115,15 @@ func Run(denHome string, src fs.FS, out io.Writer) error {
 	fmt.Fprintln(out, "\nnext steps:")
 	fmt.Fprintf(out, "  1. edit %s to point at your own repo\n",
 		filepath.Join(denHome, "nests", "example.yaml"))
-	fmt.Fprintln(out, "  2. run `den doctor` to check the result")
+	// Spells out --den-home rather than a bare "run `den doctor`": denHome
+	// here is already RESOLVED (config.Home in cli/init.go applied the
+	// default/DEN_HOME/--den-home precedence before calling Run), but Run has
+	// no way to tell the caller which of those the user actually typed. A
+	// bare hint after `den init --den-home /x` would have doctor check the
+	// DEFAULT home instead and fail with "run `den init`" — a loop. Printing
+	// the flag explicitly makes the hint correct under every invocation,
+	// including the default one, where --den-home just repeats what doctor
+	// would have picked anyway.
+	fmt.Fprintf(out, "  2. run `den doctor --den-home %s` to check the result\n", denHome)
 	return nil
 }

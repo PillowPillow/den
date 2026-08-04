@@ -23,12 +23,16 @@ func insideExampleHome(home, p string) bool {
 }
 
 // TestRunExampleDenHomeOnlyFailsOnTheNestRepo locks down README.md's promise
-// right after `cp -R examples/den-home ~/.den`: the placeholder nest repo
-// (~/dev/my-project) is the only diagnostic a fresh copy must fail on. The
-// phantom `kit: ./kit` this test would have caught (examples/ ships no kit/
-// directory — git does not track empty ones) already broke that promise
-// once; this is what stops it from happening silently again, since go:embed
-// (a later task) inherits whatever examples/den-home contains byte for byte.
+// for the on-disk source tree den init embeds: the placeholder nest repo
+// (~/dev/my-project) is the only diagnostic a fresh `den init` home must fail
+// on. The phantom `kit: ./kit` this test would have caught (examples/ ships
+// no kit/ directory — git does not track empty ones) already broke that
+// promise once; this is what stops it from happening silently again, since
+// go:embed (internal/cli/init.go) inherits whatever examples/den-home
+// contains byte for byte. cli/init_test.go's
+// TestInitThenDoctorOnlyFailsOnTheNestRepo checks the same promise end to end
+// through the actual `den init` command; this test checks it against the
+// source tree directly, without going through the embed or the CLI.
 //
 // Stat is scoped, not fully faked nor fully real:
 //   - the placeholder nest repo fails, unconditionally — named explicitly so

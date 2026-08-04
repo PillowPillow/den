@@ -40,9 +40,11 @@ $EDITOR ~/.den/nests/example.yaml
 den doctor
 ```
 
-`den init` copies the shipped example into the den home, and refuses with `already initialized:
-<path>` if a `config.yaml` is already there — it never overwrites or merges into an existing home.
-Step 2 above is why: the shipped `~/.den/nests/example.yaml` points at `~/dev/my-project`, and
+`den init` copies the shipped example into the den home, refusing only on the presence of
+`config.yaml` itself (`already initialized: <path>`) — a home with no `config.yaml` counts as
+uninitialized no matter what else is sitting in it, and every shipped file is then written
+unconditionally, overwriting a same-named file already on disk. Step 2 above is why: the shipped
+`~/.den/nests/example.yaml` points at `~/dev/my-project`, and
 skipping the edit is what makes the first `den doctor` fail on "repo not found" — that diagnostic
 goes away once the nest points at a real repository. `sbx` missing is a second, machine-dependent
 one — only shown if it is not already installed.
