@@ -401,6 +401,12 @@ func TestOrphansSkipsAPlainDirectoryAndKeepsGoing(t *testing.T) {
 	if len(skipped) != 1 || !strings.Contains(skipped[0].Error(), notes) {
 		t.Fatalf("skipped = %v, expected one reason naming %s", skipped, notes)
 	}
+	// The WORDING matters: root here has no enclosing repository, so identify
+	// must fail outright (guard 2). Without this, the test would also pass if
+	// guard 3 fired, and the two cases would stop being told apart.
+	if !strings.Contains(skipped[0].Error(), "not a git worktree") {
+		t.Errorf("reason = %q, expected guard 2 (identify failed), not another guard", skipped[0])
+	}
 }
 
 // GUARD 3 — worktree_root INSIDE a repository. git answers for the first
@@ -457,13 +463,22 @@ func TestOrphansSkipsAFile(t *testing.T) {
 // isolates GUARD 6, which the other guards make otherwise unreachable through
 // the filesystem alone: a directory that IS a worktree root of that repository,
 // yet does not appear in the repository's registrations.
-type listHidingWorktrees struct{ Git }
+//
+// Named field rather than an embedded Git, following fakePruneFailingGit in
+// internal/cli: the delegation is then visible, and no method is promoted by
+// accident. `dir` is the cwd git was invoked in — worktreeEntry invokes it in
+// the REPOSITORY, so the answer lists the main worktree and nothing else.
+type listHidingWorktrees struct{ real Git }
 
 func (g listHidingWorktrees) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	if len(args) >= 2 && args[0] == "worktree" && args[1] == "list" {
 		return []byte("worktree " + dir + "\nbranch refs/heads/main\n\n"), nil
 	}
-	return g.Git.Run(ctx, dir, args...)
+	return g.real.Run(ctx, dir, args...)
+}
+
+func (g listHidingWorktrees) RunWithInput(ctx context.Context, dir string, input []byte, args ...string) ([]byte, error) {
+	return g.real.RunWithInput(ctx, dir, input, args...)
 }
 
 // GUARD 6 — den asks the repository whether it knows this worktree. Without
@@ -477,7 +492,7 @@ func TestOrphansSkipsAnUnregisteredWorktree(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	found, skipped, err := Orphans(context.Background(), listHidingWorktrees{NewGit()}, root, "feat", nil)
+	found, skipped, err := Orphans(context.Background(), listHidingWorktrees{real: NewGit()}, root, "feat", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -524,6 +539,11 @@ Add to `internal/cli/rm_test.go`:
 // Issue #46. `den api -w feat ~/dev/hotfix` gives hotfix a worktree, but a
 // positional is deliberately NOT part of the sandbox identity, so `den rm`
 // cannot find it in the nest. It is recovered from the directory instead.
+//
+// This is ALSO the ORDERING test, and the only one: it holds one declared repo
+// AND one orphan, so an implementation that removed before enumerating would
+// see removeParentDir empty <root>/<wt> and lose the orphan. Do not "simplify"
+// it down to a single repo — that silently drops the coverage.
 func TestRmCleansUpAWorktreeNoRepoDeclares(t *testing.T) {
 	denHome := t.TempDir()
 	root := filepath.Join(denHome, "worktrees")
@@ -559,6 +579,9 @@ func TestRmCleansUpAWorktreeNoRepoDeclares(t *testing.T) {
 			t.Errorf("%s must have been moved to the trash; stat: %v", p, err)
 		}
 	}
+	// executeCmdWithSbx MERGES stdout and stderr, so this count sees warnings
+	// too: no later task may introduce a warning containing "moved to trash"
+	// (Task 5's per-repo message deliberately does not).
 	if strings.Count(out, "moved to trash") != 2 {
 		t.Errorf("both worktrees must be announced; got:\n%s", out)
 	}
