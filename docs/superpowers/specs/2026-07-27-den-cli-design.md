@@ -217,6 +217,7 @@ sandbox**.
 
 | Commande | Rôle |
 |---|---|
+| `den init` | crée un den home à partir de l'exemple embarqué (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`) ; refuse si `config.yaml` existe déjà |
 | `den <nest> [-w <wt>] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell |
 | `den ls` | sandboxes vivantes (`sbx ls --json` filtré sur le motif de nommage, colonnes nom/nest/worktree/statut/workspaces) |
 | `den sh <name>` | shell dans une sandbox existante |
