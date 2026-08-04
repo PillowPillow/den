@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/doctor"
@@ -158,6 +159,11 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 		// spawn has no SystemDeps constructor to hold it (see spawn.Deps), and a
 		// field left implicit here is a dependency the reader has to hunt for.
 		GOOS: runtime.GOOS,
+		// The real clock for the source-staleness hint (spawn.Deps.Now):
+		// nil is what the package's own tests want (no source touched, no
+		// clock owed), but a live den wiring this field to nothing would
+		// silently drop the hint for every user, forever.
+		Now: time.Now,
 	})
 	return root
 }

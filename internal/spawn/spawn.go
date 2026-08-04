@@ -14,12 +14,14 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
 )
@@ -84,6 +86,13 @@ type Deps struct {
 	// be the one no test ever exercises. Empty-tolerant like Out and Err, so the
 	// many hand-built Deps of this package keep describing their own machine.
 	GOOS string
+	// Now clocks the source-staleness hint (source.Stale): nil SKIPS it
+	// entirely, deliberately — the dozens of hand-built Deps in this
+	// package's own tests touch no source and must owe nothing to the
+	// clock. The wiring site (internal/cli/root.go) sets it to time.Now;
+	// tests that DO exercise a source inject a fixed one instead, the same
+	// pattern as Policy.Now and Freshness.Now.
+	Now func() time.Time
 }
 
 // goos is Deps.GOOS with its documented default applied. Empty falls back to
@@ -158,14 +167,83 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	if err != nil {
 		return err
 	}
-	stacks, err := config.LoadStacks(denHome)
+	// o.Nest may be a source reference ("corp:backend"): Locate is the SOLE
+	// place that turns it into a root to load the nest from, and refuses
+	// here — before anything else is read — when the source isn't
+	// installed, naming `den source add` as the fix.
+	nestRoot, srcName, bareNest, err := source.Locate(denHome, o.Nest)
 	if err != nil {
 		return err
 	}
-	n, err := nest.LoadNest(denHome, o.Nest)
+	n, err := nest.LoadNest(nestRoot, bareNest)
 	if err != nil {
 		return err
 	}
+
+	// Stack origin. `n.Stack`, falling back to `g.Defaults.Stack` as ever, is
+	// a REFERENCE — bare inside a source, optionally prefixed for a local
+	// nest — and this is the ONE place that turns it into a root to load
+	// stacks from: nest.Resolve works on bare names within a SINGLE root and
+	// must not learn about sources, so the caller (here) owns reference
+	// resolution.
+	ref := n.Stack
+	if ref == "" {
+		ref = g.Defaults.Stack
+	}
+	var stackRoot, stackSrcName string
+	if srcName != "" {
+		// A nest loaded FROM a source may only reference its stack BARE: a
+		// prefixed reference would resolve differently on every machine
+		// (whichever name the OTHER source happens to be installed under
+		// there) and CI, which has installed neither, could not resolve it
+		// at all. Same rule, same wording, as `den lint`'s checkNest
+		// (internal/lint/lint.go) — the two must never diverge on what a
+		// source nest is allowed to say.
+		if prefix, _ := config.SplitSourceRef(ref); prefix != "" {
+			return fmt.Errorf(
+				"nest %q: `stack: %s` is a prefixed reference — inside a source, references are bare "+
+					"and resolve in the source itself: the install name is chosen per machine and CI "+
+					"knows none", n.Name, ref)
+		}
+		stackRoot, stackSrcName = nestRoot, srcName
+	} else {
+		stackRoot, stackSrcName, ref, err = source.Locate(denHome, ref)
+		if err != nil {
+			return err
+		}
+	}
+	stacks, err := config.LoadStacks(stackRoot)
+	if err != nil {
+		return err
+	}
+	// Overwritten with the BARE name Resolve can look up in stackRoot: n.Stack
+	// as loaded from disk may still carry a source prefix (the local-nest
+	// case above), and Resolve has no notion of sources at all.
+	n.Stack = ref
+
+	// Staleness hint (spec 2026-08-04 §4): printed at most once per DISTINCT
+	// source this spawn touched — the nest's source and the stack's can be
+	// the same, different, or the stack's alone (a local nest with a
+	// prefixed `stack:`). Never a refusal and never a network call: Stale
+	// reads FETCH_HEAD/HEAD's mtime off disk. d.Now == nil skips it outright
+	// — the many hand-built Deps elsewhere in this package's tests touch no
+	// source and owe nothing to the clock.
+	if d.Now != nil {
+		now := d.Now()
+		hinted := make(map[string]bool, 2)
+		for _, s := range []string{srcName, stackSrcName} {
+			if s == "" || hinted[s] {
+				continue
+			}
+			hinted[s] = true
+			if source.Stale(denHome, s, now) {
+				fmt.Fprintf(d.Err,
+					"hint: source %q was last fetched more than 7 days ago — den source update %s\n",
+					s, s)
+			}
+		}
+	}
+
 	// `-i` feeds the SAME input as `--without`, and nothing more: the checklist
 	// is a source of input placed in front of a selection rule that already
 	// exists and is already tested (nest.Resolve). Nothing here reopens it.
@@ -201,7 +279,32 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 		worktreeName = worktree.Name{Dir: flattened, Branch: o.Worktree}
 	}
-	sandboxName, err := sbx.SandboxName(o.Nest, worktreeName.Dir)
+	// Sandbox naming: ":" is not in sbx's `--name` charset, so a nest loaded
+	// FROM a source cannot spawn under its prefixed reference verbatim — its
+	// sandbox component is the FLATTENED reference ("corp:backend" →
+	// "corp-backend"). A LOCAL nest keeps o.Nest unchanged: today's ordinary,
+	// working sandbox name, and there is no source prefix to strip.
+	nestComponent := o.Nest
+	if srcName != "" {
+		nestComponent, err = config.FlattenSandboxComponent("nest", o.Nest)
+		if err != nil {
+			return err
+		}
+		// A local nest whose FILE NAME equals the flattened reference would
+		// spawn (or `den ls`/`den sh`/`den rm`) the identical sandbox name as
+		// this source nest — nothing downstream could tell them apart.
+		// Refused here, before any side effect, naming BOTH files so the
+		// user can rename whichever they prefer; den never normalizes a
+		// collision like this in silence.
+		localPath := nest.FilePath(denHome, nestComponent)
+		if _, statErr := os.Stat(localPath); statErr == nil {
+			return fmt.Errorf(
+				"nest %q: flattens to sandbox name %q, which collides with the local nest %s — "+
+					"rename %s or %s so attach, `den ls` and `den rm` are never ambiguous between them",
+				o.Nest, nestComponent, localPath, nest.FilePath(nestRoot, bareNest), localPath)
+		}
+	}
+	sandboxName, err := sbx.SandboxName(nestComponent, worktreeName.Dir)
 	if err != nil {
 		return err
 	}
@@ -219,7 +322,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		if _, err := os.Stat(repo.Path); err != nil {
 			return fmt.Errorf(
 				"nest %q: repo not found: %s — fix `repos:` in %s",
-				o.Nest, repo.Path, nest.FilePath(denHome, o.Nest))
+				o.Nest, repo.Path, nest.FilePath(nestRoot, bareNest))
 		}
 	}
 	// ssh.dir, in mount mode: it becomes a workspace, so it goes

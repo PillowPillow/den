@@ -2487,3 +2487,155 @@ func TestSpawnDoesNotCheckTheImageOfAPullableStack(t *testing.T) {
 		t.Error("den read the inventory for a stack it cannot build — it has no remedy to offer")
 	}
 }
+
+// `den corp:backend` spawns from the source's nest and the source's stacks:
+// a plain directory under sources/ is a valid installed source for Spawn,
+// which never runs git — the layout alone is what Locate reads.
+func TestSpawnFromSourceNest(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	// The sandbox name is the FLATTENED reference: ":" is not in sbx's
+	// `--name` charset.
+	if !f.HasCalled("create", "--name", "corp-api", "--template", "teamstack:v1") {
+		t.Errorf("expected a create for sandbox corp-api, image teamstack:v1; calls: %v", f.Calls)
+	}
+}
+
+// A local nest whose file name equals the flattened source reference would
+// make `den ls`/`den sh`/`den rm` ambiguous between the two: refused before
+// any side effect, naming both files.
+func TestSpawnSourceNestRefusesLocalHomonym(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	write(t, filepath.Join(denHome, "nests", "corp-api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d)
+	if err == nil {
+		t.Fatal("expected a refusal of the ambiguous flattened name, got nil")
+	}
+	sourceNestPath := filepath.Join(denHome, "sources", "corp", "nests", "api.yaml")
+	localNestPath := filepath.Join(denHome, "nests", "corp-api.yaml")
+	for _, want := range []string{sourceNestPath, localNestPath} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected it to name %s", err.Error(), want)
+		}
+	}
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	}
+}
+
+// A nest loaded FROM a source may only reference its stack bare: a prefixed
+// reference would resolve differently per machine (whichever name the OTHER
+// source happens to be installed under) and CI has neither installed.
+func TestSpawnSourceNestRefusesPrefixedStackRef(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: corp:teamstack\nrepos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d)
+	if err == nil {
+		t.Fatal("expected a refusal of the prefixed stack reference, got nil")
+	}
+	if !strings.Contains(err.Error(), "bare") {
+		t.Errorf("error = %q, expected it to name the bare-reference rule", err.Error())
+	}
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	}
+}
+
+// A LOCAL nest may prefix its stack reference; the sandbox name stays the
+// nest's ordinary, unflattened one — the NEST is local, only the stack came
+// from a source.
+func TestSpawnLocalNestWithSourceStack(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "nests", "n.yaml"),
+		"stack: corp:teamstack\nrepos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "n", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if !f.HasCalled("create", "--name", "n", "--template", "teamstack:v1") {
+		t.Errorf("expected sandbox name to stay \"n\" (unflattened); calls: %v", f.Calls)
+	}
+}
+
+// The staleness hint fires once per source touched, on Err, and never blocks
+// or reaches the network — it's read entirely off FETCH_HEAD/HEAD's mtime.
+func TestSpawnHintsOnStaleSource(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	headPath := filepath.Join(denHome, "sources", "corp", ".git", "HEAD")
+	write(t, headPath, "ref: refs/heads/main\n")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(headPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	f, d := fakeDeps()
+	d.Now = func() time.Time { return time.Now() }
+	errBuf := &bytes.Buffer{}
+	d.Err = errBuf
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if !strings.Contains(errBuf.String(), "den source update corp") {
+		t.Errorf("Err = %q, expected a staleness hint naming `den source update corp`", errBuf.String())
+	}
+	_ = f
+}
+
+// Now == nil skips the hint entirely and must not panic: hand-built test
+// Deps elsewhere in this file owe nothing to the clock.
+func TestSpawnNoStalenessHintWhenNowIsNil(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	headPath := filepath.Join(denHome, "sources", "corp", ".git", "HEAD")
+	write(t, headPath, "ref: refs/heads/main\n")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(headPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	_, d := fakeDeps()
+	errBuf := &bytes.Buffer{}
+	d.Err = errBuf
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("Err = %q, expected no hint when Deps.Now is nil", errBuf.String())
+	}
+}
