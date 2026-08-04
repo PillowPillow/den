@@ -240,3 +240,27 @@ func TestNestShowResolvesCommandLineRepos(t *testing.T) {
 		t.Errorf("output = %q, expected the declared repo to keep its own wording", out)
 	}
 }
+
+// TestNestShowResolvesRelativeCommandLineRepos is what actually exercises
+// newNestShowCmd's os.Getwd() call: an ABSOLUTE positional (the case above)
+// never touches opts.Cwd, since nest.parseRepoArgs only consults it to
+// resolve a RELATIVE path — that call could be missing entirely and the test
+// above would still pass. A relative positional forces the wiring: without
+// it, opts.Cwd stays "" and nest.Resolve refuses with its own "Cwd is unset"
+// wiring-defect message instead of resolving.
+func TestNestShowResolvesRelativeCommandLineRepos(t *testing.T) {
+	testDenHome(t)
+	out, err := run(t, "nest", "show", "api", "./hotfix")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(wd, "hotfix") + " (command line)"
+	if !strings.Contains(out, expected) {
+		t.Errorf("output = %q, expected containing %q — the relative path must resolve "+
+			"against the process's working directory", out, expected)
+	}
+}
