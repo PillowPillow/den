@@ -194,11 +194,19 @@ release pipe (`internal/pipe/release/body.go`), independently of the changelog p
 output is the expectation and this check is the comparison.
 
 If the body comes back empty or wrong, the release is already out; repair it in place
-rather than retagging:
+rather than retagging — the notes file here is the tag body, without the subject line, or
+the release page repeats its own title:
 
 ```bash
-gh release edit vX.Y.Z --notes-file <notes-file>
+git for-each-ref --format='%(contents:body)' refs/tags/vX.Y.Z > <body-file>
+gh release edit vX.Y.Z --notes-file <body-file>
 ```
 
-and report that `release.header` did not render, so the config gets fixed before the next
-release.
+An **empty** body is almost never `.goreleaser.yaml`'s fault: `actions/checkout` fetches the
+annotated tag object and then re-fetches the commit SHA into the same ref
+(`+<sha>:refs/tags/vX.Y.Z`), leaving a lightweight tag whose `%(contents:body)` is empty —
+so `{{ .TagBody }}` renders nothing. Happened on v1.1.0 (2026-08-04): a 4-byte body, repaired
+by hand. The remedy is one step after checkout in `release.yml`, `git fetch --force --tags`
+(`--force` is required — otherwise the fetch will not clobber the ref checkout just wrote).
+Check that step is present before suspecting the template. Report whichever it was, so the
+next release does not repeat it.
