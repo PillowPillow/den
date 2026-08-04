@@ -694,6 +694,221 @@ only the runner's name moved."
 
 ---
 
+---
+
+### Task 5: Le « tell » `dev` cassé par Go 1.24+
+
+**Ajoutée le 2026-08-04, après la Task 1.** Ne figurait pas au plan d'origine.
+
+**Files:**
+- Modify: `internal/cli/version.go` (`resolveVersion`, `displayVersion`)
+- Modify: `internal/cli/version_test.go` (les 4 tests existants + 3 nouveaux)
+
+**Interfaces:**
+- Consumes: rien.
+- Produces: `resolveVersion(ldflags, buildinfo string, fromLocalVCS bool) string` — **la signature change**, elle gagne un troisième paramètre. La Task 4 édite les commentaires de ces deux fichiers et passe donc après celle-ci.
+
+**Ordre d'exécution révisé :** 1 ✅ → **2** (CI) → **5** (celle-ci) → **3** (doc) → **4** (commentaires). La Task 5 précède les Tasks 3 et 4 parce que celles-ci réécrivent les phrases qui affirment la propriété que celle-ci répare. Leur texte, lui, ne change pas : le correctif rend ces phrases vraies à nouveau plutôt que de les amender.
+
+#### Le problème
+
+`README.md`, `CLAUDE.md`, `internal/cli/version.go` et `internal/cli/version_test.go` affirment tous qu'un `go build` nu répond `den dev`, « the documented tell that the build skipped the runner ». **C'est faux depuis Go 1.24**, et ça l'était déjà avant cette migration — reproduit sur le checkout `main` intact (`a28f04a`), toolchain Go 1.26.1 :
+
+```
+$ go build -o /tmp/den-plain ./cmd/den && /tmp/den-plain version
+den v1.1.1-0.20260804111234-a28f04a21c08+dirty
+```
+
+Go renseigne désormais `debug.BuildInfo.Main.Version` avec une pseudo-version dérivée du VCS. `resolveVersion` voit un `buildinfo` qui n'est ni `""` ni `"(devel)"`, et le retourne. La suite ne l'attrape pas : `TestResolveVersionKeepsDevWhenBuildInfoIsDevel` teste `resolveVersion("dev", "(devel)")`, or Go ne dit plus `(devel)` quand il y a un `.git`.
+
+#### Le discriminant, établi par mesure
+
+Trois chemins probés sur cette machine (Go 1.26.1) le 2026-08-04 :
+
+| Chemin de build | `Main.Version` | réglages `vcs.*` |
+|---|---|---|
+| `go build` dans un checkout git | `v0.0.0-20260804112638-05a5bd888ac6` | **présents** (`vcs.revision`, `vcs.time`, `vcs.modified`) |
+| `go build` sur la même source sans `.git` | `(devel)` | absents |
+| `go install …/cmd/den@v1.0.1` (proxy) | `v1.0.1` | **absents** |
+
+La présence de `vcs.revision` sépare donc exactement « construit depuis un checkout local » — donc en contournant le runner — de « construit depuis un module téléchargé », qui est le seul cas que le fallback existe pour secourir. C'est un signal structurel, pas un motif de chaîne : inutile de reconnaître la forme d'une pseudo-version, forme qui a d'ailleurs changé entre versions de Go.
+
+- [ ] **Step 1: Écrire les tests qui échouent**
+
+Ajouter à `internal/cli/version_test.go` :
+
+```go
+// THE regression: Go 1.24+ stamps Main.Version from VCS, so a plain `go build`
+// in a checkout no longer answers "(devel)" — it answers a pseudo-version, which
+// the old two-argument arbitration happily returned. den then named a version
+// nobody can check out. Probed on Go 1.26.1, 2026-08-04.
+func TestResolveVersionKeepsDevForALocalVCSBuild(t *testing.T) {
+	got := resolveVersion("dev", "v1.1.1-0.20260804111234-a28f04a21c08+dirty", true)
+	if got != "dev" {
+		t.Fatalf("a plain `go build` must stay the documented dev tell, got %q", got)
+	}
+}
+
+// A local checkout that happens to sit on a tag is still a build that skipped
+// the runner. The rule keys on WHERE the build came from, not on whether the
+// string it carries looks respectable.
+func TestResolveVersionKeepsDevForALocalVCSBuildEvenOnACleanTag(t *testing.T) {
+	got := resolveVersion("dev", "v1.0.1", true)
+	if got != "dev" {
+		t.Fatalf("a local build must not borrow a tag it did not stamp, got %q", got)
+	}
+}
+
+// The case that must NOT regress: `task build` runs inside a checkout, so
+// fromLocalVCS is true there too. The ldflags stamp still has to win — reading
+// the new flag before the stamp would break the one documented way to build.
+func TestResolveVersionPrefersLdflagsEvenFromALocalVCSBuild(t *testing.T) {
+	got := resolveVersion("v1.0.1-5-g364136e-dirty", "v1.1.1-0.20260804111234-a28f04a21c08+dirty", true)
+	if got != "v1.0.1-5-g364136e-dirty" {
+		t.Fatalf("the ldflags stamp lost to the VCS pseudo-version: %q", got)
+	}
+}
+```
+
+Et mettre à jour les quatre tests existants pour la nouvelle signature. Ils décrivent tous des builds qui ne viennent pas d'un checkout local, donc `false` :
+
+- `TestResolveVersionPrefersLdflagsStamp` : `resolveVersion("v1.0.0-3-gabc1234-dirty", "v1.0.0", false)`
+- `TestResolveVersionFallsBackToBuildInfoOnGoInstall` : `resolveVersion("dev", "v1.0.0", false)`
+- `TestResolveVersionKeepsDevWhenBuildInfoIsDevel` : `resolveVersion("dev", "(devel)", false)`
+- `TestResolveVersionKeepsDevWhenBuildInfoIsEmpty` : `resolveVersion("dev", "", false)`
+
+- [ ] **Step 2: Lancer les tests, vérifier qu'ils échouent**
+
+```bash
+go test ./internal/cli/ -run TestResolveVersion -count=1
+```
+
+Attendu : échec de compilation d'abord (`resolveVersion` prend 2 arguments, pas 3). C'est l'échec attendu à ce stade — la signature n'existe pas encore.
+
+- [ ] **Step 3: Modifier `resolveVersion`**
+
+Remplacer la fonction et son commentaire par :
+
+```go
+// resolveVersion arbitrates between the two ways a binary can know its version.
+// The ldflags stamp (Taskfile, goreleaser) wins whenever it ran: `git describe`
+// distinguishes a dirty checkout from a tag, which module build info never
+// does. Build info is the rescue for `go install …/cmd/den@vX`, the one
+// install path that bypasses `task build` yet still carries the tag — without
+// this fallback that binary answers "den dev" and a bug report against it
+// names no code.
+//
+// fromLocalVCS is what keeps that rescue from swallowing the case it was never
+// meant to cover. Since Go 1.24 the toolchain stamps Main.Version from VCS
+// state, so a plain `go build` in a checkout no longer answers the "(devel)"
+// placeholder — it answers a pseudo-version like
+// v1.1.1-0.20260804111234-a28f04a21c08+dirty, which is not a version anybody
+// can check out and which the old arbitration returned as though it were.
+// Probed on Go 1.26.1 (2026-08-04): a build from a local checkout always
+// carries a vcs.revision setting, a build from a downloaded module never does,
+// and `go install …@v1.0.1` answers a bare "v1.0.1" with no vcs settings at
+// all. Keying on WHERE the build came from is therefore exact, where matching
+// the shape of a pseudo-version would only be a guess about a format Go has
+// already changed once.
+//
+// The ldflags check stays first on purpose: `task build` also runs inside a
+// checkout, so fromLocalVCS is true for the one documented way to build.
+func resolveVersion(ldflags, buildinfo string, fromLocalVCS bool) string {
+	if ldflags != "" && ldflags != "dev" {
+		return ldflags
+	}
+	if !fromLocalVCS && buildinfo != "" && buildinfo != "(devel)" {
+		return buildinfo
+	}
+	return "dev"
+}
+```
+
+- [ ] **Step 4: Modifier `displayVersion`**
+
+Remplacer la fonction et son commentaire par :
+
+```go
+// displayVersion is the impure twin: it feeds resolveVersion the process's own
+// build info. It stays a thin reader — finding vcs.revision and copying
+// Main.Version, nothing else — so the arbitration above remains fully testable
+// without faking debug.ReadBuildInfo.
+func displayVersion() string {
+	buildinfo := ""
+	fromLocalVCS := false
+	if info, ok := debug.ReadBuildInfo(); ok {
+		buildinfo = info.Main.Version
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" {
+				fromLocalVCS = true
+				break
+			}
+		}
+	}
+	return resolveVersion(Version, buildinfo, fromLocalVCS)
+}
+```
+
+- [ ] **Step 5: Lancer les tests, vérifier qu'ils passent**
+
+```bash
+go test ./internal/cli/ -run TestResolveVersion -count=1 -v
+```
+
+Attendu : les sept tests passent.
+
+- [ ] **Step 6: Vérifier le comportement réel — c'est le point de la tâche**
+
+Les tests unitaires prouvent l'arbitrage, pas ce que Go raconte réellement à `den`. Les deux mesures :
+
+```bash
+go build -o /tmp/den-plain ./cmd/den && /tmp/den-plain version && rm /tmp/den-plain
+```
+
+Attendu : `den dev`. C'était `den v1.1.1-0.…+dirty` avant le correctif — c'est toute la tâche.
+
+```bash
+task build && ./den version && git describe --tags --always --dirty
+```
+
+Attendu : les deux dernières lignes s'accordent, à `den ` près. Le stamp du runner ne doit **pas** avoir été atteint par le correctif.
+
+- [ ] **Step 7: Lancer les gates**
+
+```bash
+task check && echo "CHECK GREEN"
+```
+
+Attendu : `CHECK GREEN`. La suite complète, pas seulement `-run TestResolveVersion`.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add internal/cli/version.go internal/cli/version_test.go
+git commit -m "fix(version): a plain go build answers dev again under Go 1.24+
+
+README, CLAUDE.md and version.go all promise that a bare go build answers
+den dev — the documented tell that a binary skipped the runner. It has not
+been true since Go 1.24 started stamping Main.Version from VCS state: a
+checkout build answers a pseudo-version, resolveVersion saw something that
+was neither empty nor (devel), and returned it. den named a version nobody
+can check out. Reproduced on untouched main before any of this branch landed.
+
+The suite missed it because it asserts on (devel), the placeholder Go emits
+only when there is no .git to read.
+
+resolveVersion now takes whether the build came from a local checkout, which
+three probes on Go 1.26.1 show is the exact discriminator: a checkout build
+always carries vcs.revision, a downloaded module never does, and
+go install …@v1.0.1 answers a bare v1.0.1 with no vcs settings — that last
+one being the only case the buildinfo rescue was ever for. Matching the shape
+of a pseudo-version instead would be a guess about a format Go has already
+changed once.
+
+The ldflags check stays first: task build also runs inside a checkout, so the
+new flag is true for the one documented way to build too."
+```
+
 ## Vérification finale du chantier
 
 À lancer une fois les quatre tâches faites, avant toute PR.
