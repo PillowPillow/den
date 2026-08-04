@@ -180,34 +180,45 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return err
 	}
 
-	// Stack origin. `n.Stack`, falling back to `g.Defaults.Stack` as ever, is
-	// a REFERENCE — bare inside a source, optionally prefixed for a local
-	// nest — and this is the ONE place that turns it into a root to load
-	// stacks from: nest.Resolve works on bare names within a SINGLE root and
-	// must not learn about sources, so the caller (here) owns reference
-	// resolution.
-	ref := n.Stack
-	if ref == "" {
-		ref = g.Defaults.Stack
-	}
-	var stackRoot, stackSrcName string
+	// Stack origin. `n.Stack` is a REFERENCE — bare inside a source,
+	// optionally prefixed for a local nest, and for a LOCAL nest only,
+	// falling back to the personal `g.Defaults.Stack` when absent — and this
+	// is the ONE place that turns it into a root to load stacks from:
+	// nest.Resolve works on bare names within a SINGLE root and must not
+	// learn about sources, so the caller (here) owns reference resolution.
+	var stackRoot, stackSrcName, ref string
 	if srcName != "" {
+		// A source nest may NOT fall back on `g.Defaults.Stack`: that default
+		// is personal to this machine, and a nest silently inheriting it
+		// would spawn a different stack for every teammate — or, worse,
+		// spawn the SOURCE's own stack of the same name in silence, which is
+		// exactly the substitution den refuses rather than performs (spec
+		// §2). Same refusal, same wording, as `den lint`'s checkNest
+		// (internal/lint/lint.go) — the two must never diverge on what a
+		// source nest is allowed to say.
+		if n.Stack == "" {
+			return fmt.Errorf(
+				"nest %q: no `stack:` — a source nest cannot fall back on the personal defaults.stack: "+
+					"it must spawn identically on every machine", n.Name)
+		}
 		// A nest loaded FROM a source may only reference its stack BARE: a
 		// prefixed reference would resolve differently on every machine
 		// (whichever name the OTHER source happens to be installed under
 		// there) and CI, which has installed neither, could not resolve it
-		// at all. Same rule, same wording, as `den lint`'s checkNest
-		// (internal/lint/lint.go) — the two must never diverge on what a
-		// source nest is allowed to say.
-		if prefix, _ := config.SplitSourceRef(ref); prefix != "" {
+		// at all.
+		if prefix, _ := config.SplitSourceRef(n.Stack); prefix != "" {
 			return fmt.Errorf(
 				"nest %q: `stack: %s` is a prefixed reference — inside a source, references are bare "+
 					"and resolve in the source itself: the install name is chosen per machine and CI "+
-					"knows none", n.Name, ref)
+					"knows none", n.Name, n.Stack)
 		}
-		stackRoot, stackSrcName = nestRoot, srcName
+		stackRoot, stackSrcName, ref = nestRoot, srcName, n.Stack
 	} else {
-		stackRoot, stackSrcName, ref, err = source.Locate(denHome, ref)
+		localRef := n.Stack
+		if localRef == "" {
+			localRef = g.Defaults.Stack
+		}
+		stackRoot, stackSrcName, ref, err = source.Locate(denHome, localRef)
 		if err != nil {
 			return err
 		}
@@ -218,7 +229,8 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	}
 	// Overwritten with the BARE name Resolve can look up in stackRoot: n.Stack
 	// as loaded from disk may still carry a source prefix (the local-nest
-	// case above), and Resolve has no notion of sources at all.
+	// case above) or be empty (the personal-default case), and Resolve has
+	// no notion of sources at all.
 	n.Stack = ref
 
 	// Staleness hint (spec 2026-08-04 §4): printed at most once per DISTINCT
@@ -298,10 +310,15 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// collision like this in silence.
 		localPath := nest.FilePath(denHome, nestComponent)
 		if _, statErr := os.Stat(localPath); statErr == nil {
+			// The local file is named FIRST as the one to rename: the source
+			// file lives in a team repo's git clone, and `den source update`
+			// would silently revert a rename made there — advice that
+			// survives is advice worth reading first.
 			return fmt.Errorf(
 				"nest %q: flattens to sandbox name %q, which collides with the local nest %s — "+
-					"rename %s or %s so attach, `den ls` and `den rm` are never ambiguous between them",
-				o.Nest, nestComponent, localPath, nest.FilePath(nestRoot, bareNest), localPath)
+					"rename %s (or the source nest %s, though a `den source update` would revert that) "+
+					"so attach, `den ls` and `den rm` are never ambiguous between them",
+				o.Nest, nestComponent, localPath, localPath, nest.FilePath(nestRoot, bareNest))
 		}
 	}
 	sandboxName, err := sbx.SandboxName(nestComponent, worktreeName.Dir)

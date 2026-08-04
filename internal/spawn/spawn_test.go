@@ -2538,6 +2538,12 @@ func TestSpawnSourceNestRefusesLocalHomonym(t *testing.T) {
 	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
 		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
 	}
+	// The strong form of "no side effect precedes the refusal", the same one
+	// TestSpawnRefusesInvalidConfiguration asserts: not just that sbx was
+	// never called, but that nothing was written to disk either.
+	if _, statErr := os.Stat(filepath.Join(denHome, "agents", "claude")); statErr == nil {
+		t.Error("the agent profile must not have been created before the refusal")
+	}
 }
 
 // A nest loaded FROM a source may only reference its stack bare: a prefixed
@@ -2559,6 +2565,36 @@ func TestSpawnSourceNestRefusesPrefixedStackRef(t *testing.T) {
 	}
 	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
 		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	}
+	if _, statErr := os.Stat(filepath.Join(denHome, "agents", "claude")); statErr == nil {
+		t.Error("the agent profile must not have been created before the refusal")
+	}
+}
+
+// A source nest cannot fall back on the PERSONAL defaults.stack: doing so
+// would either spawn a different stack per teammate, or — worse — spawn the
+// source's own stack of the same name in silence. `den lint`'s checkNest
+// already refuses this; spawn must refuse it identically rather than let a
+// nest that lint rejects still be spawnable.
+func TestSpawnSourceNestRefusesMissingStack(t *testing.T) {
+	denHome, _ := denTest(t) // defaults.stack: devx, and denHome/stacks/devx exists
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"repos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d)
+	if err == nil {
+		t.Fatal("expected a refusal of the missing `stack:`, got nil")
+	}
+	if !strings.Contains(err.Error(), "defaults.stack") {
+		t.Errorf("error = %q, expected it to name the personal-default rule", err.Error())
+	}
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	}
+	if _, statErr := os.Stat(filepath.Join(denHome, "agents", "claude")); statErr == nil {
+		t.Error("the agent profile must not have been created before the refusal")
 	}
 }
 
@@ -2598,7 +2634,7 @@ func TestSpawnHintsOnStaleSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 	d.Now = func() time.Time { return time.Now() }
 	errBuf := &bytes.Buffer{}
 	d.Err = errBuf
@@ -2609,7 +2645,11 @@ func TestSpawnHintsOnStaleSource(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "den source update corp") {
 		t.Errorf("Err = %q, expected a staleness hint naming `den source update corp`", errBuf.String())
 	}
-	_ = f
+	// The nest and its stack are the SAME source ("corp"): the hint must
+	// fire once, not twice — the dedupe this test exists to pin.
+	if n := strings.Count(errBuf.String(), "den source update corp"); n != 1 {
+		t.Errorf("hint printed %d times, expected exactly 1 (once per distinct source): %q", n, errBuf.String())
+	}
 }
 
 // Now == nil skips the hint entirely and must not panic: hand-built test
