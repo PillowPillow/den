@@ -2546,6 +2546,43 @@ func TestSpawnSourceNestRefusesLocalHomonym(t *testing.T) {
 	}
 }
 
+// Two DIFFERENT installed sources can flatten to the identical sandbox name:
+// source "corp" nest "a-b" and source "corp-a" nest "b" both flatten to
+// "corp-a-b". Both are legal names on their own — this is the collision the
+// local-homonym guard above does NOT catch, since neither nest is local.
+func TestSpawnRefusesCrossSourceSandboxNameCollision(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "a-b.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	write(t, filepath.Join(denHome, "sources", "corp-a", "stacks", "teamstack", "stack.yaml"),
+		"image: other:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp-a", "nests", "b.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:a-b", Detach: true}, d)
+	if err == nil {
+		t.Fatal("expected a refusal of the cross-source sandbox-name collision, got nil")
+	}
+	for _, want := range []string{
+		filepath.Join(denHome, "sources", "corp", "nests", "a-b.yaml"),
+		filepath.Join(denHome, "sources", "corp-a", "nests", "b.yaml"),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected it to name %s", err.Error(), want)
+		}
+	}
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	}
+	if _, statErr := os.Stat(filepath.Join(denHome, "agents", "claude")); statErr == nil {
+		t.Error("the agent profile must not have been created before the refusal")
+	}
+}
+
 // A nest loaded FROM a source may only reference its stack bare: a prefixed
 // reference would resolve differently per machine (whichever name the OTHER
 // source happens to be installed under) and CI has neither installed.
@@ -2677,5 +2714,64 @@ func TestSpawnNoStalenessHintWhenNowIsNil(t *testing.T) {
 	}
 	if errBuf.Len() != 0 {
 		t.Errorf("Err = %q, expected no hint when Deps.Now is nil", errBuf.String())
+	}
+}
+
+// A spawn that touches no source at all must stay silent even when d.Now is
+// set AND a stale source happens to be installed — the hint is scoped to the
+// sources THIS spawn actually resolved through, never a blanket sweep of
+// everything under sources/.
+func TestSpawnNoStalenessHintForPurelyLocalSpawn(t *testing.T) {
+	denHome, _ := denTest(t) // local nest "api", local stack "devx", no source referenced
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	headPath := filepath.Join(denHome, "sources", "corp", ".git", "HEAD")
+	write(t, headPath, "ref: refs/heads/main\n")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(headPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	_, d := fakeDeps()
+	d.Now = func() time.Time { return time.Now() }
+	errBuf := &bytes.Buffer{}
+	d.Err = errBuf
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("Err = %q, expected no hint for a purely local spawn (nest and stack both local)", errBuf.String())
+	}
+}
+
+// A LOCAL nest with a prefixed `stack:` touches a source through the STACK
+// alone (stackSrcName), never through srcName (which stays "" — the nest
+// itself is local). The hint must still fire, naming that source.
+func TestSpawnHintsOnStaleSourceThroughStackOnly(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "nests", "n.yaml"),
+		"stack: corp:teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	headPath := filepath.Join(denHome, "sources", "corp", ".git", "HEAD")
+	write(t, headPath, "ref: refs/heads/main\n")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(headPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	_, d := fakeDeps()
+	d.Now = func() time.Time { return time.Now() }
+	errBuf := &bytes.Buffer{}
+	d.Err = errBuf
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "n", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if !strings.Contains(errBuf.String(), "den source update corp") {
+		t.Errorf("Err = %q, expected a staleness hint naming `den source update corp` "+
+			"(the stack's source, though the nest itself is local)", errBuf.String())
 	}
 }

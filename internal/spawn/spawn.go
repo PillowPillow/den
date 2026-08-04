@@ -196,10 +196,20 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// §2). Same refusal, same wording, as `den lint`'s checkNest
 		// (internal/lint/lint.go) — the two must never diverge on what a
 		// source nest is allowed to say.
+		// The subject named in BOTH refusals below is o.Nest — what the user
+		// actually typed — not n.Name, which LoadNest sets to the bare
+		// filename ("api", not "corp:api"): naming n.Name would point at a
+		// nest the user never typed, and (if they happen to own a same-named
+		// LOCAL nest) send them to edit the wrong file. The source file to
+		// fix is appended explicitly instead, since there is no lint-style
+		// frame here to supply it. The RULE SENTENCE stays identical to `den
+		// lint`'s checkNest (internal/lint/lint.go) — only the subject and
+		// the appended file differ.
 		if n.Stack == "" {
 			return fmt.Errorf(
 				"nest %q: no `stack:` — a source nest cannot fall back on the personal defaults.stack: "+
-					"it must spawn identically on every machine", n.Name)
+					"it must spawn identically on every machine — fix %s",
+				o.Nest, nest.FilePath(nestRoot, bareNest))
 		}
 		// A nest loaded FROM a source may only reference its stack BARE: a
 		// prefixed reference would resolve differently on every machine
@@ -210,7 +220,8 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			return fmt.Errorf(
 				"nest %q: `stack: %s` is a prefixed reference — inside a source, references are bare "+
 					"and resolve in the source itself: the install name is chosen per machine and CI "+
-					"knows none", n.Name, n.Stack)
+					"knows none — fix %s",
+				o.Nest, n.Stack, nest.FilePath(nestRoot, bareNest))
 		}
 		stackRoot, stackSrcName, ref = nestRoot, srcName, n.Stack
 	} else {
@@ -250,8 +261,8 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			hinted[s] = true
 			if source.Stale(denHome, s, now) {
 				fmt.Fprintf(d.Err,
-					"hint: source %q was last fetched more than 7 days ago — den source update %s\n",
-					s, s)
+					"hint: source %q was last fetched more than %s ago — den source update %s\n",
+					s, staleAfterWords(), s)
 			}
 		}
 	}
@@ -296,18 +307,23 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// sandbox component is the FLATTENED reference ("corp:backend" →
 	// "corp-backend"). A LOCAL nest keeps o.Nest unchanged: today's ordinary,
 	// working sandbox name, and there is no source prefix to strip.
+	//
+	// Flattening rewrites exactly ONE character on this path: the ":"
+	// separator. srcName is charset-validated by config.ValidateSourceName
+	// and bareNest by LoadNest's config.ValidateSandboxComponent, so both
+	// already satisfy the sandbox charset and nothing else in "srcName:
+	// bareNest" changes — the flattened form is always literally
+	// "srcName-bareNest". Two collisions are therefore possible, and only
+	// two: a LOCAL nest whose file name equals that string, and ANOTHER
+	// installed source whose own "otherSrc-otherNest" decomposition of the
+	// same string also names a real nest file. Both are checked below,
+	// before any side effect; neither is normalized in silence.
 	nestComponent := o.Nest
 	if srcName != "" {
 		nestComponent, err = config.FlattenSandboxComponent("nest", o.Nest)
 		if err != nil {
 			return err
 		}
-		// A local nest whose FILE NAME equals the flattened reference would
-		// spawn (or `den ls`/`den sh`/`den rm`) the identical sandbox name as
-		// this source nest — nothing downstream could tell them apart.
-		// Refused here, before any side effect, naming BOTH files so the
-		// user can rename whichever they prefer; den never normalizes a
-		// collision like this in silence.
 		localPath := nest.FilePath(denHome, nestComponent)
 		if _, statErr := os.Stat(localPath); statErr == nil {
 			// The local file is named FIRST as the one to rename: the source
@@ -319,6 +335,15 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 					"rename %s (or the source nest %s, though a `den source update` would revert that) "+
 					"so attach, `den ls` and `den rm` are never ambiguous between them",
 				o.Nest, nestComponent, localPath, localPath, nest.FilePath(nestRoot, bareNest))
+		}
+		if otherPath, found := crossSourceCollision(denHome, srcName, nestComponent); found {
+			return fmt.Errorf(
+				"nest %q: flattens to sandbox name %q, which collides with the source nest %s — "+
+					"two DIFFERENT installed sources decompose the same sandbox name; rename the "+
+					"source nest at %s or %s (renaming inside a source is reverted by its next "+
+					"`den source update`, so the durable fix is usually the `den source add --name`) "+
+					"so attach, `den ls` and `den rm` are never ambiguous between them",
+				o.Nest, nestComponent, otherPath, nest.FilePath(nestRoot, bareNest), otherPath)
 		}
 	}
 	sandboxName, err := sbx.SandboxName(nestComponent, worktreeName.Dir)
@@ -695,6 +720,62 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return nil
 	}
 	return Attach(ctx, d.Sbx, sandboxName, workdir)
+}
+
+// staleAfterWords renders source.StaleAfter for the staleness hint's prose.
+// Derived from the constant rather than a literal "7 days" duplicated here:
+// source.StaleAfter is its SOLE definition, and a value changed there must
+// not leave the hint quoting a number that's no longer true. Days, not a raw
+// time.Duration.String() ("168h0m0s" would read as noise in a sentence a
+// human is meant to read).
+func staleAfterWords() string {
+	days := int64(source.StaleAfter / (24 * time.Hour))
+	if days == 1 {
+		return "1 day"
+	}
+	return fmt.Sprintf("%d days", days)
+}
+
+// crossSourceCollision finds whether ANOTHER installed source (not exclude)
+// has a nest whose OWN "otherSrc-otherNest" flattening equals flattened —
+// the second of the two collisions a source nest's flattened sandbox name
+// can hit (the first, a same-named LOCAL nest, is checked at the call site).
+//
+// It works backwards from the string alone: since flattening only ever
+// rewrites the ":" separator (see the call site's comment), the flattened
+// form of "s:n" is always exactly "s-n" once s and n are themselves
+// charset-valid — which every installed source name and every loadable nest
+// name already is. So for each OTHER installed source s2, flattened need
+// only be tested against the single prefix "s2-": if it matches, the
+// remainder is the ONLY candidate nest name that could possibly collide, and
+// a real file at that name is a real collision, not a guess.
+//
+// Fail-open on a ReadDir error: this improves a message, and refusing a
+// spawn because den's OWN sources/ listing failed would forbid nests that
+// have nothing to do with the read that broke.
+func crossSourceCollision(denHome, exclude, flattened string) (path string, found bool) {
+	entries, err := os.ReadDir(source.Root(denHome))
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == exclude {
+			continue
+		}
+		prefix := e.Name() + "-"
+		if !strings.HasPrefix(flattened, prefix) {
+			continue
+		}
+		otherNest := flattened[len(prefix):]
+		if otherNest == "" {
+			continue
+		}
+		candidate := nest.FilePath(source.Dir(denHome, e.Name()), otherNest)
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 // checkFreshness runs the §9.1 gate and turns its verdict into den's behaviour.
