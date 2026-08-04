@@ -2,15 +2,15 @@ package cli
 
 import "testing"
 
-// The Makefile is "the ONLY documented way to build" precisely because a plain
+// `task build` is "the ONLY documented way to build" precisely because a plain
 // `go build` leaves Version at "dev". But `go install …/cmd/den@v1.0.0` — the
-// reflex of every Go developer — bypasses the Makefile AND carries the tag in
+// reflex of every Go developer — bypasses the Taskfile AND carries the tag in
 // the module build info. resolveVersion is the arbitration that rescues that
-// path: ldflags first (the Makefile and goreleaser both stamp it), build info
+// path: ldflags first (the Taskfile and goreleaser both stamp it), build info
 // second, "dev" only when neither knows better.
 
 func TestResolveVersionPrefersLdflagsStamp(t *testing.T) {
-	// When the Makefile or goreleaser stamped a version, build info must not
+	// When the Taskfile or goreleaser stamped a version, build info must not
 	// override it: `git describe` on a dirty checkout says `v1.0.0-3-gabc-dirty`
 	// while build info would still answer a clean-looking `(devel)` or a stale
 	// module version — the stamp is the more honest of the two.
@@ -35,7 +35,7 @@ func TestResolveVersionKeepsDevWhenBuildInfoIsDevel(t *testing.T) {
 	// A plain `go build` in a checkout: ldflags never ran AND build info
 	// answers the literal "(devel)". Substituting "(devel)" for "dev" would
 	// swap one non-answer for an uglier one — keep "dev", the documented
-	// tell that the binary skipped `make build`.
+	// tell that the binary skipped `task build`.
 	got := resolveVersion("dev", "(devel)", false)
 	if got != "dev" {
 		t.Fatalf("resolveVersion leaked build info's placeholder: %q", got)
@@ -80,5 +80,20 @@ func TestResolveVersionPrefersLdflagsEvenFromALocalVCSBuild(t *testing.T) {
 	got := resolveVersion("v1.0.1-5-g364136e-dirty", "v1.1.1-0.20260804111234-a28f04a21c08+dirty", true)
 	if got != "v1.0.1-5-g364136e-dirty" {
 		t.Fatalf("the ldflags stamp lost to the VCS pseudo-version: %q", got)
+	}
+}
+
+// The guard against a build that stamped nothing. A misspelled `{{.VERSION}}`
+// in the Taskfile renders as the empty string — Task reports no error and exits
+// 0 — so `-X …cli.Version=` reaches the linker and Version stays "". Drop the
+// `ldflags != ""` term and the arbitration returns that empty string: `den
+// version` answers "den " with nothing after it, which is not `dev` either and
+// so passes any check that only looks for the dev tell. The Taskfile's own
+// comment warns about this trap and HANDOFF.md rests an argument on it; nothing
+// tested it until this branch.
+func TestResolveVersionKeepsDevWhenLdflagsStampedNothing(t *testing.T) {
+	got := resolveVersion("", "v1.1.1-0.20260804111234-a28f04a21c08+dirty", true)
+	if got != "dev" {
+		t.Fatalf("an empty ldflags stamp must not reach the user: %q", got)
 	}
 }

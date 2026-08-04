@@ -1,7 +1,7 @@
-# goreleaser is the release twin of `make build`: both exist to keep one promise,
+# goreleaser is the release twin of `task build`: both exist to keep one promise,
 # a shipped binary names the code it runs. The ldflags below MUST target the same
-# symbol as the Makefile (github.com/PillowPillow/den/internal/cli.Version) and
-# use {{ .Tag }} — not {{ .Version }} — because `git describe` (the Makefile
+# symbol as the Taskfile (github.com/PillowPillow/den/internal/cli.Version) and
+# use {{ .Tag }} — not {{ .Version }} — because `git describe` (the Taskfile
 # path) answers `v1.0.0` with the leading v, and two install paths answering
 # `v1.0.0` vs `1.0.0` for the same commit would look like two different builds
 # in a bug report.
