@@ -208,7 +208,12 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			writeResolution(cmd.OutOrStdout(), r)
+			// args[0], not r.Nest.Name: LoadNest sets Name to the bare
+			// filename ("api", not "corp:api" — the filename is
+			// authoritative, spec §2), so the header dropped the prefix the
+			// user typed. On a den that also owns a LOCAL "api", that header
+			// named a different nest than the one printed below it.
+			writeResolution(cmd.OutOrStdout(), args[0], r)
 			return nil
 		},
 	}
@@ -218,8 +223,12 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 	return cmd
 }
 
-func writeResolution(w io.Writer, r *nest.Resolved) {
-	fmt.Fprintf(w, "nest:   %s\n", r.Nest.Name)
+// ref is the reference the user typed, and it is what the header shows —
+// see the call site for why r.Nest.Name is the wrong string. The STACK line
+// stays bare: a source nest's `stack:` resolves inside that same source, so
+// there is no second prefix for the reader to reconcile.
+func writeResolution(w io.Writer, ref string, r *nest.Resolved) {
+	fmt.Fprintf(w, "nest:   %s\n", ref)
 	fmt.Fprintf(w, "stack:  %s (image %s)\n", r.Stack.Name, r.Stack.Image)
 	fmt.Fprintf(w, "agent:  %s\n", r.AgentName)
 	fmt.Fprintf(w, "  config_dir: %s\n", r.AgentConfigDir)

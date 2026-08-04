@@ -441,3 +441,22 @@ func TestNestLsSkipsNonDirectoryEntriesUnderSources(t *testing.T) {
 		t.Errorf("the stray file must not be treated as a source; got:\n%s", out)
 	}
 }
+
+// `den nest show corp:api` printed `nest:   api`, dropping the prefix the
+// user typed — and on a den that also owns a LOCAL `api`, that header names
+// a different nest than the one being shown.
+func TestNestShowHeaderKeepsTheSourcePrefix(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, minimalConfig)
+	writeUnder(t, dir, filepath.Join("sources", "corp", "stacks", "devx", "stack.yaml"),
+		"image: corp-devx:v1\n")
+	writeUnder(t, dir, filepath.Join("sources", "corp", "nests", "api.yaml"), "stack: devx\n")
+
+	out, err := run(t, "nest", "show", "corp:api", "--den-home", dir)
+	if err != nil {
+		t.Fatalf("den nest show corp:api: %v", err)
+	}
+	if !strings.Contains(out, "nest:   corp:api") {
+		t.Errorf("the header must name the reference the user typed; got:\n%s", out)
+	}
+}

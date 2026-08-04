@@ -383,6 +383,12 @@ repo key "review-mgmt" is not mapped on this machine — add `review-mgmt: <loca
 `url:` only enriches that message; it exists to tell you what to clone, never to trigger a clone
 den performs itself. Local nests can use `key:` too — it is one mechanism, not a sources-only one.
 
+Keys are resolved **after** `--without`/`--only`, so an unmapped key on an *optional* repo is
+escapable: a teammate who simply does not have the front-end checkout runs `den corp:backend
+--without front-app` and spawns without it. The refusal says so itself when the repo is optional.
+A key on a repo that is still selected always refuses — den never drops a repo on its own — and a
+*required* one is never offered the escape, since `--without` refuses required repos outright.
+
 ### Addressing
 
 A source's stacks and nests are addressed `<source>:<name>` (`corp:dgdevx`, `corp:backend`); a
@@ -395,6 +401,18 @@ knows none.
 flattened sandbox name: `corp:backend` becomes sandbox `corp-backend` — the same flattening `-w`
 already applies to branch names. A flattening collision (a local nest already named `corp-backend`,
 say) is refused at spawn, never silently renamed.
+
+`den sh`, `den rm` and `den ports` take **either** spelling: the reference you typed
+(`corp:backend`, `corp:backend.feat12`) or the literal name `den ls` prints (`corp-backend`,
+`corp-backend.feat12`). The literal one is decoded back to its source, which is unambiguous
+precisely because spawn refused both competing decompositions up front.
+
+The one case where the flattened name stops working is an ambiguity created **after** the spawn —
+you write a local nest `corp-backend.yaml`, or install a second source that also decomposes the
+name. den refuses rather than guessing which nest declares the sandbox's repos, and the prefixed
+spelling `corp:backend` keeps working throughout. If the source is **uninstalled** after the
+spawn, the flattened name has nothing left to decode from and den can only report the missing
+local nest; `den source add` it again, or destroy the sandbox with `den rm --keep-worktrees`.
 
 ### Fail-closed updates
 
@@ -419,10 +437,11 @@ hint: source "corp" was last fetched more than 7 days ago — den source update 
 
 The same validation `source add`/`source update` run: strict YAML, `parent:` resolvable and
 acyclic, declared paths (`kit`, `kits`, `provision.includes`/`steps`) existing and confined to the
-checkout, bare (never prefixed) internal references, and a nest with no `stack:`. It reports every
-finding at once, not one per push. A stack's illegal name, missing `image:`, or a repo entry with
-both (or neither) `path:` and `key:` are refused too — those surface as the load error on the
-offending file, which can end the report early on that one file rather than join the itemized list
+checkout, bare (never prefixed) internal references, a nest with no `stack:`, and a nest whose
+`repos:` carries a `path:` instead of a `key:` — a work repo lives outside the checkout, so no
+path could travel to a colleague's machine anyway. It reports every finding at once, not one per
+push. A stack's illegal name, missing `image:`, or a repo entry with both (or neither) `path:`
+and `key:` are refused too — those surface as the load error on the offending file, which can end the report early on that one file rather than join the itemized list
 above. Point it at a checkout to run it standalone, e.g. from the team repo's own CI:
 
 ```bash
@@ -433,19 +452,25 @@ It reads no den home and touches no git or `sbx` — an argument is a filesystem
 
 ### Known limitations
 
-- `den sh`, `den rm` and `den ports` take a single sandbox-name argument, and flattening it
-  rewrites every character outside the sandbox charset — including the `.` that separates a
-  worktree from its nest. So `den sh corp:api.feat12` cannot reach the worktree'd sandbox a source
-  nest spawned: it flattens to `corp-api-feat12`, which matches nothing. The refusal lists the live
-  sandboxes, so retry with the literal name `den ls` prints (`corp-api.feat12`).
-- Following on from that: `den rm corp-api.feat12` destroys the sandbox correctly (the literal
-  name needs no source lookup), but cannot reverse-decode `corp-api` back into the source `corp`
-  to find the nest that declares the worktree's repos. Worktree cleanup degrades to a warning —
-  the sandbox is destroyed, the worktree is left on disk untouched, and the warning names its path.
-- A local nest and a source nest that share a bare name (`backend` locally, `corp:backend` from a
-  source) hash to the same port window when neither declares `ports.base:` — the window is seeded
-  by the bare nest name only. They don't double-bind (the scan in [Ports](#ports) above shifts the
-  second one to the next free block), but one of the two loses its stable, bookmarkable URL.
+A local object and a source object that share a **bare name** (`devx` locally, `corp:devx` from a
+source) address different files everywhere — but a few things downstream are keyed by the bare
+name alone, and are therefore shared between them:
+
+- The **port window** when neither nest declares `ports.base:`: it is hashed from the bare nest
+  name. They don't double-bind (the scan in [Ports](#ports) above shifts the second one to the
+  next free block), but one of the two loses its stable, bookmarkable URL.
+- The **build scratch directory** `cache/build/<stack>` and the throwaway sandbox name
+  `<stack>-build`. Harmless when the two builds run one after the other; `den build devx` and
+  `den build corp:devx` running concurrently collide.
+- The declared **`image:` tag**. Two stacks in different roots that declare the same `image:`
+  collide in sbx's global template store: `den build corp:devx` overwrites whatever the local
+  `devx` built, and the local nest then spawns from the team's image with no warning. Unlike the
+  others this one is author-chosen rather than derived, so it is avoidable — give a team stack a
+  distinctive tag (`corp-devx:v1`) and the collision cannot arise.
+
+One more, created by the ambiguity refusal above: once a local nest file shares a live source
+sandbox's flattened name, that flattened name is no longer addressable and `den sh`/`rm`/`ports`
+need the prefixed spelling (`corp:backend`) until you rename one of the two nests.
 
 ## Design
 
