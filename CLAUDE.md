@@ -12,10 +12,11 @@ hermetic.
 ## Commands
 
 ```bash
-make test        # go test -count=1 ./...   (-count=1 defeats the cache — plain `go test` can pass stale)
-make typecheck   # go build ./...
-make lint        # go vet ./... && test -z "$(gofmt -l .)"   — gofmt is enforced, not advisory
-make build       # go build -ldflags "-X .../cli.Version=$(git describe --tags --always --dirty)" -o den ./cmd/den
+task check       # lint » typecheck » test, fail-fast — what CI runs, and what to run before a commit
+task test        # go test -count=1 ./...   (-count=1 defeats the cache — plain `go test` can pass stale)
+task typecheck   # go build ./...
+task lint        # go vet ./... then test -z "$(gofmt -l .)"   — gofmt is enforced, not advisory
+task build       # go build -ldflags "-X .../cli.Version=$(git describe --tags --always --dirty)" -o den ./cmd/den
                  # the ONLY documented way to build: a plain `go build` answers `den dev`
 
 go test ./internal/spawn/ -run TestSpawnAddsNoWorkspaceOutsideMountMode -count=1   # single test
@@ -103,3 +104,6 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   actually answered.
 - `.claude/worktrees/feat+spawn-interactive/` is a full shadow copy of the tree. Exclude it from
   greps or every search returns doubled hits.
+- Il n'y a plus de `Makefile` : le runner est `Taskfile.yml` depuis le 2026-08-04. Les plans
+  datés et les handoffs sous `docs/superpowers/` disent encore `make lint && make test` — c'est
+  correct **à leur date** et ils ne sont pas réécrits. Traduire en `task check` en les lisant.

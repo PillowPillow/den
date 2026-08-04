@@ -1,5 +1,5 @@
-# The same three gates a local dev runs (make lint / typecheck / test), on every
-# push and PR. The `checks` job is hermetic by construction — no socket, no
+# The same three gates a local dev runs (`task check`), on every push and PR.
+# The `checks` job is hermetic by construction — no socket, no
 # process, no real sbx — so a bare ubuntu runner with a Go toolchain is enough;
 # anything more (services, sbx install) would contradict the repo's own test
 # conventions. `install-script` is the one deliberate exception: its object
@@ -15,13 +15,26 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: make lint
-      - run: make typecheck
-      - run: make test
+      # `version` is pinned to the v3 line and not left to float: the action
+      # otherwise installs whatever is newest, and a task v4 released on a
+      # Tuesday would break a CI whose code has not moved. `repo-token` is what
+      # keeps the release lookup off the unauthenticated GitHub API rate limit.
+      #
+      # The action's own major is `@v3` — unrelated to the `version: 3.x` below,
+      # which is go-task's. v2.0.0 is the last node20 tag and was the one action
+      # still tripping the deprecation warning after #44 bumped the other three;
+      # v3.0.0 (2026-06-30) moves the runtime to node24 and changes nothing else
+      # that matters here — `version` and `repo-token` are declared identically
+      # at both tags, read out of action.yml, not out of the release notes.
+      - uses: arduino/setup-task@v3
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: task check
 
   # install.sh is an interface between .goreleaser.yaml's archive naming and
   # whatever machine runs `curl | sh`. shellcheck locks the POSIX-sh promise;
@@ -38,7 +51,7 @@ jobs:
   install-script:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: shellcheck install.sh
       - name: smoke against the latest release
         run: |

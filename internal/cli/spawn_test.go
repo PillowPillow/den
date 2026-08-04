@@ -510,3 +510,57 @@ func TestInteractiveRefusesWithoutATerminalProbe(t *testing.T) {
 		t.Errorf("the refusal must name the non-interactive equivalents: %v", err)
 	}
 }
+
+func TestPositionalsReachSpawnOptionsAsRepos(t *testing.T) {
+	// Same shape as TestFlagsReachSpawnOptions: an INVALID value proves the
+	// wiring, because an unwired argument is silent — the paths would simply
+	// vanish and the spawn would succeed mounting nothing extra.
+	f, d := fakeSpawnDeps()
+	missing := filepath.Join(t.TempDir(), "gone")
+
+	_, err := runSpawn(t, denHomeSpawnable(t), d, "api", missing)
+	if err == nil {
+		t.Fatal("a positional naming a path that does not exist must fail the spawn")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("positionals do not reach spawn.Options (expected %q); got: %v", missing, err)
+	}
+	if !strings.Contains(err.Error(), "command line") {
+		t.Errorf("error = %q, expected it to name the command line as the place to fix", err)
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("no sbx call must have happened; calls: %v", f.Calls)
+	}
+}
+
+func TestSeveralPositionalsAllReachSpawnOptions(t *testing.T) {
+	// The SECOND path is the invalid one: with `args[1:2]` instead of
+	// `args[1:]`, or with only the first positional read, this passes silently.
+	f, d := fakeSpawnDeps()
+	missing := filepath.Join(t.TempDir(), "gone")
+	present := t.TempDir()
+
+	_, err := runSpawn(t, denHomeSpawnable(t), d, "api", present, missing)
+	if err == nil {
+		t.Fatal("expected the spawn to fail on the second positional")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("only the first positional seems to reach spawn.Options; got: %v", err)
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("no sbx call must have happened; calls: %v", f.Calls)
+	}
+}
+
+func TestATypoOnASubcommandIsStillSuggestedWithPositionals(t *testing.T) {
+	// `den doctr /dev/a` must keep suggesting `den doctor`. The suggestion is
+	// pinned to nest.NestNotFoundError, not to the argument count — and this
+	// test is what keeps that true now that extra arguments are legal.
+	_, _, err := runFullRoot(t, denHomeSpawnable(t), "doctr", "/dev/a")
+	if err == nil {
+		t.Fatal("expected a failure: there is no nest named doctr")
+	}
+	if !strings.Contains(err.Error(), "den doctor") {
+		t.Errorf("error = %q, expected it to suggest `den doctor`", err)
+	}
+}

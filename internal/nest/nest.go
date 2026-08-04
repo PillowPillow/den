@@ -18,7 +18,18 @@ import (
 // is set (LoadNest refuses both and neither-with-url): Path is a machine
 // path, Key is an indirection through the personal `repos:` mapping of
 // config.yaml — the one thing that lets a TEAM nest travel between machines
-// (spec 2026-08-04 §2.4).
+// (spec 2026-08-04 §2.4). A Key entry's Path stays EMPTY until Resolve fills
+// it, which is why every path-keyed check in this package has to tolerate one.
+//
+// AdHoc records where the entry came from, and it is not cosmetic: it decides
+// which place a "repo not found" tells the user to correct — a `repos:` line in
+// a yaml file, or the command they just typed. Sending someone to edit a nest
+// file over a path they typed by hand is the kind of wrong remedy den exists to
+// avoid (spec §2).
+//
+// `yaml:"-"` states the intent rather than leaving it to a side effect of the
+// decoder: strict decoding (KnownFields(true)) would already reject a hand
+// written `adhoc:`, but that is a property of the loader, not of this type.
 type Repo struct {
 	Path string `yaml:"path"`
 	Key  string `yaml:"key"`
@@ -26,6 +37,7 @@ type Repo struct {
 	// clone command the user probably wants. den never clones a work repo.
 	URL      string `yaml:"url"`
 	Optional bool   `yaml:"optional"`
+	AdHoc    bool   `yaml:"-"`
 }
 
 // Name is the repo's short name, used by --without/--only and as the
@@ -151,7 +163,7 @@ func LoadNest(denHome, name string) (*Nest, error) {
 		}
 	}
 	// After expansion: two differently-written paths can converge.
-	if err := checkUniqueNames(n.Repos); err != nil {
+	if err := checkUniqueNames(n.Repos, "nest"); err != nil {
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
 	for agent, dir := range n.Agents {

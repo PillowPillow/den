@@ -1,6 +1,7 @@
 package nest
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -441,4 +442,147 @@ func TestResolveUnmappedRequiredKeyDoesNotOfferWithout(t *testing.T) {
 	if strings.Contains(err.Error(), "--without review-mgmt") {
 		t.Errorf("error %q offers --without on a REQUIRED repo, which selectRepos refuses", err)
 	}
+}
+
+func TestResolvePutsCommandLineReposFirst(t *testing.T) {
+	// Workspaces[0] decides where the attached shell starts
+	// (sbx.Sandbox.Workdir). "I am mounting X on the fly" means "I have come to
+	// work in X", so a positional wins over the nest's own first repo.
+	r, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{
+		Repos: []string{"/tmp/hotfix"},
+		Cwd:   "/work",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"/tmp/hotfix", "/dev/api", "/dev/front"}
+	if got := paths(r.Repos); !slices.Equal(got, expected) {
+		t.Errorf("Repos = %v, expected %v — the positional comes first", got, expected)
+	}
+	if !r.Repos[0].AdHoc {
+		t.Error("Repos[0].AdHoc = false: the origin must survive the merge")
+	}
+	if r.Repos[1].AdHoc {
+		t.Error("Repos[1].AdHoc = true: a declared repo must not be reported as ad-hoc")
+	}
+}
+
+func TestResolveWithoutStillFiltersDeclaredRepos(t *testing.T) {
+	// --without/--only keep addressing the declared list ONLY. A repo given on
+	// the command line is removed by not typing it.
+	r, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{
+		Repos:   []string{"/tmp/hotfix"},
+		Cwd:     "/work",
+		Without: []string{"front"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"/tmp/hotfix", "/dev/api"}
+	if got := paths(r.Repos); !slices.Equal(got, expected) {
+		t.Errorf("Repos = %v, expected %v", got, expected)
+	}
+}
+
+func TestResolveRefusesWithoutNamingACommandLineRepo(t *testing.T) {
+	_, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{
+		Repos:   []string{"/tmp/hotfix"},
+		Cwd:     "/work",
+		Without: []string{"hotfix"},
+	})
+	if err == nil {
+		t.Fatal("expected a refusal: --without does not address a repo given on the command line")
+	}
+	if !strings.Contains(err.Error(), "hotfix") {
+		t.Errorf("error = %q, expected it to name the repo", err)
+	}
+}
+
+func TestResolveRefusesABasenameCollisionWithTheCommandLine(t *testing.T) {
+	// nestTest declares /dev/api. A positional whose basename is also "api"
+	// makes --without, the worktree path and the sbx positional ambiguous at
+	// once: a hard error, not a last-one-wins.
+	_, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{
+		Repos: []string{"/tmp/scratch/api"},
+		Cwd:   "/work",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal on the duplicated short name \"api\"")
+	}
+	if !strings.Contains(err.Error(), "command line") {
+		t.Errorf("error = %q, expected it to point at the fixable half", err)
+	}
+}
+
+func TestResolveRefusesTheSamePathTwiceOnTheCommandLine(t *testing.T) {
+	// Two positionals naming the same directory: same basename, so absent the
+	// duplicate-path pre-pass this falls through to the basename message,
+	// which sends the reader hunting for a second, distinct path that does
+	// not exist.
+	_, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{
+		Repos: []string{"/tmp/scratch/hotfix", "/tmp/scratch/hotfix"},
+		Cwd:   "/work",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal: the same path was given twice on the command line")
+	}
+	if strings.Contains(err.Error(), "short name") {
+		t.Errorf("error = %q, expected the SAME-PATH message, not the basename collision", err)
+	}
+	if !strings.Contains(err.Error(), "twice") {
+		t.Errorf("error = %q, expected it to say the path was given twice", err)
+	}
+}
+
+func TestResolveRefusesACommandLinePathEqualToADeclaredOne(t *testing.T) {
+	// The declared entry carries a trailing slash — legal YAML, and LoadNest
+	// only ever tilde-expands a declared path (nest.go:129), it never Cleans
+	// it. A positional's path IS Cleaned, in parseRepoArg. If the duplicate
+	// check compared raw strings instead of Clean(a) == Clean(b), this case —
+	// exactly the one the finding names, `den api ~/dev/api` colliding with an
+	// already-declared repo — would be missed and fall through to the
+	// basename message instead.
+	n := &Nest{
+		Name:  "fullstack",
+		Stack: "devx",
+		Repos: []Repo{{Path: "/dev/api/"}},
+	}
+	_, err := Resolve("/d", globalTest(), stacksTest(), n, Options{
+		Repos: []string{"/dev/api"},
+		Cwd:   "/work",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal: the command line repeats the declared path")
+	}
+	if strings.Contains(err.Error(), "short name") {
+		t.Errorf("error = %q, expected the SAME-PATH message, not the basename collision", err)
+	}
+	if !strings.Contains(err.Error(), "already declared") {
+		t.Errorf("error = %q, expected it to say the path is already declared", err)
+	}
+	if !strings.Contains(err.Error(), "command line") {
+		t.Errorf("error = %q, expected it to point at the fixable half", err)
+	}
+}
+
+func TestResolveWithoutCommandLineReposIsUnchanged(t *testing.T) {
+	// The nominal path: no positional, no Cwd, and the declared list is exactly
+	// what it was before this feature existed.
+	r, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := paths(r.Repos); !slices.Equal(got, []string{"/dev/api", "/dev/front"}) {
+		t.Errorf("Repos = %v", got)
+	}
+}
+
+// paths is the Path projection, so a failure prints what a reader recognizes
+// rather than a wall of struct literals.
+func paths(rs []Repo) []string {
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, r.Path)
+	}
+	return out
 }

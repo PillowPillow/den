@@ -254,6 +254,23 @@ func TestLoadNestRejectsTwoHomonymousKeyRepos(t *testing.T) {
 	}
 }
 
+// Two DISTINCT key-typed repos are the ordinary team nest, and they must
+// LOAD. The pin is on the duplicate-path pre-pass introduced with the
+// command-line positionals: it compares filepath.Clean(Path), and a key entry
+// has no Path before Resolve — Clean("") is ".", so both entries collided on
+// "." and LoadNest refused a legal nest, naming a path nobody had written.
+func TestLoadNestAcceptsTwoDistinctKeyRepos(t *testing.T) {
+	denHome := t.TempDir()
+	writeNest(t, denHome, "backend", "repos:\n  - { key: api }\n  - { key: review-mgmt }\n")
+	n, err := LoadNest(denHome, "backend")
+	if err != nil {
+		t.Fatalf("two distinct keys are a legal nest: %v", err)
+	}
+	if len(n.Repos) != 2 {
+		t.Errorf("Repos = %v, expected both entries kept", n.Repos)
+	}
+}
+
 func TestLoadNestMissing(t *testing.T) {
 	if _, err := LoadNest(t.TempDir(), "ghost"); err == nil {
 		t.Fatal("expected an error for a missing nest")

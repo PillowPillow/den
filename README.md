@@ -38,17 +38,20 @@ Prebuilt archives also sit on the
 [releases page](https://github.com/PillowPillow/den/releases) if you'd rather
 not pipe a script into your shell.
 
-From a checkout:
+From a checkout — the build runs through [go-task](https://taskfile.dev), so it comes first:
 
 ```bash
-make build
+brew install go-task/tap/go-task   # or, with a Go toolchain already there:
+go install github.com/go-task/task/v3/cmd/task@latest
+
+task build
 ```
 
 Every path stamps the version into the binary, so `den version` names the code it runs — the
-release tag (`v1.0.0`) via Homebrew, `go install` and releases (including `install.sh`), and where you stand relative to
-it (`v1.0.0-3-gabc1234-dirty`) via `make build`. A plain `go build` in a checkout is the one
-build that names nothing: it answers `dev`, which is the documented tell that the build skipped
-`make`.
+release tag (`v1.0.0`) via Homebrew, `go install …/cmd/den@v1.0.0` and releases (including
+`install.sh`), and where you stand relative to it (`v1.0.0-3-gabc1234-dirty`) via `task build`.
+Building from a checkout without the runner — a plain `go build`, or a `go install ./cmd/den` —
+is what names nothing: it answers `dev`, the documented tell that the build skipped `task`.
 
 ## Bootstrapping
 
@@ -75,7 +78,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | Command | Role |
 |---|---|
 | `den init` | creates a den home from the shipped example (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`); refuses if `config.yaml` already exists |
-| `den <nest>` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise |
+| `den <nest> [repo...]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise; extra repos are mounted on the fly |
 | `den ls` | lists live sandboxes, with their nest and worktree |
 | `den sh <name>` | opens a shell in an existing sandbox |
 | `den ports <name>` | publishes the nest's declared ports into that sandbox and prints where they land on the host |
@@ -111,6 +114,50 @@ branch `feature/123` in a sandbox `api.feature-123`. That is the name it appears
 So den accepts any name it can **name**; git remains the sole judge of what is a legal **ref**.
 `-w 'a..b'` passes naming (sandbox `api.a--b`) and it is `git worktree add` that refuses,
 before any sandbox is created.
+
+### Mounting a repo on the fly
+
+A nest file is still required — what becomes optional is its `repos:` block. A repo does not need
+to be declared there to enter the sandbox: the paths that follow the nest name are mounted like
+`repos:` entries, worktree included.
+
+```bash
+den scratch ~/dev/a ~/dev/b     # a nest with no `repos:` — both repos come from the command line
+den api ~/dev/hotfix            # additive: api's repos PLUS hotfix
+den scratch .                   # the current directory
+den api -w feat/x ~/dev/hotfix  # -w propagates a worktree to hotfix, same as api's own repos
+den nest show scratch ~/dev/a   # what would be mounted, without creating anything
+```
+
+The first repo on the command line becomes the directory where the shell starts. Mounts are frozen
+at sandbox creation, so on an already-live sandbox `den` warns rather than changing anything: it
+names any path it will not mount, and it says so separately when the shell will not start where you
+asked — asking for a subset of what is already mounted triggers only the second. `den rm <name>`
+then relaunch to change either.
+
+`:ro` is not accepted: a repo mounted on the fly is mounted writable, like a declared `repos:` entry.
+Under `-w`, it must also be a git repository, exactly like a declared one — den refuses before
+creating anything otherwise.
+
+`--without` and `--only` still address only the declared `repos:` list, so a repo given on the
+command line is dropped by not typing it. Naming an undeclared repo on either flag is not a no-op:
+den refuses the whole spawn with `repo "<name>" unknown in this nest`.
+
+**`den rm` does not clean the worktree of a repo given on the command line.** A positional is not
+part of the sandbox identity, so den persists it nowhere and `den rm` — which recovers what to
+clean from the sandbox name alone, through the nest's `repos:` — cannot know it existed. After
+`den api -w feat ~/dev/hotfix`, `den rm api.feat` leaves `worktree_root/feat/hotfix` and its git
+registration behind. Remove it yourself, naming the worktree — `git worktree remove` takes its path
+and refuses a dirty one without `-f`:
+
+```bash
+git -C ~/dev/hotfix worktree remove ~/.den/worktrees/feat/hotfix
+```
+
+The same is true of a repo deleted from `repos:` before the teardown. Under the `per-repo` layout
+the leftover sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den added
+to that repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to
+remove.
 
 Options of `den rm`: `--keep-worktrees` (keep the worktrees), `--force` (delete them even if they
 carry uncommitted changes; without it, den refuses **before** touching the VM).

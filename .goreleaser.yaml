@@ -1,7 +1,7 @@
-# goreleaser is the release twin of `make build`: both exist to keep one promise,
+# goreleaser is the release twin of `task build`: both exist to keep one promise,
 # a shipped binary names the code it runs. The ldflags below MUST target the same
-# symbol as the Makefile (github.com/PillowPillow/den/internal/cli.Version) and
-# use {{ .Tag }} — not {{ .Version }} — because `git describe` (the Makefile
+# symbol as the Taskfile (github.com/PillowPillow/den/internal/cli.Version) and
+# use {{ .Tag }} — not {{ .Version }} — because `git describe` (the Taskfile
 # path) answers `v1.0.0` with the leading v, and two install paths answering
 # `v1.0.0` vs `1.0.0` for the same commit would look like two different builds
 # in a bug report.
@@ -17,6 +17,16 @@ release:
   github:
     owner: PillowPillow
     name: den
+  # The release body is the curated CHANGELOG.md section, carried here in the annotated
+  # tag's body — `/release` writes that text once and puts it in both places, so the repo
+  # and the release page cannot drift. Header is rendered by the release pipe
+  # (internal/pipe/release/body.go), which is why it survives `changelog.disable` below.
+  #
+  # The tag must be created with `git tag -a --cleanup=verbatim`: git's default cleanup
+  # deletes every line starting with `#`, which strips the `### Added` headings out of the
+  # tag object without a word, and this template would then publish a headingless body.
+  header: |
+    {{ .TagBody }}
 
 builds:
   - main: ./cmd/den
@@ -42,16 +52,16 @@ checksum:
   name_template: checksums.txt
 
 changelog:
-  # `git` (not `github`) so a local `goreleaser release --snapshot` works
-  # against a private or offline clone — the GitHub API is only reachable once
-  # the repo is public and a token is around, and the changelog must not be the
-  # reason a dry run fails.
-  use: git
-  filters:
-    exclude:
-      - "^docs"
-      - "^test"
-      - "^chore"
+  # No generated commit list: the release body is the hand-written section from
+  # CHANGELOG.md, reaching GitHub through `release.header` above. A reformatted `git log`
+  # underneath it would repeat the same release twice, in the worse of the two voices.
+  #
+  # `disable: true` and not `filters.exclude: [".*"]`, which was the first attempt:
+  # excluding everything still leaves goreleaser's "## Changelog" title in the body, a
+  # heading with nothing under it. Disabling skips the pipe entirely and leaves
+  # ctx.ReleaseNotes empty, and the release pipe renders the header regardless — so the
+  # body is exactly the tag body, nothing appended.
+  disable: true
 
 # homebrew_casks, not the deprecated `brews`: goreleaser v2 routes CLI binaries
 # through casks now. Casks are macOS-only — Linux users get the release

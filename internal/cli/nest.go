@@ -161,9 +161,9 @@ func warnAboutShadowedNests(cmd *cobra.Command, nests []*nest.Nest) {
 func newNestShowCmd(denHome *string) *cobra.Command {
 	var opts nest.Options
 	cmd := &cobra.Command{
-		Use:   "show <nest>",
+		Use:   "show <nest> [repo...]",
 		Short: "Show a fully resolved nest",
-		Args:  exactlyOneArg,
+		Args:  atLeastOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {
@@ -204,6 +204,17 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The dry-run of `den <nest> [repo...]`: same resolution, no side
+			// effect. Reading the working directory here mirrors internal/spawn
+			// — internal/nest never reads it itself.
+			opts.Repos = args[1:]
+			if len(opts.Repos) > 0 {
+				if opts.Cwd, err = os.Getwd(); err != nil {
+					return fmt.Errorf(
+						"reading the working directory, needed to resolve the repos given on "+
+							"the command line: %w", err)
+				}
+			}
 			r, err := nest.Resolve(home, g, stacks, n, opts)
 			if err != nil {
 				return err
@@ -238,8 +249,15 @@ func writeResolution(w io.Writer, ref string, r *nest.Resolved) {
 
 	fmt.Fprintln(w, "repos:")
 	for _, repo := range r.Repos {
+		// A repo given on the command line is neither required nor optional —
+		// those words describe a `repos:` declaration and --without/--only,
+		// which never address it. Naming its origin instead is what makes this
+		// listing a usable dry-run.
 		status := "required"
-		if repo.Optional {
+		switch {
+		case repo.AdHoc:
+			status = "command line"
+		case repo.Optional:
 			status = "optional"
 		}
 		fmt.Fprintf(w, "  - %s (%s)\n", repo.Path, status)

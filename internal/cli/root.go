@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"runtime"
@@ -234,6 +235,11 @@ var (
 	noArgs        = argsBetween(0, 0)
 	exactlyOneArg = argsBetween(1, 1)
 	atMostOneArg  = argsBetween(0, 1)
+	// atLeastOneArg has no upper bound because the arguments past the first are
+	// repos, and nothing caps how many a spawn may mount. argsBetween's
+	// "too many" branch is therefore unreachable through it — only the
+	// "one argument expected: none received" wording is ever produced.
+	atLeastOneArg = argsBetween(1, math.MaxInt)
 )
 
 // argsBetween returns a validator accepting between min and max arguments.
