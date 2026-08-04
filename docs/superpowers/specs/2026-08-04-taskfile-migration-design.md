@@ -175,7 +175,7 @@ chose sans qu'un test le voie.
 
 ```bash
 task build && ./den version     # doit répondre v1.0.0-N-gSHA[-dirty], jamais "dev"
-go build ./cmd/den && ./den version   # doit toujours répondre "dev"
+go build -o /tmp/den-plain ./cmd/den && /tmp/den-plain version && rm /tmp/den-plain   # doit toujours répondre "dev"
 ```
 
 Les deux assertions comptent. La première prouve que les ldflags passent encore ; la

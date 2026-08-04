@@ -1,4 +1,4 @@
-# The task runner den's four gates and its one build live in. `-X ...cli.Version`
+# The task runner den's gates and its build live in. `-X ...cli.Version`
 # is what makes a binary say which code it runs; without it `den version` answers
 # `dev` on a user's machine, which names nothing. The value comes from
 # `git describe`, so a tagged build says `v1.0.0` and every other one says where
