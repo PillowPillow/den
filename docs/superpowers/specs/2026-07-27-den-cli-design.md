@@ -283,6 +283,18 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
    pour la remplacer, et son `-- ARGS` ne fait qu'*ajouter* des arguments. **Les ports ne sont PAS
    publiés au spawn** → `den ports <nest>` à la demande.
 
+**Limite connue du teardown.** `den rm` ne nettoie PAS le worktree d'un repo passé en positionnel.
+Un positionnel ne fait pas partie de l'identité (décision 7) : den ne le persiste nulle part, et
+`den rm` reconstruit ce qu'il doit nettoyer à partir du seul nom de sandbox, via les `repos:` du
+nest — il ne peut donc pas savoir que ce worktree a existé. Le répertoire et son enregistrement git
+restent en place ; en layout `per-repo` l'orphelin atterrit sous `<repo>/.den/<wt>`, dans le repo de
+l'utilisateur, avec la ligne `.den/` que den a ajoutée à son `.git/info/exclude`. Le cas préexistait
+pour un repo retiré de `repos:` avant le teardown ; les positionnels en font le chemin ordinaire.
+Le correctif tient en deux moitiés asymétriques : en layout central, énumérer `worktree_root/<wt>/*`
+et traiter les entrées que `repos:` n'explique pas ; en `per-repo`, l'énumération est impossible
+faute du chemin du repo, et il ne reste qu'à avertir. Cette asymétrie mérite son propre changement
+plutôt qu'un passager sur celui-ci.
+
 ### Build DAG — `den build [stack] [--force]`
 - Parse tous les `stacks/*/stack.yaml` → graphe via `parent`.
 - `den build dgdevx` → construit `devx` d'abord **si son image manque**, puis `dgdevx`.

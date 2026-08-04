@@ -135,6 +135,22 @@ creating anything otherwise.
 command line is dropped by not typing it. Naming an undeclared repo on either flag is not a no-op:
 den refuses the whole spawn with `repo "<name>" unknown in this nest`.
 
+**`den rm` does not clean the worktree of a repo given on the command line.** A positional is not
+part of the sandbox identity, so den persists it nowhere and `den rm` — which recovers what to
+clean from the sandbox name alone, through the nest's `repos:` — cannot know it existed. After
+`den api -w feat ~/dev/hotfix`, `den rm api.feat` leaves `worktree_root/feat/hotfix` and its git
+registration behind. Remove it yourself, naming the worktree — `git worktree remove` takes its path
+and refuses a dirty one without `-f`:
+
+```bash
+git -C ~/dev/hotfix worktree remove ~/.den/worktrees/feat/hotfix
+```
+
+The same is true of a repo deleted from `repos:` before the teardown. Under the `per-repo` layout
+the leftover sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den added
+to that repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to
+remove.
+
 Options of `den rm`: `--keep-worktrees` (keep the worktrees), `--force` (delete them even if they
 carry uncommitted changes; without it, den refuses **before** touching the VM).
 
