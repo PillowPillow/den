@@ -80,8 +80,16 @@ func (g *Global) Validate() []error {
 
 	for _, name := range names {
 		a := g.Agents[name]
+		// Not "required": LoadGlobalUnvalidated already defaults an ABSENT
+		// config_dir (config.go), so this only fires on a value that was
+		// explicitly written and is blank — same split as worktree_root
+		// (ValidateWorktree below): the loader defaults the empty string, this
+		// TrimSpace catches what the loader's `== ""` check let through.
 		if strings.TrimSpace(a.ConfigDir) == "" {
-			errs = append(errs, fmt.Errorf("agents.%s.config_dir: required", name))
+			errs = append(errs, fmt.Errorf(
+				"agents.%s.config_dir: blank — it would reach `sbx create` as an empty "+
+					"positional argument and mount nothing; remove the key to use the default, "+
+					"or set a real path", name))
 		}
 		// TrimSpace, not `== ""`: agent.FreshnessCommand judges on TrimSpace
 		// too, and the stricter of the two judges must win.
@@ -155,8 +163,12 @@ func (g *Global) ValidateWorktree() []error {
 	// and the user would read two lines for one fault.
 	switch {
 	case strings.TrimSpace(g.WorktreeRoot) == "":
+		// Not "required" either, for the same reason as config_dir above: an
+		// ABSENT worktree_root is already defaulted by LoadGlobalUnvalidated
+		// (config.go:73); this only fires on a written-but-blank value.
 		errs = append(errs, fmt.Errorf(
-			"worktree_root: required — it's the root under which den creates and finds worktrees"))
+			"worktree_root: blank — it's the root under which den creates and finds worktrees; "+
+				"remove the key to use the default, or set an absolute path"))
 	case !filepath.IsAbs(g.WorktreeRoot):
 		// LoadGlobalUnvalidated only makes the DEFAULT absolute; a
 		// hand-written value passes through unchanged, ExpandPath touching

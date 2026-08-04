@@ -4,7 +4,9 @@
 > `CLAUDE.md`, puis le spec. Réponds en français (préférence utilisateur) ; écris le code, les
 > commentaires et les messages utilisateur **en anglais**.
 >
-> Dernière mise à jour : **2026-08-03**, après le tag **`v1.0.0`** (#10, PR #34).
+> Dernière mise à jour : **2026-08-03**, après le tag **`v1.0.0`** (#10, PR #34) — et retouchée le
+> même jour sur la branche `feat/den-init` pour `den init` (§0), livré APRÈS le tag et absent du
+> binaire que `v1.0.0` nomme.
 
 > ⚠️ **Ce fichier a menti pendant cinq jours.** Sa version précédente, datée du 2026-07-28,
 > annonçait « Plan 2 écrit et PAS exécuté », « 34 commits, rien n'est poussé », et des conventions
@@ -26,6 +28,10 @@
   `git describe --tags --always --dirty` dans `cli.Version` : un binaire construit en suivant le
   README répond `den v1.0.0`, plus `den dev`. **Toutes les issues v1 sont fermées.** Ce qui reste
   ouvert et pourquoi ça ne bloquait pas le tag est au §8 ci-dessous.
+- **`den init` est arrivé après le tag**, sur `feat/den-init` : il matérialise un den home depuis
+  l'exemple embarqué et refuse si `config.yaml` existe déjà (pas de `--force`). Le binaire `v1.0.0`
+  ne le contient pas ; le bootstrap README ci-dessous décrit l'état de cette branche, pas celui du
+  tag.
 
 ## 1. Mission
 
@@ -199,7 +205,7 @@ deux surfaces de `sbx` qu'aucun banc n'a encore touchées.
   de la v1).
 - `docs/superpowers/plans/` et `docs/superpowers/handoffs/2026-*` — **historiques, jamais réécrits**.
   Ils décrivent l'état à leur date.
-- `README.md` — amorçage utilisateur (`cp -R examples/den-home ~/.den`, puis `den doctor`).
+- `README.md` — amorçage utilisateur (`den init`, puis `den doctor`).
 
 **Dans le dépôt voisin `sbx-devbox`** (monté `:ro` — non modifiable depuis la sandbox) :
 

@@ -35,14 +35,19 @@ build that names nothing: it answers `dev`, which is the documented tell that th
 ## Bootstrapping
 
 ```bash
-cp -R examples/den-home ~/.den
-$EDITOR ~/.den/config.yaml
-./den doctor
+den init
+$EDITOR ~/.den/nests/example.yaml
+den doctor
 ```
 
-On the first `den doctor`, two diagnostics are expected until you adapt the config: `sbx` missing
-if it is not installed, and the example repo `~/dev/my-project` not found. Both go away once
-`~/.den/config.yaml` and `~/.den/nests/example.yaml` are adjusted.
+`den init` copies the shipped example into the den home, refusing only on the presence of
+`config.yaml` itself (`already initialized: <path>`) — a home with no `config.yaml` counts as
+uninitialized no matter what else is sitting in it, and every shipped file is then written
+unconditionally, overwriting a same-named file already on disk. Step 2 above is why: the shipped
+`~/.den/nests/example.yaml` points at `~/dev/my-project`, and
+skipping the edit is what makes the first `den doctor` fail on "repo not found" — that diagnostic
+goes away once the nest points at a real repository. `sbx` missing is a second, machine-dependent
+one — only shown if it is not already installed.
 
 `~/.den/` is the single source of truth. The `DEN_HOME` variable (or the `--den-home` flag) lets
 you use a different one — that is what makes `den` testable and scriptable.
@@ -51,6 +56,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 
 | Command | Role |
 |---|---|
+| `den init` | creates a den home from the shipped example (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`); refuses if `config.yaml` already exists |
 | `den <nest>` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise |
 | `den ls` | lists live sandboxes, with their nest and worktree |
 | `den sh <name>` | opens a shell in an existing sandbox |
