@@ -20,7 +20,20 @@ import (
 // LoadNest judges a single file (the fix is in the yaml), Resolve judges the
 // merged spawn, where the collision may be between a file and the command line
 // and only the second is fixable by retyping. repoOrigin() carries the other half.
+//
+// checkNoDuplicatePaths runs FIRST, and as an entirely separate pass over the
+// list, because the case it catches — the exact same path given twice — is
+// also a basename collision, and the basename message misdescribes it: it
+// sends the reader hunting for a SECOND, distinct path that shares nothing
+// with the one on screen, when there isn't one. A single fused loop would
+// report whichever collision it reaches first by position (so
+// [/dev/a, /dev/b/a, /dev/a] would blame the basename at index 1 and never
+// reach the exact duplicate at index 2); the separate pre-pass makes the more
+// useful diagnosis win regardless of where in the list it falls.
 func checkUniqueNames(repos []Repo, scope string) error {
+	if err := checkNoDuplicatePaths(repos, scope); err != nil {
+		return err
+	}
 	seen := make(map[string]Repo, len(repos))
 	for _, r := range repos {
 		if previous, ok := seen[r.Name()]; ok {
@@ -32,6 +45,65 @@ func checkUniqueNames(repos []Repo, scope string) error {
 		seen[r.Name()] = r
 	}
 	return nil
+}
+
+// checkNoDuplicatePaths is checkUniqueNames' pre-pass; see its comment for
+// why this runs first and separately.
+//
+// Compared after filepath.Clean, not as raw strings: a declared `repos:`
+// entry is only ever tilde-expanded (LoadNest, nest.go), never Cleaned, while
+// a command-line path IS Cleaned (parseRepoArg) — so a declared
+// `path: /dev/api/` and a typed `/dev/api` are the same directory that raw
+// equality would call different, silently falling through to the basename
+// message this check exists to preempt. Raw equality was the rejected
+// alternative for exactly that reason.
+func checkNoDuplicatePaths(repos []Repo, scope string) error {
+	seen := make(map[string]Repo, len(repos))
+	for _, r := range repos {
+		clean := filepath.Clean(r.Path)
+		if previous, ok := seen[clean]; ok {
+			return duplicatePathError(previous, r, scope)
+		}
+		seen[clean] = r
+	}
+	return nil
+}
+
+// duplicatePathError names the collision as what it is — the same path given
+// twice — rather than deduplicating in silence: den refuses rather than
+// normalizing a configuration it cannot honor unambiguously (spec §2), the
+// same call parseRepoArg makes about a path's whitespace. Which of the two
+// wordings applies follows AdHoc, same as repoOrigin:
+//
+//   - both from the command line: neither is more "correct" than the other,
+//     so the remedy is simply to drop one.
+//   - both declared: the fix is in the yaml, one `repos:` entry is redundant.
+//   - one of each: unambiguous — the declared entry stands, the positional is
+//     the fixable half, so the remedy names dropping IT specifically.
+func duplicatePathError(a, b Repo, scope string) error {
+	switch {
+	case a.AdHoc && b.AdHoc:
+		// Naming a alone, not both: this branch is only ever reached with
+		// a.Path == b.Path byte-for-byte, never merely "the same after another
+		// Clean". Each ad-hoc Path already IS filepath.Clean's output
+		// (parseRepoArg), and Clean is idempotent — so two ad-hoc entries
+		// denoting the same directory converge to one canonical string before
+		// they ever reach this function, whatever their raw, as-typed forms
+		// were. There is no second spelling left to show.
+		return fmt.Errorf(
+			"repo %s is given twice on the command line — drop one occurrence", a.Path)
+	case !a.AdHoc && !b.AdHoc:
+		return fmt.Errorf(
+			"repo %s is declared twice in the %s — remove one `repos:` entry", a.Path, scope)
+	default:
+		declared := a
+		if a.AdHoc {
+			declared = b
+		}
+		return fmt.Errorf(
+			"repo %s is already declared in the %s — drop it from the command line",
+			declared.Path, scope)
+	}
 }
 
 // repoOrigin names where a repo came from, for the collision message. Named

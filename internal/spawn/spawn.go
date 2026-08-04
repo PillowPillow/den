@@ -242,8 +242,18 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			// has nothing to do with the failure — the wrong remedy is worse
 			// than a bare error, because it is followed.
 			if repo.AdHoc {
+				// %q, not %s: a command-line path is deliberately never trimmed
+				// (parseRepoArg, internal/nest/repos.go) so a directory legitimately
+				// named with leading/trailing spaces survives intact — but that only
+				// pays off if this check names it verbatim. Under %s the padding
+				// blends into the surrounding text and `den api " /dev/api "` prints
+				// exactly like a clean path. And unlike the declared branch below,
+				// this one names no remedy: the origin alone tells the user where the
+				// path came from, not what to do about it.
 				return fmt.Errorf(
-					"repo not found: %s — given on the command line", repo.Path)
+					"repo not found: %q — given on the command line: check the path, or drop it "+
+						"from the command line",
+					repo.Path)
 			}
 			return fmt.Errorf(
 				"nest %q: repo not found: %s — fix `repos:` in %s",

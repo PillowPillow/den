@@ -205,3 +205,50 @@ func TestCheckUniqueNamesNamesTheCommandLineOrigin(t *testing.T) {
 		t.Errorf("error = %q, expected it to name the declared path too", err)
 	}
 }
+
+// The same path typed twice on the command line shares a basename with
+// itself, so before the pre-pass existed this fell through to the "share the
+// short name" message — which sends the reader hunting for a SECOND path
+// that shares nothing with the one on screen, since there isn't one.
+func TestCheckUniqueNamesRefusesTheSamePathTwiceOnTheCommandLine(t *testing.T) {
+	err := checkUniqueNames([]Repo{
+		{Path: "/dev/api", AdHoc: true},
+		{Path: "/dev/api", AdHoc: true},
+	}, "spawn")
+	if err == nil {
+		t.Fatal("expected a refusal: the same path was given twice")
+	}
+	if strings.Contains(err.Error(), "short name") {
+		t.Errorf("error = %q, expected the SAME-PATH message, not the basename collision "+
+			"it would otherwise fall through to", err)
+	}
+	if !strings.Contains(err.Error(), "twice") {
+		t.Errorf("error = %q, expected it to say the path was given twice", err)
+	}
+	if !strings.Contains(err.Error(), "command line") {
+		t.Errorf("error = %q, expected it to say both occurrences came from the command line", err)
+	}
+}
+
+// A command-line path can also repeat a DECLARED one — `den api ~/dev/api`
+// when `api` is already in repos:. Unlike the all-command-line case, this one
+// has an unambiguous remedy: keep the declared entry, drop the positional.
+func TestCheckUniqueNamesRefusesACommandLinePathEqualToADeclaredOne(t *testing.T) {
+	err := checkUniqueNames([]Repo{
+		{Path: "/dev/api", AdHoc: true},
+		{Path: "/dev/api"},
+	}, "spawn")
+	if err == nil {
+		t.Fatal("expected a refusal: the command line repeats the declared path")
+	}
+	if strings.Contains(err.Error(), "short name") {
+		t.Errorf("error = %q, expected the SAME-PATH message, not the basename collision "+
+			"it would otherwise fall through to", err)
+	}
+	if !strings.Contains(err.Error(), "already declared") {
+		t.Errorf("error = %q, expected it to say the path is already declared", err)
+	}
+	if !strings.Contains(err.Error(), "command line") {
+		t.Errorf("error = %q, expected it to point at the fixable half", err)
+	}
+}

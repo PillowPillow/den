@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -2573,6 +2574,30 @@ func TestSpawnRefusesAMissingCommandLineRepoWithoutBlamingTheNestFile(t *testing
 	if callStartingWith(f, "create") != nil {
 		t.Error("a sandbox was created despite the refusal: everything rejectable from config " +
 			"alone must be rejected before the first side effect")
+	}
+}
+
+// A command-line path is deliberately never trimmed (parseRepoArg,
+// internal/nest/repos.go): a directory legitimately named with leading or
+// trailing spaces must survive intact, and the payoff of that decision is
+// that the later "not found" check names it verbatim, WITH %q, so the
+// padding is visible instead of blending into the surrounding text. padded
+// is built as an absolute path with a trailing space so IsAbs still holds
+// and the expected string does not depend on the process's cwd (unlike a
+// leading space, which would defeat IsAbs and get joined against it).
+func TestSpawnNamesAPaddedCommandLineRepoVerbatimAndQuoted(t *testing.T) {
+	denHome, _ := denTest(t)
+	_, d := fakeDeps()
+
+	padded := filepath.Join(t.TempDir(), "gone") + " "
+	err := Spawn(context.Background(), denHome, Options{Nest: "api", Repos: []string{padded}}, d)
+	if err == nil {
+		t.Fatal("expected a refusal on a path that does not exist")
+	}
+	quoted := fmt.Sprintf("%q", padded)
+	if !strings.Contains(err.Error(), quoted) {
+		t.Errorf("error = %q, expected it to contain the path quoted as %s — a bare %%s would "+
+			"print the same bytes indistinguishably from a clean path", err, quoted)
 	}
 }
 

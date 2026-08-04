@@ -409,6 +409,57 @@ func TestResolveRefusesABasenameCollisionWithTheCommandLine(t *testing.T) {
 	}
 }
 
+func TestResolveRefusesTheSamePathTwiceOnTheCommandLine(t *testing.T) {
+	// Two positionals naming the same directory: same basename, so absent the
+	// duplicate-path pre-pass this falls through to the basename message,
+	// which sends the reader hunting for a second, distinct path that does
+	// not exist.
+	_, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{
+		Repos: []string{"/tmp/scratch/hotfix", "/tmp/scratch/hotfix"},
+		Cwd:   "/work",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal: the same path was given twice on the command line")
+	}
+	if strings.Contains(err.Error(), "short name") {
+		t.Errorf("error = %q, expected the SAME-PATH message, not the basename collision", err)
+	}
+	if !strings.Contains(err.Error(), "twice") {
+		t.Errorf("error = %q, expected it to say the path was given twice", err)
+	}
+}
+
+func TestResolveRefusesACommandLinePathEqualToADeclaredOne(t *testing.T) {
+	// The declared entry carries a trailing slash — legal YAML, and LoadNest
+	// only ever tilde-expands a declared path (nest.go:129), it never Cleans
+	// it. A positional's path IS Cleaned, in parseRepoArg. If the duplicate
+	// check compared raw strings instead of Clean(a) == Clean(b), this case —
+	// exactly the one the finding names, `den api ~/dev/api` colliding with an
+	// already-declared repo — would be missed and fall through to the
+	// basename message instead.
+	n := &Nest{
+		Name:  "fullstack",
+		Stack: "devx",
+		Repos: []Repo{{Path: "/dev/api/"}},
+	}
+	_, err := Resolve("/d", globalTest(), stacksTest(), n, Options{
+		Repos: []string{"/dev/api"},
+		Cwd:   "/work",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal: the command line repeats the declared path")
+	}
+	if strings.Contains(err.Error(), "short name") {
+		t.Errorf("error = %q, expected the SAME-PATH message, not the basename collision", err)
+	}
+	if !strings.Contains(err.Error(), "already declared") {
+		t.Errorf("error = %q, expected it to say the path is already declared", err)
+	}
+	if !strings.Contains(err.Error(), "command line") {
+		t.Errorf("error = %q, expected it to point at the fixable half", err)
+	}
+}
+
 func TestResolveWithoutCommandLineReposIsUnchanged(t *testing.T) {
 	// The nominal path: no positional, no Cwd, and the declared list is exactly
 	// what it was before this feature existed.
