@@ -31,6 +31,14 @@ jobs:
           # goreleaser derives the changelog from git history and refuses a
           # shallow clone; fetch-depth 0 is its documented requirement.
           fetch-depth: 0
+      # checkout fetches the annotated tag object, then re-fetches the commit SHA
+      # *into the same ref* (`+<sha>:refs/tags/vX.Y.Z`), which downgrades the tag to a
+      # lightweight one. `%(contents:body)` then answers nothing, so goreleaser's
+      # `release.header: {{ .TagBody }}` publishes an empty release page — measured on
+      # v1.1.0 (2026-08-04), whose body came out 4 bytes and had to be repaired by hand.
+      # --force is not optional: without it this fetch refuses to clobber the lightweight
+      # ref checkout just wrote, and nothing changes.
+      - run: git fetch --force --tags
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
