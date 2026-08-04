@@ -2480,7 +2480,7 @@ func TestSpawnDoesNotCheckTheImageOfAPullableStack(t *testing.T) {
 	fake := &sbx.Fake{}
 	// A stack with no provision.steps: not buildable.
 	s := &config.Stack{Name: "pulled", Image: "ghcr.io/acme/base:v3"}
-	if err := checkStackImage(context.Background(), Deps{Sbx: fake}, s); err != nil {
+	if err := checkStackImage(context.Background(), Deps{Sbx: fake}, s, s.Name); err != nil {
 		t.Fatalf("checkStackImage refused a pullable stack: %v", err)
 	}
 	if fake.HasCalled("template", "ls") {
@@ -2799,5 +2799,34 @@ func TestSpawnHintsOnStaleSourceThroughStackOnly(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "den source update corp") {
 		t.Errorf("Err = %q, expected a staleness hint naming `den source update corp` "+
 			"(the stack's source, though the nest itself is local)", errBuf.String())
+	}
+}
+
+// The remedy must name the stack the way the USER can reach it. `den build
+// devx` and `den build corp:devx` address two different stacks in two
+// different roots, and on a den that owns a local `devx` the wrong one is not
+// even a refusal: it succeeds, builds another image, and this spawn still
+// fails. A remedy that names a command sending the user somewhere else is
+// worse than one that fails.
+func TestSpawnRefusalNamesTheSourcePrefixedStack(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: corp-teamstack:v1\nbase: claude\nprovision:\n  steps: [./provision/setup.sh]\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	f, d := fakeDeps()
+	answerTemplates(f, `{"images":[]}`)
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:api"}, d)
+	if err == nil {
+		t.Fatal("expected a refusal on an image no build ever produced")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "den build corp:teamstack") {
+		t.Errorf("message = %q, want the prefixed remedy `den build corp:teamstack`", msg)
+	}
+	if strings.Contains(msg, "den build teamstack;") {
+		t.Errorf("message = %q names the BARE stack, which addresses a different (local) stack", msg)
 	}
 }

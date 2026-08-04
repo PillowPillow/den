@@ -50,6 +50,29 @@ func (s *SbxImages) Has(ctx context.Context, image string) (bool, error) {
 	return sbx.FindTemplate(s.loaded, image) != nil, nil
 }
 
+// Target is the stack the user named, in the TWO spellings Plan needs, and
+// it is a struct rather than two adjacent string parameters precisely so a
+// call site cannot silently swap them.
+//
+//   - Name is the BARE name, the one the chain and config.Stacks are keyed
+//     by. It is what the plan ARBITRATES on.
+//   - Ref is the reference the user typed, prefixed when the target came from
+//     a source ("corp:devx"). It is the only spelling a `den build ...`
+//     remedy may print — internal/cli/build.go rewrites the argument to the
+//     bare name before Chain sees it, and a remedy built from that name sends
+//     the user to a DIFFERENT stack in a different root, one that on many
+//     dens builds successfully and changes nothing about the failure.
+//
+// The zero Target is "no target at all" (bare `den build`): both fields empty.
+type Target struct {
+	Name string
+	Ref  string
+}
+
+// LocalTarget is the Target of a bare, unprefixed argument, where the two
+// spellings coincide.
+func LocalTarget(name string) Target { return Target{Name: name, Ref: name} }
+
 // Step is one stack of the chain and the verdict on it.
 type Step struct {
 	Stack *config.Stack
@@ -77,7 +100,7 @@ type Step struct {
 //
 // force with no target is a no-op rather than a refusal: `den build` already
 // rebuilds everything, so the flag asks for what is happening anyway.
-func Plan(ctx context.Context, chain []*config.Stack, target string, force bool, images Images) ([]Step, error) {
+func Plan(ctx context.Context, chain []*config.Stack, target Target, force bool, images Images) ([]Step, error) {
 	steps := make([]Step, 0, len(chain))
 	for _, s := range chain {
 		// A stack with NO `provision.steps` is not buildable, and that is a
@@ -93,7 +116,7 @@ func Plan(ctx context.Context, chain []*config.Stack, target string, force bool,
 		// must refuse rather than answer with a skip line: the user asked for
 		// that build specifically, and silently doing nothing reads as success.
 		if !s.Buildable() {
-			if s.Name == target {
+			if s.Name == target.Name {
 				return nil, notBuildableError(s)
 			}
 			steps = append(steps, Step{
@@ -106,7 +129,7 @@ func Plan(ctx context.Context, chain []*config.Stack, target string, force bool,
 		// Only an ANCESTOR is a candidate for skipping — see the godoc. With no
 		// target every stack is a root, so nothing is an ancestor and nothing is
 		// consulted.
-		if target == "" || force || s.Name == target {
+		if target.Name == "" || force || s.Name == target.Name {
 			steps = append(steps, Step{Stack: s, Build: true})
 			continue
 		}
@@ -121,7 +144,7 @@ func Plan(ctx context.Context, chain []*config.Stack, target string, force bool,
 			return nil, fmt.Errorf(
 				"stack %q: den could not check whether image %s is already built: %w — "+
 					"rebuild it anyway with `den build %s --force`",
-				s.Name, s.Image, err, target)
+				s.Name, s.Image, err, target.Ref)
 		}
 		if present {
 			steps = append(steps, Step{

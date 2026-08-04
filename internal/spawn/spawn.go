@@ -410,7 +410,12 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	}
 	live := sbx.Find(boxes, sandboxName)
 	if live == nil {
-		if err := checkStackImage(ctx, d, r.Stack); err != nil {
+		// stackSrcName, not srcName: the stack's own origin. A LOCAL nest may
+		// carry a prefixed `stack:`, and a source nest's stack always resolves
+		// inside that same source — so the two differ, and only the stack's
+		// says what `den build` must be handed.
+		if err := checkStackImage(ctx, d, r.Stack,
+			config.JoinSourceRef(stackSrcName, r.Stack.Name)); err != nil {
 			return err
 		}
 	}
@@ -1098,7 +1103,16 @@ func WarnEmptySSHAgentOnReentry(w io.Writer, sshMode, socket string, probe func(
 //     it guards nothing. sbx still refuses the create by itself if the image
 //     really is absent, so turning den's inability to read an inventory into a
 //     refusal would forbid spawns over a diagnostic that failed.
-func checkStackImage(ctx context.Context, d Deps, s *config.Stack) error {
+//
+// stackRef is the spelling the REMEDY must print: the stack's reference as
+// the user can type it, prefixed when the stack came from a source
+// ("corp:devx"). s.Name is the bare name and is deliberately NOT used for
+// the command, only for the subject. The two are the same string for a local
+// stack and different for a source one, and interpolating the bare name there
+// was worse than a refusing remedy: on a den that also owns a local `devx`,
+// `den build devx` SUCCEEDS, builds a different image, and this spawn still
+// refuses — a command that works, does something, and fixes nothing.
+func checkStackImage(ctx context.Context, d Deps, s *config.Stack, stackRef string) error {
 	// Buildability comes from config, which is the SOLE source of the verdict
 	// (config.Stack.Buildable). It used to be a `os.Stat` on the stack's
 	// build.sh, from internal/build — an edge that existed only to answer this
@@ -1124,7 +1138,7 @@ func checkStackImage(ctx context.Context, d Deps, s *config.Stack) error {
 	return fmt.Errorf(
 		"stack %q: image %s is not built — run `den build %s`; "+
 			"`sbx template ls` lists the images sbx already has",
-		s.Name, s.Image, s.Name)
+		s.Name, s.Image, stackRef)
 }
 
 // reportDrift prints what changed between the mixin a sandbox received at

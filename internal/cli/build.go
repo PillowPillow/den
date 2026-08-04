@@ -50,11 +50,19 @@ func newBuildCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			// enters a graph nobody asked it to join. A source's images are
 			// built by whoever maintains it.
 			stacksRoot := home
+			// The REFERENCE the user typed is kept alongside the bare name
+			// the graph is keyed by, because every `den build ...` remedy
+			// build.Plan prints must name a command addressing THIS stack:
+			// `den build devx` and `den build corp:devx` are two different
+			// stacks in two different roots, and on a den owning both, the
+			// bare one builds successfully and fixes nothing.
+			planTarget := build.LocalTarget(target)
 			if target != "" {
 				var bareTarget string
 				if stacksRoot, _, bareTarget, err = source.Locate(home, target); err != nil {
 					return err
 				}
+				planTarget = build.Target{Name: bareTarget, Ref: target}
 				target = bareTarget
 			}
 			stacks, err := config.LoadStacks(stacksRoot)
@@ -108,7 +116,7 @@ func newBuildCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			// The inventory is passed even when the plan will not consult it:
 			// SbxImages reads `sbx template ls --json` lazily, so `den build`
 			// (all) and `--force` still spend no process on it.
-			steps, err := build.Plan(cmd.Context(), chain, target, force, &build.SbxImages{Runner: runner})
+			steps, err := build.Plan(cmd.Context(), chain, planTarget, force, &build.SbxImages{Runner: runner})
 			if err != nil {
 				return err
 			}
