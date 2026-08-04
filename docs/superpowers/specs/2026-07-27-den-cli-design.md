@@ -290,7 +290,13 @@ nulle part — mais le répertoire, lui, se souvient : son `.git` désigne son d
 nest n'expliquent pas ; le cas préexistant du repo retiré de `repos:` avant le teardown est corrigé
 du même geste. Une entrée dont den ne peut pas répondre — un dépôt garé sous `worktree_root`, un
 répertoire qui n'est pas un worktree, un repo dont le nom de répertoire diffère — est **laissée en
-place** et nommée dans un avertissement. En `per-repo` l'énumération reste impossible faute du
+place** et nommée dans un avertissement. **Le worktree d'un AUTRE nest aussi** : `worktree_root/<wt>`
+n'a pas de composante de nest, donc `den api -w feat` et `den web -w feat` cohabitent sous
+`worktree_root/feat`. `den rm api.feat` retire les worktrees de *cette* sandbox — un répertoire
+expliqué par les `repos:` d'un autre nest est laissé en place, avec un avertissement qui nomme le
+nest propriétaire. Deux nests qui montent tous deux un repo **en positionnel** sous le même `-w`
+restent indiscernables : rien sur le disque ne dit à quelle sandbox appartenait un positionnel.
+En `per-repo` l'énumération reste impossible faute du
 chemin du repo : den nettoie les repos déclarés et avertit pour le reste, sous `<repo>/.den/<wt>`.
 `--force` et le refus sur modifications non commitées s'appliquent aux entrées récupérées comme aux
 autres. Mécanisme :

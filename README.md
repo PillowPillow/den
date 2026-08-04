@@ -147,6 +147,13 @@ A directory den cannot vouch for is **left in place**, named in a warning: a rep
 under `worktree_root`, a directory that is not a worktree, a repo whose directory name does not
 match. den removes what it placed, not what merely looks like it.
 
+So is **another nest's worktree**, and that one den did place: `worktree_root/<wt>` has no nest
+component, so `den api -w feat` and `den web -w feat` sit side by side under `worktree_root/feat`.
+`den rm api.feat` removes the worktrees of *that* sandbox — a directory accounted for by another
+nest's `repos:` is left alone and the warning names the nest that owns it. Two nests that both
+mount a repo **on the command line** under the same `-w` are the one case den cannot tell apart:
+nothing on disk says which sandbox a positional belonged to, so the first teardown cleans up both.
+
 Under the `per-repo` layout there is nothing to enumerate — the worktree lives at `<repo>/.den/<wt>`
 and without the repo path den has nowhere to look. `den rm` cleans up the declared repos and warns
 where to look for the rest:

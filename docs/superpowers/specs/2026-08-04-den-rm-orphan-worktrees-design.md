@@ -101,6 +101,61 @@ L'invariant est porteur — c'est lui qui interdit à un appelant d'envoyer `Rem
 de `known` vérifie `Path("central", root, wt, repo) == dir` — la comparaison passe par la fonction
 qui a **posé** le répertoire, pas par une heuristique de basename.
 
+### §2 bis — L'invariant que les six contrôles n'énoncent pas (amendement du 2026-08-04)
+
+Les six contrôles répondent tous à **une seule** question : « ce répertoire est-il un worktree que
+den a posé ? ». Pour le worktree d'un **autre nest**, les six répondent oui — à juste titre, den l'a
+bel et bien posé. L'invariant qui compte est plus étroit, et il manquait à cette spec :
+
+> **den retire les worktrees de CETTE sandbox. `<worktree_root>/<wt>` est un espace de noms partagé
+> par tous les nests qui utilisent ce nom de worktree**, `Path` n'ayant aucune composante de nest.
+
+Sans lui, `den rm api.feat12` met à la corbeille le travail `feat12` du nest `web`, sous une entrée
+de corbeille nommée d'après `api` ; et si ce worktree est **sale**, le refus sur modifications non
+commitées fait **échouer** `den rm api.feat12` en nommant un fichier que l'utilisateur n'a jamais
+touché dans ce nest — la commande devient inutilisable, bloquée par un état étranger.
+
+**Septième contrôle**, après le contrôle 6 : *les `repos:` déclarés par un AUTRE nest expliquent-ils
+ce répertoire ?* Si oui → **sauter et avertir**, en nommant le nest propriétaire. Jamais d'exclusion
+silencieuse : l'utilisateur doit apprendre pourquoi un répertoire a survécu.
+
+```go
+// Repo déclaré par un AUTRE nest ; Nest est nommé dans l'avertissement.
+type Foreign struct{ Nest, Repo string }
+
+func Orphans(ctx context.Context, g Git, root, wt string, known []string, foreign []Foreign) ([]Orphan, []error, error)
+```
+
+La comparaison porte sur le **chemin du dépôt récupéré** (`repoPath`, dérivé du `.git` du
+répertoire), via `samePath` — **pas** sur les basenames, **pas** via `Path`. Un repo ad-hoc
+`~/dev/hotfix` et un `~/other/hotfix` déclaré ailleurs partagent un basename tout en étant deux
+dépôts différents : seule la comparaison en chemin complet garde l'ad-hoc supprimable.
+
+Côté `cleanWorktrees` (layout central uniquement) : `nest.ListNests` fournit la liste, le nest
+courant est écarté. Tout y est de la **résolution** (doctrine T13/T16) : une erreur structurelle ou
+un autre nest illisible **avertit et continue**, jamais ne fait échouer `den rm` — ce qui laisserait
+l'utilisateur avec une VM vivante qu'il ne peut plus détruire. Un autre nest illisible signifie que
+den n'a pas pu apprendre ce qu'il déclare, donc ses worktrees **ne sont pas** exclus : l'avertissement
+doit le dire, et non passer outre en silence. Ce silence-là est exactement la façon dont ce bug
+revient.
+
+**Rejeté** : passer la mise en page à `<root>/<nest>/<wt>/<repo>`. Cela casse `spawn`, `den ls`, le
+cache de mixins et tous les worktrees déjà sur le disque, pour un bug que ce contrôle ferme à bas
+coût.
+
+**Résidu assumé, documenté et non gardé** : deux nests qui montent tous deux un repo **ad-hoc** sous
+le même `<wt>` restent indiscernables — aucun fait sur le disque ne dit à quelle sandbox appartenait
+un positionnel, et le premier teardown nettoie les deux. Autre cas voisin, volontairement non gardé :
+deux nests qui **déclarent le même repo** partagent un unique répertoire `<root>/<wt>/<repo>` ;
+`accountedFor` répond alors oui et le septième contrôle ne s'exécute pas. Filtrer aussi la liste
+déclarée ferait refuser à `den rm api.feat12` le nettoyage de son propre repo dès qu'un autre nest
+le nomme — une régression, pas une protection. Troisième forme, symétrique : ce nest monte
+`~/dev/hotfix` en **ad-hoc** alors qu'un autre nest le **déclare**. Un seul répertoire, `accountedFor`
+ne répond pas (rien n'est déclaré ici), le septième contrôle saute donc l'entrée et `den rm api.feat`
+laisse en place le worktree ad-hoc de l'utilisateur. Comportement correct — le sens du doute est le
+bon, et l'avertissement nomme un remède qui fonctionne (`den rm web.feat`) — mais il vaut mieux
+l'avoir écrit ici que le faire découvrir à l'usage.
+
 ## §3 — Réécriture de `cleanWorktrees`
 
 L'énumération a lieu **avant** la boucle des repos déclarés. Ce n'est pas un choix de style :
@@ -158,6 +213,19 @@ répertoire, l'autre ment :
 - **garde-fou 4** : un clone principal garé sous `worktree_root` doit être **sauté** ;
 - **garde-fou 5** : un repo qui est lui-même un worktree lié, dont le basename récupéré diffère,
   doit être **sauté avec avertissement** et non silencieusement no-opé.
+
+Le **septième** contrôle (§2 bis) en ajoute quatre, pour les mêmes raisons — les deux modes du
+défaut, et la comparaison qui le rend utilisable :
+
+- `cli` : deux nests déclarant des repos différents, tous deux avec un worktree sous le même `<wt>` ;
+  `den rm` sur l'un laisse le worktree de l'autre **et son enregistrement git** sur le disque,
+  avertit en nommant l'autre nest, et détruit quand même la sandbox ;
+- `cli` : mode **bloquant** — le worktree de l'autre nest porte des modifications non commitées ;
+  `den rm <ce nest>` doit **réussir** ;
+- `worktree` : `Orphans` saute un répertoire expliqué par un `Foreign`, la raison nommant le nest ;
+- `worktree` : **collision de basename** — un nest étranger déclare un repo de même basename que le
+  repo ad-hoc de ce nest, à un chemin différent ; le worktree ad-hoc doit **rester** récupéré. C'est
+  ce test qui épingle la comparaison en chemin complet.
 
 ## Documentation à mettre à jour
 
