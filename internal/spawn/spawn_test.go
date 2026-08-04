@@ -16,6 +16,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sshagent"
@@ -2567,5 +2568,105 @@ func TestSpawnStillBlamesTheNestFileForADeclaredRepo(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "repos:") {
 		t.Errorf("error = %q, expected it to send the user to `repos:`", err)
+	}
+}
+
+func TestSpawnRefusesANonGitRepoUnderWorktreeBeforeCreatingAnything(t *testing.T) {
+	denHome, _ := denTest(t)
+	// early is a REAL git repo, given BEFORE data on the command line — it is
+	// what makes this test discriminate. nest.Resolve prepends ad-hoc repos
+	// ahead of declared ones, so the nest's OWN repo (from denTest) lands at
+	// r.Repos[2], after both of these: step 3's loop would never reach it
+	// either way, before or after this fix, so asserting on IT would pass
+	// whether the fix works or not. early, at r.Repos[0], is what step 3
+	// would have given a worktree to, before ever reaching data — and that
+	// is the orphan this ordering exists to prevent.
+	early := filepath.Join(t.TempDir(), "early")
+	createRepo(t, early)
+	data := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, d := fakeDeps()
+
+	err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Worktree: "feat", Repos: []string{early, data}}, d)
+	if err == nil {
+		t.Fatal("expected a refusal: -w propagates a worktree to every repo, and data is not one")
+	}
+	if !strings.Contains(err.Error(), data) {
+		t.Errorf("error = %q, expected it to name the offending path", err)
+	}
+	if !strings.Contains(err.Error(), "-w") {
+		t.Errorf("error = %q, expected it to name the flag that made this fatal", err)
+	}
+
+	// The assertion that actually proves "before the first side effect": no
+	// worktree exists for early, the repo that WOULD have gotten one first —
+	// step 3's loop reaches data (not a git repo) only after early, so a
+	// refusal originating there, instead of at 2bis, would already have
+	// created early's worktree.
+	//
+	// The message alone proves nothing — it would read identically after the
+	// damage was done.
+	wt := filepath.Join(denHome, "worktrees", "feat", "early")
+	if _, statErr := os.Stat(wt); statErr == nil {
+		t.Errorf("%s exists: a worktree was created before the refusal, which is the orphan "+
+			"this ordering exists to prevent", wt)
+	}
+	if callStartingWith(f, "create") != nil {
+		t.Error("a sandbox was created despite the refusal")
+	}
+}
+
+func TestSpawnGivesACommandLineRepoAWorktreeAndItsGitDir(t *testing.T) {
+	denHome, repo := denTest(t)
+	hotfix := filepath.Join(t.TempDir(), "hotfix")
+	createRepo(t, hotfix)
+	f, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Worktree: "feat", Repos: []string{hotfix}}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := workspacesOf(callStartingWith(f, "create"))
+	expected := []string{
+		filepath.Join(denHome, "worktrees", "feat", "hotfix"),
+		filepath.Join(denHome, "worktrees", "feat", filepath.Base(repo)),
+		// resolvedGitDir, not filepath.Join(x, ".git"): on macOS /var is a
+		// symlink to /private/var, and git reports the resolved form — same
+		// reason TestSpawnMountsEachRepoGitDirWithAWorktree above uses it.
+		resolvedGitDir(t, hotfix),
+		resolvedGitDir(t, repo),
+		filepath.Join(denHome, "agents", "claude"),
+	}
+	if !slices.Equal(got, expected) {
+		t.Errorf("workspaces = %v, expected %v — a repo given on the command line gets the "+
+			"SAME treatment as a declared one: worktree, then its common git dir", got, expected)
+	}
+}
+
+// The counterpart of TestSpawnRefusesANonGitRepoUnderWorktreeBeforeCreatingAnything:
+// a non-git repo reached from `repos:` (not the command line) must be told
+// which FILE to fix, the same way step 2's existence check already
+// distinguishes the two origins.
+func TestSpawnRefusesADeclaredNonGitRepoUnderWorktreeNamingTheNestFile(t *testing.T) {
+	denHome, _ := denTest(t)
+	data := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+data+" }\n")
+	_, d := fakeDeps()
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat"}, d)
+	if err == nil {
+		t.Fatal("expected a refusal: -w propagates a worktree to every repo, and data is not one")
+	}
+	if !strings.Contains(err.Error(), nest.FilePath(denHome, "api")) {
+		t.Errorf("error = %q, expected it to name the nest file — this repo came from `repos:`, "+
+			"not the command line, so `drop that path` is not a remedy anyone can follow", err)
 	}
 }

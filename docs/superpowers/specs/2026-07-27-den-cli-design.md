@@ -1302,7 +1302,7 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
 
   **FERMÉE par #8** (`internal/spawn/spawn.go`, `checkStackImage`) : den lit
   `sbx template ls --json` **avant** `sbx create` et refuse en nommant le remède du §11 — « lance
-  `den build <stack>` ». Le contrôle est placé à l'étape 2ter de la séquence, ce qui a fait
+  `den build <stack>` ». Le contrôle est placé à l'étape 2quater de la séquence, ce qui a fait
   **remonter la lecture `sbx ls --json`** (le verdict créer-ou-attacher) au-dessus des worktrees :
   refuser plus bas aurait laissé un worktree git par dépôt derrière soi. Trois silences délibérés,
   chacun évitant un refus que den ne saurait justifier :

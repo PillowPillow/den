@@ -250,6 +250,50 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				o.Nest, repo.Path, nest.FilePath(denHome, o.Nest))
 		}
 	}
+	// 2bis. Under -w, git-ness is decided HERE, before any worktree exists.
+	//
+	// worktree.Ensure only os.Stat's its repo (worktree.checkRepo): a non-git
+	// directory is not caught until `git worktree add` fails, at step 3, AFTER
+	// the worktrees of the repos ahead of it were created — one orphaned
+	// worktree per repo, left for the user to clean up by hand. That is the
+	// regression this function's ordering exists to prevent, and it predates
+	// ad-hoc repos: a declared `repos:` entry pointing at a non-git directory
+	// has it too. Positionals just made it reachable in one keystroke.
+	//
+	// CommonGitDir is a pure read AND is exactly the value step 3 needs, so the
+	// result is kept and reused there rather than asked of git twice.
+	//
+	// Keyed by repo.Path rather than by rank: two entries can name the same
+	// repository (a clone and one of its worktrees), the case step 3 already
+	// dedups on gitDirs. Keyed by path, the alias falls on the same probe and
+	// the reuse does not reintroduce the call it removes.
+	commonDirs := make(map[string]string, len(r.Repos))
+	if o.Worktree != "" {
+		for _, repo := range r.Repos {
+			if _, known := commonDirs[repo.Path]; known {
+				continue
+			}
+			commonDir, err := worktree.CommonGitDir(ctx, d.Git, repo.Path)
+			if err != nil {
+				// The remedy follows the ORIGIN, same as step 2's existence check
+				// above: sending someone to edit nests/<n>.yaml over a path they
+				// typed by hand names a file that has nothing to do with the
+				// failure — the wrong remedy is worse than a bare error, because
+				// it is followed.
+				if repo.AdHoc {
+					return fmt.Errorf(
+						"%w — `-w` propagates a worktree to every repo of the spawn, and %s is not "+
+							"a git repository: drop `-w`, or drop that path", err, repo.Path)
+				}
+				return fmt.Errorf(
+					"%w — `-w` propagates a worktree to every repo of the spawn, and %s is not a "+
+						"git repository: drop `-w`, or fix `repos:` in %s",
+					err, repo.Path, nest.FilePath(denHome, o.Nest))
+			}
+			commonDirs[repo.Path] = commonDir
+		}
+	}
+
 	// ssh.dir, in mount mode: it becomes a workspace, so it goes
 	// VERBATIM into `sbx create`'s argv. den never passes sbx a path it
 	// hasn't guaranteed exists — a missing directory would mount an empty
@@ -287,7 +331,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 	}
 
-	// 2bis. In agent-forward, warn (never block) if the agent den is about to
+	// 2ter. In agent-forward, warn (never block) if the agent den is about to
 	// forward holds no key. sbx transmits the socket faithfully, but an empty
 	// agent forwards an empty agent: `git push` then dies on publickey inside
 	// the VM, far from the cause, with no ~/.ssh to fall back to. Same probe as
@@ -301,7 +345,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// itself assertable from a test that sets nothing but its arguments.
 	warnEmptySSHAgent(d.Err, r.SSHMode, os.Getenv("SSH_AUTH_SOCK"), d.SSHAgent, d.goos())
 
-	// 2ter. Spawn-or-attach is decided HERE, before the first side effect, and
+	// 2quater. Spawn-or-attach is decided HERE, before the first side effect, and
 	// the stack image is checked on the create branch (spec §11).
 	//
 	// The reading used to sit at step 6, next to the create/attach fork it
@@ -375,13 +419,10 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			//
 			// The `gitdir` symlink resolves as-is, unrewritten, because
 			// sbx mounts at the SAME absolute path as the host (A11).
-			commonDir, err := worktree.CommonGitDir(ctx, d.Git, repo.Path)
-			if err != nil {
-				return err
-			}
-			// Two `repos:` entries can point at the same repository (a
-			// clone and one of its worktrees): sbx would receive the same
-			// positional twice.
+			// Read from the step-2 probe, never asked again: git already
+			// answered this, and asking twice would let the two answers differ
+			// under a concurrent checkout.
+			commonDir := commonDirs[repo.Path]
 			if !slices.Contains(gitDirs, commonDir) {
 				gitDirs = append(gitDirs, commonDir)
 			}
@@ -441,7 +482,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	previous, previousErr := agent.ReadMixin(r.DenHome, sandboxName)
 
 	// 6. Spawn-or-attach: a name that's already live is not an error
-	// (spec §11). `live` was read at step 2ter — the image check needed the
+	// (spec §11). `live` was read at step 2quater — the image check needed the
 	// verdict before any worktree existed.
 
 	// The attach workdir: the config's on the create branch (the VM will
