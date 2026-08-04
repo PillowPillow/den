@@ -6,6 +6,7 @@ import (
 	"github.com/PillowPillow/den/internal/build"
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/source"
 	"github.com/spf13/cobra"
 )
 
@@ -33,14 +34,32 @@ func newBuildCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			stacks, err := config.LoadStacks(home)
-			if err != nil {
-				return err
-			}
 
 			target := ""
 			if len(args) == 1 {
 				target = args[0]
+			}
+
+			// A target may be a source reference ("corp:teamstack"):
+			// source.Locate is the SOLE place that turns it into a root to
+			// load stacks from, exactly as spawn.go resolves a nest or stack
+			// reference. A BARE target (or no target at all) leaves
+			// stacksRoot at the personal den home unchanged — which is also
+			// what keeps a bare `den build` building the LOCAL stacks only:
+			// it never touches source.Locate, so an installed source never
+			// enters a graph nobody asked it to join. A source's images are
+			// built by whoever maintains it.
+			stacksRoot := home
+			if target != "" {
+				var bareTarget string
+				if stacksRoot, _, bareTarget, err = source.Locate(home, target); err != nil {
+					return err
+				}
+				target = bareTarget
+			}
+			stacks, err := config.LoadStacks(stacksRoot)
+			if err != nil {
+				return err
 			}
 
 			chain, excluded, err := build.Chain(stacks, target)

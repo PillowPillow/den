@@ -712,3 +712,27 @@ func TestRmGivesAFreshDeadlineToEachRepo(t *testing.T) {
 			"the deadline is not set for each repo", secondRemaining, gitProbeTimeout)
 	}
 }
+
+// A source reference names a sandbox that was never spawned under its
+// prefixed name: ":" is not in sbx's charset, so spawn (spawn.go) named the
+// live VM "corp-api", the FLATTENED reference. `den rm corp:api` must find
+// and destroy THAT sandbox.
+//
+// No worktree fixture here on purpose: a colon reference names a sandbox
+// spawned WITHOUT `-w` (flattening the whole argument would mangle a
+// worktree suffix's own "." separator, so den does not offer that
+// combination — see rm.go). cleanWorktrees is therefore exercised through
+// its ordinary, unchanged path: `sbx.SplitName("corp-api")` reports no
+// worktree, and it returns immediately.
+func TestRmAcceptsASourceReference(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	f := &sbx.Fake{Responses: lsWith("corp-api")}
+
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp:api"); err != nil {
+		t.Fatalf("den rm corp:api: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "corp-api") {
+		t.Errorf("expected the flattened sandbox corp-api to be destroyed; calls: %v", f.Calls)
+	}
+}

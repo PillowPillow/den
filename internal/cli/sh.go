@@ -42,7 +42,19 @@ func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Resul
 		Short: "Open a shell in an existing sandbox",
 		Args:  exactlyOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The SANDBOX name is the flattened reference: ":" is not in
+			// sbx's `--name` charset, so a nest loaded from a source never
+			// spawns under its prefixed name (spawn.go) — the live VM this
+			// command must find is already "corp-api", not "corp:api". `den
+			// sh` reads no nest file at all, so nothing else here needs
+			// source.Locate.
 			name := args[0]
+			if src, _ := config.SplitSourceRef(name); src != "" {
+				var err error
+				if name, err = config.FlattenSandboxComponent("nest", name); err != nil {
+					return err
+				}
+			}
 			boxes, err := sbx.Ls(cmd.Context(), runner)
 			if err != nil {
 				return err

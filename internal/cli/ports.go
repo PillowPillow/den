@@ -10,6 +10,7 @@ import (
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/ports"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/source"
 	"github.com/spf13/cobra"
 )
 
@@ -40,7 +41,25 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 		Short: "Show where a sandbox's declared ports land on the host",
 		Args:  exactlyOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
+			ref := args[0]
+			// The SANDBOX name is the flattened reference: ":" is not in sbx's
+			// `--name` charset, so a nest loaded from a source never spawns
+			// under its prefixed name (spawn.go) — the live VM this command
+			// must find is already "corp-api", not "corp:api". A bare
+			// reference is unchanged: flattening only ever rewrites the ":"
+			// separator, and a local name carries none.
+			//
+			// Computed here, before ANYTHING is asked of sbx or the den home:
+			// it needs neither, so a bad `--den-home` still gets the ordinary
+			// "sandbox not found" rather than a config error unrelated to
+			// what was typed.
+			name := ref
+			if src, _ := config.SplitSourceRef(ref); src != "" {
+				var err error
+				if name, err = config.FlattenSandboxComponent("nest", ref); err != nil {
+					return err
+				}
+			}
 
 			// `--add` FIRST, before a single call is made to sbx: what it can
 			// refuse — a bind address that is not the loopback, a value that is
@@ -90,14 +109,30 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 			// everything above answers from `sbx ls --json` alone, so a sandbox
 			// that does not exist is reported as such even on a machine whose
 			// den home cannot be located.
-			nestName, _ := sbx.SplitName(name)
 			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
 			}
-			n, err := nest.LoadNest(home, nestName)
-			if err != nil {
-				return err
+			// The nest FILE, unlike the sandbox, is not addressed by the
+			// flattened name: a source nest never lives under
+			// <denHome>/nests, so recovering it needs the ORIGINAL
+			// reference, through the same source.Locate spawn uses — not
+			// sbx.SplitName's nest component, which for a source-originated
+			// sandbox is already flattened and names no real file.
+			var n *nest.Nest
+			if src, _ := config.SplitSourceRef(ref); src != "" {
+				nestRoot, _, bareName, err := source.Locate(home, ref)
+				if err != nil {
+					return err
+				}
+				if n, err = nest.LoadNest(nestRoot, bareName); err != nil {
+					return err
+				}
+			} else {
+				nestName, _ := sbx.SplitName(name)
+				if n, err = nest.LoadNest(home, nestName); err != nil {
+					return err
+				}
 			}
 
 			res, err := ports.Resolve(n, ports.Options{

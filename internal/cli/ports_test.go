@@ -1339,3 +1339,48 @@ func TestPortsPortlessNestWithAddRendersNoWindow(t *testing.T) {
 		}
 	}
 }
+
+// A source reference names a sandbox that was never spawned under its
+// prefixed name — ":" is not in sbx's charset, so the live VM is
+// "corp-api", the FLATTENED reference, exactly as spawn named it. `den ports
+// corp:api` must reach THAT sandbox, and must load the nest's declarations
+// from the source's own root (sources/corp/nests/api.yaml), not from
+// ~/.den/nests, which holds no such file.
+func TestPortsAcceptsASourceReference(t *testing.T) {
+	denHome := t.TempDir()
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nports:\n  base: 9100\n  publish:\n"+
+			"    - { name: vite, container: 5173 }\n    - { name: api, container: 3000 }\n")
+
+	f := &sbx.Fake{Responses: lsWith("corp-api")}
+	stdout, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "corp:api")
+	if err != nil {
+		t.Fatalf("den ports corp:api: %v", err)
+	}
+
+	// The sandbox den talked to is the flattened name — the argv sbx.Fake
+	// actually received.
+	if !f.HasCalled("ports", "corp-api", "--publish", "127.0.0.1:9100:5173") {
+		t.Errorf("expected a publish call against sandbox corp-api; calls: %v", f.Calls)
+	}
+	if !strings.Contains(stdout, "sandbox: corp-api") {
+		t.Errorf("the header must name the flattened sandbox; got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "vite") {
+		t.Errorf("the nest's declared ports must have been read from the source; got:\n%s", stdout)
+	}
+}
+
+// A source reference naming an installed source but a nest that does not
+// exist there is refused with the ordinary "nest not found" diagnostic — not
+// a colon-shaped sandbox name that sbx would reject.
+func TestPortsSourceReferenceUnknownNest(t *testing.T) {
+	denHome := t.TempDir()
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"), "stack: devx\n")
+
+	f := &sbx.Fake{Responses: lsWith("corp-web")}
+	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "corp:web")
+	if err == nil {
+		t.Fatal("a nest absent from the source must be refused")
+	}
+}

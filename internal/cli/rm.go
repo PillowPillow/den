@@ -33,7 +33,28 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 		Short: "Destroy a sandbox (the agent profile persists)",
 		Args:  exactlyOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The SANDBOX name is the flattened reference: ":" is not in
+			// sbx's `--name` charset, so a nest loaded from a source never
+			// spawns under its prefixed name (spawn.go) — the live VM this
+			// command must find and destroy is already "corp-api", not
+			// "corp:api".
+			//
+			// This never needs to combine with a worktree suffix: flattening
+			// the WHOLE argument would also rewrite the "." that separates a
+			// worktree from its nest (FlattenSandboxComponent excludes "."
+			// from its charset on purpose, see config/name.go), so
+			// "corp:api.feat12" would flatten to "corp-api-feat12" — a name
+			// that never matches the live "corp-api.feat12" spawn actually
+			// created. A worktree'd sandbox is destroyed by the name `den
+			// ls` shows instead, unaffected by this branch (cleanWorktrees
+			// below is unchanged).
 			name := args[0]
+			if src, _ := config.SplitSourceRef(name); src != "" {
+				var err error
+				if name, err = config.FlattenSandboxComponent("nest", name); err != nil {
+					return err
+				}
+			}
 			home, err := config.Home(*denHome)
 			if err != nil {
 				return err

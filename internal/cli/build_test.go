@@ -331,3 +331,38 @@ func TestBuildRefusesANamedStackItCannotBuild(t *testing.T) {
 		t.Errorf("built = %v, want nothing built", builtStacks(f))
 	}
 }
+
+// A source reference builds the stack from the SOURCE's own stacks/, not
+// ~/.den/stacks — same doctrine as spawn.go: config.LoadStacks reads whatever
+// root source.Locate names, and the graph (parent chain, image inventory)
+// resolves entirely within that one root.
+func TestBuildAcceptsASourceReference(t *testing.T) {
+	denHome := t.TempDir()
+	buildStack(t, filepath.Join(denHome, "sources", "corp"), "teamstack",
+		"image: teamstack:v1\nbase: claude\nprovision:\n  steps: [step.sh]\n")
+	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": noPriorSandboxes}}
+
+	if _, _, err := runBuild(t, f, "--den-home", denHome, "build", "corp:teamstack"); err != nil {
+		t.Fatalf("den build corp:teamstack: %v", err)
+	}
+	if got := strings.Join(builtStacks(f), ","); got != "teamstack" {
+		t.Errorf("built = %v, want just teamstack", builtStacks(f))
+	}
+}
+
+// Bare `den build`, with no argument, builds the LOCAL stacks only: a
+// source's images are built by whoever maintains it, and an installed source
+// must not silently enter the graph of a build nobody asked it to join.
+func TestBuildWithoutAnArgumentIgnoresInstalledSources(t *testing.T) {
+	home := buildDenHome(t)
+	buildStack(t, filepath.Join(home, "sources", "corp"), "teamstack",
+		"image: teamstack:v1\nbase: claude\nprovision:\n  steps: [step.sh]\n")
+	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": noPriorSandboxes}}
+
+	if _, _, err := runBuild(t, f, "--den-home", home, "build"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Join(builtStacks(f), ","); got != "base,mid,leaf" {
+		t.Errorf("built = %v, want base,mid,leaf (the source's teamstack must be absent)", builtStacks(f))
+	}
+}

@@ -182,57 +182,13 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 
 	// Stack origin. `n.Stack` is a REFERENCE — bare inside a source,
 	// optionally prefixed for a local nest, and for a LOCAL nest only,
-	// falling back to the personal `g.Defaults.Stack` when absent — and this
-	// is the ONE place that turns it into a root to load stacks from:
-	// nest.Resolve works on bare names within a SINGLE root and must not
-	// learn about sources, so the caller (here) owns reference resolution.
-	var stackRoot, stackSrcName, ref string
-	if srcName != "" {
-		// A source nest may NOT fall back on `g.Defaults.Stack`: that default
-		// is personal to this machine, and a nest silently inheriting it
-		// would spawn a different stack for every teammate — or, worse,
-		// spawn the SOURCE's own stack of the same name in silence, which is
-		// exactly the substitution den refuses rather than performs (spec
-		// §2). Same refusal, same wording, as `den lint`'s checkNest
-		// (internal/lint/lint.go) — the two must never diverge on what a
-		// source nest is allowed to say.
-		// The subject named in BOTH refusals below is o.Nest — what the user
-		// actually typed — not n.Name, which LoadNest sets to the bare
-		// filename ("api", not "corp:api"): naming n.Name would point at a
-		// nest the user never typed, and (if they happen to own a same-named
-		// LOCAL nest) send them to edit the wrong file. The source file to
-		// fix is appended explicitly instead, since there is no lint-style
-		// frame here to supply it. The RULE SENTENCE stays identical to `den
-		// lint`'s checkNest (internal/lint/lint.go) — only the subject and
-		// the appended file differ.
-		if n.Stack == "" {
-			return fmt.Errorf(
-				"nest %q: no `stack:` — a source nest cannot fall back on the personal defaults.stack: "+
-					"it must spawn identically on every machine — fix %s",
-				o.Nest, nest.FilePath(nestRoot, bareNest))
-		}
-		// A nest loaded FROM a source may only reference its stack BARE: a
-		// prefixed reference would resolve differently on every machine
-		// (whichever name the OTHER source happens to be installed under
-		// there) and CI, which has installed neither, could not resolve it
-		// at all.
-		if prefix, _ := config.SplitSourceRef(n.Stack); prefix != "" {
-			return fmt.Errorf(
-				"nest %q: `stack: %s` is a prefixed reference — inside a source, references are bare "+
-					"and resolve in the source itself: the install name is chosen per machine and CI "+
-					"knows none — fix %s",
-				o.Nest, n.Stack, nest.FilePath(nestRoot, bareNest))
-		}
-		stackRoot, stackSrcName, ref = nestRoot, srcName, n.Stack
-	} else {
-		localRef := n.Stack
-		if localRef == "" {
-			localRef = g.Defaults.Stack
-		}
-		stackRoot, stackSrcName, ref, err = source.Locate(denHome, localRef)
-		if err != nil {
-			return err
-		}
+	// falling back to the personal `g.Defaults.Stack` when absent — and
+	// ResolveStack is the ONE place that turns it into a root to load stacks
+	// from: nest.Resolve works on bare names within a SINGLE root and must
+	// not learn about sources, so the caller owns reference resolution.
+	stackRoot, stackSrcName, ref, err := ResolveStack(denHome, g, nestRoot, srcName, n, o.Nest)
+	if err != nil {
+		return err
 	}
 	stacks, err := config.LoadStacks(stackRoot)
 	if err != nil {
@@ -720,6 +676,64 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return nil
 	}
 	return Attach(ctx, d.Sbx, sandboxName, workdir)
+}
+
+// ResolveStack turns a LOADED nest's `stack:` field into a root to load
+// stacks from and the bare reference to resolve within it. Exported and
+// shared with `den nest show` (internal/cli/nest.go): both need the exact
+// same two refusals below, and a second copy would be a second place for
+// them to drift from each other — or from `den lint`'s checkNest
+// (internal/lint/lint.go), which states the SAME rule sentences for the
+// non-interactive form of this same check.
+//
+// nestRoot and srcName are Spawn's own `source.Locate(denHome, ref)` result
+// for the NEST (not the stack) — the caller already computed them to load n
+// in the first place, and passing them again here is cheaper and clearer
+// than asking ResolveStack to re-derive srcName from n.Name, which carries
+// no source information at all (LoadNest strips it, spec: "the filename is
+// authoritative").
+//
+// subject is the identifier named in both refusals: the reference the USER
+// TYPED (Spawn's o.Nest, `nest show`'s args[0]) — never n.Name, which
+// LoadNest sets to the bare filename ("api", not "corp:api"): naming n.Name
+// would point at a nest the user never typed, and, if they happen to own a
+// same-named LOCAL nest, send them to edit the wrong file. The source file to
+// fix is appended explicitly instead, since there is no lint-style frame here
+// to supply it.
+func ResolveStack(denHome string, g *config.Global, nestRoot, srcName string, n *nest.Nest, subject string) (
+	stackRoot, stackSrcName, ref string, err error) {
+	if srcName != "" {
+		// A source nest may NOT fall back on `g.Defaults.Stack`: that default
+		// is personal to this machine, and a nest silently inheriting it
+		// would spawn a different stack for every teammate — or, worse,
+		// spawn the SOURCE's own stack of the same name in silence, which is
+		// exactly the substitution den refuses rather than performs (spec
+		// §2).
+		if n.Stack == "" {
+			return "", "", "", fmt.Errorf(
+				"nest %q: no `stack:` — a source nest cannot fall back on the personal defaults.stack: "+
+					"it must spawn identically on every machine — fix %s",
+				subject, nest.FilePath(nestRoot, n.Name))
+		}
+		// A nest loaded FROM a source may only reference its stack BARE: a
+		// prefixed reference would resolve differently on every machine
+		// (whichever name the OTHER source happens to be installed under
+		// there) and CI, which has installed neither, could not resolve it
+		// at all.
+		if prefix, _ := config.SplitSourceRef(n.Stack); prefix != "" {
+			return "", "", "", fmt.Errorf(
+				"nest %q: `stack: %s` is a prefixed reference — inside a source, references are bare "+
+					"and resolve in the source itself: the install name is chosen per machine and CI "+
+					"knows none — fix %s",
+				subject, n.Stack, nest.FilePath(nestRoot, n.Name))
+		}
+		return nestRoot, srcName, n.Stack, nil
+	}
+	localRef := n.Stack
+	if localRef == "" {
+		localRef = g.Defaults.Stack
+	}
+	return source.Locate(denHome, localRef)
 }
 
 // staleAfterWords renders source.StaleAfter for the staleness hint's prose.

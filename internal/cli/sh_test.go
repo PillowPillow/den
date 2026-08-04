@@ -539,3 +539,23 @@ func TestShWithNoSandboxAtAll(t *testing.T) {
 		t.Errorf("the message must say no sandbox is running; got: %v", err)
 	}
 }
+
+// A source reference names a sandbox that was never spawned under its
+// prefixed name: ":" is not in sbx's charset, so spawn (spawn.go) names the
+// live VM with the FLATTENED reference, "corp-api". `den sh corp:api` must
+// reach that same sandbox — `den sh` never reads a nest file at all, so
+// nothing here needs source.Locate; it only needs to look for the name spawn
+// actually used.
+func TestShAcceptsASourceReference(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"corp-api","status":"running","workspaces":["/w"]}]}`)},
+	}}
+
+	if _, err := executeCmdWithSbx(t, f, "sh", "corp:api"); err != nil {
+		t.Fatalf("den sh corp:api: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/w", "corp-api", "bash", "-l") {
+		t.Errorf("the attach must target the flattened sandbox corp-api; attaches: %v", f.Attaches)
+	}
+}

@@ -223,3 +223,105 @@ func TestNestLsWarnsAboutNothingWithoutACollision(t *testing.T) {
 		t.Errorf("stderr = %q, expected empty: no nest is shadowed", stderr)
 	}
 }
+
+// `den nest show corp:api` reads the nest AND its stack from the source's own
+// root (sources/corp/{nests,stacks}), never from ~/.den — same doctrine as
+// spawn.go: source.Locate is the sole place a reference becomes a root.
+func TestNestShowAcceptsASourceReference(t *testing.T) {
+	dir := t.TempDir()
+	writeUnder(t, dir, "config.yaml", `
+defaults:
+  agent: claude
+  stack: devx
+agents:
+  claude:
+    config_dir: /tmp/den-agents/claude
+    update: "claude update"
+`)
+	writeUnder(t, dir, filepath.Join("sources", "corp", "stacks", "devx", "stack.yaml"), "image: devx:v1\n")
+	writeUnder(t, dir, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: /dev/api }\n")
+
+	out, err := run(t, "nest", "show", "corp:api", "--den-home", dir)
+	if err != nil {
+		t.Fatalf("den nest show corp:api: %v", err)
+	}
+	if !strings.Contains(out, "devx:v1") {
+		t.Errorf("the stack must have been read from the source's own root; got:\n%s", out)
+	}
+}
+
+// A nest loaded FROM a source may reference its stack only BARE: a prefixed
+// `stack:` would resolve differently per machine (whichever name the OTHER
+// source happens to be installed under there) — same refusal as spawn.go and
+// `den lint`'s checkNest.
+func TestNestShowRefusesAPrefixedStackInsideASource(t *testing.T) {
+	dir := t.TempDir()
+	writeUnder(t, dir, "config.yaml",
+		"defaults:\n  agent: claude\n  stack: devx\nagents:\n  claude: {config_dir: /tmp/c, update: x}\n")
+	writeUnder(t, dir, filepath.Join("sources", "corp", "nests", "api.yaml"), "stack: other:devx\n")
+
+	_, err := run(t, "nest", "show", "corp:api", "--den-home", dir)
+	if err == nil {
+		t.Fatal("expected a refusal: a source nest's `stack:` must be bare")
+	}
+	if !strings.Contains(err.Error(), "bare") {
+		t.Errorf("the message must say WHY: %v", err)
+	}
+}
+
+// `den nest ls` lists source nests too, prefixed `<source>:<name>` — the
+// same reference spawn, `den sh`/`rm`/`ports` and `den nest show` all accept
+// for that same nest.
+func TestNestLsListsSourceNests(t *testing.T) {
+	dir := testDenHomeWithNest(t, "api")
+	writeUnder(t, dir, filepath.Join("sources", "corp", "stacks", "devx", "stack.yaml"), "image: devx:v1\n")
+	writeUnder(t, dir, filepath.Join("sources", "corp", "nests", "backend.yaml"), "stack: devx\n")
+
+	out, err := run(t, "nest", "ls", "--den-home", dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "api") {
+		t.Errorf("the local nest must stay listed; got:\n%s", out)
+	}
+	if !strings.Contains(out, "corp:backend") {
+		t.Errorf("the source nest must be listed, prefixed; got:\n%s", out)
+	}
+}
+
+// A broken source nest is reported like a broken LOCAL one, prefixed — and it
+// must not hide the healthy local nests, nor a healthy nest of the SAME
+// source.
+func TestNestLsReportsBrokenSourceNestsPrefixed(t *testing.T) {
+	dir := testDenHomeWithNest(t, "api")
+	writeUnder(t, dir, filepath.Join("sources", "corp", "stacks", "devx", "stack.yaml"), "image: devx:v1\n")
+	writeUnder(t, dir, filepath.Join("sources", "corp", "nests", "backend.yaml"), "stack: devx\n")
+	writeUnder(t, dir, filepath.Join("sources", "corp", "nests", "broken.yaml"), "egres: [x]\n")
+
+	out, err := run(t, "nest", "ls", "--den-home", dir)
+	if err == nil {
+		t.Fatal("expected an error: a source nest is broken")
+	}
+	if !strings.Contains(out, "api") || !strings.Contains(out, "corp:backend") {
+		t.Errorf("the healthy nests must stay listed; got:\n%s", out)
+	}
+	if !strings.Contains(out, "! corp:broken:") {
+		t.Errorf("the broken source nest must be reported by its prefixed name; got:\n%s", out)
+	}
+}
+
+// An unreadable (or absent) sources/ directory must not break the local
+// listing: `den nest ls` still shows what IS there.
+func TestNestLsToleratesAnUnreadableSourcesDir(t *testing.T) {
+	dir := testDenHomeWithNest(t, "api")
+	// No sources/ directory at all — the ordinary case for a den that never
+	// ran `den source add`.
+	out, err := run(t, "nest", "ls", "--den-home", dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "api") {
+		t.Errorf("the local nest must stay listed; got:\n%s", out)
+	}
+}
