@@ -80,6 +80,62 @@ func TestHomePriority(t *testing.T) {
 	})
 }
 
+// TestDefaultHomeIsTheLastRungOfHomeAndIgnoresTheOtherTwo pins what makes
+// DefaultHome usable as a COMPARISON target (deninit asks "is this home the
+// plain default?" to decide whether its `den doctor` hint needs --den-home):
+// it must answer the same string Home's last rung answers, and it must not
+// follow $DEN_HOME — a DefaultHome that moved with the environment would make
+// that question mean "does this shell agree", which is not the same question.
+func TestDefaultHomeIsTheLastRungOfHomeAndIgnoresTheOtherTwo(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".den")
+
+	t.Run("it is ~/.den, absolute", func(t *testing.T) {
+		t.Setenv("DEN_HOME", "")
+		got, err := DefaultHome()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("DefaultHome = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("DEN_HOME does not move it", func(t *testing.T) {
+		t.Setenv("DEN_HOME", "/from/env")
+		got, err := DefaultHome()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("DefaultHome = %q, want %q — DEN_HOME must not reach it", got, want)
+		}
+	})
+
+	// The invariant deninit's comparison rests on, asserted rather than
+	// assumed: with neither flag nor env, the two must agree EXACTLY, down to
+	// the filepath.Abs form. If one of them ever gained a symlink resolution
+	// step the other lacks, ~/.den behind a symlinked home would silently stop
+	// comparing equal and the hint would go back to always printing the flag.
+	t.Run("Home falls back to exactly this string", func(t *testing.T) {
+		t.Setenv("DEN_HOME", "")
+		fromHome, err := Home("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fromDefault, err := DefaultHome()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fromHome != fromDefault {
+			t.Errorf("Home(\"\") = %q but DefaultHome() = %q, want them identical", fromHome, fromDefault)
+		}
+	})
+}
+
 func TestExpandPath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

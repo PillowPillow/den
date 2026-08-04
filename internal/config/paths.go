@@ -8,27 +8,45 @@ import (
 	"strings"
 )
 
+// DefaultHome is the last rung of Home's precedence on its own: ~/.den, with
+// neither the flag nor $DEN_HOME consulted.
+//
+// Exported for the one thing Home cannot answer — "is this den home the plain
+// default, or did something have to be typed to get here?". internal/deninit
+// asks that to decide whether `den init`'s closing `den doctor` hint needs to
+// carry --den-home. Deliberately NOT expressible as Home("") with the
+// environment ignored: DEN_HOME is precisely what must not reach it there, and
+// a caller comparing against Home("") would be asking whether the CURRENT
+// shell agrees, not whether the path is the default.
+func DefaultHome() (string, error) {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		// os.UserHomeDir's message ("$HOME is not defined") is accurate but
+		// silent: it says neither what den was looking for nor that two
+		// fallbacks exist. This happens for real under systemd, in a
+		// container, or in a cron job.
+		return "", fmt.Errorf(
+			"could not locate den's configuration directory (~/.den): %w — "+
+				"pass --den-home <dir>, or set DEN_HOME", err)
+	}
+	return filepath.Abs(filepath.Join(h, ".den"))
+}
+
 // Home resolves the den config directory. Priority: flag > $DEN_HOME > ~/.den.
 //
 // The result is ALWAYS absolute: worktree_root derives from it, and this path
 // later goes to `git worktree` and `sbx create`, where cwd is no longer guaranteed.
+//
+// The last rung goes through DefaultHome rather than repeating filepath.Join(h,
+// ".den") here, so the two can never answer different strings for the same
+// machine — deninit compares them for equality.
 func Home(flagValue string) (string, error) {
 	raw := flagValue
 	if raw == "" {
 		raw = os.Getenv("DEN_HOME")
 	}
 	if raw == "" {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			// os.UserHomeDir's message ("$HOME is not defined") is accurate but
-			// silent: it says neither what den was looking for nor that two
-			// fallbacks exist. This happens for real under systemd, in a
-			// container, or in a cron job.
-			return "", fmt.Errorf(
-				"could not locate den's configuration directory (~/.den): %w — "+
-					"pass --den-home <dir>, or set DEN_HOME", err)
-		}
-		raw = filepath.Join(h, ".den")
+		return DefaultHome()
 	}
 	return filepath.Abs(raw)
 }

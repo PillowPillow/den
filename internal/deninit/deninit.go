@@ -115,15 +115,26 @@ func Run(denHome string, src fs.FS, out io.Writer) error {
 	fmt.Fprintln(out, "\nnext steps:")
 	fmt.Fprintf(out, "  1. edit %s to point at your own repo\n",
 		filepath.Join(denHome, "nests", "example.yaml"))
-	// Spells out --den-home rather than a bare "run `den doctor`": denHome
-	// here is already RESOLVED (config.Home in cli/init.go applied the
-	// default/DEN_HOME/--den-home precedence before calling Run), but Run has
-	// no way to tell the caller which of those the user actually typed. A
-	// bare hint after `den init --den-home /x` would have doctor check the
-	// DEFAULT home instead and fail with "run `den init`" — a loop. Printing
-	// the flag explicitly makes the hint correct under every invocation,
-	// including the default one, where --den-home just repeats what doctor
-	// would have picked anyway.
-	fmt.Fprintf(out, "  2. run `den doctor --den-home %s` to check the result\n", denHome)
+	// The hint carries --den-home only when it CHANGES where doctor looks.
+	// denHome arrives already resolved (config.Home in cli/init.go applied the
+	// flag/DEN_HOME/default precedence before calling Run), so Run cannot see
+	// which rung produced it — but it does not need to. The question the hint
+	// has to answer is "will a bare `den doctor`, typed later, land here?", and
+	// that is exactly "is this the plain default", which config.DefaultHome
+	// answers without the caller passing anything extra.
+	//
+	// It is deliberately NOT decided from Home("") with the current
+	// environment: under `DEN_HOME=/x den init`, Home("") also answers /x, so
+	// the hint would come out bare — and the shell that later reads it may
+	// never have exported DEN_HOME, sending doctor to ~/.den to fail with "run
+	// `den init`". That loop is the whole reason the flag is spelled out at
+	// all, so the env must not be allowed to suppress it. Same safe direction
+	// if DefaultHome itself fails (no HOME): print the flag, which is correct
+	// everywhere, rather than a bare hint that is correct only sometimes.
+	doctor := fmt.Sprintf("den doctor --den-home %s", denHome)
+	if def, err := config.DefaultHome(); err == nil && def == denHome {
+		doctor = "den doctor"
+	}
+	fmt.Fprintf(out, "  2. run `%s` to check the result\n", doctor)
 	return nil
 }
