@@ -135,6 +135,143 @@ func Path(layout, root, wt, repoPath string) string {
 	return filepath.Join(root, wt, filepath.Base(repoPath))
 }
 
+// Orphan is a worktree directory den created that the caller's list of repos
+// does not account for — typically the worktree of a repo passed on the command
+// line, deliberately absent from the sandbox identity (spec §4.3), or one whose
+// entry was deleted from the nest's `repos:` since the spawn.
+type Orphan struct {
+	Dir      string // <root>/<wt>/<name>
+	RepoPath string // the repository, recovered from Dir's own .git
+}
+
+// Orphans enumerates the worktree directories of wt under root that `known`
+// does not account for, recovering each one's repository from its own `.git`.
+// It is the INVERSE of Path, and the reason den can clean up what it never
+// stored: den keeps no state beyond the sandbox name, but the directory itself
+// remembers which repository it belongs to.
+//
+// CENTRAL LAYOUT ONLY. In per-repo, Path puts the worktree at <repo>/.den/<wt>:
+// without the repo path there is no directory to list, so there is nothing to
+// enumerate — the caller warns instead.
+//
+// Three returns, because three outcomes are genuinely different:
+//   - the entries den may remove;
+//   - one error per entry deliberately SKIPPED. Not a failure: an entry den
+//     cannot vouch for is left alone, and the caller warns. Removing on a
+//     guess would be worse than the leftover this exists to clear;
+//   - a hard error, only when the enumeration ITSELF fails. An absent
+//     <root>/<wt> is the nominal "no worktree" case, not a failure.
+func Orphans(ctx context.Context, g Git, root, wt string, known []string) ([]Orphan, []error, error) {
+	// Path("central", root, "", repo) is <root>/<repo>, so an empty wt would
+	// enumerate worktree_root ITSELF and offer the worktrees of every other
+	// nest for removal. Same refusal as removeParentDir's, for the same reason.
+	if wt == "" {
+		return nil, nil, nil
+	}
+
+	parent := filepath.Join(root, wt)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil // no worktree directory: nothing to recover
+		}
+		return nil, nil, fmt.Errorf("listing %s: %w", parent, err)
+	}
+
+	var found []Orphan
+	var skipped []error
+	// os.ReadDir returns its entries SORTED, which is what keeps the caller's
+	// output — and its goldens — stable from one run to the next.
+	for _, e := range entries {
+		dir := filepath.Join(parent, e.Name())
+		if accountedFor(root, wt, dir, known) {
+			continue // the caller already handles this one: silent, not skipped
+		}
+		orphan, reason := recoverOrphan(ctx, g, root, wt, dir, e.IsDir())
+		if reason != nil {
+			skipped = append(skipped, reason)
+			continue
+		}
+		found = append(found, orphan)
+	}
+	return found, skipped, nil
+}
+
+// accountedFor asks the question through Path — the function that PLACED the
+// directory — rather than by comparing basenames: the comparison is then exact
+// by construction, and it keeps following Path if the layout ever changes.
+func accountedFor(root, wt, dir string, known []string) bool {
+	for _, repo := range known {
+		if samePath(Path("central", root, wt, repo), dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// recoverOrphan decides whether dir is a worktree den may remove, and of which
+// repository. It returns a REASON, never an error to abort on.
+//
+// Deriving the repository FROM the directory makes checkOwnership a tautology:
+// we would ask git whose the directory is, then assert that it is theirs. The
+// guard that makes "den only removes directories it placed itself" true has to
+// be rebuilt here, out of the checks below — each one closes a case where the
+// tautology would have said yes.
+func recoverOrphan(ctx context.Context, g Git, root, wt, dir string, isDir bool) (Orphan, error) {
+	if !isDir {
+		return Orphan{}, fmt.Errorf("%s is not a directory: left in place", dir)
+	}
+
+	wtRoot, common, err := identify(ctx, g, dir)
+	if err != nil {
+		return Orphan{}, fmt.Errorf(
+			"%s is not a git worktree, or its repository is gone: left in place (%v)", dir, err)
+	}
+
+	// git answers for the first repository found walking UP: without this, a
+	// plain directory the user parked under worktree_root would pass for a
+	// worktree of whatever repository happens to contain worktree_root.
+	if !samePath(wtRoot, dir) {
+		return Orphan{}, fmt.Errorf(
+			"%s is not the root of a git worktree — git answers for %s: left in place", dir, wtRoot)
+	}
+
+	repoPath := repoDir(common)
+
+	// dir IS the main worktree of its own repository: someone cloned a repo
+	// under worktree_root. Sending it to the trash would be far worse than the
+	// leftover this enumeration exists to clear.
+	if samePath(repoPath, dir) {
+		return Orphan{}, fmt.Errorf(
+			"%s is a repository itself, not a worktree den created: left in place", dir)
+	}
+
+	// Remove RECOMPUTES the path from RepoPath (see Target) — deliberately, so
+	// that no caller can send it anywhere. When the repo is ITSELF a linked
+	// worktree, repoDir walks up to the MAIN worktree, whose basename may
+	// differ from the directory we just enumerated. Remove would then stat a
+	// path that does not exist, take the "already gone" branch, and report
+	// success while the directory stays on disk. Say so instead of no-oping.
+	if !samePath(Path("central", root, wt, repoPath), dir) {
+		return Orphan{}, fmt.Errorf(
+			"%s belongs to %s, whose directory name differs — den would clean up elsewhere: "+
+				"remove %s by hand", dir, repoPath, dir)
+	}
+
+	// The strongest available proof that this path really is a worktree OF that
+	// repository, and not a directory that merely looks like one.
+	registered, _, err := worktreeEntry(ctx, g, repoPath, dir)
+	if err != nil {
+		return Orphan{}, fmt.Errorf("%s left in place: %v", dir, err)
+	}
+	if !registered {
+		return Orphan{}, fmt.Errorf(
+			"%s is not a registered worktree of %s: left in place", dir, repoPath)
+	}
+
+	return Orphan{Dir: dir, RepoPath: repoPath}, nil
+}
+
 // Name carries the TWO names of a worktree, which do not always coincide.
 //
 // Dir is the flattened component (config.FlattenSandboxComponent): it names the

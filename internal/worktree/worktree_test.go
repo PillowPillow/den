@@ -43,6 +43,94 @@ func TestPath(t *testing.T) {
 	}
 }
 
+// The worktree of a repo passed on the command line belongs to no nest's
+// repos:, so `den rm` has nothing to iterate — that is issue #46. It IS
+// recoverable without den having stored anything: the directory carries a
+// `.git` pointing at its repository, which is exactly what Orphans reads.
+func TestOrphansRecoversAWorktreeNoRepoAccountsFor(t *testing.T) {
+	repo := testRepo(t, "hotfix")
+	root := t.TempDir()
+	if _, err := Ensure(context.Background(), NewGit(), "central", root, wtName("feat"), repo); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	found, skipped, err := Orphans(context.Background(), NewGit(), root, "feat", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(skipped) != 0 {
+		t.Errorf("nothing must be skipped here; got %v", skipped)
+	}
+	if len(found) != 1 {
+		t.Fatalf("found = %v, expected exactly the worktree of %s", found, repo)
+	}
+	if found[0].Dir != filepath.Join(root, "feat", "hotfix") {
+		t.Errorf("Dir = %q, expected %q", found[0].Dir, filepath.Join(root, "feat", "hotfix"))
+	}
+	if !samePath(found[0].RepoPath, repo) {
+		t.Errorf("RepoPath = %q, expected %q — recovered from the worktree's own .git",
+			found[0].RepoPath, repo)
+	}
+}
+
+// A repo the caller ALREADY handles must not come back as an orphan: it would
+// be removed twice, and the second Remove would report on a directory that is
+// already in the trash. The de-duplication goes through Path — the very
+// function that placed the directory — and not through a basename heuristic.
+func TestOrphansSkipsWhatTheCallerAlreadyKnows(t *testing.T) {
+	declared := testRepo(t, "api")
+	adhoc := testRepo(t, "hotfix")
+	root := t.TempDir()
+	for _, repo := range []string{declared, adhoc} {
+		if _, err := Ensure(context.Background(), NewGit(), "central", root, wtName("feat"), repo); err != nil {
+			t.Fatalf("setup %s: %v", repo, err)
+		}
+	}
+
+	found, skipped, err := Orphans(context.Background(), NewGit(), root, "feat", []string{declared})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(skipped) != 0 {
+		t.Errorf("a known repo is skipped SILENTLY, not warned about; got %v", skipped)
+	}
+	if len(found) != 1 || !samePath(found[0].RepoPath, adhoc) {
+		t.Fatalf("found = %v, expected only %s", found, adhoc)
+	}
+}
+
+// No worktree directory at all is the NOMINAL case (a sandbox spawned without
+// -w, a worktree already cleaned up). Returning an error would make `den rm`
+// warn about a perfectly ordinary teardown.
+func TestOrphansOnAnAbsentDirectoryIsNotAnError(t *testing.T) {
+	found, skipped, err := Orphans(context.Background(), NewGit(), t.TempDir(), "feat", nil)
+	if err != nil {
+		t.Fatalf("an absent <root>/<wt> must not be an error: %v", err)
+	}
+	if len(found) != 0 || len(skipped) != 0 {
+		t.Errorf("found = %v, skipped = %v, expected both empty", found, skipped)
+	}
+}
+
+// Path("central", root, "", repo) is <root>/<repo>: enumerating with an empty
+// worktree name would offer every entry of the user's worktree_root — including
+// the worktrees of OTHER nests — for removal. Same refusal as removeParentDir's.
+func TestOrphansRefusesAnEmptyWorktreeName(t *testing.T) {
+	repo := testRepo(t, "api")
+	root := t.TempDir()
+	if _, err := Ensure(context.Background(), NewGit(), "central", root, wtName("feat"), repo); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	found, _, err := Orphans(context.Background(), NewGit(), root, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(found) != 0 {
+		t.Errorf("found = %v, expected nothing: an empty worktree name designates no worktree", found)
+	}
+}
+
 // testRepo creates a real git repo with one commit, under t.TempDir().
 func testRepo(t *testing.T, name string) string {
 	t.Helper()
