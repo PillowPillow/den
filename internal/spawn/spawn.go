@@ -113,6 +113,11 @@ type Options struct {
 	// Interactive is `-i`: pick the nest's optional repos from a checklist
 	// instead of naming them on the command line.
 	Interactive bool
+	// Repos are the repositories given as positionals: `den <nest> ~/dev/a`.
+	// Raw — tilde unexpanded, possibly relative; nest.Resolve normalizes them.
+	// Additive to the nest's `repos:`, and placed AHEAD of them, so the first
+	// one becomes the directory the attached shell starts in.
+	Repos []string
 }
 
 // Spawn runs the spec §6 sequence in order: resolve → select repos →
@@ -175,8 +180,23 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			return err
 		}
 	}
+	// The working directory is read HERE, once, and handed to internal/nest,
+	// which stays pure: `den scratch .` is then assertable without a test having
+	// to chdir. os.Getwd is world access, like the os.Stat probes at step 2 —
+	// this side of the boundary is where it belongs.
+	//
+	// Read only when there IS a positional: a spawn with none must not fail
+	// because the process sits in a deleted directory.
+	cwd := ""
+	if len(o.Repos) > 0 {
+		if cwd, err = os.Getwd(); err != nil {
+			return fmt.Errorf(
+				"reading the working directory, needed to resolve the repos given on "+
+					"the command line: %w", err)
+		}
+	}
 	r, err := nest.Resolve(denHome, g, stacks, n, nest.Options{
-		Agent: o.Agent, Without: without, Only: o.Only,
+		Agent: o.Agent, Without: without, Only: o.Only, Repos: o.Repos, Cwd: cwd,
 	})
 	if err != nil {
 		return err
@@ -217,6 +237,14 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// 2. All repos must exist before any create (spec §11).
 	for _, repo := range r.Repos {
 		if _, err := os.Stat(repo.Path); err != nil {
+			// The remedy follows the ORIGIN. Sending someone to edit
+			// nests/<n>.yaml over a path they typed by hand names a file that
+			// has nothing to do with the failure — the wrong remedy is worse
+			// than a bare error, because it is followed.
+			if repo.AdHoc {
+				return fmt.Errorf(
+					"repo not found: %s — given on the command line", repo.Path)
+			}
 			return fmt.Errorf(
 				"nest %q: repo not found: %s — fix `repos:` in %s",
 				o.Nest, repo.Path, nest.FilePath(denHome, o.Nest))

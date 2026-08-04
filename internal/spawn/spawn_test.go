@@ -2487,3 +2487,85 @@ func TestSpawnDoesNotCheckTheImageOfAPullableStack(t *testing.T) {
 		t.Error("den read the inventory for a stack it cannot build — it has no remedy to offer")
 	}
 }
+
+func TestSpawnMountsCommandLineRepos(t *testing.T) {
+	denHome, repo := denTest(t)
+	hotfix := filepath.Join(t.TempDir(), "hotfix")
+	createRepo(t, hotfix)
+	f, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Repos: []string{hotfix}}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := workspacesOf(callStartingWith(f, "create"))
+	expected := []string{hotfix, repo, filepath.Join(denHome, "agents", "claude")}
+	if !slices.Equal(got, expected) {
+		t.Errorf("workspaces = %v, expected %v — the positional comes first, because "+
+			"Workspaces[0] is where the attached shell starts", got, expected)
+	}
+}
+
+func TestSpawnMountsSeveralCommandLineReposInOrder(t *testing.T) {
+	// A nest with NO `repos:` at all: the headline case. Without the
+	// positionals its only workspace would be the agent profile, which is a
+	// useless place to land.
+	denHome, _ := denTest(t)
+	write(t, filepath.Join(denHome, "nests", "scratch.yaml"), "stack: devx\n")
+	a := filepath.Join(t.TempDir(), "a")
+	b := filepath.Join(t.TempDir(), "b")
+	createRepo(t, a)
+	createRepo(t, b)
+	f, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "scratch", Repos: []string{a, b}}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := workspacesOf(callStartingWith(f, "create"))
+	expected := []string{a, b, filepath.Join(denHome, "agents", "claude")}
+	if !slices.Equal(got, expected) {
+		t.Errorf("workspaces = %v, expected %v", got, expected)
+	}
+}
+
+func TestSpawnRefusesAMissingCommandLineRepoWithoutBlamingTheNestFile(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+
+	err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Repos: []string{filepath.Join(t.TempDir(), "gone")}}, d)
+	if err == nil {
+		t.Fatal("expected a refusal on a path that does not exist")
+	}
+	if !strings.Contains(err.Error(), "command line") {
+		t.Errorf("error = %q, expected it to name the command line — sending the user to edit "+
+			"nests/api.yaml over a path they typed by hand is the wrong remedy", err)
+	}
+	if strings.Contains(err.Error(), "repos:") {
+		t.Errorf("error = %q, expected it NOT to quote `repos:`", err)
+	}
+	if callStartingWith(f, "create") != nil {
+		t.Error("a sandbox was created despite the refusal: everything rejectable from config " +
+			"alone must be rejected before the first side effect")
+	}
+}
+
+func TestSpawnStillBlamesTheNestFileForADeclaredRepo(t *testing.T) {
+	// The counterpart, so "branches on origin" cannot degrade into "always says
+	// command line".
+	denHome, _ := denTest(t)
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+filepath.Join(t.TempDir(), "gone")+" }\n")
+	_, d := fakeDeps()
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "repos:") {
+		t.Errorf("error = %q, expected it to send the user to `repos:`", err)
+	}
+}
