@@ -405,13 +405,15 @@ task build
 ```
 
 Every path stamps the version into the binary, so `den version` names the code it runs — the
-release tag (`v1.0.0`) via Homebrew, `go install` and releases (including `install.sh`), and where you stand relative to
-it (`v1.0.0-3-gabc1234-dirty`) via `task build`. A plain `go build` in a checkout is the one
-build that names nothing: it answers `dev`, which is the documented tell that the build skipped
-`task`.
+release tag (`v1.0.0`) via Homebrew, `go install …/cmd/den@v1.0.0` and releases (including
+`install.sh`), and where you stand relative to it (`v1.0.0-3-gabc1234-dirty`) via `task build`.
+Building from a checkout without the runner — a plain `go build`, or a `go install ./cmd/den` —
+is what names nothing: it answers `dev`, the documented tell that the build skipped `task`.
 ```
 
 Les deux commandes d'installation sont montrées et pas une seule : `brew` ne couvre pas Linux ni WSL, et un repo qui vient de shipper un installeur `curl | sh` pour cette raison exacte ne peut pas supposer Homebrew chez le contributeur.
+
+**Deux amendements par rapport au README actuel, dus à la Task 5 et non au renommage.** Le paragraphe d'origine disait `go install` à plat ; après la Task 5 la distinction devient réelle et doit être écrite : `go install …/cmd/den@v1.0.0` télécharge un module et garde son tag, tandis qu'un `go install ./cmd/den` depuis un checkout répond `dev` comme n'importe quel build local. Et il disait « **the one** build that names nothing », ce qui n'est plus vrai puisqu'ils sont maintenant deux — d'où « Building from a checkout without the runner », qui nomme la propriété (l'origine du build) plutôt que d'énumérer.
 
 - [ ] **Step 2: Réécrire le bloc Commands de `CLAUDE.md`**
 

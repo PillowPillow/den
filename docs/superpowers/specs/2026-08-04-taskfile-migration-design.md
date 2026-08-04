@@ -184,6 +184,23 @@ runner — survit à la migration. Un design qui ferait répondre `dev` au premi
 vraie version au second, aurait perdu la propriété que tout ce dispositif existe pour
 tenir.
 
+> **Amendement du 2026-08-04, pendant l'implémentation.** La seconde assertion était
+> **fausse au moment où ce spec a été écrit**, et pas à cause de la migration : depuis
+> que Go stampe `Main.Version` depuis l'état du VCS, un `go build` nu répond une
+> pseudo-version et non `dev`. Reproduit sur `main` intact (`a28f04a`), toolchain Go
+> 1.26.1. La suite ne l'attrapait pas — elle assertait sur `(devel)`, le placeholder que
+> Go n'émet plus dès qu'il y a un `.git`.
+>
+> L'utilisateur a tranché de réparer plutôt que de différer, parce que ce chantier
+> réécrit précisément les phrases qui affirment cette propriété. Une **Task 5** a donc
+> été ajoutée au plan (`docs/superpowers/plans/2026-08-04-taskfile-migration.md`) :
+> `resolveVersion` gagne un paramètre disant si le build vient d'un checkout local,
+> détecté par la présence d'un réglage `vcs.revision`. Le correctif rend l'assertion
+> ci-dessus vraie ; il ne la modifie pas. Le périmètre de la branche s'en trouve élargi
+> d'un correctif qui n'est pas une migration de runner — c'est assumé et daté ici pour
+> qu'une relecture ultérieure ne prenne pas ce spec pour la description complète de la
+> branche.
+
 ## Blocage connu
 
 Les écritures dans `.github/` sont refusées par une règle globale (`~/.claude/settings.json`).
