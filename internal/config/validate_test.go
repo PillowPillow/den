@@ -205,7 +205,11 @@ func TestValidateAcceptsLegitimateBinDirs(t *testing.T) {
 // `defaults.agent`, `defaults.stack`, `ssh.dir`, `worktree_root` were in the
 // same boat. `den doctor` would exit 0 on a config that can't spawn, and the
 // downstream MkdirAll would create a directory literally named "␣␣␣" in the
-// user's current directory.
+// user's current directory. (config_dir and worktree_root have since moved to
+// their own TestValidateRefusesABlankConfigDir / TestValidateRefusesABlankWorktreeRoot
+// below — neither message says "required" anymore, now that both default —
+// but the TrimSpace judgment itself is unchanged and still belongs to this
+// same fix.)
 //
 // A "required" field must judge on content, not on length.
 func TestValidateRefusesABlankRequiredField(t *testing.T) {
@@ -213,15 +217,14 @@ func TestValidateRefusesABlankRequiredField(t *testing.T) {
 		field  string
 		mutate func(*Global, string)
 	}{
-		{"agents.claude.config_dir", func(g *Global, v string) {
-			a := g.Agents["claude"]
-			a.ConfigDir = v
-			g.Agents["claude"] = a
-		}},
+		// config_dir and worktree_root are deliberately NOT in this table:
+		// since both now default (config.go), neither can say "required" —
+		// see TestValidateRefusesABlankConfigDir and
+		// TestValidateRefusesABlankWorktreeRoot below, which check their own
+		// wording.
 		{"defaults.agent", func(g *Global, v string) { g.Defaults.Agent = v }},
 		{"defaults.stack", func(g *Global, v string) { g.Defaults.Stack = v }},
 		{"ssh.dir", func(g *Global, v string) { g.SSH.Mode = "mount"; g.SSH.Dir = v }},
-		{"worktree_root", func(g *Global, v string) { g.WorktreeRoot = v }},
 	}
 	for _, c := range cases {
 		for _, blank := range []string{"   ", "\t", "\n"} {
@@ -256,6 +259,66 @@ func TestValidateRefusesABlankRequiredField(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// config_dir's own wording, split out of TestValidateRefusesABlankRequiredField
+// above because its message changed shape: the field now defaults when
+// ABSENT (config.go), so an explicitly blank value is no longer "missing", it's
+// "written wrong" — the message must say so and must not say "required".
+func TestValidateRefusesABlankConfigDir(t *testing.T) {
+	for _, blank := range []string{"   ", "\t", "\n"} {
+		t.Run(strconv.Quote(blank), func(t *testing.T) {
+			g := validGlobal()
+			a := g.Agents["claude"]
+			a.ConfigDir = blank
+			g.Agents["claude"] = a
+
+			errs := g.Validate()
+			if len(errs) == 0 {
+				t.Fatalf("config_dir = %q: expected a refusal", blank)
+			}
+			var all []string
+			for _, e := range errs {
+				all = append(all, e.Error())
+			}
+			joined := strings.Join(all, " | ")
+			if !strings.Contains(joined, "agents.claude.config_dir: blank") {
+				t.Errorf("errors = %q, expected \"agents.claude.config_dir: blank\"", joined)
+			}
+			if strings.Contains(joined, "config_dir: required") {
+				t.Errorf("errors = %q, must not say \"required\": the field has a default now", joined)
+			}
+		})
+	}
+}
+
+// worktree_root's own wording, split out for the identical reason as
+// config_dir above: it now defaults when ABSENT (config.go:73), so the
+// message for an explicitly blank value must describe the field and the
+// remedy, not claim the field is "required".
+func TestValidateRefusesABlankWorktreeRoot(t *testing.T) {
+	for _, blank := range []string{"   ", "\t", "\n"} {
+		t.Run(strconv.Quote(blank), func(t *testing.T) {
+			g := validGlobal()
+			g.WorktreeRoot = blank
+
+			errs := g.Validate()
+			if len(errs) == 0 {
+				t.Fatalf("worktree_root = %q: expected a refusal", blank)
+			}
+			var all []string
+			for _, e := range errs {
+				all = append(all, e.Error())
+			}
+			joined := strings.Join(all, " | ")
+			if !strings.Contains(joined, "worktree_root: blank") {
+				t.Errorf("errors = %q, expected \"worktree_root: blank\"", joined)
+			}
+			if strings.Contains(joined, "worktree_root: required") {
+				t.Errorf("errors = %q, must not say \"required\": the field has a default now", joined)
+			}
+		})
 	}
 }
 

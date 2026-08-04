@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,7 +57,26 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 		// FileError, not the raw error: the raw one is a *fs.PathError that
 		// repeats the path we just named. %w stays mandatory — the chain must
 		// survive.
-		return nil, fmt.Errorf("reading %s: %w", path, &FileError{Err: err})
+		wrapped := fmt.Errorf("reading %s: %w", path, &FileError{Err: err})
+
+		// The remedy is added HERE, in the one wrap every LoadGlobal caller and
+		// doctor.go's config.yaml check inherit (paths.go's "sole definition"
+		// doctrine) — not at each call site, where a future caller could add a
+		// new read path and simply forget it.
+		//
+		// Gated tightly on fs.ErrNotExist, checked against the raw error (a
+		// *fs.PathError, which errors.Is unwraps on its own): a config.yaml
+		// that EXISTS but fails to read — wrong permissions, or a directory
+		// sitting where the file should be — must not point at `den init`,
+		// because deninit.Run refuses outright whenever config.yaml already
+		// exists (see internal/deninit/deninit.go). Suggesting a command that
+		// is guaranteed to refuse is worse than naming no remedy at all: it
+		// reads as "run this to fix it" when the honest answer is "this file
+		// is broken, fix it yourself".
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%w — run `den init` to create one", wrapped)
+		}
+		return nil, wrapped
 	}
 
 	var g Global
@@ -81,6 +101,21 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 		return nil, err
 	}
 	for name, a := range g.Agents {
+		// Same shape as worktree_root above: defaulted here, against the LIVE
+		// denHome, rather than baked into the example file at `den init` time.
+		// Substituting the resolved home into config_dir when the file is
+		// written would freeze it — `den init --den-home /tmp/foo` would write
+		// `/tmp/foo/agents/claude` into config.yaml, and a later move of that
+		// home (or a changed DEN_HOME) would leave the agent profile pointing
+		// at the old, now-stale location, silently. A default recomputed on
+		// every load instead tracks whichever home is live.
+		//
+		// `== ""` exactly, not TrimSpace: this is what lets `config_dir: "   "`
+		// reach Validate() and be refused there, instead of being silently
+		// swapped for the default.
+		if a.ConfigDir == "" {
+			a.ConfigDir = filepath.Join(denHome, "agents", name)
+		}
 		if a.ConfigDir, err = ExpandPath(a.ConfigDir); err != nil {
 			return nil, fmt.Errorf("agent %s: %w", name, err)
 		}

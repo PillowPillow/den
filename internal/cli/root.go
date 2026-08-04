@@ -109,10 +109,11 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 		Short: "Print den's version",
 		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			fmt.Fprintf(cmd.OutOrStdout(), "den %s\n", Version)
+			fmt.Fprintf(cmd.OutOrStdout(), "den %s\n", displayVersion())
 			return nil
 		},
 	})
+	root.AddCommand(newInitCmd(&denHome))
 	root.AddCommand(newNestCmd(&denHome))
 	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor))
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
