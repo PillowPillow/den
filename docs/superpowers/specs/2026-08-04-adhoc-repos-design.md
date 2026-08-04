@@ -1,4 +1,4 @@
-# Spec — repos à la volée : `den <nest> [path...]`
+# Spec — repos à la volée : `den <nest> [repo...]`
 
 **Date** : 2026-08-04
 **Statut** : validé (brainstorming du 2026-08-04)
@@ -266,7 +266,7 @@ Goldens édités à la main : il n'existe pas de drapeau `-update` dans ce dép�
 
 README et spec divergents sont un bug, pas une phase : les deux bougent dans le même changement.
 
-- spec CLI §5 : la ligne devient `den <nest> [path...] [-w <wt>] …` ;
+- spec CLI §5 : la ligne devient `den <nest> [repo...] [-w <wt>] …` ;
 - spec CLI §6 : l'étape de sélection des repos décrit la fusion et le pré-vol git ;
 - spec CLI §4.3 : note disant que `repos:` peut être vide, et que le nest garde son rôle (stack,
   egress, env, ports, agents) ;

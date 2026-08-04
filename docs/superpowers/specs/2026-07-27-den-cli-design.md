@@ -207,6 +207,13 @@ agents:                              # optionnel : override du config_dir PAR ag
   codex:  ~/dev/fullstack/.codex
 ```
 
+**`repos:` est facultatif.** Un nest qui n'en déclare aucun reste un objet spawnable complet — il
+porte sa stack, son egress, son env, ses ports et ses profils agents — et reçoit ses dépôts en
+positionnels : `den scratch ~/dev/a ~/dev/b`. Les positionnels sont additifs et passent **devant**
+les `repos:` déclarés, parce que `Workspaces[0]` décide du répertoire où démarre le shell attaché.
+Ils n'entrent pas dans l'identité : `den scratch ~/dev/a` et `den scratch ~/dev/b` visent la même
+sandbox `scratch`. Détail : `2026-08-04-adhoc-repos-design.md`.
+
 **Règles de fusion** (cascade) : `global ← stack ← nest ← flags CLI`.
 **Egress effectif** = `baseline ∪ stack.egress ∪ nest.egress` (dédupliqué), appliqué **scopé à la
 sandbox**.
@@ -218,14 +225,14 @@ sandbox**.
 | Commande | Rôle |
 |---|---|
 | `den init` | crée un den home à partir de l'exemple embarqué (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`) ; refuse si `config.yaml` existe déjà |
-| `den <nest> [-w <wt>] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell |
+| `den <nest> [repo...] [-w <wt>] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell ; les `repo...` sont des repos montés à la volée, additifs aux `repos:` du nest et placés devant eux |
 | `den ls` | sandboxes vivantes (`sbx ls --json` filtré sur le motif de nommage, colonnes nom/nest/worktree/statut/workspaces) |
 | `den sh <name>` | shell dans une sandbox existante |
 | `den ports <name> [--add H:C]` | **publie à la demande** la fenêtre déclarée + affiche le tableau |
 | `den rm <name> [--keep-worktrees]` | teardown (profil agent persiste ; worktrees nettoyés sauf `--keep`) |
 | `den build [<stack>] [--force]` | build image(s), ordre DAG |
 | `den doctor` | valide config, teste egress, présence/login sbx |
-| `den nest ls` / `den nest show <n>` | inspecter les nests déclarés |
+| `den nest ls` / `den nest show <n> [repo...]` | inspecter les nests déclarés |
 
 Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <name>`.
 
@@ -237,6 +244,12 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
    Fusion en cascade.
 2. **Sélection des repos.** Requis toujours inclus ; optionnels filtrés par `--without`/`--only`
    ou **checklist interactive** (`-i`).
+   La sélection produit `[positionnels…] ++ selectRepos(déclarés)`, dont l'unicité des basenames est
+   **vérifiée sur la liste fusionnée** : une collision est une erreur, pas un doublon écarté en
+   silence — le basename adresse `--without`/`--only`, devient `worktree_root/<wt>/<repo>` et une
+   position dans l'argv de `sbx create`, donc deux homonymes rendent les trois ambigus (§2). Sous
+   `-w`, la git-ité de chaque repo est sondée à ce moment — avant tout effet de bord — et le common
+   git dir obtenu est réutilisé plus bas plutôt que redemandé à git.
 3. **Worktrees** (si `-w`). Pour chaque repo sélectionné : `git worktree add` de `<wt>` au chemin
    résolu (`worktree_root/<wt>/<repo>` en central, `<repo>/.den/<wt>` en per-repo). Branche `<wt>`
    créée **sans suivi** (`--no-track`) depuis la branche par défaut du repo, découverte par
