@@ -17,8 +17,26 @@ Or with a Go toolchain, from anywhere:
 go install github.com/PillowPillow/den/cmd/den@latest
 ```
 
-Linux users can also grab a prebuilt archive from the
-[releases page](https://github.com/PillowPillow/den/releases).
+No Homebrew (Linux distros, WSL, macOS without brew):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | sh
+```
+
+The script detects OS and architecture, verifies the release checksum (and
+refuses to install without verification), and installs to `~/.local/bin`.
+Pin a version or change the destination by placing the assignment on `sh`
+(each pipeline command gets its own environment, so a prefix on `curl` never
+reaches the script):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | DEN_VERSION=v1.0.1 sh
+curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | DEN_INSTALL_DIR=~/bin sh
+```
+
+Prebuilt archives also sit on the
+[releases page](https://github.com/PillowPillow/den/releases) if you'd rather
+not pipe a script into your shell.
 
 From a checkout:
 
@@ -27,7 +45,7 @@ make build
 ```
 
 Every path stamps the version into the binary, so `den version` names the code it runs — the
-release tag (`v1.0.0`) via Homebrew, `go install` and releases, and where you stand relative to
+release tag (`v1.0.0`) via Homebrew, `go install` and releases (including `install.sh`), and where you stand relative to
 it (`v1.0.0-3-gabc1234-dirty`) via `make build`. A plain `go build` in a checkout is the one
 build that names nothing: it answers `dev`, which is the documented tell that the build skipped
 `make`.
