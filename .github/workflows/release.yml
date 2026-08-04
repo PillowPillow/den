@@ -14,8 +14,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: arduino/setup-task@v2
@@ -28,23 +28,31 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # goreleaser derives the changelog from git history and refuses a
           # shallow clone; fetch-depth 0 is its documented requirement.
           fetch-depth: 0
-      # checkout fetches the annotated tag object, then re-fetches the commit SHA
-      # *into the same ref* (`+<sha>:refs/tags/vX.Y.Z`), which downgrades the tag to a
-      # lightweight one. `%(contents:body)` then answers nothing, so goreleaser's
-      # `release.header: {{ .TagBody }}` publishes an empty release page — measured on
+      # checkout v4 fetched the annotated tag object, then re-fetched the commit SHA
+      # *into the same ref* (`+<sha>:refs/tags/vX.Y.Z`), which downgraded the tag to a
+      # lightweight one. `%(contents:body)` then answered nothing, so goreleaser's
+      # `release.header: {{ .TagBody }}` published an empty release page — measured on
       # v1.1.0 (2026-08-04), whose body came out 4 bytes and had to be repaired by hand.
-      # --force is not optional: without it this fetch refuses to clobber the lightweight
+      # --force was not optional: without it this fetch refuses to clobber the lightweight
       # ref checkout just wrote, and nothing changes.
+      #
+      # checkout v7 fixes the cause (PR #2356, first shipped in v6.0.3): a tag ref now
+      # fetches as `+refs/tags/vX.Y.Z:refs/tags/vX.Y.Z`, and the ref-match test derefs
+      # with `^{commit}` instead of comparing a tag-object SHA against a commit SHA, so
+      # the destructive second fetch is never reached. This step is therefore redundant
+      # on v7 — it stays anyway. It costs a second and is idempotent, while the
+      # regression it guards is invisible until the tag is already public and the
+      # release page already wrong.
       - run: git fetch --force --tags
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
