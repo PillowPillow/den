@@ -125,8 +125,17 @@ func TestRunMissingConfig(t *testing.T) {
 	if allOK(checks) {
 		t.Error("expected a failure when config.yaml is missing")
 	}
-	if _, ok := find(checks, "config.yaml"); !ok {
-		t.Error("the failing check should name config.yaml")
+	c, ok := findExactName(checks, "config.yaml")
+	if !ok {
+		t.Fatal("the failing check should name config.yaml")
+	}
+	// doctor.go's config.yaml check is `add("config.yaml", false, "%v", err)` —
+	// a bare pass-through of LoadGlobalUnvalidated's error. This is the
+	// acceptance case: an empty --den-home is exactly what a fresh
+	// brew/go-install user's FIRST `den doctor` sees, so the remedy must
+	// reach this line, not just LoadGlobal's own error in config_test.go.
+	if !strings.Contains(c.Detail, "den init") {
+		t.Errorf("detail = %q, expected the `den init` remedy", c.Detail)
 	}
 }
 

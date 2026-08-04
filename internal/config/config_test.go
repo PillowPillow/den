@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,6 +141,61 @@ func TestLoadGlobalMissingFile(t *testing.T) {
 	// does not let it leak through.
 	if strings.Contains(err.Error(), "no such file or directory") {
 		t.Errorf("the raw OS reason must not leak: %s", err.Error())
+	}
+	// The remedy: this is the ONE case a fresh brew/go-install user actually
+	// hits (no ~/.den yet), and CLAUDE.md's doctrine is that an error names
+	// both the file to fix AND the remedy.
+	if !strings.Contains(err.Error(), "den init") {
+		t.Errorf("error = %q, expected the `den init` remedy for a missing config.yaml", err.Error())
+	}
+	// Non-regression: internal/nest and internal/spawn both discriminate
+	// their own FileError-wrapped errors on fs.ErrNotExist (see FileError's
+	// godoc in file.go); adding the remedy text must not have broken the
+	// chain that lets errors.Is see through fmt.Errorf's %w down to the
+	// original *fs.PathError.
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("errors.Is(err, fs.ErrNotExist) = false, want true; err = %v", err)
+	}
+}
+
+// A config.yaml that EXISTS but can't be read must NOT advertise `den init`:
+// deninit.Run refuses outright whenever config.yaml is already there (task
+// 3), so pointing an unreadable-file error at a command guaranteed to refuse
+// would send the user in a circle instead of telling them what's actually
+// wrong.
+//
+// Built as a DIRECTORY named config.yaml inside t.TempDir(), not a
+// chmod-000 file: the permission case only fails as an unprivileged user —
+// running the suite as root (a real CI/container scenario) would make
+// os.ReadFile succeed anyway and silently stop testing anything. EISDIR is
+// hermetic under both.
+func TestLoadGlobalUnreadableConfigOmitsRemedy(t *testing.T) {
+	denHome := t.TempDir()
+	if err := os.Mkdir(filepath.Join(denHome, "config.yaml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadGlobal(denHome)
+	if err == nil {
+		t.Fatal("expected an error when config.yaml is a directory")
+	}
+	if strings.Contains(err.Error(), "den init") {
+		t.Errorf("error = %q, must NOT suggest `den init` for an unreadable (not absent) config.yaml", err.Error())
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("errors.Is(err, fs.ErrNotExist) = true, want false: config.yaml exists, it's just unreadable; err = %v", err)
+	}
+}
+
+// Invalid YAML fails inside DecodeYAMLStrict, past the os.ReadFile wrap this
+// task touches — confirms the gate didn't leak the remedy onto a completely
+// different failure mode.
+func TestLoadGlobalInvalidYamlOmitsRemedy(t *testing.T) {
+	_, err := LoadGlobal(writeConfig(t, "agents: [this is not a map"))
+	if err == nil {
+		t.Fatal("expected an error on invalid YAML")
+	}
+	if strings.Contains(err.Error(), "den init") {
+		t.Errorf("error = %q, must NOT suggest `den init` for invalid YAML — the file exists, it's malformed", err.Error())
 	}
 }
 
