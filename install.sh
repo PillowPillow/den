@@ -152,4 +152,8 @@ case ":$PATH:" in
 esac
 
 # Proof, not promise: the installed binary names the tag it was built from.
-"$INSTALL_DIR/den" version
+# The guard is the one exec in the script, so this is the only place a
+# wrong-arch binary or a noexec mount can surface — without it the raw exec
+# error would be the last line, with no remedy named.
+"$INSTALL_DIR/den" version \
+    || fail "installed, but $INSTALL_DIR/den does not run on this machine — a noexec mount or a binary for another architecture; pick another destination with DEN_INSTALL_DIR, or see https://github.com/$REPO/releases"

@@ -42,12 +42,20 @@ jobs:
       - run: shellcheck install.sh
       - name: smoke against the latest release
         run: |
+          # The tag is resolved on both sides of the install so a release
+          # landing mid-run cannot fail the assert: install.sh's own
+          # resolution happens between these two, so its answer must match
+          # one of them. The run stays unpinned on purpose — it is the only
+          # coverage of the script's latest-tag branch (redirect parsing and
+          # the v* check), which a DEN_VERSION pin would skip entirely.
+          before=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/PillowPillow/den/releases/latest)
+          before="${before##*/}"
           DEN_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
-          final_url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/PillowPillow/den/releases/latest)
-          tag="${final_url##*/}"
+          after=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/PillowPillow/den/releases/latest)
+          after="${after##*/}"
           got=$("$RUNNER_TEMP/bin/den" version)
-          if [ "$got" != "den $tag" ]; then
-            echo "den version answered '$got', expected 'den $tag'"
+          if [ "$got" != "den $before" ] && [ "$got" != "den $after" ]; then
+            echo "den version answered '$got', expected 'den $before' or 'den $after'"
             exit 1
           fi
       # The smoke above only proves the happy path. install.sh's whole stance is
