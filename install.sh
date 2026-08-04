@@ -7,8 +7,10 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | sh
-#   DEN_VERSION=v1.0.1 ... | sh      # pin a version
-#   DEN_INSTALL_DIR=~/bin ... | sh   # override the destination
+#   curl -fsSL ... | DEN_VERSION=v1.0.1 sh      # pin a version
+#   curl -fsSL ... | DEN_INSTALL_DIR=~/bin sh   # override the destination
+# (the assignment binds to sh, not curl — each pipeline command gets its own
+# environment, so a prefix on curl never reaches the script)
 set -eu
 
 REPO="PillowPillow/den"
