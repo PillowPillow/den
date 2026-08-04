@@ -1,7 +1,9 @@
 # The same three gates a local dev runs (make lint / typecheck / test), on every
-# push and PR. The suite is hermetic by construction — no socket, no process, no
-# real sbx — so a bare ubuntu runner with a Go toolchain is enough; anything
-# more (services, sbx install) would contradict the repo's own test conventions.
+# push and PR. The `checks` job is hermetic by construction — no socket, no
+# process, no real sbx — so a bare ubuntu runner with a Go toolchain is enough;
+# anything more (services, sbx install) would contradict the repo's own test
+# conventions. `install-script` is the one deliberate exception: its object
+# under test is the network path itself, so it gets a socket on purpose.
 name: ci
 
 on:
@@ -20,3 +22,25 @@ jobs:
       - run: make lint
       - run: make typecheck
       - run: make test
+
+  # install.sh is an interface between .goreleaser.yaml's archive naming and
+  # whatever machine runs `curl | sh`. shellcheck locks the POSIX-sh promise;
+  # the smoke run against the real latest release is the only guard on the
+  # archive-name contract — nothing else tests it. This job is also the one
+  # deliberate exception to "no network in the suite": the thing under test
+  # IS the network path.
+  install-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck install.sh
+      - name: smoke against the latest release
+        run: |
+          DEN_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          final_url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/PillowPillow/den/releases/latest)
+          tag="${final_url##*/}"
+          got=$("$RUNNER_TEMP/bin/den" version)
+          if [ "$got" != "den $tag" ]; then
+            echo "den version answered '$got', expected 'den $tag'"
+            exit 1
+          fi
