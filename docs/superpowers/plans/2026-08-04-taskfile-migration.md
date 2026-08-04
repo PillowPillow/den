@@ -513,10 +513,14 @@ Le raisonnement du handoff survit intact : le piège n'a pas disparu avec le Mak
 
 ```bash
 grep -rn "make \(build\|test\|lint\|typecheck\)\|Makefile" \
-  README.md CLAUDE.md docs/superpowers/handoffs/HANDOFF.md ; echo "exit=$?"
+  README.md CLAUDE.md docs/superpowers/handoffs/HANDOFF.md
 ```
 
-Attendu : aucune ligne, `exit=1`. Une occurrence restante dans ces trois fichiers est une régression ; celles sous `docs/superpowers/plans/` et dans les handoffs **datés** sont attendues et ne doivent pas être touchées.
+Attendu : **exactement deux lignes**, toutes deux dans la nécrologie que le Step 3 vient de faire ajouter à `CLAUDE.md` (l. 97-98). C'est inévitable : une nécrologie doit citer le nom du mort et l'ancienne incantation, sinon elle n'aide pas le lecteur qu'elle vise.
+
+> **Correction du 2026-08-04.** Ce step exigeait initialement zéro ligne, ce qui contredisait le Step 3 de la même tâche. Les deux ne pouvaient pas tenir. L'implémenteur a suivi les deux à la lettre et signalé la contradiction plutôt que d'assouplir l'un des deux en silence — c'était la bonne conduite, et le défaut était dans ce plan.
+
+Toute autre ligne est une régression. Celles sous `docs/superpowers/plans/` et dans les handoffs **datés** sont attendues et hors du champ de ce grep.
 
 - [ ] **Step 6: Commit**
 
@@ -551,15 +555,17 @@ The handoff's argument survives untouched: what settles a release is still
 ### Task 4: Les commentaires qui nomment encore le Makefile
 
 **Files:**
-- Modify: `.goreleaser.yaml:1-7`
-- Modify: `internal/cli/version.go:5-14`
-- Modify: `internal/cli/version_test.go:5-10`, `:12-16`, `:33-38`
+- Modify: `.goreleaser.yaml` (commentaire d'en-tête)
+- Modify: `internal/cli/version.go` (commentaire de `resolveVersion`)
+- Modify: `internal/cli/version_test.go` (en-tête de fichier, 2 commentaires de cas, **+ 1 test ajouté au Step 4bis**)
+
+**Localiser par contenu, pas par numéro de ligne.** La Task 5 a réécrit `version.go` et `version_test.go` ; les numéros de ligne du plan d'origine sont périmés. Les blocs « remplacer ceci » ci-dessous restent exacts — s'appuyer dessus.
 
 **Interfaces:**
-- Consumes: rien.
+- Consumes: `resolveVersion(ldflags, buildinfo string, fromLocalVCS bool) string`, dans sa signature à trois paramètres issue de la Task 5.
 - Produces: rien.
 
-**Vérifié au préalable :** `version_test.go` ne fait qu'*évoquer* le Makefile en commentaire. Aucune assertion, aucun golden, aucune string de test ne contient `make`. Cette tâche ne touche donc pas le comportement de la suite — ce qui compte, puisque les goldens de ce repo n'ont pas de flag `-update` et se corrigent à la main.
+**Vérifié au préalable :** aucune assertion, aucun golden, aucune string de test ne contient `make` — seuls des commentaires le nomment. La partie renommage est donc mécanique et ne touche pas le comportement de la suite, ce qui compte puisque les goldens de ce repo n'ont pas de flag `-update` et se corrigent à la main. Le Step 4bis, lui, **ajoute** un test : c'est la seule partie de cette tâche qui change ce que la suite vérifie.
 
 - [ ] **Step 1: `.goreleaser.yaml` — l'en-tête**
 
@@ -655,6 +661,37 @@ par :
 	// tell that the binary skipped `task build`.
 ```
 
+- [ ] **Step 4bis: Le test qui manque au garde-fou que cette branche documente**
+
+**Ajouté le 2026-08-04**, sur un finding de la review de la Task 5 : aucun test ne passe `""` pour `ldflags`. Le terme `ldflags != ""` dans `resolveVersion` n'est donc protégé par rien — alors que c'est précisément le piège que cette branche documente deux fois, dans le commentaire de `build` du `Taskfile.yml` et à la ligne 167 de `HANDOFF.md`. Documenter un danger en laissant sa protection non testée est le trou que la branche a elle-même mis en lumière.
+
+Ajouter à `internal/cli/version_test.go` :
+
+```go
+// The guard against a build that stamped nothing. A misspelled `{{.VERSION}}`
+// in the Taskfile renders as the empty string — Task reports no error and exits
+// 0 — so `-X …cli.Version=` reaches the linker and Version stays "". Drop the
+// `ldflags != ""` term and the arbitration returns that empty string: `den
+// version` answers "den " with nothing after it, which is not `dev` either and
+// so passes any check that only looks for the dev tell. The Taskfile's own
+// comment warns about this trap and HANDOFF.md rests an argument on it; nothing
+// tested it until this branch.
+func TestResolveVersionKeepsDevWhenLdflagsStampedNothing(t *testing.T) {
+	got := resolveVersion("", "v1.1.1-0.20260804111234-a28f04a21c08+dirty", true)
+	if got != "dev" {
+		t.Fatalf("an empty ldflags stamp must not reach the user: %q", got)
+	}
+}
+```
+
+Vérifier qu'il contraint réellement le code, plutôt que de le supposer. Retirer temporairement le terme `ldflags != ""` de `internal/cli/version.go`, lancer :
+
+```bash
+go test ./internal/cli/ -run TestResolveVersionKeepsDevWhenLdflagsStampedNothing -count=1
+```
+
+Attendu : **échec**, avec `an empty ldflags stamp must not reach the user: ""`. Puis restaurer le terme et relancer : le test doit passer. Un test qui passe dans les deux états ne garde rien.
+
 - [ ] **Step 5: Vérifier que la suite est toujours verte**
 
 Un commentaire ne peut pas casser un test — sauf s'il a été édité de travers et a mangé une ligne de code. C'est ce que ce step attrape.
@@ -667,31 +704,43 @@ Attendu : `CHECK GREEN`. En particulier `gofmt` doit rester silencieux : une éd
 
 - [ ] **Step 6: Vérifier qu'il ne reste aucun `make` hors historique**
 
+Ne pas grepper l'arbre entier : `docs/superpowers/plans/`, `docs/superpowers/specs/`, les handoffs datés, `.claude/` et `.superpowers/` (le workspace SDD, git-ignoré) nomment tous `make` légitimement, et un grep large noie le signal sous ~180 lignes de bruit. Ne regarder que les fichiers **suivis et vivants** :
+
 ```bash
-grep -rn "Makefile\|make build\|make test\|make lint\|make typecheck" \
-  --include="*.go" --include="*.yaml" --include="*.yml" --include="*.md" . \
-  | grep -v "docs/superpowers/plans/" \
-  | grep -v "docs/superpowers/handoffs/2026-" \
-  | grep -v "docs/superpowers/specs/2026-08-04-taskfile" \
-  | grep -v "^./.claude/"
-echo "exit=$?"
+git ls-files -- '*.go' '*.yaml' '*.yml' '*.md' \
+  ':!docs/superpowers/plans/*' ':!docs/superpowers/specs/*' ':!docs/superpowers/handoffs/2026-*' \
+  | xargs grep -n "Makefile\|make build\|make test\|make lint\|make typecheck"
 ```
 
-Attendu : aucune ligne, `exit=1`. Les exclusions sont les documents historiques (jamais réécrits), le spec et le plan de ce chantier (qui parlent du Makefile au passé, légitimement), et les worktrees. `HANDOFF.md` n'est pas exclu et ne doit pas ressortir : il a été corrigé à la Task 3.
+Attendu : **exactement quatre lignes**, chacune un survivant délibéré. Toute autre ligne est une régression — en particulier toute ligne de `internal/cli/version_test.go`, que cette tâche vient de nettoyer.
+
+| Lignes attendues | Pourquoi elles restent |
+|---|---|
+| `CLAUDE.md` ×2 (l. 97-98) | La nécrologie ajoutée à la Task 3. Elle doit citer le nom du mort et l'ancienne incantation, sinon elle n'aide pas le lecteur qu'elle vise. |
+| `Taskfile.yml` ×1 (l. 24) | Le commentaire de `build` dit explicitement que le piège du `{{.VERSION}}` vide est « the same trap the Makefile's `$$(...)` note guarded against ». Nommer l'ancêtre est le propos de la phrase. |
+| `internal/cli/ports_test.go` ×1 (l. 1160) | « from SystemDeps left `make test` green in all 12 packages » — un commentaire qui **raconte** une régression de l'ère make. Le récit d'un incident daté, pas une instruction. Le réécrire en `task test` falsifierait ce qui s'est réellement passé, exactement comme réécrire un handoff daté. **Ne pas y toucher.** |
+
+*(Ce step exigeait initialement zéro ligne sur un grep de l'arbre entier — une attente fausse en trois points, corrigée le 2026-08-04 après que la Task 3 a révélé la contradiction.)*
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add .goreleaser.yaml internal/cli/version.go internal/cli/version_test.go
-git commit -m "docs: the comments naming the Makefile name the Taskfile
+git commit -m "test(version): cover the empty stamp, and rename the last make mentions
 
-Comments only — no assertion, golden, or test string in version_test.go ever
-contained the word, which is why the suite is untouched by this. It matters
-because this repo's goldens carry no -update flag and are fixed by hand.
+The comments are the mechanical half: no assertion, golden, or test string ever
+contained the word make, which is why renaming them leaves the suite's behaviour
+alone. That matters here because this repo's goldens carry no -update flag and
+are fixed by hand.
 
-goreleaser's header still has to point at whatever the local build is the twin
-of, and resolveVersion's rescue is still for the install path that bypasses it;
-only the runner's name moved."
+The test is the half that is not mechanical. Task 5's review found that nothing
+passes an empty ldflags string, so the ldflags != \"\" term in resolveVersion was
+guarding a case no test described — and it is exactly the case this branch spends
+two comments warning about, in the Taskfile and in HANDOFF.md. A misspelled
+{{.VERSION}} renders empty, Task exits 0, and the binary answers 'den ' with
+nothing after it: not dev, so it slips past any check that only looks for the dev
+tell. Verified the test constrains the code by removing the term and watching it
+go red."
 ```
 
 ---
