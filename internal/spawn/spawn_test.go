@@ -2600,6 +2600,19 @@ func TestSpawnSourceNestRefusesPrefixedStackRef(t *testing.T) {
 	if !strings.Contains(err.Error(), "bare") {
 		t.Errorf("error = %q, expected it to name the bare-reference rule", err.Error())
 	}
+	// Discriminating assertions, not just "bare": the subject must be
+	// o.Nest ("corp:api", what was typed), never n.Name ("api", the bare
+	// filename LoadNest fills in) — a `Contains("api")` alone would pass
+	// against EITHER form and so pin nothing. And the file to fix must be
+	// the SOURCE nest's, under sources/corp/nests/, not some denHome-rooted
+	// guess.
+	if !strings.Contains(err.Error(), "corp:api") {
+		t.Errorf("error = %q, expected the subject to be the prefixed reference %q, "+
+			"not the bare filename LoadNest sets n.Name to", err.Error(), "corp:api")
+	}
+	if want := filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"); !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %q, expected it to name the source nest file %s", err.Error(), want)
+	}
 	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
 		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
 	}
@@ -2626,6 +2639,19 @@ func TestSpawnSourceNestRefusesMissingStack(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "defaults.stack") {
 		t.Errorf("error = %q, expected it to name the personal-default rule", err.Error())
+	}
+	// Discriminating assertions, not just "defaults.stack": the subject must
+	// be o.Nest ("corp:api", what was typed), never n.Name ("api", the bare
+	// filename LoadNest fills in) — a `Contains("api")` alone would pass
+	// against EITHER form and so pin nothing. And the file to fix must be
+	// the SOURCE nest's, under sources/corp/nests/, not some denHome-rooted
+	// guess.
+	if !strings.Contains(err.Error(), "corp:api") {
+		t.Errorf("error = %q, expected the subject to be the prefixed reference %q, "+
+			"not the bare filename LoadNest sets n.Name to", err.Error(), "corp:api")
+	}
+	if want := filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"); !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %q, expected it to name the source nest file %s", err.Error(), want)
 	}
 	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
 		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
