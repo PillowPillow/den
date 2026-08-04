@@ -58,6 +58,14 @@ messages d'erreur et les hints. Rejetés : la fusion plate « local gagne » (ma
 contraire au fail-loud de den) et la fusion plate « collision = refus » (une source qui ajoute une
 stack casse les utilisateurs qui avaient le même nom en local).
 
+- **Références internes nues.** À l'intérieur d'une source, `stack:` (nest) et `parent:` (stack)
+  se résolvent **sans préfixe, dans la source elle-même** — une référence préfixée y est un refus
+  (`den lint` la rejette). Raison : le nom d'installation est choisi par chaque machine
+  (`--name`) ; une référence `corp:...` figée dans le contenu casserait sous un autre nom, et la
+  CI du repo d'équipe — qui ne connaît aucun nom d'installation — ne pourrait pas la valider.
+  Corollaire : une source est **auto-contenue** (même règle que le confinement des chemins, §5),
+  elle ne peut pas référencer une stack du den home local ni d'une autre source. Le préfixe
+  `<source>:` n'existe que côté personnel : CLI, `defaults.stack`, nests locaux.
 - Le **nom de source** obéit au même charset que les nests (`[A-Za-z0-9][A-Za-z0-9+-]*`, point
   exclu) : il devient préfixe d'adressage puis composant de nom de sandbox. `den source add`
   refuse un `--name` (ou un basename d'URL) illégal, avec le remède « passe `--name` ».
@@ -76,7 +84,7 @@ donc `path:` **ou** `key:`, mutuellement exclusifs (même forme de refus que `ba
 
 ```yaml
 # nests/backend.yaml (dans la source corp)
-stack: corp:dgdevx
+stack: dgdevx        # référence NUE : résolue dans la source elle-même, jamais préfixée
 repos:
   - { key: review-mgmt }
   - { key: front-app, optional: true, url: git@gitlab.corp:front/app.git }
