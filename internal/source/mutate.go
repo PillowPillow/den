@@ -123,16 +123,6 @@ func unpushedCommitCount(ctx context.Context, git worktree.Git, dir string, args
 	return n, nil
 }
 
-func unpushedRefusal(name string, n int, dir string) error {
-	plural := ""
-	if n > 1 {
-		plural = "s"
-	}
-	return fmt.Errorf(
-		"source %q: %d unpushed commit%s at %s — push them first; "+
-			"den never destroys unpushed contributions", name, n, plural, dir)
-}
-
 // aheadOfUpstream is Update's unpushed-commit guard: commits on the
 // checked-out branch that are not on ITS OWN upstream ("@{u}..HEAD"). Scoped
 // to the current branch on purpose — the ff-only merge below only ever
@@ -140,7 +130,8 @@ func unpushedRefusal(name string, n int, dir string) error {
 // risk, and requireUpstream above has already guaranteed "@{u}" resolves.
 // Called before the fetch below so Update never even reaches the ff-only
 // refusal that recommends `den source rm` on work that refusal would then
-// have destroyed.
+// have destroyed. Update has no --force: unlike Remove, there is no
+// "delete it anyway" reading of "update anyway" that makes sense.
 func aheadOfUpstream(ctx context.Context, git worktree.Git, dir, name string) error {
 	n, err := unpushedCommitCount(ctx, git, dir, "@{u}..HEAD")
 	if err != nil {
@@ -149,7 +140,14 @@ func aheadOfUpstream(ctx context.Context, git worktree.Git, dir, name string) er
 	if n == 0 {
 		return nil
 	}
-	return unpushedRefusal(name, n, dir)
+	plural := ""
+	if n > 1 {
+		plural = "s"
+	}
+	return fmt.Errorf(
+		"source %q: %d unpushed commit%s at %s — push them first; "+
+			"den never fast-forwards a clone out from under local commits it cannot restore",
+		name, n, plural, dir)
 }
 
 // unpushedAnywhere is Remove's unpushed-commit guard. Remove destroys the
@@ -166,6 +164,20 @@ func aheadOfUpstream(ctx context.Context, git worktree.Git, dir, name string) er
 // (same class as isDirty's .gitignore note above, not solved here): a
 // commit on a DETACHED HEAD belongs to no branch, so "--branches" does not
 // see it either — den polices local branches, not every reachable commit.
+// Same class again: a stash is invisible to BOTH this check and isDirty —
+// neither `git status` nor `--branches --not --remotes` sees stashed work,
+// so `den source rm` can silently drop a stash. Undocumented until now,
+// accepted for the same reason as the other two: den polices what git
+// tracks as history or working-tree state, not everything git can hold.
+//
+// "--branches --not --remotes" answers "is this commit on some remote-
+// tracking ref", NOT "did the user push it" — an upstream history rewrite
+// (`git fetch` force-updating a remote-tracking ref past a commit that was
+// already fast-forwarded from it) orphans a commit exactly the same way an
+// unpushed one looks, and den CANNOT tell the two apart from local state
+// alone. Guessing which one it is would trade a safe refusal for a silent
+// deletion, so this refuses either way — but the refusal must be escapable,
+// which is what force is for below.
 func unpushedAnywhere(ctx context.Context, git worktree.Git, dir, name string) error {
 	n, err := unpushedCommitCount(ctx, git, dir, "--branches", "--not", "--remotes")
 	if err != nil {
@@ -174,7 +186,16 @@ func unpushedAnywhere(ctx context.Context, git worktree.Git, dir, name string) e
 	if n == 0 {
 		return nil
 	}
-	return unpushedRefusal(name, n, dir)
+	plural := ""
+	if n > 1 {
+		plural = "s"
+	}
+	return fmt.Errorf(
+		"source %q: %d commit%s at %s not reachable from any remote-tracking ref — this can be "+
+			"genuinely unpushed work, or history the team repo rewrote out from under this clone; "+
+			"`git -C %s log --branches --not --remotes` shows exactly what they are; push what is "+
+			"worth keeping, or `den source rm --force %s` deletes it anyway",
+		name, n, plural, dir, dir, name)
 }
 
 // Update fetches and fast-forwards — with the lint gate BETWEEN the two
@@ -206,21 +227,31 @@ func Update(ctx context.Context, git worktree.Git, denHome, name string) error {
 	if err := aheadOfUpstream(ctx, git, dir, name); err != nil {
 		return err
 	}
-	if _, err := git.Run(ctx, dir, "fetch", "origin"); err != nil {
+	// Bare `git fetch`, no explicit remote: it fetches whatever
+	// branch.<name>.remote names for the CHECKED-OUT branch, which
+	// requireUpstream above has already guaranteed is set. Hardcoding
+	// "origin" here was its own bug, independent of the FETCH_HEAD one
+	// below — a branch tracking a differently-named remote would have its
+	// real remote left untouched while "origin" (irrelevant to this branch)
+	// got fetched, and the merge below would then read "@{u}" pointing at
+	// data that was never refreshed: a silent no-op indistinguishable from
+	// "already up to date", with FETCH_HEAD's mtime bump still resetting the
+	// 7-day staleness clock as if a real check had happened.
+	if _, err := git.Run(ctx, dir, "fetch"); err != nil {
 		return err
 	}
 	// Lint the fetched tree before moving HEAD, on the checked-out branch's
-	// OWN upstream ("@{u}") — never FETCH_HEAD. `git fetch origin` with no
-	// refspec writes one FETCH_HEAD line per advertised remote branch and
-	// marks "for merge" only the one branch git considers explicitly
-	// requested; on a clone whose checked-out branch has no upstream (a
-	// contributor's own local work-in-progress branch, say) that marking
-	// does not point at THIS branch's remote at all — den would lint and
-	// then attempt to fast-forward onto whatever branch happened to be
-	// listed first. requireUpstream above already refuses that case, so it
-	// cannot reach here; "@{u}", passed as the literal ref string to both
-	// `worktree add` and `merge --ff-only` (never pre-resolved to a SHA and
-	// reused), always names THIS branch's own tracked ref instead.
+	// OWN upstream ("@{u}") — never FETCH_HEAD. `git fetch` with no refspec
+	// writes one FETCH_HEAD line per advertised remote branch and marks
+	// "for merge" only the one branch git considers explicitly requested;
+	// on a clone whose checked-out branch has no upstream (a contributor's
+	// own local work-in-progress branch, say) that marking does not point
+	// at THIS branch's remote at all — den would lint and then attempt to
+	// fast-forward onto whatever branch happened to be listed first.
+	// requireUpstream above already refuses that case, so it cannot reach
+	// here; "@{u}", passed as the literal ref string to both `worktree add`
+	// and `merge --ff-only` (never pre-resolved to a SHA and reused),
+	// always names THIS branch's own tracked ref instead.
 	tmp, err := os.MkdirTemp("", "den-source-lint-*")
 	if err != nil {
 		return err
@@ -250,23 +281,37 @@ func Update(ctx context.Context, git worktree.Git, denHome, name string) error {
 	}
 	if _, err := git.Run(ctx, dir, "merge", "--ff-only", "@{u}"); err != nil {
 		return fmt.Errorf(
-			"source %q: cannot fast-forward — the team repo rewrote its history. "+
-				"If you have no local work: `den source rm %s` then `den source add <url> --name %s` (%w)",
-			name, name, name, err)
+			"source %q: cannot fast-forward — the team repo rewrote its history. A fetch just "+
+				"orphaned any local commit that was only fast-forwarded from the old history, so "+
+				"`den source rm %s` may itself refuse naming those same commits — "+
+				"`den source rm --force %s` then `den source add <url> --name %s` if you have "+
+				"nothing there worth keeping (%w)",
+			name, name, name, name, err)
 	}
 	return nil
 }
 
-// Remove deletes the clone. The dirty refusal mirrors Update's and exists
-// for the same reason; --untracked-files=normal again, untracked included: a
-// file the user created is work, whether git tracks it or not. Its
-// ahead-count guard is unpushedAnywhere, deliberately NOT Update's
-// aheadOfUpstream/requireUpstream pair: Remove is the documented escape
-// hatch the ff-only refusal above names ("den source rm" then "add"), and
-// requiring an upstream here would make that hatch unreachable on exactly
-// the branch shape (a contributor's untracked local branch) the fetch-ref
-// fix above exists to handle — the same failure from the other direction.
-func Remove(ctx context.Context, git worktree.Git, denHome, name string) error {
+// Remove deletes the clone, or — with force — skips BOTH safety checks
+// below and deletes it regardless of what they would have found. That
+// escape hatch matters because it is the one the ff-only refusal above
+// itself names: a `git fetch` that discovers the team repo rewrote history
+// orphans any local commit that was only reachable via the OLD history (it
+// is no longer on any remote-tracking ref, exactly what unpushedAnywhere
+// looks for), on a clone the user never touched. Without --force that
+// leaves no way out of a state Update itself created — a manual `rm -rf`
+// would be the only remaining option, and this package exists specifically
+// so users never need one.
+//
+// The dirty refusal mirrors Update's and exists for the same reason;
+// --untracked-files=normal again, untracked included: a file the user
+// created is work, whether git tracks it or not. Its ahead-count guard is
+// unpushedAnywhere, deliberately NOT Update's aheadOfUpstream/
+// requireUpstream pair: Remove is the documented escape hatch the ff-only
+// refusal above names, and requiring an upstream here would make that
+// hatch unreachable on exactly the branch shape (a contributor's untracked
+// local branch) the fetch-ref fix above exists to handle — the same
+// failure from the other direction.
+func Remove(ctx context.Context, git worktree.Git, denHome, name string, force bool) error {
 	if err := config.ValidateSourceName(name); err != nil {
 		return err
 	}
@@ -274,14 +319,20 @@ func Remove(ctx context.Context, git worktree.Git, denHome, name string) error {
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("source %q: not installed — expected %s", name, dir)
 	}
+	if force {
+		return os.RemoveAll(dir)
+	}
 	dirty, err := isDirty(ctx, git, dir)
 	if err != nil {
 		return err
 	}
 	if dirty {
 		return fmt.Errorf(
-			"source %q: the working tree at %s has local changes — push or discard them first; "+
-				"`den source rm` never destroys unpushed contributions", name, dir)
+			"source %q: the working tree at %s has local changes — `git -C %s status --porcelain "+
+				"--untracked-files=normal` shows what (plain `git status` can lie here: a LOCAL "+
+				"status.showUntrackedFiles=no hides untracked files from it); push or discard them "+
+				"first, or `den source rm --force %s` to delete anyway; `den source rm` never "+
+				"destroys unpushed contributions without --force", name, dir, dir, name)
 	}
 	if err := unpushedAnywhere(ctx, git, dir, name); err != nil {
 		return err

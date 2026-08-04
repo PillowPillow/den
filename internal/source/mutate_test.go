@@ -136,8 +136,13 @@ func TestUpdateRefusesImpossibleFastForward(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "cannot fast-forward") {
 		t.Fatalf("expected the ff-only refusal, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "den source rm") {
-		t.Errorf("refusal does not name the remedy: %v", err)
+	// `den source rm` (no --force) is the WRONG remedy here — the fetch
+	// below orphans the local commit, so plain `rm` will itself refuse (see
+	// the Remove assertions at the end of this test). The refusal must name
+	// the remedy that actually works, not merely mention the command that
+	// will bounce the user right back.
+	if !strings.Contains(err.Error(), "den source rm --force") {
+		t.Errorf("refusal does not name the working remedy (den source rm --force): %v", err)
 	}
 	after, err := worktree.NewGit().Run(context.Background(), Dir(home, "corp"), "rev-parse", "HEAD")
 	if err != nil {
@@ -154,6 +159,25 @@ func TestUpdateRefusesImpossibleFastForward(t *testing.T) {
 	}
 	if lines := strings.Count(strings.TrimSpace(string(out)), "\n") + 1; lines != 1 {
 		t.Errorf("worktree list has %d entries, want 1 (main only):\n%s", lines, out)
+	}
+
+	// The fetch above force-updated origin/main (a clone's default fetch
+	// refspec has a leading "+", allowing non-fast-forward updates to
+	// remote-tracking refs) — orphaning the very commit `main` was on. That
+	// commit is now indistinguishable, from local state alone, from
+	// genuinely unpushed work: `den source rm` must refuse it and name
+	// --force as the deliberate override, and `den source rm --force` must
+	// actually remove the clone rather than leaving only a manual `rm -rf`.
+	if err := Remove(context.Background(), worktree.NewGit(), home, "corp", false); err == nil {
+		t.Fatal("expected Remove to refuse: the fetch orphaned the local commit")
+	} else if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("refusal does not name --force: %v", err)
+	}
+	if err := Remove(context.Background(), worktree.NewGit(), home, "corp", true); err != nil {
+		t.Fatalf("Remove --force: %v", err)
+	}
+	if _, statErr := os.Stat(Dir(home, "corp")); !os.IsNotExist(statErr) {
+		t.Error("clone still present after Remove --force")
 	}
 }
 
@@ -181,17 +205,51 @@ func TestRemoveRefusesDirtyThenRemovesClean(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(Dir(home, "corp"), "wip.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Remove(context.Background(), worktree.NewGit(), home, "corp"); err == nil {
+	dirtyErr := Remove(context.Background(), worktree.NewGit(), home, "corp", false)
+	if dirtyErr == nil {
 		t.Fatal("expected the dirty-tree refusal")
+	}
+	if !strings.Contains(dirtyErr.Error(), "--force") {
+		t.Errorf("dirty-tree refusal does not name --force: %v", dirtyErr)
 	}
 	if err := os.Remove(filepath.Join(Dir(home, "corp"), "wip.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if err := Remove(context.Background(), worktree.NewGit(), home, "corp"); err != nil {
+	if err := Remove(context.Background(), worktree.NewGit(), home, "corp", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if _, err := os.Stat(Dir(home, "corp")); !os.IsNotExist(err) {
 		t.Error("clone still present")
+	}
+}
+
+// TestRemoveForceSkipsBothChecks pins the fix round 2 escape hatch: force
+// must skip the dirty check AND the unpushed-commit check, not just one of
+// them — a user with nothing worth keeping needs a single command, not a
+// manual `rm -rf` when it turns out only one guard would have let them
+// through.
+func TestRemoveForceSkipsBothChecks(t *testing.T) {
+	home := t.TempDir()
+	url := makeSourceRepo(t)
+	if _, err := Add(context.Background(), worktree.NewGit(), home, url, "corp"); err != nil {
+		t.Fatal(err)
+	}
+	dir := Dir(home, "corp")
+	// Dirty AND carrying an unpushed commit: without force, either guard
+	// alone would refuse.
+	if err := os.WriteFile(filepath.Join(dir, "stacks", "devx", "extra.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "local work, not pushed")
+	if err := os.WriteFile(filepath.Join(dir, "wip.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(context.Background(), worktree.NewGit(), home, "corp", true); err != nil {
+		t.Fatalf("Remove --force: %v", err)
+	}
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Error("clone still present after Remove --force")
 	}
 }
 
@@ -216,7 +274,7 @@ func TestRemoveRefusesUntrackedWorkHiddenByLocalConfig(t *testing.T) {
 	if err := os.WriteFile(untracked, []byte("image: mine:v1\nbase: claude\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := Remove(context.Background(), worktree.NewGit(), home, "corp")
+	err := Remove(context.Background(), worktree.NewGit(), home, "corp", false)
 	if err == nil || !strings.Contains(err.Error(), "local changes") {
 		t.Fatalf("expected the dirty-tree refusal despite showUntrackedFiles=no, got: %v", err)
 	}
@@ -279,7 +337,7 @@ func TestRemoveSucceedsOnNoUpstreamBranchWhenNothingUnpushed(t *testing.T) {
 	}
 	dir := Dir(home, "corp")
 	gitCmd(t, dir, "checkout", "-b", "wip")
-	if err := Remove(context.Background(), worktree.NewGit(), home, "corp"); err != nil {
+	if err := Remove(context.Background(), worktree.NewGit(), home, "corp", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
@@ -305,8 +363,8 @@ func TestRemoveRefusesUnpushedCommitsOnNoUpstreamBranch(t *testing.T) {
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "local work on an untracked branch")
 
-	err := Remove(context.Background(), worktree.NewGit(), home, "corp")
-	if err == nil || !strings.Contains(err.Error(), "unpushed commit") {
+	err := Remove(context.Background(), worktree.NewGit(), home, "corp", false)
+	if err == nil || !strings.Contains(err.Error(), "not reachable from any remote-tracking ref") {
 		t.Fatalf("expected the unpushed-commits refusal, got: %v", err)
 	}
 	if _, statErr := os.Stat(dir); statErr != nil {
@@ -352,9 +410,12 @@ func TestRemoveRefusesUnpushedCommits(t *testing.T) {
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "local work, not pushed")
 
-	err := Remove(context.Background(), worktree.NewGit(), home, "corp")
-	if err == nil || !strings.Contains(err.Error(), "unpushed commit") {
+	err := Remove(context.Background(), worktree.NewGit(), home, "corp", false)
+	if err == nil || !strings.Contains(err.Error(), "not reachable from any remote-tracking ref") {
 		t.Fatalf("expected the unpushed-commits refusal, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("refusal does not name --force: %v", err)
 	}
 	if _, statErr := os.Stat(dir); statErr != nil {
 		t.Errorf("clone removed despite an unpushed commit: %v", statErr)
@@ -430,6 +491,64 @@ func TestUpdatePrunesStaleWorktreeRegistrationWhenRemoveFails(t *testing.T) {
 	}
 	if lines := strings.Count(strings.TrimSpace(string(out)), "\n") + 1; lines != 1 {
 		t.Errorf("worktree list has %d entries after a failed remove, want 1 (main only) once pruned:\n%s", lines, out)
+	}
+}
+
+// TestUpdateFetchesTheBranchsOwnRemoteNotOrigin pins the RESIDUAL of the
+// FETCH_HEAD finding: the fetch itself was still hardcoded to "origin"
+// while the merge handle is "@{u}". A branch tracking a differently-named
+// remote would have that real remote left unfetched while "origin" (which
+// this branch has nothing to do with) got fetched — `merge --ff-only @{u}`
+// would then read stale data and, if nothing NEW happened to be on
+// "origin" either, silently report success. This clones from one remote,
+// re-points the branch's upstream at a SECOND one, grows both, and asserts
+// only the branch's own remote's content lands.
+func TestUpdateFetchesTheBranchsOwnRemoteNotOrigin(t *testing.T) {
+	home := t.TempDir()
+	originURL := makeSourceRepo(t)
+	otherURL := makeSourceRepo(t)
+	if _, err := Add(context.Background(), worktree.NewGit(), home, originURL, "corp"); err != nil {
+		t.Fatal(err)
+	}
+	dir := Dir(home, "corp")
+	gitCmd(t, dir, "remote", "add", "other", otherURL)
+	gitCmd(t, dir, "fetch", "other")
+	gitCmd(t, dir, "branch", "--set-upstream-to=other/main")
+
+	// Grow "origin" — the WRONG remote for this branch. Its content must
+	// NOT land.
+	originDir := strings.TrimPrefix(originURL, "file://")
+	if err := os.MkdirAll(filepath.Join(originDir, "stacks", "wrong"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(originDir, "stacks", "wrong", "stack.yaml"),
+		[]byte("image: wrong:v1\nbase: claude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, originDir, "add", "-A")
+	gitCmd(t, originDir, "commit", "-m", "grows the WRONG remote")
+
+	// Grow "other" — the branch's actual, configured upstream. This is what
+	// Update must fetch and fast-forward onto.
+	otherDir := strings.TrimPrefix(otherURL, "file://")
+	if err := os.MkdirAll(filepath.Join(otherDir, "stacks", "right"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherDir, "stacks", "right", "stack.yaml"),
+		[]byte("image: right:v1\nbase: claude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, otherDir, "add", "-A")
+	gitCmd(t, otherDir, "commit", "-m", "grows the branch's real upstream")
+
+	if err := Update(context.Background(), worktree.NewGit(), home, "corp"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stacks", "right", "stack.yaml")); err != nil {
+		t.Errorf("fast-forward onto the branch's own upstream did not land: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stacks", "wrong", "stack.yaml")); !os.IsNotExist(err) {
+		t.Error("Update fetched origin instead of the branch's own configured remote")
 	}
 }
 
