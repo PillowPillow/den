@@ -1,0 +1,64 @@
+# The task runner den's four gates and its one build live in. `-X ...cli.Version`
+# is what makes a binary say which code it runs; without it `den version` answers
+# `dev` on a user's machine, which names nothing. The value comes from
+# `git describe`, so a tagged build says `v1.0.0` and every other one says where
+# it sits relative to the last tag (`v1.0.0-3-gabc1234-dirty`) — the release case
+# and the working-tree case, from one expression. The `|| echo dev` covers the two
+# ways describe legitimately fails (no git, or a tarball with no .git); an
+# unreadable version is a worse answer than `dev`.
+version: "3"
+
+tasks:
+  build:
+    desc: Build den with the version stamped in — the only documented way to build
+    # VERSION is declared HERE, and not under a top-level `vars:`, because Task
+    # evaluates global dynamic vars EAGERLY: every `task test` would shell out to
+    # `git describe` for a value it never reads. Probed against task v3.52.0 on
+    # 2026-08-04 — a global var whose command writes to stderr emitted its trace
+    # under a `task` invocation that never mentions it. Scoping it to its one
+    # consumer is the whole fix.
+    #
+    # And spell `{{.VERSION}}` carefully. Task renders an unknown variable as the
+    # empty string, silently, exit 0 (probed the same day): a typo here does not
+    # fail the build, it ships `Version=` — a binary that answers `den ` with
+    # nothing after it. This is the same trap the Makefile's `$$(...)` note
+    # guarded against, under a different spelling, which is why the check that
+    # settles a release is `./den version` AGREEING with `git describe` rather
+    # than merely differing from `dev`.
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+    cmds:
+      - go build -ldflags "-X github.com/PillowPillow/den/internal/cli.Version={{.VERSION}}" -o den ./cmd/den
+
+  test:
+    desc: Run the suite with the build cache defeated
+    # -count=1 is not decoration: a plain `go test` can report a pass that belongs
+    # to an earlier tree.
+    cmds:
+      - go test -count=1 ./...
+
+  typecheck:
+    desc: Compile every package
+    cmds:
+      - go build ./...
+
+  lint:
+    desc: go vet plus an enforced gofmt
+    # Two cmds rather than one `&&`: Task stops at the first failing command
+    # either way, but a red run then names which of the two gates went down
+    # instead of collapsing both into a single exit code. gofmt is enforced here,
+    # not advised.
+    cmds:
+      - go vet ./...
+      - test -z "$(gofmt -l .)"
+
+  check:
+    desc: The three gates, fail-fast — what CI runs, and what to run before a commit
+    # The sequence predates the task: ci.yml and release.yml both spelled it out
+    # as three separate steps, and the plans repeat it by hand. Naming it removes
+    # the duplication and, with it, the chance the two workflows drift apart.
+    cmds:
+      - task: lint
+      - task: typecheck
+      - task: test
