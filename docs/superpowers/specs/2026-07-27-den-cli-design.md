@@ -83,6 +83,7 @@ actionnable, jamais normalisé en silence : normaliser casserait l'aller-retour
     fullstack.yaml
   kits/                    # kits transverses non-egress, layerés avant `kit` (cf. §4.2)
     ssh-known-hosts/
+  sources/<n>/             # clones git de sources d'équipe (même layout partiel) — spec 2026-08-04
   worktrees/               # worktrees générés (layout central par défaut)
     <wt>/<repo>/
   cache/                   # optionnel, reconstructible — jamais source de vérité
@@ -226,6 +227,7 @@ sandbox**.
 | `den build [<stack>] [--force]` | build image(s), ordre DAG |
 | `den doctor` | valide config, teste egress, présence/login sbx |
 | `den nest ls` / `den nest show <n>` | inspecter les nests déclarés |
+| `den source add\|update\|ls\|rm`, `den lint <path>` | sources d'équipe (clones git partagés) — voir spec 2026-08-04 |
 
 Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <name>`.
 

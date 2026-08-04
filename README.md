@@ -83,6 +83,11 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den build [<stack>]` | builds stack images in `parent` order, playing each stack's `provision.steps` in a throwaway build VM |
 | `den nest ls` | lists the declared nests |
 | `den nest show <n>` | shows a fully resolved nest (stack, agent, egress, repos) |
+| `den source add <url> [--name n]` | clones a team source under `~/.den/sources/<n>/` and validates it; refuses (and removes the clone) if invalid |
+| `den source update [n]` | fetches and fast-forwards one source, or every installed source when none is named; refuses rather than overwrite local or unpushed work |
+| `den source ls` | lists installed sources: name, HEAD, last fetch, URL |
+| `den source rm <n> [--force]` | removes an installed source; refuses on a dirty working tree or commits unreachable from any remote-tracking ref, unless `--force` |
+| `den lint <path>` | validates a checkout (stacks, nests, references, path confinement) — what a team source's CI runs |
 | `den doctor` | diagnoses the configuration and the environment |
 | `den version` | binary version |
 
@@ -320,6 +325,127 @@ list them in `steps:`, move any shared function library into `includes:`, and de
 scripts could do and steps cannot: read host files (only `includes:`/`steps:` text enters the VM),
 and pick their own shell (den sends `bash -lc`). `versions.lock` is out of the model — den claims
 nothing about tool versioning, and pins stay where they already are, in the scripts.
+
+## Team sources
+
+A **source** is a team's stacks and nests shared through a private git repo — typically reachable
+only from a VPN, and unrelated to the product's own GitHub. den clones it under
+`~/.den/sources/<name>/`; its objects are then addressed `<name>:<nest>`.
+
+```bash
+$ den source add git@gitlab.corp:dev/stacks.git --name corp
+source "corp" installed — its objects are addressed corp:<name> (e.g. `den corp:<nest>`)
+
+$ den corp:backend
+# resolves the nest "backend" and its stack inside the "corp" source, then
+# spawns (or attaches to) the sandbox "corp-backend"
+
+$ den source update
+source "corp" updated
+```
+
+`add` clones and lints the checkout in the same step: an invalid source is refused **and its own
+clone removed**, so a bad push never leaves a half-usable directory behind. Bare `den source
+update` refreshes every installed source; `den source update corp` refreshes just one. `den
+source rm corp` deletes the clone; it refuses on local changes or on commits unreachable from any
+remote-tracking ref (unpushed work, or a team repo that rewrote its history — see below),
+`--force` deletes anyway. Contributing back is just an ordinary git workflow: edit
+`~/.den/sources/corp/` directly, commit, push — den adds no ritual on top.
+
+### Repo keys — what makes a nest shareable
+
+A shared nest cannot carry machine-specific paths. Its `repos:` entries carry `key:` instead of
+`path:`, and each person maps that key to their own local checkout:
+
+```yaml
+# sources/corp/nests/backend.yaml (inside the source repo)
+stack: dgdevx        # bare reference — resolved inside the source itself, never prefixed
+repos:
+  - { key: review-mgmt }
+  - { key: front-app, optional: true, url: git@gitlab.corp:front/app.git }
+```
+
+```yaml
+# ~/.den/config.yaml (personal, per machine)
+repos:
+  review-mgmt: ~/dev/review-mgmt
+  front-app: ~/dev/front
+```
+
+An unmapped key is a refusal **before any side effect** — no clone is ever attempted on the
+user's behalf:
+
+```
+repo key "review-mgmt" is not mapped on this machine — add `review-mgmt: <local path>` under
+`repos:` in ~/.den/config.yaml
+```
+
+`url:` only enriches that message; it exists to tell you what to clone, never to trigger a clone
+den performs itself. Local nests can use `key:` too — it is one mechanism, not a sources-only one.
+
+### Addressing
+
+A source's stacks and nests are addressed `<source>:<name>` (`corp:dgdevx`, `corp:backend`); a
+local object stays unprefixed. Inside a source, references (`stack:` on a nest, `parent:` on a
+stack) are always **bare** and resolve within that source itself — a prefixed reference there is a
+lint failure, because the install name (`--name`) is chosen per machine and the team repo's own CI
+knows none.
+
+`:` is not legal in an `sbx create --name`, so a nest loaded from a source spawns under a
+flattened sandbox name: `corp:backend` becomes sandbox `corp-backend` — the same flattening `-w`
+already applies to branch names. A flattening collision (a local nest already named `corp-backend`,
+say) is refused at spawn, never silently renamed.
+
+### Fail-closed updates
+
+`den source update` is the only thing that touches the network — a spawn never fetches, so
+everything keeps working off-VPN. It fetches, then lints the fetched tree **before** fast-forwarding
+(in a throwaway detached worktree, never touching the checked-out branch until the lint passes): a
+typo pushed by a teammate fails that lint and the local clone stays on its last good state, unchanged.
+It also refuses to fast-forward over a dirty working tree or unpushed commits — den never discards
+contributions it cannot restore. If the team repo rewrote its history, fast-forwarding itself
+becomes impossible; the refusal explains that `den source rm` may itself refuse (the fetch that
+triggered it just orphaned those same commits) and points at `den source rm --force` followed by
+`den source add` for a clone with nothing local worth keeping.
+
+At spawn, den never fetches — it just reads the clone as it stands. If the source has not been
+fetched in over 7 days, den prints a **hint**, never a refusal:
+
+```
+hint: source "corp" was last fetched more than 7 days ago — den source update corp
+```
+
+### `den lint <path>`
+
+The same validation `source add`/`source update` run: strict YAML, `parent:` resolvable and
+acyclic, declared paths (`kit`, `kits`, `provision.includes`/`steps`) existing and confined to the
+checkout, bare (never prefixed) internal references, and a nest with no `stack:`. It reports every
+finding at once, not one per push. A stack's illegal name, missing `image:`, or a repo entry with
+both (or neither) `path:` and `key:` are refused too — those surface as the load error on the
+offending file, which can end the report early on that one file rather than join the itemized list
+above. Point it at a checkout to run it standalone, e.g. from the team repo's own CI:
+
+```bash
+den lint .
+```
+
+It reads no den home and touches no git or `sbx` — an argument is a filesystem path, nothing more.
+
+### Known limitations
+
+- `den sh`, `den rm` and `den ports` take a single sandbox-name argument, and flattening it
+  rewrites every character outside the sandbox charset — including the `.` that separates a
+  worktree from its nest. So `den sh corp:api.feat12` cannot reach the worktree'd sandbox a source
+  nest spawned: it flattens to `corp-api-feat12`, which matches nothing. The refusal lists the live
+  sandboxes, so retry with the literal name `den ls` prints (`corp-api.feat12`).
+- Following on from that: `den rm corp-api.feat12` destroys the sandbox correctly (the literal
+  name needs no source lookup), but cannot reverse-decode `corp-api` back into the source `corp`
+  to find the nest that declares the worktree's repos. Worktree cleanup degrades to a warning —
+  the sandbox is destroyed, the worktree is left on disk untouched, and the warning names its path.
+- A local nest and a source nest that share a bare name (`backend` locally, `corp:backend` from a
+  source) hash to the same port window when neither declares `ports.base:` — the window is seeded
+  by the bare nest name only. They don't double-bind (the scan in [Ports](#ports) above shifts the
+  second one to the next free block), but one of the two loses its stable, bookmarkable URL.
 
 ## Design
 

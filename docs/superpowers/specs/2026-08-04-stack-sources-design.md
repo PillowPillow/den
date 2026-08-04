@@ -113,9 +113,9 @@ repos:
 | Commande | Effet |
 |---|---|
 | `den source add <url> [--name n]` | clone dans `sources/<n>/` (défaut : basename de l'URL), lint post-clone, **refus + suppression du clone** si invalide |
-| `den source update [n]` | fetch, **lint de l'arbre fetché AVANT fast-forward** ; source invalide = refus, le clone reste sur l'ancien HEAD sain |
-| `den source ls` | nom, URL, HEAD, date du dernier fetch, état lint |
-| `den source rm <n>` | supprime le clone ; **refus si le working tree est sale** (contributions non poussées) |
+| `den source update [n]` | fetch, **lint de l'arbre fetché AVANT fast-forward** ; source invalide = refus, le clone reste sur l'ancien HEAD sain. Refuse aussi sur working tree sale, branche sans upstream, ou commits locaux non poussés sur `@{u}` — sans `--force` : contrairement à `rm`, `update` n'a pas d'échappatoire, il n'y a pas de lecture de « update quand même » qui ait un sens. Sans `n`, met à jour **toutes** les sources installées, échecs cumulés (une source hors VPN ne doit pas masquer l'état des autres) |
+| `den source ls` | tableau nom/HEAD/date du dernier fetch/URL ; une source en échec de lint porte un suffixe `— INVALID` sur sa ligne, pas une colonne séparée |
+| `den source rm <n> [--force]` | supprime le clone ; **refus** si le working tree est sale (contributions non poussées) **ou** si des commits ne sont atteignables depuis aucune ref de suivi distant (`--branches --not --remotes` — un fetch qui a réécrit l'historique produit exactement cette forme) ; `--force` court-circuite les deux vérifications |
 | `den lint <path>` | valide un checkout arbitraire ; exit ≠ 0 pour la CI du repo d'équipe |
 
 **Contribution** = éditer `~/.den/sources/corp/` directement, commit, push — le clone est un repo
@@ -149,6 +149,8 @@ Couverture v1 :
 - Noms légaux (nests : `[A-Za-z0-9][A-Za-z0-9+-]*`, point exclu — spec mère §2).
 - `image:` non vide sur toute stack (spec mère §4.2).
 - `path:`/`key:` mutuellement exclusifs sur chaque entrée `repos:`.
+- Un nest de source sans `stack:` est un refus direct : il ne peut pas retomber sur le
+  `defaults.stack` personnel — il doit spawner identiquement sur toute machine.
 
 Hors périmètre v1 : dry-run de build (exigerait `sbx`, donc une machine provisionnée — la CI du
 repo d'équipe n'en a pas).
@@ -160,9 +162,13 @@ repo d'équipe n'en a pas).
   invalide n'est une erreur que pour les commandes qui le nomment — et `den source ls` le montre.
 - **Source injoignable** (hors VPN) : `den source update` échoue avec le message git, le clone
   local reste utilisable, le spawn ne le remarque pas.
-- **Fast-forward impossible** (histoire réécrite côté équipe) : refus avec remède (« le repo
-  d'équipe a réécrit son histoire ; `den source rm` puis `den source add` si tu n'as pas de
-  travail local »). den ne rebase ni ne merge jamais tout seul.
+- **Fast-forward impossible** (histoire réécrite côté équipe) : refus avec remède — mais le remède
+  n'est PAS un `den source rm` nu. Le `fetch` qui vient de révéler la réécriture a, par construction,
+  orphelin tout commit local qui n'était atteignable que via l'ancienne histoire : il n'est plus sur
+  aucune ref de suivi distant, exactement ce que le refus de `den source rm` (§3) surveille. Un
+  `den source rm` nu bute donc sur le même refus, causé par le même fetch. Le remède réel est
+  `den source rm --force <n>` puis `den source add <url> --name <n>` si tu n'as pas de travail local
+  dans ce clone qui vaille la peine d'être gardé. den ne rebase ni ne merge jamais tout seul.
 
 ## 7. Tests
 
