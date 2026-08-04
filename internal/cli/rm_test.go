@@ -261,7 +261,7 @@ func TestRmUnreadableNestDoesNotPreventDestruction(t *testing.T) {
 	// naming where it looked, not on an abandoned directory.
 	expectedWhere := filepath.Join(denHome, "worktrees", "feat12")
 	if !strings.Contains(out, expectedWhere) {
-		t.Errorf("the output must say where the abandoned worktree was left (%s); got:\n%s",
+		t.Errorf("the output must say where den looked for worktrees (%s); got:\n%s",
 			expectedWhere, out)
 	}
 	if !f.HasCalled("rm", "--force", "api.feat12") {
@@ -975,5 +975,108 @@ func TestRmWarnsAboutAnUnrecoverableOrphanAndStillDestroys(t *testing.T) {
 	}
 	if !f.HasCalled("rm", "--force", "api.feat12") {
 		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// THE CROSS-NEST INVARIANT. worktree.Path has no nest component, so
+// <worktree_root>/<wt> is a namespace SHARED by every nest spawned with the
+// same -w: `den api -w feat12` and `den web -w feat12` both land under
+// <root>/feat12. The enumeration therefore SEES nest web's worktree, and all
+// six recovery guards say "yes, den placed this" — because den did. Only the
+// repos web DECLARES tell the two apart.
+//
+// Two nests, each declaring its own repo, is the whole point of this setup: do
+// NOT simplify it down to one nest. That is exactly the shape a future
+// "accountedFor already de-duplicates" simplification would drop, and the
+// regression it hides is den trashing another nest's work under a trash entry
+// named after this one.
+func TestRmLeavesTheWorktreeOfAnotherNestAlone(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, minimalConfig+"worktree_layout: central\nworktree_root: "+root+"\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+
+	mine := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, mine)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+mine+" }\n")
+
+	// Another nest, another repo, the SAME worktree name: nothing in den
+	// forbids it, and the two worktrees sit side by side under <root>/feat12.
+	theirs := filepath.Join(t.TempDir(), "web")
+	createTestRepo(t, theirs)
+	writeNest(t, denHome, "web", "stack: devx\nrepos:\n  - { path: "+theirs+" }\n")
+
+	var paths []string
+	for _, repo := range []string{mine, theirs} {
+		p, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+			"central", root, worktree.Name{Dir: "feat12", Branch: "feat12"}, repo)
+		if err != nil {
+			t.Fatalf("preparing the worktree of %s: %v", repo, err)
+		}
+		paths = append(paths, p)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12", "web.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(paths[0]); !os.IsNotExist(statErr) {
+		t.Errorf("this nest's own worktree %s must still be cleaned up; stat: %v", paths[0], statErr)
+	}
+	if _, statErr := os.Stat(paths[1]); statErr != nil {
+		t.Errorf("nest web's worktree %s must survive `den rm api.feat12`: %v", paths[1], statErr)
+	}
+	// The DIRECTORY surviving is not enough: a web worktree stripped of its
+	// registration is no longer usable, and `den web -w feat12` would then
+	// refuse to reuse it.
+	if reg := gitOutput(t, theirs, "worktree", "list", "--porcelain"); !strings.Contains(reg, "feat12") {
+		t.Errorf("nest web's registration must survive in %s:\n%s", theirs, reg)
+	}
+	// Skip-and-warn, never silent exclusion: a user who sees a directory
+	// survive must learn why, and the reason names the nest that owns it.
+	if !strings.Contains(out, paths[1]) || !strings.Contains(out, `"web"`) {
+		t.Errorf("the warning must name the surviving directory and the nest owning it; got:\n%s", out)
+	}
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// The BLOCKING mode of the same defect, and the worse one: recovered as an
+// orphan, another nest's dirty worktree meets the uncommitted-changes refusal
+// and `den rm api.feat12` FAILS — naming a file the user never touched in this
+// nest, and leaving them with a live VM they cannot destroy until they clean up
+// unrelated work. The guard drops the entry from the work list entirely, so the
+// refusal never sees it.
+func TestRmSucceedsWhenAnotherNestsWorktreeIsDirty(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, minimalConfig+"worktree_layout: central\nworktree_root: "+root+"\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+
+	theirs := filepath.Join(t.TempDir(), "web")
+	createTestRepo(t, theirs)
+	writeNest(t, denHome, "web", "stack: devx\nrepos:\n  - { path: "+theirs+" }\n")
+
+	p, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"central", root, worktree.Name{Dir: "feat12", Branch: "feat12"}, theirs)
+	if err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(p, "wip.txt"), []byte("work in progress"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12", "web.feat12")}
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
+		t.Fatalf("another nest's uncommitted work must not block this teardown: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(p, "wip.txt")); statErr != nil {
+		t.Errorf("nest web's uncommitted work must be untouched: %v", statErr)
+	}
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must be destroyed; calls: %v", f.Calls)
 	}
 }

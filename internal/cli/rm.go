@@ -176,7 +176,7 @@ func cleanWorktrees(ctx context.Context, home, sandboxName string, g worktree.Gi
 				"if you passed a repo on the command line to `den %s`, look for its worktree "+
 				"at <repo>/.den/%s and remove it by hand\n", nestName, nestName, wt)
 	} else {
-		targets = append(targets, recoveredTargets(ctx, base, g, known, warnW)...)
+		targets = append(targets, recoveredTargets(ctx, base, g, known, foreignRepos(home, nestName, warnW), warnW)...)
 	}
 
 	for _, t := range targets {
@@ -205,14 +205,14 @@ func cleanWorktrees(ctx context.Context, home, sandboxName string, g worktree.Gi
 // deleted since the spawn, a directory den cannot vouch for, an unreadable
 // worktree_root — each becomes a warning naming what was left behind, and
 // `den rm` goes on to destroy the sandbox.
-func recoveredTargets(ctx context.Context, base worktree.Target, g worktree.Git, known []string, warnW io.Writer) []worktree.Target {
+func recoveredTargets(ctx context.Context, base worktree.Target, g worktree.Git, known []string, foreign []worktree.Foreign, warnW io.Writer) []worktree.Target {
 	// One deadline for the whole enumeration: it is a resolution step, and its
 	// worst case — a repo on a dead network mount — degrades to a warning, not
 	// to a `den rm` that never returns.
 	scanCtx, cancel := context.WithTimeout(ctx, gitProbeTimeout)
 	defer cancel()
 
-	found, skipped, err := worktree.Orphans(scanCtx, g, base.Root, base.Worktree, known)
+	found, skipped, err := worktree.Orphans(scanCtx, g, base.Root, base.Worktree, known, foreign)
 	if err != nil {
 		fmt.Fprintf(warnW, "worktrees left behind may survive under %s: %v\n",
 			filepath.Join(base.Root, base.Worktree), err)
@@ -229,4 +229,56 @@ func recoveredTargets(ctx context.Context, base worktree.Target, g worktree.Git,
 		targets = append(targets, t)
 	}
 	return targets
+}
+
+// foreignRepos lists the repos declared by every nest OTHER than this one, so
+// the enumeration can leave their worktrees alone.
+//
+// It exists because worktree.Path has no nest component: <root>/<wt> is a
+// namespace shared by every nest spawned with the same `-w`, and enumerating it
+// therefore offers nest web's `feat12` worktree to `den rm api.feat12`. The
+// declared list of the OTHER nests is the only on-disk fact that tells the two
+// apart.
+//
+// CENTRAL LAYOUT ONLY, like the enumeration it feeds — per-repo has nothing to
+// enumerate, hence nothing to exclude.
+//
+// Everything here is RESOLUTION, so nothing fails `den rm` (doctrine T13/T16):
+// a broken ~/.den must never leave the user with a live VM they can no longer
+// destroy. But a nest den could not read is a nest whose repos den does not
+// know, so its worktrees are NOT excluded — and the warning says exactly that
+// rather than passing over it. Staying silent there is precisely how the
+// cross-nest removal comes back.
+//
+// LoadNest has already expanded a leading "~" in each `repos:` path, which is
+// what makes the full-path comparison in worktree.Orphans meet git's answer.
+func foreignRepos(home, nestName string, warnW io.Writer) []worktree.Foreign {
+	nests, broken, err := nest.ListNests(home)
+	if err != nil {
+		fmt.Fprintf(warnW,
+			"den could not list the nests under %s, so it does not know which worktrees "+
+				"belong to another nest and may remove one of them: %v\n",
+			filepath.Join(home, "nests"), err)
+		return nil
+	}
+	for _, b := range broken {
+		if b.Name == nestName {
+			continue // this nest's own failure is already reported by the caller
+		}
+		fmt.Fprintf(warnW,
+			"nest %q is unreadable, so den does not know which repos it declares — "+
+				"its worktrees are NOT protected and may be removed: fix its file under %s: %v\n",
+			b.Name, filepath.Join(home, "nests"), b.Err)
+	}
+
+	var foreign []worktree.Foreign
+	for _, n := range nests {
+		if n.Name == nestName {
+			continue // this nest's own repos are the `known` list, not foreign ones
+		}
+		for _, repo := range n.Repos {
+			foreign = append(foreign, worktree.Foreign{Nest: n.Name, Repo: repo.Path})
+		}
+	}
+	return foreign
 }
