@@ -506,11 +506,23 @@ func TestUpdatePrunesStaleWorktreeRegistrationWhenRemoveFails(t *testing.T) {
 func TestUpdateFetchesTheBranchsOwnRemoteNotOrigin(t *testing.T) {
 	home := t.TempDir()
 	originURL := makeSourceRepo(t)
-	otherURL := makeSourceRepo(t)
 	if _, err := Add(context.Background(), worktree.NewGit(), home, originURL, "corp"); err != nil {
 		t.Fatal(err)
 	}
 	dir := Dir(home, "corp")
+	// "other" is a CLONE of origin, not a second independent makeSourceRepo:
+	// two independently built repos share no history, so aheadOfUpstream
+	// (correctly) sees the local commit as absent from an unrelated
+	// "other/main" and refuses — flakily, since two makeSourceRepo calls'
+	// root commits collide in SHA only when git's 1-second commit-timestamp
+	// resolution happens to land both "init" commits in the same second.
+	// Cloning guarantees "other" starts from the SAME commit as HEAD, which
+	// is what the fix under test actually assumes: a branch's upstream
+	// pointing somewhere origin isn't, on a shared history.
+	otherParent := t.TempDir()
+	otherDir := filepath.Join(otherParent, "other-remote")
+	gitCmd(t, otherParent, "clone", strings.TrimPrefix(originURL, "file://"), otherDir)
+	otherURL := "file://" + otherDir
 	gitCmd(t, dir, "remote", "add", "other", otherURL)
 	gitCmd(t, dir, "fetch", "other")
 	gitCmd(t, dir, "branch", "--set-upstream-to=other/main")
@@ -530,7 +542,6 @@ func TestUpdateFetchesTheBranchsOwnRemoteNotOrigin(t *testing.T) {
 
 	// Grow "other" — the branch's actual, configured upstream. This is what
 	// Update must fetch and fast-forward onto.
-	otherDir := strings.TrimPrefix(otherURL, "file://")
 	if err := os.MkdirAll(filepath.Join(otherDir, "stacks", "right"), 0o755); err != nil {
 		t.Fatal(err)
 	}
