@@ -521,6 +521,61 @@ worktree_layout: per-repo
 	}
 }
 
+// In per-repo, Path puts the worktree INSIDE the user's repository and den has
+// no directory to enumerate: a repo passed on the command line leaves
+// <repo>/.den/<wt> behind, inside a repository the user cares about, where
+// nothing gitignores it. den cannot find it — so it says so, without ever
+// claiming a leftover exists (it keeps no state and cannot know).
+func TestRmWarnsAboutPossibleLeftoversUnderThePerRepoLayout(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig+"worktree_layout: per-repo\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	if _, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"per-repo", "", worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "<repo>/.den/feat12") {
+		t.Errorf("the warning must name where to look; got:\n%s", out)
+	}
+	// Conditional, never an assertion: this teardown declared its repo and left
+	// nothing behind.
+	if strings.Contains(out, "was left behind") || strings.Contains(out, "survives at") {
+		t.Errorf("the warning must not claim a leftover exists; got:\n%s", out)
+	}
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// The counterpart: nothing of the sort is printed under the central layout,
+// where den enumerates and therefore knows.
+func TestRmDoesNotWarnAboutLeftoversUnderTheCentralLayout(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, minimalConfig+"worktree_layout: central\nworktree_root: "+root+"\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out, ".den/feat12") {
+		t.Errorf("no per-repo warning must appear under the central layout; got:\n%s", out)
+	}
+}
+
 // The worktree's directory may have disappeared BEFORE `den rm` runs (a
 // manual `rm -rf` by the user): Remove then returns an EMPTY trash path, and
 // nothing must be announced — otherwise the command would print "worktree

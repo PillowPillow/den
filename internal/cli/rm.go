@@ -163,7 +163,21 @@ func cleanWorktrees(ctx context.Context, home, sandboxName string, g worktree.Gi
 		t.RepoPath = path
 		targets = append(targets, t)
 	}
-	targets = append(targets, recoveredTargets(ctx, base, g, known, warnW)...)
+	if gl.WorktreeLayout == "per-repo" {
+		// Nothing to enumerate: Path puts the worktree at <repo>/.den/<wt>, so
+		// without a repo path there is no directory to list. And den keeps no
+		// state beyond the sandbox name, so it cannot know whether a repo was
+		// ever passed on the command line — the warning is therefore
+		// CONDITIONAL, never an assertion that something was left behind.
+		// Noisy for users who never pass a positional; that is the price of not
+		// lying about a state den does not have.
+		fmt.Fprintf(warnW,
+			"per-repo layout: den can only clean up the repos declared in nest %q — "+
+				"if you passed a repo on the command line to `den %s`, look for its worktree "+
+				"at <repo>/.den/%s and remove it by hand\n", nestName, nestName, wt)
+	} else {
+		targets = append(targets, recoveredTargets(ctx, base, g, known, warnW)...)
+	}
 
 	for _, t := range targets {
 		// One deadline PER repo, not one for the whole loop: a broken repo must
