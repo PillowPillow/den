@@ -438,3 +438,20 @@ func TestValidateWorktreeAcceptsAnAbsoluteRoot(t *testing.T) {
 		t.Errorf("absolute root refused: %v", errs)
 	}
 }
+
+// A blank repos value would expand to a relative path and mount the wrong
+// directory — same family of fault as a blank config_dir or worktree_root.
+func TestValidateRepoKeyBlankPath(t *testing.T) {
+	g := validGlobal()
+	g.Repos = map[string]string{"api": "   "}
+	errs := g.Validate()
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "repos.api") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a repos.api error, got: %v", errs)
+	}
+}

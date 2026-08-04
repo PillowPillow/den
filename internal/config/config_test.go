@@ -247,6 +247,25 @@ func TestLoadGlobalUnvalidatedEmptyFile(t *testing.T) {
 	}
 }
 
+// Repos maps a personal repo KEY (spec 2026-08-04 §2.4) to a path on THIS
+// machine, tilde-expanded at load like every other host path.
+func TestLoadGlobalRepoKeys(t *testing.T) {
+	denHome := writeConfig(t, validConfig+`repos:
+  review-mgmt: ~/dev/review-mgmt
+  front-app: /abs/front
+`)
+	g, err := LoadGlobal(denHome)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if got := g.Repos["front-app"]; got != "/abs/front" {
+		t.Errorf("front-app = %q", got)
+	}
+	if got := g.Repos["review-mgmt"]; strings.HasPrefix(got, "~") {
+		t.Errorf("review-mgmt not expanded: %q", got)
+	}
+}
+
 // --- D1: Validate() had only ONE caller, doctor.go:59 -----------------------
 //
 // Consequence measured before the fix: `den <nest>`, `den ls`, `den sh` and

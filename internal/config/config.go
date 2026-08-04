@@ -40,6 +40,10 @@ type Global struct {
 	WorktreeLayout string           `yaml:"worktree_layout"`
 	WorktreeRoot   string           `yaml:"worktree_root"`
 	Egress         []string         `yaml:"egress"`
+	// Repos maps a repo KEY (used by team nests via `key:`, spec 2026-08-04
+	// §2.4) to a path on THIS machine. Personal by design: it is the one part
+	// of a shared nest that cannot travel.
+	Repos map[string]string `yaml:"repos"`
 }
 
 // LoadGlobalUnvalidated reads <denHome>/config.yaml, applies defaults and
@@ -120,6 +124,13 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 			return nil, fmt.Errorf("agent %s: %w", name, err)
 		}
 		g.Agents[name] = a // map values are not addressable
+	}
+	for key, p := range g.Repos {
+		expanded, err := ExpandPath(p)
+		if err != nil {
+			return nil, fmt.Errorf("repos.%s: %w", key, err)
+		}
+		g.Repos[key] = expanded
 	}
 	return &g, nil
 }
