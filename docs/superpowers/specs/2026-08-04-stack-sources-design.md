@@ -156,6 +156,12 @@ Couverture v1 :
 - Noms légaux (nests : `[A-Za-z0-9][A-Za-z0-9+-]*`, point exclu — spec mère §2).
 - `image:` non vide sur toute stack (spec mère §4.2).
 - `path:`/`key:` mutuellement exclusifs sur chaque entrée `repos:`.
+- **`path:` absolu refusé sur une entrée `repos:` de nest** (jugé après expansion, donc `~/dev/x`
+  tombe aussi). C'est le pendant nest du refus que `checkDeclaredPath` applique déjà aux chemins
+  déclarés d'une stack, et il manquait : un nest de source livrant `path: /Users/alice/dev/x`
+  passait le lint et échouait sur la machine de chaque collègue. Le remède n'est PAS « déclare-le
+  relatif » — un repo de travail est hors du checkout, donc aucun chemin ne voyage : la seule forme
+  partageable est `key:` + le mapping perso `repos:` (§2.4).
 - Un nest de source sans `stack:` est un refus direct : il ne peut pas retomber sur le
   `defaults.stack` personnel — il doit spawner identiquement sur toute machine.
 

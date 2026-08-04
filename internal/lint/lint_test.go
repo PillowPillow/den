@@ -358,3 +358,50 @@ func TestRunSymlinkEscapesRoot(t *testing.T) {
 		t.Fatalf("expected a confinement error for a symlink escaping the checkout, got: %v", errs)
 	}
 }
+
+// A stack's declared paths are refused when absolute (checkDeclaredPath), but
+// a NEST's `repos:` were not checked at all — so a source nest shipping
+// `path: /Users/alice/dev/x` linted clean and failed on every colleague's
+// machine. That is precisely what lint exists to catch: an object is not
+// distributable if it depends on the layout of the machine that authored it.
+func TestRunRefusesAnAbsoluteRepoPathInANest(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml": "image: devx:v1\nbase: claude\n",
+		"nests/api.yaml":         "stack: devx\nrepos:\n  - { path: /Users/alice/dev/x }\n",
+	})
+	errs := Run(root)
+	if len(errs) == 0 {
+		t.Fatal("an absolute repo path in a source nest must be refused")
+	}
+	joined := errsString(errs)
+	for _, want := range []string{"/Users/alice/dev/x", "key:", "repos:"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("findings %v lack %q", errs, want)
+		}
+	}
+}
+
+// "~/dev/x" is the same fault wearing a different hat: LoadNest expands it to
+// an absolute path on the authoring machine, and it names a directory only
+// that machine has.
+func TestRunRefusesATildeRepoPathInANest(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml": "image: devx:v1\nbase: claude\n",
+		"nests/api.yaml":         "stack: devx\nrepos:\n  - { path: ~/dev/x }\n",
+	})
+	if len(Run(root)) == 0 {
+		t.Fatal("a ~-rooted repo path expands to a machine path and must be refused")
+	}
+}
+
+// A `key:` entry is the shareable form and must stay clean — the check must
+// not fire on the very construct it recommends.
+func TestRunAcceptsKeyReposInANest(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml": "image: devx:v1\nbase: claude\n",
+		"nests/api.yaml":         "stack: devx\nrepos:\n  - { key: api }\n  - { key: front, optional: true }\n",
+	})
+	if errs := Run(root); len(errs) != 0 {
+		t.Errorf("a key-only nest is the shareable form and must lint clean, got: %v", errs)
+	}
+}

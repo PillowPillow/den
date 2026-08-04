@@ -210,21 +210,59 @@ func checkCycles(stacks config.Stacks) []error {
 // resolvable in THIS checkout.
 func checkNest(root string, stacks config.Stacks, n *nest.Nest) []error {
 	var errs []error
-	if n.Stack == "" {
+	// A switch, not three early returns: the three `stack:` faults exclude one
+	// another (a missing reference cannot also be prefixed, and neither can be
+	// resolved), but the `repos:` check below is independent of all of them and
+	// must still run. Returning early there meant a nest with two unrelated
+	// problems reported one — the "one push, not five" promise Run's godoc
+	// makes, broken on the one object where both checks apply.
+	switch source, _ := config.SplitSourceRef(n.Stack); {
+	case n.Stack == "":
 		errs = append(errs, fmt.Errorf(
 			"nest %q: no `stack:` — a source nest cannot fall back on the personal defaults.stack: "+
 				"it must spawn identically on every machine", n.Name))
-		return errs
-	}
-	if source, _ := config.SplitSourceRef(n.Stack); source != "" {
+	case source != "":
 		errs = append(errs, fmt.Errorf(
 			"nest %q: `stack: %s` is a prefixed reference — inside a source, references are bare "+
 				"and resolve in the source itself: the install name is chosen per machine and CI "+
 				"knows none", n.Name, n.Stack))
-		return errs
+	default:
+		if _, err := stacks.Get(n.Stack); err != nil {
+			errs = append(errs, fmt.Errorf("nest %q: %w", n.Name, err))
+		}
 	}
-	if _, err := stacks.Get(n.Stack); err != nil {
-		errs = append(errs, fmt.Errorf("nest %q: %w", n.Name, err))
+	return append(errs, checkNestRepos(n)...)
+}
+
+// checkNestRepos refuses a `path:` that can only mean something on the machine
+// that authored it — the nest-side counterpart of checkDeclaredPath's first
+// refusal, which a stack has had all along while a nest had no check at all.
+// A source nest shipping `path: /Users/alice/dev/x` linted clean and then
+// failed on every colleague's machine, which is exactly the class of fault
+// `den lint` exists to catch before the push.
+//
+// The REMEDY is not checkDeclaredPath's, and deliberately so: telling the
+// author to "declare it relative" is right for a stack's `kit:` (relative to
+// the stack directory, and shipped inside the checkout) and wrong here. A
+// work repo is not in the source tree at all, so no relative path could name
+// it either. The only form that travels is `key:` plus the personal `repos:`
+// mapping each teammate fills in — spec 2026-08-04 §2.4, and the mechanism
+// that makes a team nest shareable in the first place.
+//
+// The judgement is on the path as LOADED, not as written, so `~/dev/x` is
+// caught too: nest.LoadNest expands it (config.ExpandPath), and it names a
+// directory only the authoring machine has, which is the same fault.
+func checkNestRepos(n *nest.Nest) []error {
+	var errs []error
+	for _, r := range n.Repos {
+		if r.Path == "" || !filepath.IsAbs(r.Path) {
+			continue
+		}
+		errs = append(errs, fmt.Errorf(
+			"nest %q: `path: %s` is a machine path — a source is cloned onto machines with "+
+				"different layouts, and a work repo lives outside the checkout, so no path can "+
+				"travel. Declare `key: <name>` instead and let each machine map it under `repos:` "+
+				"in its own config.yaml", n.Name, r.Path))
 	}
 	return errs
 }
