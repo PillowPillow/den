@@ -1,6 +1,7 @@
 package nest
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -336,4 +337,96 @@ func TestResolveEnvNeverNil(t *testing.T) {
 	if r.Env == nil {
 		t.Error("Env must be an empty map, never nil: the mixin iterates over it without a guard")
 	}
+}
+
+func TestResolvePutsCommandLineReposFirst(t *testing.T) {
+	// Workspaces[0] decides where the attached shell starts
+	// (sbx.Sandbox.Workdir). "I am mounting X on the fly" means "I have come to
+	// work in X", so a positional wins over the nest's own first repo.
+	r, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{
+		Repos: []string{"/tmp/hotfix"},
+		Cwd:   "/work",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"/tmp/hotfix", "/dev/api", "/dev/front"}
+	if got := paths(r.Repos); !slices.Equal(got, expected) {
+		t.Errorf("Repos = %v, expected %v — the positional comes first", got, expected)
+	}
+	if !r.Repos[0].AdHoc {
+		t.Error("Repos[0].AdHoc = false: the origin must survive the merge")
+	}
+	if r.Repos[1].AdHoc {
+		t.Error("Repos[1].AdHoc = true: a declared repo must not be reported as ad-hoc")
+	}
+}
+
+func TestResolveWithoutStillFiltersDeclaredRepos(t *testing.T) {
+	// --without/--only keep addressing the declared list ONLY. A repo given on
+	// the command line is removed by not typing it.
+	r, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{
+		Repos:   []string{"/tmp/hotfix"},
+		Cwd:     "/work",
+		Without: []string{"front"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"/tmp/hotfix", "/dev/api"}
+	if got := paths(r.Repos); !slices.Equal(got, expected) {
+		t.Errorf("Repos = %v, expected %v", got, expected)
+	}
+}
+
+func TestResolveRefusesWithoutNamingACommandLineRepo(t *testing.T) {
+	_, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{
+		Repos:   []string{"/tmp/hotfix"},
+		Cwd:     "/work",
+		Without: []string{"hotfix"},
+	})
+	if err == nil {
+		t.Fatal("expected a refusal: --without does not address a repo given on the command line")
+	}
+	if !strings.Contains(err.Error(), "hotfix") {
+		t.Errorf("error = %q, expected it to name the repo", err)
+	}
+}
+
+func TestResolveRefusesABasenameCollisionWithTheCommandLine(t *testing.T) {
+	// nestTest declares /dev/api. A positional whose basename is also "api"
+	// makes --without, the worktree path and the sbx positional ambiguous at
+	// once: a hard error, not a last-one-wins.
+	_, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{
+		Repos: []string{"/tmp/scratch/api"},
+		Cwd:   "/work",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal on the duplicated short name \"api\"")
+	}
+	if !strings.Contains(err.Error(), "command line") {
+		t.Errorf("error = %q, expected it to point at the fixable half", err)
+	}
+}
+
+func TestResolveWithoutCommandLineReposIsUnchanged(t *testing.T) {
+	// The nominal path: no positional, no Cwd, and the declared list is exactly
+	// what it was before this feature existed.
+	r, err := Resolve("/d", globalTest(), stacksTest(), nestTest(), Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := paths(r.Repos); !slices.Equal(got, []string{"/dev/api", "/dev/front"}) {
+		t.Errorf("Repos = %v", got)
+	}
+}
+
+// paths is the Path projection, so a failure prints what a reader recognizes
+// rather than a wall of struct literals.
+func paths(rs []Repo) []string {
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, r.Path)
+	}
+	return out
 }
