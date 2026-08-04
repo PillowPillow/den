@@ -700,6 +700,13 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 // same-named LOCAL nest, send them to edit the wrong file. The source file to
 // fix is appended explicitly instead, since there is no lint-style frame here
 // to supply it.
+//
+// n must be exactly what LoadNest returned: nest.FilePath(nestRoot, n.Name)
+// is how both refusals below name the file to fix, and that is only correct
+// while n.Name is still the bare filename LoadNest set it to — a caller that
+// renamed n.Name for display (`den nest ls`'s "<source>:<name>" prefix, for
+// instance) would send the user to a file that does not exist under that
+// name.
 func ResolveStack(denHome string, g *config.Global, nestRoot, srcName string, n *nest.Nest, subject string) (
 	stackRoot, stackSrcName, ref string, err error) {
 	if srcName != "" {
