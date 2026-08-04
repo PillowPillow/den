@@ -112,6 +112,45 @@ func TestUpdateRefusesInvalidUpstreamAndKeepsHead(t *testing.T) {
 	}
 }
 
+func TestUpdateRefusesImpossibleFastForward(t *testing.T) {
+	home := t.TempDir()
+	url := makeSourceRepo(t)
+	upstream := strings.TrimPrefix(url, "file://")
+	if _, err := Add(context.Background(), worktree.NewGit(), home, url, "corp"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(Dir(home, "corp"), ".git", "refs", "heads", "main"))
+	beforeHead := ""
+	if err == nil {
+		beforeHead = string(before)
+	}
+	// Upstream rewrites history instead of growing it: the amended commit
+	// still lints clean, so control must reach the ff-only merge and refuse
+	// there, not at the lint gate.
+	gitCmd(t, upstream, "commit", "--amend", "-m", "rewritten history")
+
+	err = Update(context.Background(), worktree.NewGit(), home, "corp")
+	if err == nil || !strings.Contains(err.Error(), "cannot fast-forward") {
+		t.Fatalf("expected the ff-only refusal, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "den source rm") {
+		t.Errorf("refusal does not name the remedy: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(Dir(home, "corp"), ".git", "refs", "heads", "main"))
+	if err != nil || string(after) != beforeHead {
+		t.Errorf("HEAD moved despite the impossible fast-forward: before=%q after=%q (err=%v)", beforeHead, after, err)
+	}
+	// The lint probe's throwaway worktree must not linger in the clone's
+	// registration: only the main worktree should remain.
+	out, err := worktree.NewGit().Run(context.Background(), Dir(home, "corp"), "worktree", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Count(strings.TrimSpace(string(out)), "\n") + 1; lines != 1 {
+		t.Errorf("worktree list has %d entries, want 1 (main only):\n%s", lines, out)
+	}
+}
+
 func TestUpdateRefusesDirtyWorktree(t *testing.T) {
 	home := t.TempDir()
 	url := makeSourceRepo(t)

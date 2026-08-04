@@ -109,8 +109,13 @@ func Update(ctx context.Context, git worktree.Git, denHome, name string) error {
 		return err
 	}
 	lintErrs := lint.Run(probe)
+	// The removal's own error is secondary to the lint verdict: swallowing the
+	// verdict here would turn a safety-critical refusal into a bare git error,
+	// and the temp dir is gone via defer either way. `worktree prune` clears
+	// the .git/worktrees/ registration `os.RemoveAll(tmp)` cannot reach, so a
+	// failed `remove` never leaves a stale entry in the user's clone.
 	if _, err := git.Run(ctx, dir, "worktree", "remove", "--force", probe); err != nil {
-		return err
+		git.Run(ctx, dir, "worktree", "prune")
 	}
 	if len(lintErrs) > 0 {
 		return fmt.Errorf("%w\nthe local clone stays on its last valid state — nothing changed",
