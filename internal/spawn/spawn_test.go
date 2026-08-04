@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sshagent"
@@ -370,6 +372,8 @@ func TestSpawnDoesNotInventAWorkdirWhenTheVMMountsNothing(t *testing.T) {
 	f.Responses["ls --json"] = sbx.Response{
 		Output: []byte(`{"sandboxes":[{"name":"api","status":"running"}]}`),
 	}
+	var out bytes.Buffer
+	d.Out = &out
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -385,6 +389,20 @@ func TestSpawnDoesNotInventAWorkdirWhenTheVMMountsNothing(t *testing.T) {
 			t.Errorf("the recomputed path %s must not resurface; attach: %v", repo, a)
 		}
 	}
+	// The nest's one declared repo isn't mounted by a VM that mounts nothing —
+	// reportUnmountedRepos must still say so...
+	log := out.String()
+	if !strings.Contains(log, repo) {
+		t.Errorf("log = %q, expected it to name %s as not mounted", log, repo)
+	}
+	// ...but MUST NOT invent a start directory: workdir is "" here (Workdir()
+	// on a VM with no Workspaces), and the doc comment's very reason for that
+	// guard — "the line is then omitted rather than naming a directory den
+	// would be inventing" — is exactly what this asserts.
+	if strings.Contains(log, "the shell starts in") {
+		t.Errorf("log = %q, expected no start-directory line: the VM mounts nothing, "+
+			"so there is no directory to name", log)
+	}
 }
 
 // D1: a sandbox found but NOT RUNNING is not a live sandbox.
@@ -398,21 +416,27 @@ func TestSpawnDoesNotInventAWorkdirWhenTheVMMountsNothing(t *testing.T) {
 // `--detach` VM, and `sbx exec` restarts it transparently. The old refusal
 // pointed at `den rm`, which destroys state the stop had preserved.
 func TestSpawnResumesAStoppedSandbox(t *testing.T) {
-	denHome, _ := denTest(t)
+	denHome, repo := denTest(t)
 	f, d := fakeDeps()
 	var out bytes.Buffer
 	d.Out = &out
+	// The VM's one workspace IS the nest's one declared repo: this test's
+	// subject is the resume announcement (F2), not the start-directory check,
+	// and reportUnmountedRepos — orthogonal to what's under test here — must
+	// stay silent so it doesn't pollute the "no den rm" assertion below. `-w`
+	// coming from the VM's OWN workdir rather than a recomputed path is D2's
+	// property, independently covered by TestSpawnAttachesInTheWorkdirReportedByTheVM
+	// with a fixture built to isolate exactly that.
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w"]}]}`),
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["` + repo + `"]}]}`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("a stopped sandbox must be resumed, not refused: %v", err)
 	}
 
-	// Resuming = attaching. -w comes from the VM's workspaces, as on a live
-	// VM: it's carried by its `create`, not by today's config.
-	if !f.HasAttached("exec", "-it", "-w", "/w", "api", "bash", "-l") {
+	// Resuming = attaching, in the VM's own workspace.
+	if !f.HasAttached("exec", "-it", "-w", repo, "api", "bash", "-l") {
 		t.Errorf("resuming must attach in the VM's workdir; attaches: %v", f.Attaches)
 	}
 	// And definitely no create: the name is held by a VM carrying work.
@@ -2485,5 +2509,375 @@ func TestSpawnDoesNotCheckTheImageOfAPullableStack(t *testing.T) {
 	}
 	if fake.HasCalled("template", "ls") {
 		t.Error("den read the inventory for a stack it cannot build — it has no remedy to offer")
+	}
+}
+
+func TestSpawnMountsCommandLineRepos(t *testing.T) {
+	denHome, repo := denTest(t)
+	hotfix := filepath.Join(t.TempDir(), "hotfix")
+	createRepo(t, hotfix)
+	f, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Repos: []string{hotfix}}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := workspacesOf(callStartingWith(f, "create"))
+	expected := []string{hotfix, repo, filepath.Join(denHome, "agents", "claude")}
+	if !slices.Equal(got, expected) {
+		t.Errorf("workspaces = %v, expected %v — the positional comes first, because "+
+			"Workspaces[0] is where the attached shell starts", got, expected)
+	}
+}
+
+func TestSpawnMountsSeveralCommandLineReposInOrder(t *testing.T) {
+	// A nest with NO `repos:` at all: the headline case. Without the
+	// positionals its only workspace would be the agent profile, which is a
+	// useless place to land.
+	denHome, _ := denTest(t)
+	write(t, filepath.Join(denHome, "nests", "scratch.yaml"), "stack: devx\n")
+	a := filepath.Join(t.TempDir(), "a")
+	b := filepath.Join(t.TempDir(), "b")
+	createRepo(t, a)
+	createRepo(t, b)
+	f, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "scratch", Repos: []string{a, b}}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := workspacesOf(callStartingWith(f, "create"))
+	expected := []string{a, b, filepath.Join(denHome, "agents", "claude")}
+	if !slices.Equal(got, expected) {
+		t.Errorf("workspaces = %v, expected %v", got, expected)
+	}
+}
+
+func TestSpawnRefusesAMissingCommandLineRepoWithoutBlamingTheNestFile(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+
+	err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Repos: []string{filepath.Join(t.TempDir(), "gone")}}, d)
+	if err == nil {
+		t.Fatal("expected a refusal on a path that does not exist")
+	}
+	if !strings.Contains(err.Error(), "command line") {
+		t.Errorf("error = %q, expected it to name the command line — sending the user to edit "+
+			"nests/api.yaml over a path they typed by hand is the wrong remedy", err)
+	}
+	if strings.Contains(err.Error(), "repos:") {
+		t.Errorf("error = %q, expected it NOT to quote `repos:`", err)
+	}
+	if callStartingWith(f, "create") != nil {
+		t.Error("a sandbox was created despite the refusal: everything rejectable from config " +
+			"alone must be rejected before the first side effect")
+	}
+}
+
+// A command-line path is deliberately never trimmed (parseRepoArg,
+// internal/nest/repos.go): a directory legitimately named with leading or
+// trailing spaces must survive intact, and the payoff of that decision is
+// that the later "not found" check names it verbatim, WITH %q, so the
+// padding is visible instead of blending into the surrounding text. padded
+// is built as an absolute path with a trailing space so IsAbs still holds
+// and the expected string does not depend on the process's cwd (unlike a
+// leading space, which would defeat IsAbs and get joined against it).
+func TestSpawnNamesAPaddedCommandLineRepoVerbatimAndQuoted(t *testing.T) {
+	denHome, _ := denTest(t)
+	_, d := fakeDeps()
+
+	padded := filepath.Join(t.TempDir(), "gone") + " "
+	err := Spawn(context.Background(), denHome, Options{Nest: "api", Repos: []string{padded}}, d)
+	if err == nil {
+		t.Fatal("expected a refusal on a path that does not exist")
+	}
+	quoted := fmt.Sprintf("%q", padded)
+	if !strings.Contains(err.Error(), quoted) {
+		t.Errorf("error = %q, expected it to contain the path quoted as %s — a bare %%s would "+
+			"print the same bytes indistinguishably from a clean path", err, quoted)
+	}
+}
+
+func TestSpawnStillBlamesTheNestFileForADeclaredRepo(t *testing.T) {
+	// The counterpart, so "branches on origin" cannot degrade into "always says
+	// command line".
+	denHome, _ := denTest(t)
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+filepath.Join(t.TempDir(), "gone")+" }\n")
+	_, d := fakeDeps()
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "repos:") {
+		t.Errorf("error = %q, expected it to send the user to `repos:`", err)
+	}
+}
+
+func TestSpawnRefusesANonGitRepoUnderWorktreeBeforeCreatingAnything(t *testing.T) {
+	denHome, _ := denTest(t)
+	// early is a REAL git repo, given BEFORE data on the command line — it is
+	// what makes this test discriminate. nest.Resolve prepends ad-hoc repos
+	// ahead of declared ones, so the nest's OWN repo (from denTest) lands at
+	// r.Repos[2], after both of these: step 3's loop would never reach it
+	// either way, before or after this fix, so asserting on IT would pass
+	// whether the fix works or not. early, at r.Repos[0], is what step 3
+	// would have given a worktree to, before ever reaching data — and that
+	// is the orphan this ordering exists to prevent.
+	early := filepath.Join(t.TempDir(), "early")
+	createRepo(t, early)
+	data := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, d := fakeDeps()
+
+	err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Worktree: "feat", Repos: []string{early, data}}, d)
+	if err == nil {
+		t.Fatal("expected a refusal: -w propagates a worktree to every repo, and data is not one")
+	}
+	if !strings.Contains(err.Error(), data) {
+		t.Errorf("error = %q, expected it to name the offending path", err)
+	}
+	if !strings.Contains(err.Error(), "-w") {
+		t.Errorf("error = %q, expected it to name the flag that made this fatal", err)
+	}
+
+	// The assertion that actually proves "before the first side effect": no
+	// worktree exists for early, the repo that WOULD have gotten one first —
+	// step 3's loop reaches data (not a git repo) only after early, so a
+	// refusal originating there, instead of at 2bis, would already have
+	// created early's worktree.
+	//
+	// The message alone proves nothing — it would read identically after the
+	// damage was done.
+	wt := filepath.Join(denHome, "worktrees", "feat", "early")
+	if _, statErr := os.Stat(wt); statErr == nil {
+		t.Errorf("%s exists: a worktree was created before the refusal, which is the orphan "+
+			"this ordering exists to prevent", wt)
+	}
+	if callStartingWith(f, "create") != nil {
+		t.Error("a sandbox was created despite the refusal")
+	}
+}
+
+func TestSpawnGivesACommandLineRepoAWorktreeAndItsGitDir(t *testing.T) {
+	denHome, repo := denTest(t)
+	hotfix := filepath.Join(t.TempDir(), "hotfix")
+	createRepo(t, hotfix)
+	f, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Worktree: "feat", Repos: []string{hotfix}}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := workspacesOf(callStartingWith(f, "create"))
+	expected := []string{
+		filepath.Join(denHome, "worktrees", "feat", "hotfix"),
+		filepath.Join(denHome, "worktrees", "feat", filepath.Base(repo)),
+		// resolvedGitDir, not filepath.Join(x, ".git"): on macOS /var is a
+		// symlink to /private/var, and git reports the resolved form — same
+		// reason TestSpawnMountsEachRepoGitDirWithAWorktree above uses it.
+		resolvedGitDir(t, hotfix),
+		resolvedGitDir(t, repo),
+		filepath.Join(denHome, "agents", "claude"),
+	}
+	if !slices.Equal(got, expected) {
+		t.Errorf("workspaces = %v, expected %v — a repo given on the command line gets the "+
+			"SAME treatment as a declared one: worktree, then its common git dir", got, expected)
+	}
+}
+
+// The counterpart of TestSpawnRefusesANonGitRepoUnderWorktreeBeforeCreatingAnything:
+// a non-git repo reached from `repos:` (not the command line) must be told
+// which FILE to fix, the same way step 2's existence check already
+// distinguishes the two origins.
+func TestSpawnRefusesADeclaredNonGitRepoUnderWorktreeNamingTheNestFile(t *testing.T) {
+	denHome, _ := denTest(t)
+	data := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+data+" }\n")
+	_, d := fakeDeps()
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat"}, d)
+	if err == nil {
+		t.Fatal("expected a refusal: -w propagates a worktree to every repo, and data is not one")
+	}
+	if !strings.Contains(err.Error(), nest.FilePath(denHome, "api")) {
+		t.Errorf("error = %q, expected it to name the nest file — this repo came from `repos:`, "+
+			"not the command line, so `drop that path` is not a remedy anyone can follow", err)
+	}
+}
+
+func TestSpawnWarnsThatALiveSandboxMountsNeitherTheNewRepoNorMovesTheShell(t *testing.T) {
+	denHome, repo := denTest(t)
+	hotfix := filepath.Join(t.TempDir(), "hotfix")
+	createRepo(t, hotfix)
+
+	// The sandbox is live, created WITHOUT hotfix: exactly the day-2 case.
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Repos: []string{hotfix}, Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if callStartingWith(f, "create") != nil {
+		t.Fatal("a live sandbox must be attached, never re-created")
+	}
+	log := out.String()
+	if !strings.Contains(log, hotfix) {
+		t.Errorf("log = %q, expected it to name the repo that is not mounted", log)
+	}
+	if !strings.Contains(log, repo) {
+		t.Errorf("log = %q, expected it to name the directory the shell starts in instead — "+
+			"naming only the mount leaves the user expecting to at least land in what they typed",
+			log)
+	}
+	if !strings.Contains(log, "den rm api") {
+		t.Errorf("log = %q, expected the remedy", log)
+	}
+}
+
+func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEverything(t *testing.T) {
+	// A permanent warning stops being read: silence is the contract when the
+	// VM already carries what was asked for.
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "den rm api") {
+		t.Errorf("log = %q, expected no unmounted-repo warning", out.String())
+	}
+}
+
+func TestSpawnTreatsTwoDifferentPositionalSetsAsTheSameSandbox(t *testing.T) {
+	// Decision 7 of the spec: positionals are NOT part of the identity.
+	// `den scratch ~/dev/a` and `den scratch ~/dev/b` both name the sandbox
+	// "scratch"; the second attaches the first and mounts nothing new. This is
+	// the likeliest way to get bitten by a scratch nest, and the warning is the
+	// only signal.
+	denHome, _ := denTest(t)
+	write(t, filepath.Join(denHome, "nests", "scratch.yaml"), "stack: devx\n")
+	a := filepath.Join(t.TempDir(), "a")
+	b := filepath.Join(t.TempDir(), "b")
+	createRepo(t, a)
+	createRepo(t, b)
+
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"scratch","status":"running","workspaces":["` + a + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "scratch", Repos: []string{b}, Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callStartingWith(f, "create") != nil {
+		t.Fatal("a second sandbox was created: positionals do not compose the identity, " +
+			"which is <nest>[.<worktree>] and nothing else")
+	}
+	if !strings.Contains(out.String(), b) {
+		t.Errorf("log = %q, expected it to name %s, the repo that is not mounted", out.String(), b)
+	}
+}
+
+// Fix round 1: the presence check above used to gate BOTH halves of the
+// warning, so an invocation asking for a SUBSET of what the VM already
+// mounts went silent about the start directory too — an ordinary day-2
+// gesture, not a rare reordering.
+//
+// `den scratch ~/dev/a ~/dev/b` creates the VM: Workspaces = [a, b, …],
+// Workdir() = a. Next day, wanting only b: `den scratch ~/dev/b`. b IS
+// mounted — nothing "missing" — yet the attach still runs with workdir = a,
+// frozen at the original create. The user typed "I have come to work in b"
+// and lands in a, told nothing: exactly the harm this function exists to
+// name, just reached through a subset instead of an absent repo.
+func TestSpawnWarnsThatTheShellStartsElsewhereEvenWhenEveryRepoIsMounted(t *testing.T) {
+	denHome, _ := denTest(t)
+	write(t, filepath.Join(denHome, "nests", "scratch.yaml"), "stack: devx\n")
+	a := filepath.Join(t.TempDir(), "a")
+	b := filepath.Join(t.TempDir(), "b")
+	createRepo(t, a)
+	createRepo(t, b)
+
+	// The VM was created with BOTH a and b: Workdir() is a, Workspaces[0].
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"scratch","status":"running","workspaces":["` + a + `","` + b + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	// This invocation names only b: b is a subset of what's mounted, so
+	// nothing is missing — and that must not silence the start-directory half.
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "scratch", Repos: []string{b}, Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callStartingWith(f, "create") != nil {
+		t.Fatal("a live sandbox must be attached, never re-created")
+	}
+	log := out.String()
+	if strings.Contains(log, "is not mounted") {
+		t.Errorf("log = %q, b is mounted — nothing should be reported as missing", log)
+	}
+	if !strings.Contains(log, "the shell starts in "+a) {
+		t.Errorf("log = %q, expected it to say the shell starts in %s (Workdir, frozen at create), "+
+			"even though b — everything this invocation asked for — is mounted", log, a)
+	}
+	if !strings.Contains(log, "den rm scratch") {
+		t.Errorf("log = %q, expected the remedy", log)
+	}
+}
+
+// The companion negative case: a live sandbox that mounts exactly what was
+// asked, IN THE SAME ORDER, must stay silent — multiple repos, not the
+// single-repo case TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEverything
+// already covers, so an order-sensitive false positive on an ordinary
+// multi-repo attach would be caught here.
+func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEverythingInOrder(t *testing.T) {
+	denHome, _ := denTest(t)
+	write(t, filepath.Join(denHome, "nests", "scratch.yaml"), "stack: devx\n")
+	a := filepath.Join(t.TempDir(), "a")
+	b := filepath.Join(t.TempDir(), "b")
+	createRepo(t, a)
+	createRepo(t, b)
+
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"scratch","status":"running","workspaces":["` + a + `","` + b + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "scratch", Repos: []string{a, b}, Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callStartingWith(f, "create") != nil {
+		t.Fatal("a live sandbox must be attached, never re-created")
+	}
+	if strings.Contains(out.String(), "den rm scratch") {
+		t.Errorf("log = %q, expected no warning: this attach asked for exactly what's mounted, "+
+			"in the same order", out.String())
 	}
 }

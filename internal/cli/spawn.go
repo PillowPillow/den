@@ -25,8 +25,15 @@ import (
 func configureSpawn(root *cobra.Command, denHome *string, deps spawn.Deps) {
 	var o spawn.Options
 
-	root.Use = "den <nest>"
-	root.Args = atMostOneArg
+	root.Use = "den <nest> [repo...]"
+	// ArbitraryArgs, not a bounded validator: args[0] is the nest and args[1:]
+	// are repos, of which there is no reason to allow only N.
+	//
+	// What matters is that Args stays NON-NIL: setting it at all is what
+	// disables cobra's legacyArgs ("unknown command"), and that switch is what
+	// makes a nest name acceptable in first position. Going back to nil here
+	// would break the whole `den <nest>` form.
+	root.Args = cobra.ArbitraryArgs
 	// Explicit, because cobra does NOT apply it on this path: its default of 2
 	// is set in findSuggestions(), which serves the "unknown command" branch den
 	// never takes (the root has a RunE). Called directly, SuggestionsFor reads
@@ -37,6 +44,11 @@ func configureSpawn(root *cobra.Command, denHome *string, deps spawn.Deps) {
 			return cmd.Help()
 		}
 		o.Nest = args[0]
+		// Raw: nest.Resolve expands the tilde and absolutizes against the
+		// working directory, which internal/spawn reads. Doing it here would put
+		// path resolution on the cobra side of the boundary, where no test of
+		// the cascade could reach it.
+		o.Repos = args[1:]
 		home, err := config.Home(*denHome)
 		if err != nil {
 			return err

@@ -15,6 +15,16 @@ type Options struct {
 	Agent   string   // --agent
 	Without []string // --without
 	Only    []string // --only
+	// Repos are the repositories given as positionals on the command line, raw:
+	// tilde unexpanded, possibly relative. They are additive to the nest's
+	// `repos:`, and they are NOT addressable by --without/--only — a repo typed
+	// by hand is removed by not typing it.
+	Repos []string
+	// Cwd resolves the relative entries of Repos. A parameter, not an
+	// os.Getwd() inside this package: the resolution stays pure, so `den
+	// scratch .` is assertable without a test having to chdir, and the one
+	// system call lives with the other world access in internal/spawn.
+	Cwd string
 }
 
 // configDirToken is the marker substituted in the agent's env values.
@@ -142,6 +152,26 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 
 	repos, err := selectRepos(n.Repos, o.Without, o.Only)
 	if err != nil {
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
+	}
+	adhoc, err := parseRepoArgs(o.Cwd, o.Repos)
+	if err != nil {
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
+	}
+	// Positionals FIRST, declared repos after: internal/spawn turns this list
+	// into `sbx create`'s workspaces in order, and sbx.Sandbox.Workdir — the
+	// directory the attached shell starts in — is Workspaces[0]. The gesture
+	// "I am mounting X on the fly" means "I have come to work in X".
+	//
+	// This is the merge point of the whole feature, and the reason nothing
+	// downstream needs a branch: from here on a repo given on the command line
+	// IS a repo. It gets a worktree under -w, its common git dir mounted, its
+	// place in the argv — by construction, not by repetition.
+	repos = append(adhoc, repos...)
+	// Re-checked on the MERGED list: LoadNest only ever saw the file. A
+	// positional colliding with a declared basename makes --without, the
+	// worktree path and the sbx positional ambiguous at once.
+	if err := checkUniqueNames(repos, "spawn"); err != nil {
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
 
