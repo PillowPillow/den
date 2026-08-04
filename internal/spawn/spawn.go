@@ -186,7 +186,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// ResolveStack is the ONE place that turns it into a root to load stacks
 	// from: nest.Resolve works on bare names within a SINGLE root and must
 	// not learn about sources, so the caller owns reference resolution.
-	stackRoot, stackSrcName, ref, err := ResolveStack(denHome, g, nestRoot, srcName, n, o.Nest)
+	stackRoot, stackSrcName, ref, err := ResolveStack(denHome, g, nestRoot, srcName, bareNest, n, o.Nest)
 	if err != nil {
 		return err
 	}
@@ -699,15 +699,13 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 // would point at a nest the user never typed, and, if they happen to own a
 // same-named LOCAL nest, send them to edit the wrong file. The source file to
 // fix is appended explicitly instead, since there is no lint-style frame here
-// to supply it.
-//
-// n must be exactly what LoadNest returned: nest.FilePath(nestRoot, n.Name)
-// is how both refusals below name the file to fix, and that is only correct
-// while n.Name is still the bare filename LoadNest set it to — a caller that
-// renamed n.Name for display (`den nest ls`'s "<source>:<name>" prefix, for
-// instance) would send the user to a file that does not exist under that
-// name.
-func ResolveStack(denHome string, g *config.Global, nestRoot, srcName string, n *nest.Nest, subject string) (
+// to supply it — hence bareNest as its own parameter, rather than read off
+// n.Name: both call sites already hold it on the line that produced n
+// (Spawn's own `bareNest`, `den nest show`'s `bareNest`), so there is nothing
+// to re-derive, and no way for a caller that renamed n.Name for display
+// (`den nest ls`'s "<source>:<name>" prefix) to feed this function a name
+// nest.FilePath cannot turn back into a real path.
+func ResolveStack(denHome string, g *config.Global, nestRoot, srcName, bareNest string, n *nest.Nest, subject string) (
 	stackRoot, stackSrcName, ref string, err error) {
 	if srcName != "" {
 		// A source nest may NOT fall back on `g.Defaults.Stack`: that default
@@ -720,7 +718,7 @@ func ResolveStack(denHome string, g *config.Global, nestRoot, srcName string, n 
 			return "", "", "", fmt.Errorf(
 				"nest %q: no `stack:` — a source nest cannot fall back on the personal defaults.stack: "+
 					"it must spawn identically on every machine — fix %s",
-				subject, nest.FilePath(nestRoot, n.Name))
+				subject, nest.FilePath(nestRoot, bareNest))
 		}
 		// A nest loaded FROM a source may only reference its stack BARE: a
 		// prefixed reference would resolve differently on every machine
@@ -732,7 +730,7 @@ func ResolveStack(denHome string, g *config.Global, nestRoot, srcName string, n 
 				"nest %q: `stack: %s` is a prefixed reference — inside a source, references are bare "+
 					"and resolve in the source itself: the install name is chosen per machine and CI "+
 					"knows none — fix %s",
-				subject, n.Stack, nest.FilePath(nestRoot, n.Name))
+				subject, n.Stack, nest.FilePath(nestRoot, bareNest))
 		}
 		return nestRoot, srcName, n.Stack, nil
 	}

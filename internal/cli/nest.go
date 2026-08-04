@@ -195,7 +195,7 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			// the two would resolve the same reference to two different
 			// diagnoses. Only the subject (args[0], what the user typed) is
 			// this call site's own.
-			stackRoot, _, ref, err := spawn.ResolveStack(home, g, nestRoot, srcName, n, args[0])
+			stackRoot, _, ref, err := spawn.ResolveStack(home, g, nestRoot, srcName, bareNest, n, args[0])
 			if err != nil {
 				return err
 			}
