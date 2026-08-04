@@ -148,6 +148,90 @@ func TestAPartialRunLeavesTheHomeReRunnable(t *testing.T) {
 	}
 }
 
+// doctorHint returns the "2. run `den doctor…`" line Run printed, so the three
+// tests below assert on that line alone rather than on the whole transcript —
+// the "created <path>" lines above it are another test's subject.
+func doctorHint(t *testing.T, transcript string) string {
+	t.Helper()
+	for _, line := range strings.Split(transcript, "\n") {
+		if strings.Contains(line, "den doctor") {
+			return line
+		}
+	}
+	t.Fatalf("no `den doctor` hint in Run's output:\n%s", transcript)
+	return ""
+}
+
+// TestTheDoctorHintIsBareWhenTheHomeIsTheDefault is the case the user hit: on
+// a plain `den init`, `--den-home /Users/x/.den` in the hint repeats the value
+// doctor would have resolved on its own, and reads as though the flag were
+// required.
+//
+// HOME is redirected at t.Setenv rather than the test asserting against the
+// REAL ~/.den, because Run writes files: a test that took the operator's
+// actual default home as its subject would create ~/.den on the machine
+// running the suite.
+func TestTheDoctorHintIsBareWhenTheHomeIsTheDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("DEN_HOME", "")
+	home, err := config.Home("")
+	if err != nil {
+		t.Fatalf("resolving the default den home: %v", err)
+	}
+	var out bytes.Buffer
+
+	if err := Run(home, fakeSrc, &out); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	hint := doctorHint(t, out.String())
+	if strings.Contains(hint, "--den-home") {
+		t.Errorf("hint = %q, want no --den-home: a bare `den doctor` already resolves %s", hint, home)
+	}
+}
+
+// TestTheDoctorHintCarriesTheFlagWhenTheHomeIsNotTheDefault is the other half
+// of the same contract: under `den init --den-home /x`, a bare hint would send
+// doctor to the DEFAULT home, where it finds no config.yaml and answers "run
+// `den init`" — the loop the flag exists to prevent.
+func TestTheDoctorHintCarriesTheFlagWhenTheHomeIsNotTheDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("DEN_HOME", "")
+	home := t.TempDir()
+	var out bytes.Buffer
+
+	if err := Run(home, fakeSrc, &out); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	hint := doctorHint(t, out.String())
+	if !strings.Contains(hint, "--den-home "+home) {
+		t.Errorf("hint = %q, want it to carry --den-home %s", hint, home)
+	}
+}
+
+// TestTheDoctorHintCarriesTheFlagUnderDenHomeEnv is the trap in deciding this
+// from "would a bare `den doctor` resolve here": in THIS process it would,
+// because $DEN_HOME is set. The hint is not for this process — it is read and
+// typed later, quite possibly from a shell that never exported DEN_HOME, and
+// there a bare hint lands on ~/.den. The predicate is therefore "is this the
+// plain default", not "does the current environment happen to agree".
+func TestTheDoctorHintCarriesTheFlagUnderDenHomeEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("DEN_HOME", home)
+	var out bytes.Buffer
+
+	if err := Run(home, fakeSrc, &out); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	hint := doctorHint(t, out.String())
+	if !strings.Contains(hint, "--den-home "+home) {
+		t.Errorf("hint = %q, want it to carry --den-home %s even though $DEN_HOME points there", hint, home)
+	}
+}
+
 func TestRunRefusesWhenConfigYamlAlreadyExists(t *testing.T) {
 	home := t.TempDir()
 	existing := "defaults:\n  agent: mine\n"
