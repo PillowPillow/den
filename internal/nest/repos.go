@@ -19,11 +19,21 @@ func checkUniqueNames(repos []Repo) error {
 			return fmt.Errorf(
 				"two repos share the short name %q (%s and %s) — this name is used by --without/--only "+
 					"and by the worktree path, it must be unique within the nest",
-				r.Name(), previous, r.Path)
+				r.Name(), previous, repoIdentifier(r))
 		}
-		seen[r.Name()] = r.Path
+		seen[r.Name()] = repoIdentifier(r)
 	}
 	return nil
+}
+
+// repoIdentifier names what the user typed to declare this repo, for
+// diagnostics: a `path:` entry's path, or "key <k>" for a key-typed entry —
+// which has no path to show (it is filled only after Resolve).
+func repoIdentifier(r Repo) string {
+	if r.Path != "" {
+		return r.Path
+	}
+	return "key " + r.Key
 }
 
 // selectRepos applies --without / --only to the list declared by the nest.

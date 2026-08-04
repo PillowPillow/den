@@ -236,6 +236,24 @@ func TestLoadNestRejectsHomonymsAfterExpansion(t *testing.T) {
 	}
 }
 
+// Two key-typed repos sharing a key have no `path:` to report — the
+// duplicate-name refusal must still name something (the key), not render as
+// "( and )".
+func TestLoadNestRejectsTwoHomonymousKeyRepos(t *testing.T) {
+	denHome := t.TempDir()
+	writeNest(t, denHome, "fullstack", "repos:\n  - { key: api }\n  - { key: api, optional: true }\n")
+	_, err := LoadNest(denHome, "fullstack")
+	if err == nil {
+		t.Fatal("expected a rejection: two repos share the key `api`")
+	}
+	if strings.Contains(err.Error(), "( and )") {
+		t.Errorf("error = %q, must not render blank identifiers", err.Error())
+	}
+	if !strings.Contains(err.Error(), "key api") {
+		t.Errorf("error = %q, expected a mention of `key api`", err.Error())
+	}
+}
+
 func TestLoadNestMissing(t *testing.T) {
 	if _, err := LoadNest(t.TempDir(), "ghost"); err == nil {
 		t.Fatal("expected an error for a missing nest")
