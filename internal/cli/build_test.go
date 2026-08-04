@@ -336,8 +336,16 @@ func TestBuildRefusesANamedStackItCannotBuild(t *testing.T) {
 // ~/.den/stacks — same doctrine as spawn.go: config.LoadStacks reads whatever
 // root source.Locate names, and the graph (parent chain, image inventory)
 // resolves entirely within that one root.
+//
+// A LOCAL stack of the SAME name, declaring a DIFFERENT image, is the
+// discriminating fixture: without it, "teamstack" resolves from either root
+// and the test cannot tell "loaded from the source" from "loaded from
+// wherever it happened to be found". With it, only the image actually built
+// says which root won.
 func TestBuildAcceptsASourceReference(t *testing.T) {
 	denHome := t.TempDir()
+	buildStack(t, denHome, "teamstack",
+		"image: local-teamstack:v1\nbase: claude\nprovision:\n  steps: [step.sh]\n")
 	buildStack(t, filepath.Join(denHome, "sources", "corp"), "teamstack",
 		"image: teamstack:v1\nbase: claude\nprovision:\n  steps: [step.sh]\n")
 	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": noPriorSandboxes}}
@@ -347,6 +355,12 @@ func TestBuildAcceptsASourceReference(t *testing.T) {
 	}
 	if got := strings.Join(builtStacks(f), ","); got != "teamstack" {
 		t.Errorf("built = %v, want just teamstack", builtStacks(f))
+	}
+	if !f.HasCalled("template", "save", "teamstack-build", "teamstack:v1") {
+		t.Errorf("expected the SOURCE's image (teamstack:v1) to be built; calls: %v", f.Calls)
+	}
+	if f.HasCalled("template", "save", "teamstack-build", "local-teamstack:v1") {
+		t.Errorf("the LOCAL stack of the same name must not have been built; calls: %v", f.Calls)
 	}
 }
 

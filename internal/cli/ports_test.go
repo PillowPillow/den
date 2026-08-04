@@ -1383,4 +1383,13 @@ func TestPortsSourceReferenceUnknownNest(t *testing.T) {
 	if err == nil {
 		t.Fatal("a nest absent from the source must be refused")
 	}
+	// Not just "an error" — this is the SOURCE's own nest-not-found file, not
+	// a "sandbox not found" refusal or an unrelated one: the sandbox
+	// "corp-web" is live (lsWith above), so a wrong assertion here would pass
+	// against the pre-Task-10 code path just as well, on a completely
+	// different error.
+	want := filepath.Join(denHome, "sources", "corp", "nests", "web.yaml")
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %q, expected it to name %s", err.Error(), want)
+	}
 }
