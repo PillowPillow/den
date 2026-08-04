@@ -216,20 +216,21 @@ func TestUnknownFirstArgumentIsANestNotFound(t *testing.T) {
 }
 
 // TestWrongArgumentCountNamesTheUsageLine locks argsBetween's wording across
-// every one of the package's eight call sites: it is the only way to notice
-// that one site was missed, a wrong count on seven sites out of eight being
+// every one of the package's seven call sites: it is the only way to notice
+// that one site was missed, a wrong count on six sites out of seven being
 // indistinguishable from a finished job.
+//
+// The root itself is no longer one of these sites: since the positionals
+// opened (den <nest> [repo...]), root.Args is cobra.ArbitraryArgs, which never
+// rejects on count — every argument past the first is a repo, and nothing
+// caps how many a spawn may mount. There is no "too many arguments" left to
+// produce from here.
 func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 	cases := []struct {
 		name     string
 		args     []string
 		expected string
 	}{
-		{
-			"root, too many arguments",
-			[]string{"a", "b"},
-			`den: at most one argument expected, 2 received, starting with "b" — usage: den <nest> [flags]`,
-		},
 		{
 			"version, extra argument",
 			[]string{"version", "x"},
@@ -253,7 +254,7 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 		{
 			"nest show, missing argument",
 			[]string{"nest", "show"},
-			"den nest show: one argument expected, none received — usage: den nest show <nest> [flags]",
+			"den nest show: one argument expected, none received — usage: den nest show <nest> [repo...] [flags]",
 		},
 		{
 			"sh, missing argument",

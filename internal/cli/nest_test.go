@@ -223,3 +223,20 @@ func TestNestLsWarnsAboutNothingWithoutACollision(t *testing.T) {
 		t.Errorf("stderr = %q, expected empty: no nest is shadowed", stderr)
 	}
 }
+
+func TestNestShowResolvesCommandLineRepos(t *testing.T) {
+	testDenHome(t)
+	out, err := run(t, "nest", "show", "api", "/dev/hotfix")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// `den nest show` is the dry-run of a spawn: it must list what would be
+	// mounted, and say which entries came from the command line — "required"
+	// and "optional" describe a `repos:` declaration, which this is not.
+	if !strings.Contains(out, "/dev/hotfix (command line)") {
+		t.Errorf("output = %q, expected the ad-hoc repo listed with its origin", out)
+	}
+	if !strings.Contains(out, "/dev/api (required)") {
+		t.Errorf("output = %q, expected the declared repo to keep its own wording", out)
+	}
+}
