@@ -7,6 +7,25 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.1.0 — 2026-08-04
+
+### Added
+- An install path that needs neither Homebrew nor a Go toolchain — Linux distros, WSL,
+  macOS without brew:
+  `curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | sh`.
+  It picks the archive for the machine's OS and architecture, verifies its sha256 checksum
+  and refuses to install when it cannot verify one, and puts `den` in `~/.local/bin`.
+  `DEN_VERSION` pins a tag and `DEN_INSTALL_DIR` moves the destination; both bind to `sh`,
+  not to `curl`, because each command in a pipeline gets its own environment.
+- `CHANGELOG.md`, whose section for a version is also that version's release notes on
+  GitHub — a release page now carries the written notes instead of a reformatted commit
+  list.
+
+### Fixed
+- `den init`'s closing hint spells out `--den-home` only when it names something other than
+  the default. On a plain init it repeated the path `den doctor` resolves on its own, which
+  read as though the flag were required.
+
 ## v1.0.1 — 2026-08-04
 
 ### Added
