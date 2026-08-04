@@ -24,6 +24,10 @@ Variables d'environnement, toutes optionnelles :
 | `DEN_VERSION` | latest release | Pinner une version exacte (`v1.0.0`) — rollback, CI |
 | `DEN_INSTALL_DIR` | `~/.local/bin` | Destination du binaire |
 
+En invocation pipe, l'assignation se place sur `sh`, pas sur `curl` — chaque commande d'un
+pipeline reçoit son propre environnement, donc `DEN_VERSION=… curl … | sh` laisserait `sh`
+sans la variable : `curl -fsSL … | DEN_VERSION=v1.0.0 sh`.
+
 Le script est servi depuis `main` via raw.githubusercontent : zéro infra, corrigeable par
 simple merge, versionné avec le repo. Rejeté : domaine court (infra à maintenir), asset de
 release (script figé jusqu'à la release suivante).

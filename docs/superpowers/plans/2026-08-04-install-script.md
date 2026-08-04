@@ -53,8 +53,10 @@ Contenu complet (les commentaires « why » sont la norme du repo — les garder
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | sh
-#   DEN_VERSION=v1.0.1 ... | sh      # pin a version
-#   DEN_INSTALL_DIR=~/bin ... | sh   # override the destination
+#   curl -fsSL ... | DEN_VERSION=v1.0.1 sh      # pin a version
+#   curl -fsSL ... | DEN_INSTALL_DIR=~/bin sh   # override the destination
+# (the assignment binds to sh, not curl — each pipeline command gets its own
+# environment, so a prefix on curl never reaches the script)
 set -eu
 
 REPO="PillowPillow/den"
@@ -245,8 +247,16 @@ curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | 
 
 The script detects OS and architecture, verifies the release checksum (and
 refuses to install without verification), and installs to `~/.local/bin`.
-Pin a version with `DEN_VERSION=v1.0.1`, change the destination with
-`DEN_INSTALL_DIR=~/bin`. Prebuilt archives also sit on the
+Pin a version or change the destination by placing the assignment on `sh`
+(each pipeline command gets its own environment, so a prefix on `curl` never
+reaches the script):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | DEN_VERSION=v1.0.1 sh
+curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | DEN_INSTALL_DIR=~/bin sh
+```
+
+Prebuilt archives also sit on the
 [releases page](https://github.com/PillowPillow/den/releases) if you'd rather
 not pipe a script into your shell.
 ```
