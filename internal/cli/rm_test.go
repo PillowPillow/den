@@ -736,3 +736,142 @@ func TestRmAcceptsASourceReference(t *testing.T) {
 		t.Errorf("expected the flattened sandbox corp-api to be destroyed; calls: %v", f.Calls)
 	}
 }
+
+// README's second known limitation, closed: `den rm corp-api.feat12`
+// destroyed the sandbox correctly but could not reverse-decode "corp-api"
+// back into the source "corp", so the nest that declares the worktree's repos
+// was never found and cleanup degraded to a warning — the worktree was left
+// on disk. The decode now finds it, and the worktree really is moved to trash.
+func TestRmCleansTheWorktreeOfAFlattenedSourceSandbox(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, `agents:
+  claude:
+    config_dir: /profile/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+worktree_layout: central
+worktree_root: `+filepath.Join(denHome, "worktrees")+`
+`)
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "stacks", "devx", "stack.yaml"),
+		"image: devx:v1\n")
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+
+	if _, err := worktree.Ensure(context.Background(), worktree.NewGit(), "central",
+		filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp-api.feat12")
+	if err != nil {
+		t.Fatalf("den rm corp-api.feat12: %v", err)
+	}
+	if !strings.Contains(out, "moved to trash") {
+		t.Errorf("the source nest's worktree must be cleaned up, not warned about; got:\n%s", out)
+	}
+	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// The prefixed spelling reaches the same worktree'd sandbox: flattening the
+// whole argument would rewrite the "." and address "corp-api-feat12".
+func TestRmAcceptsAWorktreedSourceReference(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome,
+		"rm", "corp:api.feat12", "--keep-worktrees"); err != nil {
+		t.Fatalf("den rm corp:api.feat12: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+		t.Errorf("expected corp-api.feat12 to be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// A SOURCE nest declares its repos by `key:` — that is what makes it
+// shareable — and LoadNest leaves Key entries with an EMPTY Path (only
+// nest.Resolve fills it from the personal mapping). Now that the decode
+// actually reaches such a nest, cleanup has to resolve the key the same way
+// spawn did when it created the worktree.
+func TestRmResolvesRepoKeysWhenCleaningWorktrees(t *testing.T) {
+	denHome := t.TempDir()
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeConfig(t, denHome, `agents:
+  claude:
+    config_dir: /profile/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+worktree_layout: central
+worktree_root: `+filepath.Join(denHome, "worktrees")+`
+repos:
+  api: `+repo+`
+`)
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { key: api }\n")
+
+	if _, err := worktree.Ensure(context.Background(), worktree.NewGit(), "central",
+		filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp-api.feat12")
+	if err != nil {
+		t.Fatalf("den rm corp-api.feat12: %v", err)
+	}
+	if !strings.Contains(out, "moved to trash") {
+		t.Errorf("a key-typed repo's worktree must be cleaned up; got:\n%s", out)
+	}
+}
+
+// The same nest with the key NOT mapped. An unresolved key leaves Path empty,
+// and worktree.Path("central", root, wt, "") joins to root/<wt> — the whole
+// sandbox's worktree DIRECTORY rather than one repo's subdirectory. den must
+// skip that repo and say so, never move a directory it cannot attribute.
+func TestRmSkipsAnUnmappedRepoKeyRatherThanTrashingTheWholeWorktreeDir(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, `agents:
+  claude:
+    config_dir: /profile/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+worktree_layout: central
+worktree_root: `+filepath.Join(denHome, "worktrees")+`
+`)
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { key: api }\n")
+
+	dir := filepath.Join(denHome, "worktrees", "feat12", "api")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f,
+		"--den-home", denHome, "rm", "corp-api.feat12")
+	if err != nil {
+		t.Fatalf("an unmapped key must not fail the removal: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(denHome, "worktrees", "feat12")); statErr != nil {
+		t.Errorf("den moved the whole worktree directory for a repo it could not locate: %v", statErr)
+	}
+	if !strings.Contains(stderr, "api") {
+		t.Errorf("the skipped repo must be named on stderr; got:\n%s", stderr)
+	}
+	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+	_ = stdout
+}

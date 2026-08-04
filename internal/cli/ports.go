@@ -7,10 +7,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/ports"
 	"github.com/PillowPillow/den/internal/sbx"
-	"github.com/PillowPillow/den/internal/source"
 	"github.com/spf13/cobra"
 )
 
@@ -41,24 +39,18 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 		Short: "Show where a sandbox's declared ports land on the host",
 		Args:  exactlyOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ref := args[0]
 			// The SANDBOX name is the flattened reference: ":" is not in sbx's
 			// `--name` charset, so a nest loaded from a source never spawns
 			// under its prefixed name (spawn.go) — the live VM this command
-			// must find is already "corp-api", not "corp:api". A bare
-			// reference is unchanged: flattening only ever rewrites the ":"
-			// separator, and a local name carries none.
+			// must find is already "corp-api", not "corp:api".
 			//
 			// Computed here, before ANYTHING is asked of sbx or the den home:
 			// it needs neither, so a bad `--den-home` still gets the ordinary
 			// "sandbox not found" rather than a config error unrelated to
 			// what was typed.
-			name := ref
-			if src, _ := config.SplitSourceRef(ref); src != "" {
-				var err error
-				if name, err = config.FlattenSandboxComponent("nest", ref); err != nil {
-					return err
-				}
+			name, nameErr := sandboxNameOf(args[0])
+			if nameErr != nil {
+				return nameErr
 			}
 
 			// `--add` FIRST, before a single call is made to sbx: what it can
@@ -99,40 +91,41 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 			if err := b.CheckAttachable(); err != nil {
 				return err
 			}
-			// A STOPPED sandbox is woken, here, before anything is read or
-			// published — see wakeForPorts for why waking and not refusing.
-			if b, err = wakeForPorts(cmd, runner, b); err != nil {
-				return err
-			}
-
-			// The den home is read HERE rather than at the top like `den rm`:
-			// everything above answers from `sbx ls --json` alone, so a sandbox
-			// that does not exist is reported as such even on a machine whose
-			// den home cannot be located.
+			// EVERYTHING THIS COMMAND CAN REFUSE IS REFUSED BEFORE THE WAKE
+			// BELOW. The den home and the nest used to be read after it, on
+			// the argument that `sbx ls --json` alone should answer a sandbox
+			// that does not exist — and half of that still holds, which is why
+			// this sits BELOW sbx.Find and CheckAttachable: an absent sandbox
+			// is still reported as absent on a machine whose den home cannot
+			// be located. What did not hold is the other half. wakeForPorts
+			// STARTS a microVM, and a nest lookup below it meant den booting a
+			// VM and only then refusing over a config file it could have read
+			// first — the shape this command already rejects everywhere else
+			// (see the `--add` parsing above, refused before a single sbx
+			// call).
 			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
 			}
 			// The nest FILE, unlike the sandbox, is not addressed by the
-			// flattened name: a source nest never lives under
-			// <denHome>/nests, so recovering it needs the ORIGINAL
-			// reference, through the same source.Locate spawn uses — not
-			// sbx.SplitName's nest component, which for a source-originated
-			// sandbox is already flattened and names no real file.
-			var n *nest.Nest
-			if src, _ := config.SplitSourceRef(ref); src != "" {
-				nestRoot, _, bareName, err := source.Locate(home, ref)
-				if err != nil {
-					return err
-				}
-				if n, err = nest.LoadNest(nestRoot, bareName); err != nil {
-					return err
-				}
-			} else {
-				nestName, _ := sbx.SplitName(name)
-				if n, err = nest.LoadNest(home, nestName); err != nil {
-					return err
-				}
+			// flattened name: a source nest never lives under <denHome>/nests,
+			// so "corp-api" has to be DECODED back to the source and bare name
+			// that produced it rather than read literally, which would look
+			// for a nests/corp-api.yaml that by construction never exists.
+			// nestOfSandbox works from the live sandbox name for BOTH
+			// spellings — the user may equally have typed `corp:api` or the
+			// `corp-api` that `den ls` prints and that den's own --detach
+			// message recommends.
+			n, err := nestOfSandbox(home, args[0], name)
+			if err != nil {
+				return err
+			}
+
+			// A STOPPED sandbox is woken, here, after everything refusable and
+			// before anything is published — see wakeForPorts for why waking
+			// and not refusing.
+			if b, err = wakeForPorts(cmd, runner, b); err != nil {
+				return err
 			}
 
 			res, err := ports.Resolve(n, ports.Options{

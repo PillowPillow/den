@@ -1393,3 +1393,128 @@ func TestPortsSourceReferenceUnknownNest(t *testing.T) {
 		t.Errorf("error = %q, expected it to name %s", err.Error(), want)
 	}
 }
+
+// srcPortsNest is the source nest every reverse-decode test below spawns
+// from: sources/corp/nests/api.yaml, declaring a pinned window so the
+// assertions do not depend on the name hash.
+func srcPortsNest(t *testing.T) string {
+	t.Helper()
+	denHome := t.TempDir()
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nports:\n  base: 9100\n  publish:\n"+
+			"    - { name: vite, container: 5173 }\n")
+	return denHome
+}
+
+// THE defect: `den ls` prints "corp-api", den's own --detach message
+// recommends `den ports corp-api`, and README's first known limitation tells
+// the user to retry with exactly that string — and it was the one spelling
+// `den ports` could not accept. It fell through to sbx.SplitName and looked
+// for <denHome>/nests/corp-api.yaml, a file that by construction never exists.
+func TestPortsAcceptsAFlattenedSourceSandboxName(t *testing.T) {
+	denHome := srcPortsNest(t)
+	f := &sbx.Fake{Responses: lsWith("corp-api")}
+
+	stdout, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "corp-api")
+	if err != nil {
+		t.Fatalf("den ports corp-api: %v", err)
+	}
+	if !f.HasCalled("ports", "corp-api", "--publish", "127.0.0.1:9100:5173") {
+		t.Errorf("expected the source nest's declared port to be published; calls: %v", f.Calls)
+	}
+	if !strings.Contains(stdout, "vite") {
+		t.Errorf("the source nest's ports must have been read; got:\n%s", stdout)
+	}
+}
+
+// A WORKTREE'D source sandbox had no working spelling at all: the prefixed
+// one flattened the "." too ("corp-api-feat12", matching nothing) and the
+// literal one hit the nests/corp-api.feat12 lookup. Both must now work, and
+// both must reach the SAME live VM.
+func TestPortsAcceptsBothSpellingsOfAWorktreedSourceSandbox(t *testing.T) {
+	for _, spelling := range []string{"corp:api.feat12", "corp-api.feat12"} {
+		t.Run(spelling, func(t *testing.T) {
+			denHome := srcPortsNest(t)
+			f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+
+			stdout, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", spelling)
+			if err != nil {
+				t.Fatalf("den ports %s: %v", spelling, err)
+			}
+			if !f.HasCalled("ports", "corp-api.feat12", "--publish", "127.0.0.1:9100:5173") {
+				t.Errorf("expected a publish against the worktree'd sandbox; calls: %v", f.Calls)
+			}
+			// The WINDOW is the nest's, not the worktree's: §8 promises one
+			// bookmarkable window per nest, and the decode must not have made
+			// "api.feat12" the seed.
+			if !strings.Contains(stdout, "9100-9109") {
+				t.Errorf("expected the nest's declared window; got:\n%s", stdout)
+			}
+		})
+	}
+}
+
+// A local nest file written AFTER a source sandbox was spawned makes the
+// decode retroactively ambiguous. den refuses rather than picking one, names
+// both files, and hands over the spelling that is never ambiguous — the same
+// shape as spawn's own collision refusals.
+func TestPortsRefusesAnAmbiguousFlattenedName(t *testing.T) {
+	denHome := srcPortsNest(t)
+	writeUnder(t, denHome, filepath.Join("nests", "corp-api.yaml"), "stack: devx\n")
+	f := &sbx.Fake{Responses: lsWith("corp-api")}
+
+	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "corp-api")
+	if err == nil {
+		t.Fatal("two nests produce this sandbox name: den must refuse rather than guess")
+	}
+	for _, want := range []string{
+		filepath.Join(denHome, "nests", "corp-api.yaml"),
+		filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"corp:api",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+	if f.HasCalled("ports") {
+		t.Errorf("nothing may be published after the refusal; calls: %v", f.Calls)
+	}
+}
+
+// A refusal on this path must never land after den has started a microVM.
+// The nest lookup used to sit BELOW wakeForPorts, so `den ports corp-api`
+// woke a stopped sandbox and only then complained about a config file.
+func TestPortsRefusesAnUndecodableNameWithoutWakingTheSandbox(t *testing.T) {
+	denHome := srcPortsNest(t)
+	writeUnder(t, denHome, filepath.Join("nests", "corp-api.yaml"), "stack: devx\n")
+	stopped := `{"sandboxes":[{"name":"corp-api","status":"stopped","workspaces":["/w"]}]}`
+	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": {Output: []byte(stopped)}}}
+
+	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "corp-api")
+	if err == nil {
+		t.Fatal("expected the ambiguity refusal")
+	}
+	if f.HasCalled("exec", "corp-api", "true") {
+		t.Errorf("den started a microVM and then refused; calls: %v", f.Calls)
+	}
+}
+
+// An EXPLICIT `corp:api` whose source is not installed keeps the remedy the
+// reverse decode could never produce: an uninstalled source leaves nothing
+// under sources/ to decode from, so a bare "corp-api" is indistinguishable
+// from an ordinary local nest name — but a typed prefix says outright which
+// source is missing.
+func TestPortsSourceReferenceRefusesAnUninstalledSource(t *testing.T) {
+	denHome := t.TempDir()
+	f := &sbx.Fake{Responses: lsWith("corp-api")}
+
+	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "corp:api")
+	if err == nil {
+		t.Fatal("an uninstalled source must be refused")
+	}
+	for _, want := range []string{"not installed", "den source add"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}

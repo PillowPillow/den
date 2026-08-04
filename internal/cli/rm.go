@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
@@ -37,23 +36,13 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 			// sbx's `--name` charset, so a nest loaded from a source never
 			// spawns under its prefixed name (spawn.go) — the live VM this
 			// command must find and destroy is already "corp-api", not
-			// "corp:api".
-			//
-			// This never needs to combine with a worktree suffix: flattening
-			// the WHOLE argument would also rewrite the "." that separates a
-			// worktree from its nest (FlattenSandboxComponent excludes "."
-			// from its charset on purpose, see config/name.go), so
-			// "corp:api.feat12" would flatten to "corp-api-feat12" — a name
-			// that never matches the live "corp-api.feat12" spawn actually
-			// created. A worktree'd sandbox is destroyed by the name `den
-			// ls` shows instead, unaffected by this branch (cleanWorktrees
-			// below is unchanged).
-			name := args[0]
-			if src, _ := config.SplitSourceRef(name); src != "" {
-				var err error
-				if name, err = config.FlattenSandboxComponent("nest", name); err != nil {
-					return err
-				}
+			// "corp:api". sandboxNameOf splits any ".<worktree>" suffix off
+			// before flattening, so "corp:api.feat12" reaches the live
+			// "corp-api.feat12" rather than the "corp-api-feat12" a whole-
+			// argument flatten produced and spawn never creates.
+			name, err := sandboxNameOf(args[0])
+			if err != nil {
+				return err
 			}
 			home, err := config.Home(*denHome)
 			if err != nil {
@@ -74,7 +63,7 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 			// sandbox. The reverse would leave the user with no VM and an error
 			// about a directory.
 			if !keepWorktrees {
-				if err := cleanWorktrees(cmd.Context(), home, name, g, force, out, cmd.ErrOrStderr()); err != nil {
+				if err := cleanWorktrees(cmd.Context(), home, args[0], name, g, force, out, cmd.ErrOrStderr()); err != nil {
 					return err
 				}
 			}
@@ -105,7 +94,7 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 // returns the path of the entry it created. That path is the ONLY trace the
 // user gets of where their work went, so it is announced for every worktree
 // actually moved.
-func cleanWorktrees(ctx context.Context, home, sandboxName string, g worktree.Git, force bool, out, warnW io.Writer) error {
+func cleanWorktrees(ctx context.Context, home, ref, sandboxName string, g worktree.Git, force bool, out, warnW io.Writer) error {
 	nestName, wt := sbx.SplitName(sandboxName)
 	if wt == "" {
 		return nil // no worktree: nothing to clean up
@@ -135,7 +124,13 @@ func cleanWorktrees(ctx context.Context, home, sandboxName string, g worktree.Gi
 	if errs := gl.ValidateWorktree(); len(errs) > 0 {
 		return fmt.Errorf("cleaning up worktrees: %w", config.ConfigError(home, errs))
 	}
-	n, err := nest.LoadNest(home, nestName)
+	// DECODED, not read literally: for a sandbox spawned from a source nest
+	// the component is the flattened reference ("corp-api"), which names no
+	// file under <denHome>/nests — so a bare LoadNest here always failed, and
+	// cleanup of every worktree'd source sandbox degraded to the warning
+	// below while the directories stayed on disk. nestOfSandbox holds the
+	// decode, shared with `den ports`.
+	n, err := nestOfSandbox(home, ref, sandboxName)
 	if err != nil {
 		// wt and gl.WorktreeRoot are both available here: without them the user
 		// learns a worktree was abandoned, but not where to go find it.
@@ -149,6 +144,29 @@ func cleanWorktrees(ctx context.Context, home, sandboxName string, g worktree.Gi
 	}
 
 	for _, repo := range n.Repos {
+		// The KEY is resolved here, through the same personal mapping spawn
+		// used when it created the worktree — LoadNest leaves a `key:` entry's
+		// Path empty on purpose (only nest.Resolve fills it), and a source
+		// nest declares its repos by key, since that is what makes it
+		// shareable at all.
+		//
+		// An EMPTY path is skipped rather than passed on, and that is a safety
+		// rule, not tidiness: worktree.Path("central", root, wt, "") joins to
+		// root/<wt> — the whole sandbox's worktree DIRECTORY instead of one
+		// repo's subdirectory — and "per-repo" yields a RELATIVE ".den/<wt>"
+		// resolved against whatever cwd den was launched from. den does not
+		// move a directory it cannot attribute to a repo.
+		path := repo.Path
+		if repo.Key != "" {
+			path = gl.Repos[repo.Key]
+		}
+		if path == "" {
+			fmt.Fprintf(warnW, "nest %q: repo key %q is not mapped on this machine, so den cannot "+
+				"locate its worktree %q — it is left on disk; map it under `repos:` in %s and re-run "+
+				"`den rm`, or remove the directory by hand\n",
+				n.Name, repo.Key, wt, config.GlobalPath(home))
+			continue
+		}
 		// One deadline PER repo, not one for the whole loop: a broken repo must
 		// not eat the budget of the next repos of the same nest.
 		repoCtx, cancel := context.WithTimeout(ctx, gitProbeTimeout)
@@ -158,7 +176,7 @@ func cleanWorktrees(ctx context.Context, home, sandboxName string, g worktree.Gi
 			Root:     gl.WorktreeRoot,
 			Nest:     sandboxName,
 			Worktree: wt,
-			RepoPath: repo.Path,
+			RepoPath: path,
 			Force:    force,
 		})
 		cancel()

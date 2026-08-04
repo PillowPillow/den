@@ -559,3 +559,22 @@ func TestShAcceptsASourceReference(t *testing.T) {
 		t.Errorf("the attach must target the flattened sandbox corp-api; attaches: %v", f.Attaches)
 	}
 }
+
+// The worktree'd form of TestShAcceptsASourceReference. Flattening the WHOLE
+// argument rewrote the "." too, so `den sh corp:api.feat12` looked for
+// "corp-api-feat12" and matched nothing. The "." separates the worktree from
+// the nest and only the NEST component carries a source prefix, so the split
+// comes first and the flattening second.
+func TestShAcceptsAWorktreedSourceReference(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"corp-api.feat12","status":"running","workspaces":["/w"]}]}`)},
+	}}
+
+	if _, err := executeCmdWithSbx(t, f, "sh", "corp:api.feat12"); err != nil {
+		t.Fatalf("den sh corp:api.feat12: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/w", "corp-api.feat12", "bash", "-l") {
+		t.Errorf("the attach must target corp-api.feat12; attaches: %v", f.Attaches)
+	}
+}

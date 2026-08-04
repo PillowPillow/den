@@ -44,6 +44,14 @@ const alphanumericChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0
 // it rune by rune rather than duplicating it in a regexp, so the two can never diverge.
 const sandboxComponentChars = alphanumericChars + "+-"
 
+// FlattenedSourceSeparator is what SourceRefSeparator BECOMES in a sandbox
+// name: ":" is outside sandboxComponentChars, and FlattenSandboxComponent
+// rewrites every out-of-charset rune to "-". Named rather than spelled out at
+// each site because the reverse direction depends on it — source's decode of
+// a flattened sandbox name back to "<source>:<nest>" derives its prefix from
+// this constant, so the two can never disagree on which character to look for.
+const FlattenedSourceSeparator = "-"
+
 // FlattenSandboxComponent renders the "nameable" version of a name: every
 // character outside the charset becomes a "-". This is what lets
 // `den <nest> -w feature/123` work on the real branch "feature/123" while
