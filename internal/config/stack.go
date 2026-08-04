@@ -57,6 +57,27 @@ type Stack struct {
 
 	Dir string `yaml:"-"` // stack directory, filled in at load time
 
+	// AbsoluteDeclaredPaths records, per YAML key ("kit", "kits",
+	// "provision.includes", "provision.steps"), a bool slice PARALLEL BY
+	// INDEX to that key's own values (Kit is treated as a length-1 slice):
+	// true at position i means paths[i] was written as an ABSOLUTE path in
+	// stack.yaml, false means it was relative and got resolved against the
+	// stack directory. Populated by LoadStack; never decoded (`yaml:"-"`) —
+	// content never sets it, loading does, after resolving.
+	//
+	// Index-based and NOT value-based on purpose: resolveAgainst below is
+	// idempotent on an already-absolute path, so once loading is done an
+	// absolute entry looks IDENTICAL to a relative sibling that happened to
+	// resolve to the same string (e.g. `kits: [kit, /checkout/stacks/devx/kit]`
+	// where the first entry resolves to the second's literal value) — a
+	// value-keyed lookup would flag both or neither. Positional truth avoids
+	// that collision entirely. internal/lint needs the distinction because a
+	// stack shipped through a source repo must never declare a
+	// machine-specific absolute path, even one that happens to lie inside
+	// the checkout root on the authoring machine (spec 2026-08-04 §5; Task 4
+	// review finding #1).
+	AbsoluteDeclaredPaths map[string][]bool `yaml:"-"`
+
 	// ParentImage is Parent's own `image:`, filled in by build.Chain's walk —
 	// never decoded from YAML, hence `yaml:"-"`. A build derives from the
 	// parent's IMAGE, not its name (`sbx create --template` takes a
@@ -122,12 +143,17 @@ func LoadStack(denHome, name string) (*Stack, error) {
 
 	s.Name = name // the directory is authoritative, unconditionally
 	s.Dir = dir
-	if s.Kit != "" && !filepath.IsAbs(s.Kit) {
-		s.Kit = filepath.Join(dir, s.Kit)
+	s.AbsoluteDeclaredPaths = map[string][]bool{}
+	if s.Kit != "" {
+		if filepath.IsAbs(s.Kit) {
+			s.AbsoluteDeclaredPaths["kit"] = []bool{true}
+		} else {
+			s.Kit = filepath.Join(dir, s.Kit)
+		}
 	}
-	resolveAgainst(dir, s.Kits)
-	resolveAgainst(dir, s.Provision.Includes)
-	resolveAgainst(dir, s.Provision.Steps)
+	s.AbsoluteDeclaredPaths["kits"] = resolveAgainst(dir, s.Kits)
+	s.AbsoluteDeclaredPaths["provision.includes"] = resolveAgainst(dir, s.Provision.Includes)
+	s.AbsoluteDeclaredPaths["provision.steps"] = resolveAgainst(dir, s.Provision.Steps)
 
 	// `image:` is checked UNCONDITIONALLY, ahead of the origin switch below —
 	// which concerns only a stack den would BUILD. Emptiness here travels
@@ -190,15 +216,31 @@ func LoadStack(denHome, name string) (*Stack, error) {
 }
 
 // resolveAgainst rewrites the relative entries of a path list against dir, IN
-// PLACE. Sole definition of the rule stated once in §4.2 and applying to
-// `kits`, `provision.includes` and `provision.steps` alike: a blank entry is
-// left alone rather than turned into the stack directory itself.
-func resolveAgainst(dir string, paths []string) {
+// PLACE, and reports — as a bool PARALLEL BY INDEX to paths — which entries
+// were already absolute. Sole definition of the rule stated once in §4.2 and
+// applying to `kits`, `provision.includes` and `provision.steps` alike: a
+// blank entry is left alone rather than turned into the stack directory
+// itself.
+//
+// The absolute report is for internal/lint (see AbsoluteDeclaredPaths on
+// Stack), and index-based rather than value-based on purpose: this function
+// is idempotent on an absolute path, so by the time it returns, an entry
+// that WAS written absolute is indistinguishable, BY VALUE, from a relative
+// sibling that resolved to the same string. A value-keyed report would
+// conflate the two; position never does.
+func resolveAgainst(dir string, paths []string) (wasAbsolute []bool) {
+	wasAbsolute = make([]bool, len(paths))
 	for i, p := range paths {
-		if p != "" && !filepath.IsAbs(p) {
+		switch {
+		case p == "":
+			continue
+		case filepath.IsAbs(p):
+			wasAbsolute[i] = true
+		default:
 			paths[i] = filepath.Join(dir, p)
 		}
 	}
+	return wasAbsolute
 }
 
 // BrokenStack is a stack present on disk but not loadable.

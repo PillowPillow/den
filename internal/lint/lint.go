@@ -20,7 +20,8 @@ import (
 // deterministic order — a CI log must be reproducible, and showing one error
 // per push when a repo has five is five pushes instead of one.
 //
-// An empty result means valid. The checks reuse the production loaders
+// A nil (or empty) result means valid — callers should test len(), never
+// compare against nil. The checks reuse the production loaders
 // (config.LoadStacks, nest.ListNests) so lint can never accept what a spawn
 // would later refuse — one judge, not two.
 func Run(root string) []error {
@@ -28,9 +29,20 @@ func Run(root string) []error {
 	if err != nil {
 		return []error{fmt.Errorf("resolving %q: %w", root, err)}
 	}
-	root = abs
-	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
-		return []error{fmt.Errorf("%s: not a directory — `den lint` validates a checkout root", root)}
+	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+		return []error{fmt.Errorf("%s: not a directory — `den lint` validates a checkout root", abs)}
+	}
+	// EvalSymlinks the root itself, once, so every confinement check below
+	// compares like-for-like: a declared path is resolved the SAME way (see
+	// checkDeclaredPath). Comparing a resolved declared path against an
+	// unresolved root would misjudge any checkout that itself sits behind a
+	// symlink — verified on this repo's own dev machine, where macOS
+	// resolves a plain t.TempDir() under a symlinked /var → /private/var
+	// (Task 4 review finding #2). Stat above already proved abs exists, so
+	// this cannot fail on ENOENT.
+	root, err = filepath.EvalSymlinks(abs)
+	if err != nil {
+		return []error{fmt.Errorf("resolving %s: %w", abs, err)}
 	}
 
 	var errs []error
@@ -64,14 +76,14 @@ func Run(root string) []error {
 
 // checkStack judges one healthy stack: its parent reference, and every path
 // it declares. Paths were made absolute by LoadStack against the stack dir;
-// what is checked here is that they stay INSIDE root and exist. Confinement
-// is a shareability rule, not a security one: a path that escapes the
-// checkout depends on the machine that receives the source, so the object is
-// not distributable (spec 2026-08-04 §5).
+// what is checked here is that they were written RELATIVE and stay INSIDE
+// root and exist. Confinement is a shareability rule, not a security one: a
+// path that escapes the checkout depends on the machine that receives the
+// source, so the object is not distributable (spec 2026-08-04 §5).
 func checkStack(root string, stacks config.Stacks, s *config.Stack) []error {
 	var errs []error
 	if s.Parent != "" {
-		if strings.Contains(s.Parent, config.SourceRefSeparator) {
+		if source, _ := config.SplitSourceRef(s.Parent); source != "" {
 			errs = append(errs, fmt.Errorf(
 				"stack %q: `parent: %s` is a prefixed reference — inside a source, references are "+
 					"bare and resolve in the source itself: the install name is chosen per machine "+
@@ -80,20 +92,80 @@ func checkStack(root string, stacks config.Stacks, s *config.Stack) []error {
 			errs = append(errs, fmt.Errorf("stack %q: %w", s.Name, err))
 		}
 	}
-	paths := slices.Concat(s.DeclaredKits(), s.Provision.Includes, s.Provision.Steps)
-	for _, p := range paths {
-		rel, err := filepath.Rel(root, p)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			errs = append(errs, fmt.Errorf(
-				"stack %q: %s escapes the checkout — a source is self-contained: a path outside "+
-					"its tree depends on the receiving machine and cannot be shared", s.Name, p))
-			continue
-		}
-		if _, err := os.Stat(p); err != nil {
-			errs = append(errs, fmt.Errorf("stack %q: %s: %w", s.Name, p, err))
+
+	// Each group is checked under its OWN YAML key, not flattened: a
+	// refusal must name the exact key to fix (`kit:` vs `kits:` vs
+	// `provision.includes:` vs `provision.steps:`), and only the loader
+	// (config.Stack.AbsoluteDeclaredPaths) still knows which group an
+	// absolute entry came from.
+	var kit []string
+	if s.Kit != "" {
+		kit = []string{s.Kit}
+	}
+	groups := []struct {
+		key   string
+		paths []string
+	}{
+		{"kit", kit},
+		{"kits", s.Kits},
+		{"provision.includes", s.Provision.Includes},
+		{"provision.steps", s.Provision.Steps},
+	}
+	for _, g := range groups {
+		abs := s.AbsoluteDeclaredPaths[g.key] // parallel by index to g.paths, see the field's doc
+		for i, p := range g.paths {
+			if p == "" {
+				continue
+			}
+			wasAbsolute := i < len(abs) && abs[i]
+			errs = append(errs, checkDeclaredPath(root, s, g.key, p, wasAbsolute)...)
 		}
 	}
 	return errs
+}
+
+// checkDeclaredPath judges one path declared under key ("kit", "kits",
+// "provision.includes" or "provision.steps"). Three refusals, checked in an
+// order chosen so each error names the clearest possible cause:
+//
+//  1. Written absolute in stack.yaml — refused UNCONDITIONALLY, regardless
+//     of where it happens to point on THIS machine. An absolute path is a
+//     property of the authoring machine; it can coincidentally resolve
+//     inside root there and still be meaningless on a colleague's clone
+//     (Task 4 review finding #1). Checked first because it is a judgment
+//     about the DECLARATION, not about the filesystem — no reason to let a
+//     Stat outcome distract from it.
+//  2. Missing — checked before symlink resolution so a nonexistent path
+//     reports "does not exist", not EvalSymlinks' own ENOENT wording aimed
+//     at a different failure.
+//  3. Escapes the checkout — root and the declared path are BOTH resolved
+//     through EvalSymlinks before comparing. Resolving only one side would
+//     misjudge either direction: a checkout itself behind a symlink (root
+//     needs resolving) or, the case this exists for, a symlink COMMITTED
+//     INSIDE the checkout pointing outside it (lexically confined, Stat
+//     follows it and succeeds, and it dangles on a fresh clone — Task 4
+//     review finding #2).
+func checkDeclaredPath(root string, s *config.Stack, key, p string, wasAbsolute bool) []error {
+	if wasAbsolute {
+		return []error{fmt.Errorf(
+			"stack %q: `%s: %s` is an absolute path in stack.yaml — a source is cloned onto "+
+				"machines with different layouts; declare it relative to the stack directory "+
+				"(or to the source root, via `../`) instead", s.Name, key, p)}
+	}
+	if _, err := os.Stat(p); err != nil {
+		return []error{fmt.Errorf("stack %q: %s: %s: %w", s.Name, key, p, err)}
+	}
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return []error{fmt.Errorf("stack %q: %s: %s: %w", s.Name, key, p, err)}
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return []error{fmt.Errorf(
+			"stack %q: %s: %s escapes the checkout — a source is self-contained: a path outside "+
+				"its tree depends on the receiving machine and cannot be shared", s.Name, key, p)}
+	}
+	return nil
 }
 
 // checkCycles walks parent edges among HEALTHY stacks. Three colors are not
@@ -144,7 +216,7 @@ func checkNest(root string, stacks config.Stacks, n *nest.Nest) []error {
 				"it must spawn identically on every machine", n.Name))
 		return errs
 	}
-	if strings.Contains(n.Stack, config.SourceRefSeparator) {
+	if source, _ := config.SplitSourceRef(n.Stack); source != "" {
 		errs = append(errs, fmt.Errorf(
 			"nest %q: `stack: %s` is a prefixed reference — inside a source, references are bare "+
 				"and resolve in the source itself: the install name is chosen per machine and CI "+
