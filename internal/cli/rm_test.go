@@ -1199,3 +1199,79 @@ func TestRmKeepWorktreesKeepsTheManifest(t *testing.T) {
 		t.Errorf("the kept record must be named, so the user can act on it; got:\n%s", out)
 	}
 }
+
+// Proof 9 — a sandbox from before this feature. The old derivation still
+// runs, and the user is told the answer is only as good as an unchanged
+// configuration.
+func TestRmFallsBackAndSaysSoWithoutAManifest(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	wt := createWorktree(t, repo, root, "feat12")
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the legacy derivation must still reclaim the worktree: %v", err)
+	}
+	if !strings.Contains(out, "no creation record") {
+		t.Errorf("the fallback must be announced; got: %s", out)
+	}
+}
+
+// Proof 10 — a corrupt record must never block. The file is named, the
+// derivation takes over, and above all the VM is destroyed: a `den rm` that
+// refuses leaves a live sandbox nobody can remove (doctrine T13/T16).
+func TestRmWarnsAndStillDestroysOnACorruptManifest(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	wt := createWorktree(t, repo, root, "feat12")
+
+	path, err := manifest.Path(denHome, "api.feat12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("a corrupt record must never fail the rm: %v", err)
+	}
+	if !strings.Contains(out, path) {
+		t.Errorf("the unreadable file must be named; got:\n%s", out)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the derivation must take over and reclaim the worktree: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+	// den read nothing of that file, so it cannot know it is worthless: a
+	// record written by a NEWER den lands in this same branch, and deleting it
+	// would destroy that den's only trace of a live sandbox. The message
+	// carries the remedy instead.
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("den must leave a file it could not read alone: %v", err)
+	}
+	if !strings.Contains(out, "by hand") {
+		t.Errorf("the message must say what to do with the file it leaves behind; got:\n%s", out)
+	}
+}
