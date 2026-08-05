@@ -311,3 +311,73 @@ func TestLsSurvivesACorruptRecord(t *testing.T) {
 		t.Errorf("the live sandbox must still be listed; got:\n%s", out)
 	}
 }
+
+// Flattening is lossy: `-w feature/12` becomes the sandbox api.feat-12, and
+// before the record there was nowhere left to read "feature/12" from. The NEST
+// column has the same problem in reverse — a source nest spawns as "corp-api"
+// while the user only ever typed "corp:api".
+func TestLsShowsTheBranchAsTypedAndThePrefixedNest(t *testing.T) {
+	dir := testDenHome(t)
+	writeManifest(t, dir, manifest.Manifest{
+		Sandbox: "corp-api.feat-12",
+		Nest:    manifest.Nest{Ref: "corp:api", File: filepath.Join(dir, "sources", "corp", "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{
+			Name: "feat-12", Branch: "feature/12", Layout: "central",
+			Root: filepath.Join(dir, "worktrees"),
+		},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginKey, Key: "api", Repo: "/dev/api",
+			Mount: filepath.Join(dir, "worktrees", "feat-12", "api"), Worktree: true,
+		}},
+	})
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"corp-api.feat-12","status":"running"}]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if fields := strings.Fields(l); len(fields) > 0 && fields[0] == "corp-api.feat-12" {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("the sandbox must be listed; got:\n%s", out)
+	}
+	if !strings.Contains(line, "corp:api") {
+		t.Errorf("the NEST column must show the reference the user typed; line: %q", line)
+	}
+	if !strings.Contains(line, "feature/12") {
+		t.Errorf("the WORKTREE column must show the branch as typed; line: %q", line)
+	}
+	// The record changes what is DISPLAYED, not what is judged: `declared` is
+	// keyed by the files under <denHome>/nests, so the mark keeps being decided
+	// on the sandbox-derived name. A source nest is declared in no local file,
+	// and it carried that mark before this feature too.
+	if !strings.Contains(line, "corp:api ?") {
+		t.Errorf("the reference must be displayed with the mark the sandbox name earns, "+
+			"not instead of it; line: %q", line)
+	}
+}
+
+// Fail-open: with no record den shows exactly what it showed before.
+func TestLsFallsBackToTheSandboxNameWithoutARecord(t *testing.T) {
+	testDenHome(t) // nest "api" is declared there
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running"}]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "feat12") {
+		t.Errorf("without a record the flattened component is all den has; got:\n%s", out)
+	}
+}

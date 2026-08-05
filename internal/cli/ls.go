@@ -33,13 +33,23 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
+
+			// The creation records, read ONCE for the two things they serve:
+			// the orphan line below, and the two columns whose real value
+			// survives nowhere else. Fail-open — an unreadable state/ leaves
+			// `den ls` doing exactly what it did before records existed.
+			manifests, _, mErr := manifest.List(home)
+			if mErr != nil {
+				manifests = nil
+			}
+
 			if len(boxes) == 0 {
 				fmt.Fprintln(out, "no live sandbox")
 				// The scan runs even here, and that is the whole point: "no
 				// live sandbox, and four recorded worktrees still on disk" is
 				// exactly the state worth reporting, and it is unreachable
 				// from a return placed above it.
-				reportOrphans(out, home, boxes)
+				reportOrphans(out, boxes, manifests)
 				return nil
 			}
 
@@ -59,14 +69,40 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 				declared[n.Name] = true
 			}
 
+			recorded := make(map[string]manifest.Manifest, len(manifests))
+			for _, m := range manifests {
+				recorded[m.Sandbox] = m
+			}
+
 			w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "NAME\tNEST\tWORKTREE\tSTATUS\tWORKSPACES")
 			for _, b := range boxes {
 				nestName := b.Nest()
-				if !declared[nestName] {
+				// The MARK is decided on the sandbox-derived name, before the
+				// record replaces the displayed string: `declared` is keyed by
+				// the names of the files under <denHome>/nests, and a source
+				// reference is not one of them — keying it on the reference
+				// would flag every source sandbox as undeclared for a reason
+				// that has nothing to do with whether it is.
+				undeclared := !declared[nestName]
+				// The record, when there is one, is the ONLY place these two
+				// strings survive: flattening rewrote the branch on its way
+				// into the sandbox name, and the ":" of a source reference is
+				// not in sbx's --name charset. Fail-open — without a record
+				// the columns show what they have always shown, the flattened
+				// forms.
+				wt := b.Worktree()
+				if m, ok := recorded[b.Name]; ok {
+					if m.Nest.Ref != "" {
+						nestName = m.Nest.Ref
+					}
+					if m.Worktree != nil && m.Worktree.Branch != "" {
+						wt = m.Worktree.Branch
+					}
+				}
+				if undeclared {
 					nestName += " ?" // not declared in ~/.den/nests
 				}
-				wt := b.Worktree()
 				if wt == "" {
 					wt = "-"
 				}
@@ -75,7 +111,7 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			if err := w.Flush(); err != nil {
 				return err
 			}
-			reportOrphans(out, home, boxes)
+			reportOrphans(out, boxes, manifests)
 			return nil
 		},
 	}
@@ -86,16 +122,13 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 //
 // FAIL-OPEN, strictly: `den ls` is the command a user types when everything
 // else is broken, and it must never fail over its own extra. A record that
-// cannot be read is skipped in silence here — `den doctor` is the command that
-// names it, and it is the one with a remedy to offer.
+// cannot be read is dropped in silence by the caller's manifest.List — `den
+// doctor` is the command that names it, and it is the one with a remedy to
+// offer.
 //
 // The comparison is free: this command already holds both the live list and
-// den home.
-func reportOrphans(out io.Writer, home string, boxes []sbx.Sandbox) {
-	manifests, _, err := manifest.List(home)
-	if err != nil {
-		return
-	}
+// the records.
+func reportOrphans(out io.Writer, boxes []sbx.Sandbox, manifests []manifest.Manifest) {
 	orphans := doctor.Orphans(doctor.LiveSandboxes{Known: true, Names: liveNames(boxes)}, manifests)
 	if len(orphans) == 0 {
 		return
