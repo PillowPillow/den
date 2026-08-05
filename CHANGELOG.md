@@ -7,6 +7,20 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.3.0 — 2026-08-05
+
+### Changed
+- **Breaking:** spawning is a subcommand — `den spawn <nest>`. The bare form `den <nest>` is
+  gone, and typing it gets a refusal that lists den's commands and says where spawn went.
+  Carrying spawn on the root meant `den --detach` without a nest fell through to help and
+  silently swallowed the flag, no first argument could ever list the commands (every unknown
+  token was a plausible nest name), and a nest named after a subcommand (`ls`, `rm`) could
+  never be spawned at all — `den spawn ls` now reaches it.
+- The fail-closed settle-loop after `sbx create` answers in two `sbx` calls instead of one
+  per allowlisted host: on a 26-host nest, `den spawn` drops from ~20 s to ~7 s and the
+  re-attach branch to ~2 s. The guarantee is unchanged — den still refuses to attach before
+  the scoped egress rule is verifiably live.
+
 ## v1.2.0 — 2026-08-05
 
 ### Added
