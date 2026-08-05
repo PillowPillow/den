@@ -125,6 +125,44 @@ func TestLastFetchPrefersFetchHead(t *testing.T) {
 	}
 }
 
+// TestNames pins Names' contract, distinct from List's: names only, sorted,
+// no git and no lint run, and a non-directory entry inside sources/ (e.g. a
+// stray file) is skipped rather than reported as an installed source.
+func TestNames(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(Dir(home, "zed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(Dir(home, "corp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(Root(home), "stray-file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	names, err := Names(home)
+	if err != nil {
+		t.Fatalf("Names: %v", err)
+	}
+	want := []string{"corp", "zed"}
+	if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] {
+		t.Fatalf("Names = %v, want %v (sorted, stray file excluded)", names, want)
+	}
+}
+
+// TestNamesOnMissingSourcesDir pins the same doctrine List documents: a den
+// home that never added a source has no sources/ directory at all, and that
+// is an empty list, not an error.
+func TestNamesOnMissingSourcesDir(t *testing.T) {
+	home := t.TempDir()
+	names, err := Names(home)
+	if err != nil {
+		t.Fatalf("Names: %v", err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("Names = %v, want an empty list", names)
+	}
+}
+
 func TestListReadsCloneAndLint(t *testing.T) {
 	home := t.TempDir()
 	url := makeSourceRepo(t)

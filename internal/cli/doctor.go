@@ -26,6 +26,18 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 		Short: "Diagnose den's configuration and environment",
 		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// --force only has meaning as a modifier of --fix (it relaxes
+			// one of --fix's own refusals, below). Read on its own it does
+			// nothing: without this refusal `den doctor --force` would print
+			// a plain report with no sign the flag it was given had any
+			// effect — den refuses a flag it would otherwise silently
+			// ignore. Checked before home even resolves: a flag-consistency
+			// mistake is not a config problem, and must not be masked by one.
+			if force && !fix {
+				return fmt.Errorf(
+					"--force has no effect without --fix — run `den doctor --fix --force`")
+			}
+
 			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
@@ -114,7 +126,7 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "reclaim the worktrees of sandboxes that no longer exist")
 	cmd.Flags().BoolVar(&force, "force", false,
-		"reclaim them even when they carry uncommitted changes")
+		"with --fix, reclaim them even when they carry uncommitted changes")
 	return cmd
 }
 

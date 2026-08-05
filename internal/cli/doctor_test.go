@@ -213,6 +213,48 @@ func TestDoctorFailsOnMissingConfig(t *testing.T) {
 	}
 }
 
+// TestDoctorForceWithoutFixRefuses pins the fix round 3 MINOR item: --force
+// has no meaning except as a modifier of --fix, and a user who types it
+// alone must be told so rather than getting a plain report with no sign the
+// flag did anything.
+func TestDoctorForceWithoutFixRefuses(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f, "--force")
+	if err == nil {
+		t.Fatal("expected --force without --fix to be refused")
+	}
+	if !strings.Contains(err.Error(), "--fix") {
+		t.Errorf("refusal does not name --fix: %v", err)
+	}
+	// The refusal happens before the report: nothing about the checks
+	// leaks into an error the user gave a nonsensical flag combination for.
+	if strings.Contains(out, "den home:") {
+		t.Errorf("output = %q, expected no report printed before the refusal", out)
+	}
+}
+
+// TestDoctorFixForceStillBehavesAsBefore pins that 6c's new refusal changes
+// NOTHING about the combination `--fix --force` already had: the dirty-
+// worktree reclaim in TestDoctorFixRefusesADirtyWorktreeUnlessForced above
+// covers the substance of that behavior; this asserts the narrower fact that
+// `--fix --force` on a CLEAN state still succeeds plainly, same as before
+// this fix existed.
+func TestDoctorFixForceStillBehavesAsBefore(t *testing.T) {
+	home := testDenHome(t)
+	wt := orphanFixture(t, home, "api.feat12")
+	f := &sbx.Fake{Responses: lsWith()}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f, "--fix", "--force")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the orphaned worktree must be reclaimed: %v", err)
+	}
+}
+
 // runDoctorWithSbx is runDoctor with a scripted sbx and real git: `den doctor`
 // now asks which sandboxes are live (the orphan check) and, under --fix, moves
 // worktrees. Both accesses are injected for the reason the whole file exists —

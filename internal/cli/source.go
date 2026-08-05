@@ -132,29 +132,33 @@ func newSourceCmd(denHome *string, git worktree.Git) *cobra.Command {
 }
 
 // updateAllSources drives a bare `den source update`: every installed
-// source, in source.List's order. Failures accumulate rather than aborting
-// the loop — one source stuck behind a VPN, or pointed at a remote that has
-// moved, must not hide whether the others are current. Each failure is
-// prefixed with its OWN source name here, deliberately: source.Update's bare
-// `git fetch` error carries no name at all (mutate.go), so leaving that out
-// would make a fetch failure in a multi-source update impossible to
-// attribute.
+// source, in source.Names's order (sorted — os.ReadDir's own order).
+// source.Names, not source.List, on purpose: List lints every source and
+// runs two git commands per source to build the report `den source ls`
+// shows, and none of that feeds this loop — it uses nothing but the name,
+// and source.Update lints the fetched tree itself. Failures accumulate
+// rather than aborting the loop — one source stuck behind a VPN, or pointed
+// at a remote that has moved, must not hide whether the others are current.
+// Each failure is prefixed with its OWN source name here, deliberately:
+// source.Update's bare `git fetch` error carries no name at all
+// (mutate.go), so leaving that out would make a fetch failure in a
+// multi-source update impossible to attribute.
 func updateAllSources(ctx context.Context, git worktree.Git, home string, out io.Writer) error {
-	infos, err := source.List(ctx, git, home)
+	names, err := source.Names(home)
 	if err != nil {
 		return err
 	}
-	if len(infos) == 0 {
+	if len(names) == 0 {
 		fmt.Fprintln(out, "no source installed")
 		return nil
 	}
 	var failures []string
-	for _, info := range infos {
-		if err := source.Update(ctx, git, home, info.Name); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", info.Name, err))
+	for _, name := range names {
+		if err := source.Update(ctx, git, home, name); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
-		fmt.Fprintf(out, "source %q updated\n", info.Name)
+		fmt.Fprintf(out, "source %q updated\n", name)
 	}
 	if len(failures) > 0 {
 		return fmt.Errorf("%d source(s) failed to update:\n  - %s",

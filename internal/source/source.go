@@ -73,6 +73,34 @@ func Stale(denHome, name string, now time.Time) bool {
 	return ok && now.Sub(last) > StaleAfter
 }
 
+// Names lists installed sources by name only, sorted — os.ReadDir already
+// returns entries sorted by filename, so nothing here re-sorts. A missing
+// sources/ directory is an empty list, not an error, the same doctrine List
+// documents above.
+//
+// This exists because List is not free: `den source ls` pays a `lint.Run`
+// plus a `git remote get-url` and a `git rev-parse` PER installed source,
+// work that exists to answer "what is installed and is it healthy". A bare
+// `den source update` needs only the names to iterate over — source.Update
+// lints the fetched tree itself — so routing it through List would lint
+// (and shell out to git for) every source twice per run for no reason.
+func Names(denHome string) ([]string, error) {
+	entries, err := os.ReadDir(Root(denHome))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading %s: %w", Root(denHome), err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
+}
+
 // Info is one installed source as `den source ls` shows it.
 type Info struct {
 	Name      string

@@ -258,6 +258,15 @@ func Update(ctx context.Context, git worktree.Git, denHome, name string) error {
 	}
 	defer os.RemoveAll(tmp)
 	probe := filepath.Join(tmp, "tree")
+	// Best-effort, error ignored: `worktree prune` only drops a registration
+	// whose directory is already gone, so it can never touch a live
+	// worktree — it exists solely to collect the debris a run of THIS same
+	// probe leaves behind when killed between `add` and `remove`/`prune`
+	// below (the probe path is fresh every run via os.MkdirTemp, so nothing
+	// ever collides with it and nothing but an explicit prune ever clears
+	// it). A failure here has nothing to do with the update this call is
+	// making, so it must not refuse it.
+	git.Run(ctx, dir, "worktree", "prune")
 	if _, err := git.Run(ctx, dir, "worktree", "add", "--detach", probe, "@{u}"); err != nil {
 		// Nothing was registered if `add` itself failed: no worktree to prune.
 		return err

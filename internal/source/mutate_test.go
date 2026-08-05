@@ -494,6 +494,62 @@ func TestUpdatePrunesStaleWorktreeRegistrationWhenRemoveFails(t *testing.T) {
 	}
 }
 
+// TestUpdateSucceedsWithADanglingWorktreeRegistration pins the fix round 3
+// MINOR item: a `den source update` killed between the lint probe's
+// `worktree add` and its `remove`/`prune` leaves a registration in
+// <clone>/.git/worktrees/ that nothing, before this fix, ever cleared — the
+// probe path is fresh every run (os.MkdirTemp), so no later run's own probe
+// collides with it, and no later run's own remove/prune path touches it
+// either.
+//
+// The fixture builds exactly that shape, hermetically, through the SAME
+// injected git production code uses: `worktree add` a throwaway worktree,
+// then delete its directory WITHOUT ever running `worktree remove` or
+// `worktree prune` on it — the same gap a killed process leaves. `git
+// worktree list` then still names it ("prunable"): registered, but its
+// directory is gone. Building it this way needs no process-killing, only
+// doing by hand what an interrupted run leaves behind.
+//
+// Update must both succeed despite it (the dangling entry lives at an
+// unrelated path, so it was never what could have made the probe's OWN
+// `worktree add` fail) AND leave the clone's worktree list holding only the
+// main worktree — proving the prepended `worktree prune` swept up the
+// pre-existing debris as a side effect, not merely tolerated it.
+func TestUpdateSucceedsWithADanglingWorktreeRegistration(t *testing.T) {
+	home := t.TempDir()
+	url := makeSourceRepo(t)
+	if _, err := Add(context.Background(), worktree.NewGit(), home, url, "corp"); err != nil {
+		t.Fatal(err)
+	}
+	dir := Dir(home, "corp")
+	git := worktree.NewGit()
+
+	stale := filepath.Join(t.TempDir(), "stale-worktree")
+	if _, err := git.Run(context.Background(), dir, "worktree", "add", "--detach", stale, "HEAD"); err != nil {
+		t.Fatalf("building the dangling registration: %v", err)
+	}
+	if err := os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := git.Run(context.Background(), dir, "worktree", "list"); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(out), stale) {
+		t.Fatalf("fixture did not leave a dangling registration; worktree list:\n%s", out)
+	}
+
+	if err := Update(context.Background(), git, home, "corp"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	out, err := git.Run(context.Background(), dir, "worktree", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Count(strings.TrimSpace(string(out)), "\n") + 1; lines != 1 {
+		t.Errorf("worktree list has %d entries after Update, want 1 (main only) — "+
+			"the pre-existing dangling registration should have been pruned:\n%s", lines, out)
+	}
+}
+
 // TestUpdateFetchesTheBranchsOwnRemoteNotOrigin pins the RESIDUAL of the
 // FETCH_HEAD finding: the fetch itself was still hardcoded to "origin"
 // while the merge handle is "@{u}". A branch tracking a differently-named
