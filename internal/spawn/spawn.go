@@ -635,6 +635,22 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// stays silent. Without this, the user reattaches to a VM where
 		// git is dead and only finds out on their first git command.
 		reportMissingGitDirs(d.Out, sandboxName, live.Workspaces, gitDirs)
+		// Two DIFFERENT drifts used to arrive as one. reportUnmountedRepos
+		// compares today's configuration to what the VM mounts, which
+		// fires both when the VM is missing something and when the nest
+		// itself was edited since — indistinguishable, and only the second
+		// has a remedy den can honestly name, since nothing is ever
+		// remounted on a live VM.
+		//
+		// Read, not required: a sandbox created before records existed has
+		// none, and attaching to it must keep working exactly as before.
+		if recorded, err := manifest.Read(r.DenHome, sandboxName); err == nil {
+			mounts := make([]string, 0, len(recorded.Repos))
+			for _, rr := range recorded.Repos {
+				mounts = append(mounts, rr.Mount)
+			}
+			reportNestChangedSinceCreation(d.Out, sandboxName, mounts, workspaces[:len(r.Repos)])
+		}
 		// The repos are the FIRST len(r.Repos) workspaces — step 3 appends
 		// exactly one per repo, before the git dirs, the agent profile and
 		// ssh.dir. Slicing there rather than recomputing keeps the comparison on
@@ -1393,6 +1409,24 @@ func reportUnmountedRepos(out io.Writer, sandboxName, workdir string, mounted, e
 		fmt.Fprintf(out, "  the shell starts in %s, as it did at create time\n", workdir)
 	}
 	fmt.Fprintf(out, "  `den rm %s` then relaunch to change either.\n", sandboxName)
+}
+
+// reportNestChangedSinceCreation warns when the repos the configuration now
+// resolves to are not the ones den mounted when it created this sandbox.
+//
+// The remedy is named because there is one and it is the only one: den does
+// not touch a live VM's mounts, so the configuration takes effect at the next
+// create, not at this attach. Silence here would let the user keep working in
+// a sandbox that quietly does not match the nest they just edited.
+func reportNestChangedSinceCreation(out io.Writer, sandboxName string, recorded, expected []string) {
+	if slices.Equal(recorded, expected) {
+		return
+	}
+	fmt.Fprintf(out,
+		"nest changed since sandbox %s was created: it was created with %s, the configuration "+
+			"now resolves to %s — a live sandbox keeps its create-time mounts, so this takes "+
+			"effect after `den rm %s` and a respawn\n",
+		sandboxName, strings.Join(recorded, ", "), strings.Join(expected, ", "), sandboxName)
 }
 
 // Attach opens an interactive shell in the sandbox.

@@ -3350,3 +3350,68 @@ func TestSpawnDoesNotRewriteTheManifestOfALiveSandbox(t *testing.T) {
 			reference, after)
 	}
 }
+
+// Attaching compares two different things that used to be conflated: what the
+// configuration says today versus what the VM mounts (reportUnmountedRepos),
+// and what the configuration says today versus what den ACTUALLY mounted at
+// creation. Only the second has an honest remedy — den never remounts anything
+// on a live VM, so the answer is `den rm` then respawn.
+func TestAttachReportsANestChangedSinceCreation(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("first spawn: unexpected error: %v", err)
+	}
+
+	// The nest gains a repo AFTER the create. The VM keeps mounting exactly
+	// what it was created with.
+	other := filepath.Join(t.TempDir(), "web")
+	createRepo(t, other)
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n  - { path: "+other+" }\n")
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	log.Reset()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("attach: unexpected error: %v", err)
+	}
+	got := log.String()
+	if !strings.Contains(got, "nest changed since sandbox api was created") {
+		t.Errorf("an edited nest must be named as such, not as a VM missing a mount;\n%s", got)
+	}
+	if !strings.Contains(got, other) {
+		t.Errorf("the message must name what the configuration now resolves to;\n%s", got)
+	}
+	if !strings.Contains(got, "den rm api") {
+		t.Errorf("the only remedy den can honestly offer must be named;\n%s", got)
+	}
+}
+
+// No record, or a record that still matches: nothing to say. A warning that
+// fires on every attach stops being read.
+func TestAttachSaysNothingWhenTheNestIsUnchanged(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("first spawn: unexpected error: %v", err)
+	}
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	log.Reset()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("attach: unexpected error: %v", err)
+	}
+	if strings.Contains(log.String(), "nest changed") {
+		t.Errorf("an unchanged nest must produce no warning;\n%s", log.String())
+	}
+}
