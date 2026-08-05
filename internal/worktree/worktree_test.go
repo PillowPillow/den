@@ -2690,3 +2690,39 @@ func TestCommonGitDirRefusesANonRepo(t *testing.T) {
 // from config.FlattenSandboxComponent, and offering a shortcut that assumes
 // "branch = directory" would invite flattening the branch.
 func wtName(s string) Name { return Name{Dir: s, Branch: s} }
+
+// The recorded path WINS over the calculation. This is what severs rm's
+// dependency on a configuration that may have moved: a worktree_root edited
+// between the spawn and the rm made Path() aim at a directory that never
+// existed, and the real one stayed on disk with no message about it.
+func TestRemoveUsesTheRecordedPathOverTheCalculatedOne(t *testing.T) {
+	denHome := t.TempDir()
+	repo := testRepo(t, "api")
+
+	// Created under the root in force at spawn time...
+	spawnRoot := filepath.Join(t.TempDir(), "worktrees-then")
+	created, err := Ensure(context.Background(), NewGit(), "central", spawnRoot, wtName("feat12"), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ...and removed while config.yaml now names a different root.
+	dest, err := Remove(context.Background(), NewGit(), Target{
+		DenHome:      denHome,
+		Layout:       "central",
+		Root:         filepath.Join(t.TempDir(), "worktrees-now"),
+		Nest:         "api.feat12",
+		Worktree:     "feat12",
+		RepoPath:     repo,
+		WorktreePath: created,
+	})
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if dest == "" {
+		t.Fatal("the recorded worktree must be found and moved, not reported as already gone")
+	}
+	if _, err := os.Stat(created); !os.IsNotExist(err) {
+		t.Errorf("%s must have left its place: %v", created, err)
+	}
+}
