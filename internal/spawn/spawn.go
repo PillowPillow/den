@@ -18,6 +18,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
@@ -650,6 +651,25 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			fmt.Fprintf(d.Out, "sandbox %s already live: attaching\n", sandboxName)
 		}
 	} else {
+		// The creation record, written BEFORE `sbx create` (spec 2026-08-05
+		// D3). The worktrees already exist at this point — step 3 created
+		// them — so a `sbx create` that fails leaves directories on disk, and
+		// this is the only position where that case still leaves a trace of
+		// them. The accepted corollary is that a manifest can exist with no
+		// sandbox; `den ls` and `den doctor` are what make that state
+		// addressable.
+		//
+		// A write failure REFUSES, here, rather than being warned about: den
+		// has just printed the path of every worktree it created
+		// (`worktree %s: %s` above), so the refusal names them and the user
+		// is not additionally left with a VM to destroy.
+		if err := manifest.Write(r.DenHome, manifestOf(
+			sandboxName, o.Nest, nest.FilePath(nestRoot, bareNest),
+			worktreeName, r, workspaces[:len(r.Repos)], gitDirs,
+		)); err != nil {
+			return err
+		}
+
 		// The mixin is materialized ONLY here: the one moment it's
 		// placed on a VM, and so the only time the file can claim to
 		// describe what that VM carries.
@@ -1398,4 +1418,54 @@ func first(s []string) string {
 		return ""
 	}
 	return filepath.Clean(s[0])
+}
+
+// manifestOf assembles the creation record from what spawn just did — NOT
+// from what the configuration says. mounts is workspaces[:len(r.Repos)], the
+// slice step 3 filled one entry per repo, in declaration order: those are the
+// paths `sbx create` is about to receive, worktrees included, and recording
+// anything else would put the file straight back into the business of
+// re-deriving that it exists to end.
+func manifestOf(sandboxName, nestRef, nestFile string, wt worktree.Name,
+	r *nest.Resolved, mounts, gitDirs []string) manifest.Manifest {
+
+	m := manifest.Manifest{
+		Sandbox: sandboxName,
+		Nest:    manifest.Nest{Ref: nestRef, File: nestFile},
+		Repos:   make([]manifest.Repo, 0, len(r.Repos)),
+		GitDirs: gitDirs,
+	}
+	if wt.Dir != "" {
+		m.Worktree = &manifest.Worktree{
+			Name:   wt.Dir,
+			Branch: wt.Branch,
+			Layout: r.WorktreeLayout,
+			Root:   r.WorktreeRoot,
+		}
+	}
+	for i, repo := range r.Repos {
+		// The three origins are exclusive and ordered: AdHoc first, because a
+		// positional never carries a key, and Key before the plain path,
+		// because a key entry HAS a path by now (Resolve filled it) and would
+		// otherwise be indistinguishable from a declared `path:`.
+		origin := manifest.OriginPath
+		switch {
+		case repo.AdHoc:
+			origin = manifest.OriginCommandLine
+		case repo.Key != "":
+			origin = manifest.OriginKey
+		}
+		m.Repos = append(m.Repos, manifest.Repo{
+			Name:   repo.Name(),
+			Origin: origin,
+			Key:    repo.Key,
+			Repo:   repo.Path,
+			Mount:  mounts[i],
+			// den created this directory iff it spawned under -w. That single
+			// bit is what `den rm` consults before touching anything: a repo
+			// mounted as-is is the user's own working directory.
+			Worktree: wt.Dir != "",
+		})
+	}
+	return m
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
@@ -3252,5 +3253,100 @@ func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEverythingInOrder(t *testing.T)
 	if strings.Contains(out.String(), "den rm scratch") {
 		t.Errorf("log = %q, expected no warning: this attach asked for exactly what's mounted, "+
 			"in the same order", out.String())
+	}
+}
+
+// What spawn mounted is what the manifest says — including the repo given on
+// the command line, which is declared in no file at all and which no later
+// re-derivation could ever find.
+func TestSpawnWritesTheManifestOfWhatItMounted(t *testing.T) {
+	denHome, repo := denTest(t)
+	hotfix := filepath.Join(t.TempDir(), "hotfix")
+	createRepo(t, hotfix)
+	_, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Worktree: "feature/12", Repos: []string{hotfix}}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m, err := manifest.Read(denHome, "api.feature-12")
+	if err != nil {
+		t.Fatalf("the manifest must exist after a create: %v", err)
+	}
+	if m.Nest.Ref != "api" || m.Nest.File != filepath.Join(denHome, "nests", "api.yaml") {
+		t.Errorf("the nest must be recorded by both its reference and its file: %#v", m.Nest)
+	}
+	if m.Worktree == nil || m.Worktree.Branch != "feature/12" {
+		t.Fatalf("the branch as typed must survive flattening: %#v", m.Worktree)
+	}
+	if m.Worktree.Name != "feature-12" || m.Worktree.Layout != "central" {
+		t.Errorf("the worktree den created is recorded as it was created: %#v", m.Worktree)
+	}
+	var adhoc, declared *manifest.Repo
+	for i := range m.Repos {
+		switch m.Repos[i].Origin {
+		case manifest.OriginCommandLine:
+			adhoc = &m.Repos[i]
+		case manifest.OriginPath:
+			declared = &m.Repos[i]
+		}
+	}
+	if adhoc == nil {
+		t.Fatalf("the command-line repo must be recorded: %#v", m.Repos)
+	}
+	if adhoc.Repo != hotfix {
+		t.Errorf("the repo the worktree came from must be recorded: %#v", adhoc)
+	}
+	if !adhoc.Worktree {
+		t.Errorf("under -w, den created this repo's worktree too: %#v", adhoc)
+	}
+	if adhoc.Mount != filepath.Join(denHome, "worktrees", "feature-12", "hotfix") {
+		t.Errorf("the MOUNT is the path sbx received, worktree included: %#v", adhoc)
+	}
+	if declared == nil || declared.Repo != repo {
+		t.Errorf("the declared repo must be recorded as a plain path: %#v", m.Repos)
+	}
+}
+
+// The manifest describes what THIS VM received at its create. Rewriting it on
+// attach would destroy that reference — the same doctrine, and the same
+// regression, as TestSpawnDoesNotRewriteTheMixinOfALiveSandbox.
+func TestSpawnDoesNotRewriteTheManifestOfALiveSandbox(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("first spawn: unexpected error: %v", err)
+	}
+	path, err := manifest.Path(denHome, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("create must have written %s: %v", path, err)
+	}
+
+	// The nest gains a repo, and the sandbox is now live: an attach that
+	// rewrote the record would erase what the VM actually mounts.
+	other := filepath.Join(t.TempDir(), "web")
+	createRepo(t, other)
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n  - { path: "+other+" }\n")
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("attach: unexpected error: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(reference) {
+		t.Errorf("the creation record was rewritten on a live sandbox;\nbefore:\n%s\nafter:\n%s",
+			reference, after)
 	}
 }
