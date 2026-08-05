@@ -85,6 +85,62 @@ func nestCandidates(denHome, component string) []nestCandidate {
 	return out
 }
 
+// LocalCollisionError is THE refusal for "one sandbox name, two nests that
+// explain it" — the local nest <denHome>/nests/<component>.yaml and a source
+// nest whose flattened reference is that same <component>.
+//
+// EXPORTED, and built here rather than at either call site, because two
+// commands reach this state from opposite directions and must say the same
+// thing: DecodeSandboxNest below, working backwards from a flattened sandbox
+// name, and cli.nestOfSandbox's prefixed branch, where the user named the
+// source outright. A second copy of the sentence would drift, and what it
+// would drift on is the ordering the last paragraph explains — the part that
+// is load-bearing rather than stylistic.
+//
+// THE SOURCE-SIDE SPELLING IS NAMED BUT NOT OFFERED, and that is the whole
+// care in this sentence. A live sandbox with this name may genuinely have come
+// from EITHER nest: spawn's collision block runs only for a source reference
+// (it sits inside `if srcName != ""`), so `den corp-api` on the local nest is
+// never checked against source decompositions and creates this situation with
+// no refusal anywhere. A flattened sandbox name carries no record of which nest
+// made it — that is exactly why den cannot arbitrate.
+//
+// An earlier wording offered `corp:api` conditionally ("if it was spawned from
+// the SOURCE nest"), and that was wrong twice over. Wrong while the prefixed
+// spelling still resolved, because the condition is one the USER cannot check
+// either: on the local origin the suggestion succeeded and published the wrong
+// nest's declared ports — a command that works, does something, and fixes
+// nothing. And wrong once cli.nestOfSandbox began arbitrating that spelling
+// too: it now lands on this very refusal, so the message was sending the user
+// in a circle. It is named here only to say that it is not a way through.
+//
+// NEITHER ORIGIN HAS A SPELLING, so the remedy is the same either way and the
+// sandbox has to go. --keep-worktrees, because den cannot attribute its
+// worktrees to a nest either.
+//
+// THE RENAME IS SAID TO COME AFTER THE DESTROY, and the order is not
+// stylistic. Renaming the local file while the sandbox is still LIVE removes
+// the local candidate, so the decode stops refusing and resolves to the source
+// nest — and `den ports <name>` then succeeds, publishing the source nest's
+// declared ports into a sandbox the local nest spawned. That is the very
+// outcome this refusal exists to prevent, so the message must not describe a
+// path that walks into it.
+//
+// The LOCAL file is the one to rename: a rename inside a source's clone is
+// reverted by its next `den source update`.
+func LocalCollisionError(component, localPath, sourcePath, ref string) error {
+	return fmt.Errorf(
+		"sandbox %q: two nests produce this name — the local nest %s and the source nest %s — "+
+			"and a sandbox name records neither, so den will not guess which one declares its "+
+			"repos. While both nests exist no spelling reaches it — not the flattened name, not "+
+			"`%s` — so the remedy is the same whichever one spawned it: destroy the sandbox with "+
+			"`den rm %s --keep-worktrees`. Then — once no sandbox carries this "+
+			"name any more, never before, or den would silently resolve the survivor to the "+
+			"source nest — rename %s so the two stop colliding (renaming inside a source is "+
+			"reverted by its next `den source update`)",
+		component, localPath, sourcePath, ref, component, localPath)
+}
+
 // DecodeSandboxNest maps a sandbox's NEST COMPONENT back to the nest that
 // declared it — the reverse of the flattening every source nest spawns
 // under, and the reason `den ports corp-api` can work at all.
@@ -125,44 +181,11 @@ func DecodeSandboxNest(denHome, component string) (SandboxNest, error) {
 
 	switch {
 	case localExists && len(found) > 0:
-		// THE SOURCE-SIDE SPELLING IS OFFERED CONDITIONALLY, never flatly, and
-		// that is the whole care in this sentence. A live sandbox with this
-		// name may genuinely have come from EITHER nest: spawn's collision
-		// block runs only for a source reference (it sits inside
-		// `if srcName != ""`), so `den corp-api` on the local nest is never
-		// checked against source decompositions and creates this situation
-		// with no refusal anywhere. A flattened sandbox name carries no record
-		// of which nest made it — that is exactly why den cannot arbitrate.
-		//
-		// So `den ports corp:api` is a remedy for ONE of the two origins, and
-		// on the other it would succeed while publishing the wrong nest's
-		// declared ports into the sandbox — a command that works, does
-		// something, and fixes nothing.
-		//
-		// The local-origin case has no spelling at all, so the honest remedy
-		// is that the sandbox has to go. --keep-worktrees, because den cannot
-		// attribute its worktrees to a nest either.
-		//
-		// THE RENAME IS SAID TO COME AFTER THE DESTROY, and the order is not
-		// stylistic. Renaming the local file while the sandbox is still LIVE
-		// makes localExists false, so the decode stops refusing and resolves
-		// to the source nest — and `den ports <name>` then succeeds, publishing
-		// the source nest's declared ports into a sandbox the local nest
-		// spawned. That is the very outcome this refusal exists to prevent, so
-		// the message must not describe a path that walks into it.
-		//
-		// The LOCAL file is the one to rename: a rename inside a source's
-		// clone is reverted by its next `den source update`.
-		return SandboxNest{}, fmt.Errorf(
-			"sandbox %q: two nests produce this name — the local nest %s and the source nest %s — "+
-				"and a sandbox name records neither, so den will not guess which one declares its "+
-				"repos. If it was spawned from the SOURCE nest, address it as `%s`, which always "+
-				"resolves there. If it was spawned from the LOCAL nest, no spelling reaches it: "+
-				"destroy it with `den rm %s --keep-worktrees`. Then — once no sandbox carries this "+
-				"name any more, never before, or den would silently resolve the survivor to the "+
-				"source nest — rename %s so the two stop colliding (renaming inside a source is "+
-				"reverted by its next `den source update`)",
-			component, local, found[0].Path, found[0].Ref(), component, local)
+		// A local nest file written after a source sandbox was spawned — or a
+		// source installed after a local one was. LocalCollisionError holds
+		// why den refuses instead of picking a side, and why its remedies are
+		// ordered the way they are.
+		return SandboxNest{}, LocalCollisionError(component, local, found[0].Path, found[0].Ref())
 
 	case len(found) > 1:
 		return SandboxNest{}, fmt.Errorf(

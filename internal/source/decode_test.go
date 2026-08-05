@@ -160,9 +160,11 @@ func TestDecodeSandboxNestWithNoSourcesInstalled(t *testing.T) {
 // genuinely have come from either side, and a flattened sandbox name carries
 // no record of which.
 //
-// A refusal offering only `corp:api` would therefore be the I3 shape again —
-// a suggested command that SUCCEEDS and does the wrong thing, publishing the
-// source nest's declared ports into a sandbox spawned from the local one.
+// So NEITHER spelling may be offered as a way through. A refusal pointing at
+// `corp:api` would be the I3 shape again — a suggested command that SUCCEEDS
+// and does the wrong thing, publishing the source nest's declared ports into a
+// sandbox spawned from the local one — and since cli.nestOfSandbox arbitrates
+// the prefixed spelling too, it now lands right back on this refusal.
 func TestDecodeSandboxNestAmbiguityRefusalAddressesBothOrigins(t *testing.T) {
 	home := t.TempDir()
 	writeNest(t, home, "corp-api")
@@ -173,16 +175,27 @@ func TestDecodeSandboxNestAmbiguityRefusalAddressesBothOrigins(t *testing.T) {
 		t.Fatal("expected a refusal")
 	}
 	msg := err.Error()
-	// The spelling that works IF the sandbox came from the source, said to be
-	// conditional rather than offered flatly.
-	if !strings.Contains(msg, "corp:api") {
-		t.Errorf("message %q lacks the source-side spelling", msg)
+	// The source-side spelling is NAMED — a message that never printed it
+	// would leave the user guessing what den even considered — and named as
+	// one that does not reach the sandbox either.
+	for _, want := range []string{"corp:api", "no spelling reaches it"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q lacks %q — no spelling may be offered as a way through", msg, want)
+		}
 	}
-	// And the only honest remedy when it came from the LOCAL nest: no spelling
-	// reaches it, so the sandbox has to go and be re-spawned uncollided.
+	// The one remedy left, and it is the same whichever nest spawned it: the
+	// sandbox has to go and be re-spawned uncollided.
 	for _, want := range []string{"den rm corp-api --keep-worktrees", "rename"} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("message %q lacks %q — the local-origin case has no other remedy", msg, want)
+			t.Errorf("message %q lacks %q — neither origin has another remedy", msg, want)
 		}
+	}
+	// THE ORDER, not merely the presence: renaming the local file while the
+	// sandbox is still live removes the local candidate, so the decode stops
+	// refusing and silently resolves the survivor to the SOURCE nest — the
+	// outcome this refusal exists to prevent. Destroy first, always.
+	if strings.Index(msg, "den rm corp-api") > strings.Index(msg, "rename") {
+		t.Errorf("message %q puts the rename before the destroy: following it in order "+
+			"walks into the silent resolution the refusal exists to prevent", msg)
 	}
 }

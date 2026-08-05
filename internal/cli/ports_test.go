@@ -1518,3 +1518,79 @@ func TestPortsSourceReferenceRefusesAnUninstalledSource(t *testing.T) {
 		}
 	}
 }
+
+// The SAME uninstalled source, on a den home that also holds a local
+// nests/corp-api.yaml — the state the collision check would claim for itself
+// if it ran before source.Locate. It must not: nothing under sources/ can be
+// the second half of a collision here, and the remedy the user needs is the
+// one only a typed prefix can produce, naming the missing source.
+func TestPortsSourceReferenceRefusesAnUninstalledSourceDespiteALocalNest(t *testing.T) {
+	denHome := t.TempDir()
+	writeUnder(t, denHome, filepath.Join("nests", "corp-api.yaml"), "stack: devx\n")
+	f := &sbx.Fake{Responses: lsWith("corp-api")}
+
+	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "corp:api")
+	if err == nil {
+		t.Fatal("an uninstalled source must be refused, local nest or not")
+	}
+	for _, want := range []string{"not installed", "den source add"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
+// The ambiguity the PREFIXED spelling used to walk straight past: den ports
+// corp-api refused, `den ports corp:api` resolved the source nest and
+// published ITS declared ports into a sandbox the local nest may well have
+// spawned. A typed prefix says which nest the user means, not which nest the
+// live VM came from, and only the second question is being answered here — so
+// both spellings now refuse, through source.LocalCollisionError.
+func TestPortsSourceReferenceRefusesALocalCollision(t *testing.T) {
+	denHome := srcPortsNest(t)
+	writeUnder(t, denHome, filepath.Join("nests", "corp-api.yaml"), "stack: devx\n")
+	f := &sbx.Fake{Responses: lsWith("corp-api")}
+
+	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "corp:api")
+	if err == nil {
+		t.Fatal("two nests produce this sandbox name: den must refuse rather than guess")
+	}
+	// The two files, not the whole sentence — its wording belongs to
+	// internal/source, which pins it.
+	for _, want := range []string{
+		filepath.Join(denHome, "nests", "corp-api.yaml"),
+		filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+	if f.HasCalled("ports") {
+		t.Errorf("nothing may be published after the refusal; calls: %v", f.Calls)
+	}
+}
+
+// The control for the refusal above, and the guard on WHICH file it stats:
+// the collision is between the local nest named after the FLATTENED component
+// ("corp-api") and the source nest — a local nests/api.yaml, named after the
+// BARE half of the reference, collides with nothing and must change nothing.
+// Its ports differ from the source's on purpose: that is what proves which of
+// the two files was read.
+func TestPortsSourceReferenceIgnoresALocalNestOfTheBareName(t *testing.T) {
+	denHome := srcPortsNest(t)
+	writeUnder(t, denHome, filepath.Join("nests", "api.yaml"),
+		"stack: devx\nports:\n  base: 9200\n  publish:\n"+
+			"    - { name: wrongnest, container: 4444 }\n")
+	f := &sbx.Fake{Responses: lsWith("corp-api")}
+
+	stdout, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "corp:api")
+	if err != nil {
+		t.Fatalf("den ports corp:api: %v", err)
+	}
+	if !f.HasCalled("ports", "corp-api", "--publish", "127.0.0.1:9100:5173") {
+		t.Errorf("expected the SOURCE nest's declared port to be published; calls: %v", f.Calls)
+	}
+	if strings.Contains(stdout, "wrongnest") || strings.Contains(stdout, "4444") {
+		t.Errorf("the local nests/api.yaml must not have been read; got:\n%s", stdout)
+	}
+}
