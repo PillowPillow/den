@@ -7,17 +7,6 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
-## v1.3.0 — 2026-08-05
-
-### Changed
-
-- **BREAKING — `den <nest>` no longer spawns: `den spawn <nest>`.** The spawn is a
-  subcommand like any other. Its six flags (`-w`, `--agent`, `--without`, `--only`,
-  `--detach`, `-i`) left the root, where `den --detach` alone swallowed them in
-  silence. An unknown first argument now lists everything den can do, and a nest
-  homonymous with a subcommand — `ls`, `rm`, `sh` — becomes spawnable again:
-  `den spawn ls`.
-
 ## v1.2.0 — 2026-08-05
 
 ### Added
