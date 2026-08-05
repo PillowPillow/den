@@ -7,6 +7,19 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.3.1 — 2026-08-05
+
+### Fixed
+- Runtime messages no longer cite spec section numbers (`(spec §9.1)`) — the spec lives in
+  `docs/superpowers/`, is written in French, and never ships with the binary, so the
+  parenthesis sent the reader to a lookup that could not succeed.
+
+### Changed
+- README now documents the agent profile: `~/.den/.claude` is a den-dedicated settings
+  directory (fork subagent, spawn depth, bypass permissions), separate from any profile on
+  the host, with the trade-off stated plainly — repos mount RW at the same absolute path and
+  `agent-forward` hands the VM your push access.
+
 ## v1.3.0 — 2026-08-05
 
 ### Changed
