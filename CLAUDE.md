@@ -52,6 +52,13 @@ reapplied to a live VM — den warns about mixin drift and missing git dirs inst
 `internal/cli` must import none of `net`, `hash/fnv`, `os/exec` — both invariants are locked by
 `internal/ports/hermeticity_test.go`, which fails with an import-graph message if you break them.
 
+**What den mounted is recorded, not re-derived.** `internal/manifest` writes
+`<denHome>/state/sandboxes/<sandbox>.yaml` on the create branch, before `sbx create`; `den rm`,
+`den ls` and `den doctor` replay it. Every reader falls back on the old derivation when the file is
+absent or unreadable — `den rm` must never refuse and strand a live VM (doctrine T13/T16), and den
+never deletes a record it could not read (it may belong to a newer den). `state/` is not `cache/`:
+it is never purged.
+
 **Team sources** live under `sources/<n>/` (`internal/source`) — plain git clones carrying the
 den-home partial layout (`stacks/`, `lib/`, `kits/`, `nests/`, no `config.yaml`: personal config
 never travels through a source). References are `<source>:<name>` on the personal side (`corp:backend`,

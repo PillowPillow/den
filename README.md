@@ -91,7 +91,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den source ls` | lists installed sources: name, HEAD, last fetch, URL |
 | `den source rm <n> [--force]` | removes an installed source; refuses on a dirty working tree or commits unreachable from any remote-tracking ref, unless `--force` |
 | `den lint <path>` | validates a checkout (stacks, nests, references, path confinement) — what a team source's CI runs |
-| `den doctor` | diagnoses the configuration and the environment |
+| `den doctor` | diagnoses the configuration and the environment, and reports records whose sandbox is gone; `--fix` reclaims their worktrees (`--force` if one is dirty) |
 | `den version` | binary version |
 
 Options of `den <nest>`:
@@ -143,24 +143,30 @@ creating anything otherwise.
 command line is dropped by not typing it. Naming an undeclared repo on either flag is not a no-op:
 den refuses the whole spawn with `repo "<name>" unknown in this nest`.
 
-**`den rm` does not clean the worktree of a repo given on the command line.** A positional is not
-part of the sandbox identity, so den persists it nowhere and `den rm` — which recovers what to
-clean from the sandbox name alone, through the nest's `repos:` — cannot know it existed. After
-`den api -w feat ~/dev/hotfix`, `den rm api.feat` leaves `worktree_root/feat/hotfix` and its git
-registration behind. Remove it yourself, naming the worktree — `git worktree remove` takes its path
-and refuses a dirty one without `-f`:
+**`den rm` reclaims the worktree of a repo given on the command line too.** At creation den writes
+down what it actually mounted, under `~/.den/state/sandboxes/<sandbox>.yaml`, and the teardown
+replays that record instead of re-deriving it from today's configuration. So a positional — declared
+in no file at all — is reclaimed like the rest, and so is a worktree whose `worktree_root` moved,
+whose repo key stopped being mapped, or whose nest was deleted since the spawn. A repo mounted
+as-is, that den did not create, is never touched.
 
-```bash
-git -C ~/dev/hotfix worktree remove ~/.den/worktrees/feat/hotfix
-```
+A sandbox created before the records existed (or outside den) has none: `den rm` then falls back on
+the old derivation through the nest's `repos:`, saying so — that answer is only accurate if neither
+the nest nor `config.yaml` changed since. Under the `per-repo` layout a leftover from such a sandbox
+sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den added to that
+repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to remove.
 
-The same is true of a repo deleted from `repos:` before the teardown. Under the `per-repo` layout
-the leftover sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den added
-to that repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to
-remove.
+Options of `den rm`: `--keep-worktrees` (keep the worktrees, and their record, so `den doctor` can
+still find them), `--force` (reclaim them even if they carry uncommitted changes; without it, den
+refuses **before** touching the VM).
 
-Options of `den rm`: `--keep-worktrees` (keep the worktrees), `--force` (delete them even if they
-carry uncommitted changes; without it, den refuses **before** touching the VM).
+`den doctor` reports records whose sandbox is gone — a `sbx rm` run outside den, a failed boot, a
+`den rm --keep-worktrees` — as a warning naming the directories still on disk; `den doctor --fix`
+reclaims them, `--force` when one is dirty. `den ls` names them too. Nothing is ever deleted: den
+moves worktrees to `~/.den/trash/`.
+
+`~/.den/state/` holds those records and is **never purged automatically** — unlike `~/.den/cache/`,
+it is not reconstructible.
 
 `den nest show` takes `--agent`, `--only` and `--without` — the same three as a spawn, and for the
 same reason: resolution is what they act on, so showing a nest under them is how you read what a

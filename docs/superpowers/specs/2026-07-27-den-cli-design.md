@@ -88,11 +88,16 @@ actionnable, jamais normalisé en silence : normaliser casserait l'aller-retour
     <wt>/<repo>/
   cache/                   # optionnel, reconstructible — jamais source de vérité
     build/<stack>/         #   dossier vide monté dans la VM de build (§6)
+  state/                   # trace des créations — JAMAIS purgé automatiquement
+    sandboxes/<sandbox>.yaml #   ce que den a réellement monté (spec 2026-08-05)
 ```
 
 `lib/` n'a **aucune sémantique pour den** : c'est l'emplacement conventionnel des fichiers qu'une
 stack cite dans `includes:`, rien de plus. den ne lit que `stacks/*/stack.yaml` et les chemins que
 ceux-ci déclarent ; un `lib/` absent n'est un défaut que pour la stack qui le référence.
+
+`state/` **n'est pas un cache** — un repo monté depuis la ligne de commande n'est reconstructible
+depuis rien, et le fichier est la seule trace d'un worktree pouvant porter du travail non commité.
 
 La **vérité de « ce qui tourne »** vient de `sbx ls --json` : l'identité de chaque sandbox est
 attribuée à un nest (et un worktree) par décomposition de son **nom** — **pas de base de données
