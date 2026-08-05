@@ -538,10 +538,29 @@ séquence ne touche.
 - Egress effectif (§4) posé en **`caps.network.allow` du mixin généré** → **auto-scopé** à la sandbox
   au `create` (aucune règle globale qui fuite d'un projet à l'autre) et **présent dès le
   create-time** (pas de pose paresseuse — la propagation sbx n'est pas instantanée).
-- **Settle-loop fail-closed** : après create, `den` boucle sur
-  `sbx policy check network --sandbox <name> <host>` pour chaque hôte jusqu'à ALLOW, **timeout
-  borné**. Si un hôte ne passe pas → `den` **n'attache pas**, liste les hôtes bloqués, sort en
-  erreur. Jamais de « ça marche à moitié ».
+- **Settle-loop fail-closed** : après create, `den` boucle jusqu'à ce que **tous** les hôtes soient
+  autorisés, **timeout borné**. Si un hôte ne passe pas → `den` **n'attache pas**, liste les hôtes
+  bloqués, sort en erreur. Jamais de « ça marche à moitié ».
+- **Un tour coûte deux appels, pas un par hôte** (2026-08-05). Le prix d'un `policy check` est le
+  **process** `sbx`, pas le travail de policy : mesuré, `sbx --version` — qui n'appelle même pas le
+  daemon — coûte 390 ms contre 486 ms pour un `policy check`, et vingt process concurrents prennent
+  6,4 s contre 7,8 s en série (paralléliser plafonne à ~30 %). Sur une allowlist de 26 hôtes la
+  passe séquentielle coûtait ~12 s d'un spawn de ~36 s. Donc, par tour :
+  1. **un** `sbx policy ls <name> --json` dit **ce que contient** la règle scopée — den y cherche
+     verbatim les chaînes qu'il a lui-même écrites dans le mixin, jamais une sémantique de glob
+     (réimplémenter l'autorisateur est la façon dont les deux divergent) ;
+  2. **un** `sbx policy check network --sandbox <name> <témoin>` dit si cette règle est **vivante**.
+     Le listing seul ne suffit pas : mesuré sur quatre spawns consécutifs, `policy ls` montre la
+     règle **83 à 172 ms avant** que `policy check` n'autorise l'hôte qu'elle seule couvre —
+     attacher sur le listing seul serait le demi-démarrage que ce § interdit, en plus étroit.
+     Le témoin est choisi parmi les hôtes qu'**aucune autre** règle active ne mentionne : l'allowlist
+     de den atterrit en **une seule** règle scopée, donc sa propagation est atomique.
+- **Repli** : listing illisible, schéma `policy ls` inconnu, ou règle `deny` active (une question de
+  précédence que den ne modélise pas délibérément) → passe autoritaire hôte par hôte, comme avant,
+  concurrente et bornée. Un hôte simplement **pas encore** listé n'est pas un repli : c'est la
+  propagation ordinaire, le tour dort et regarde à nouveau.
+- **Asymétrie assumée** : un `policy ls` que den ne reconnaît pas ne refuse **jamais** l'attache (le
+  fast path est une optimisation), là où un `policy check` illisible, lui, refuse.
 
 **Schéma de kit (relevé sur les kits réels, pas déduit) :** `schemaVersion: 2`, `kind: mixin`,
 `name`, `version`, `description` ; les capacités réseau vivent sous **`caps.network.allow`** (liste

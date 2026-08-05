@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -169,14 +170,43 @@ func Settle(ctx context.Context, r sbx.Runner, sandbox string, hosts []string, o
 			return inconsistentClock(sandbox, o, round-1, o.Now().Sub(start))
 		}
 
+		// The one-call path FIRST, because the per-host pass below is priced in
+		// PROCESSES, not in policy work (see maxProbeConcurrency).
+		switch verdict, missing := fastSettle(ctx, r, sandbox, remaining); verdict {
+		case fastSettled:
+			return nil
+		case fastPending:
+			// The listing was readable and den's rule simply is not fully there
+			// yet. That is what the loop EXISTS for, so it sleeps — it does not
+			// fall back on the authoritative pass. Collapsing the two would make
+			// a round-1 miss cost one listing PLUS the whole per-host sweep,
+			// i.e. slower than before precisely when the loop is doing its job.
+			if !o.Now().Before(deadline) {
+				return stillBlockedTimeout(sandbox, o, missing, nil, "")
+			}
+			o.Sleep(o.Interval)
+			continue
+		case fastUnusable:
+			// An unreadable listing, an sbx schema den does not recognize, or a
+			// `deny` rule whose precedence den deliberately does not model: the
+			// authorizer gets the last word, host by host, exactly as before.
+		}
+
 		// Only hosts STILL blocked are re-probed: a long allowlist with a
 		// single lagging host must not replay the whole list every round, and
 		// a host already allowed has no business coming back in the message.
+		results := probeAll(ctx, r, sandbox, remaining)
+
 		var stillBlocked []string
 		hint, hintHost = nil, ""
-		for _, h := range remaining {
-			ok, hnt, err := hostAllowed(ctx, r, sandbox, h)
-			if err != nil {
+		// The results are consumed in ALLOWLIST ORDER, never in completion
+		// order: the first error returned, the hint kept and the list of
+		// blocked hosts must not depend on which goroutine finished first. This
+		// walk is what makes the concurrent pass indistinguishable from the
+		// sequential one it replaced, message for message.
+		for i, h := range remaining {
+			res := results[i]
+			if res.err != nil {
 				// A cancellation almost always arrives DURING a pass, not
 				// between rounds. sbx then gets killed and cmd.Run returns
 				// "signal: killed"; sbx.Exec.Run joins ctx.Err() itself, so
@@ -188,12 +218,12 @@ func Settle(ctx context.Context, r sbx.Runner, sandbox string, hosts []string, o
 				if errCtx := ctx.Err(); errCtx != nil {
 					return canceled(sandbox, errCtx)
 				}
-				return err
+				return res.err
 			}
-			if !ok {
+			if !res.allowed {
 				stillBlocked = append(stillBlocked, h)
-				if hnt != nil {
-					hint, hintHost = hnt, h
+				if res.hint != nil {
+					hint, hintHost = res.hint, h
 				}
 			}
 		}
@@ -210,6 +240,223 @@ func Settle(ctx context.Context, r sbx.Runner, sandbox string, hosts []string, o
 		}
 		o.Sleep(o.Interval)
 	}
+}
+
+// maxProbeConcurrency bounds how many `sbx policy check` run at once in the
+// authoritative pass.
+//
+// The value is small because the measurement says the ceiling is low, and
+// saying so here is the point. Benched on 2026-08-05 (10 cores, sbx v0.35.0):
+// `sbx --version`, which makes NO daemon call at all, costs 390 ms per exec,
+// against 486 ms for a full `policy check` — the price is the process, not the
+// policy work. And that price barely parallelizes: twenty concurrent execs took
+// 6,4 s against 7,8 s sequentially, where twenty `/bin/echo` take 13 ms. On the
+// real 24-host allowlist the whole sweep went from 11,4 s sequential to 9,1 s at
+// eight in flight and 7,9 s with all twenty-four — a 30 % ceiling, not a factor
+// of N.
+//
+// Eight is therefore chosen as the point where the curve has already flattened,
+// not as a throughput bet: past it another 1,2 s buys twenty-four concurrent
+// sbx processes on a machine that is also booting a VM. The real win is not
+// here at all, it is in fastSettle spending ONE process instead of twenty-six —
+// this pass is the cold path.
+const maxProbeConcurrency = 8
+
+// probeResult is one host's outcome, kept in allowlist order (see probeAll).
+type probeResult struct {
+	allowed bool
+	hint    error
+	err     error
+}
+
+// probeAll runs the authoritative per-host check concurrently and returns the
+// results INDEXED BY hosts, so the caller can consume them in allowlist order.
+//
+// Returning an indexed slice rather than, say, a channel of outcomes is the
+// whole safety property: every message this package produces — the first error,
+// the hint's host, the sorted list of blocked hosts — was defined by the
+// sequential walk's order, and a result set that carries its index lets that
+// walk stay exactly what it was.
+//
+// The bound is a semaphore rather than a worker pool: the list is short (an
+// allowlist, not a work queue) and the goroutines do nothing but wait on a
+// process.
+func probeAll(ctx context.Context, r sbx.Runner, sandbox string, hosts []string) []probeResult {
+	results := make([]probeResult, len(hosts))
+	sem := make(chan struct{}, maxProbeConcurrency)
+	var wg sync.WaitGroup
+	for i, h := range hosts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			allowed, hint, err := hostAllowed(ctx, r, sandbox, h)
+			results[i] = probeResult{allowed: allowed, hint: hint, err: err}
+		}()
+	}
+	wg.Wait()
+	return results
+}
+
+// fastVerdict is what one `sbx policy ls` round could conclude.
+type fastVerdict int
+
+const (
+	// fastUnusable: the listing answered nothing den is willing to act on. The
+	// authoritative per-host pass decides. Never a reason to attach.
+	fastUnusable fastVerdict = iota
+	// fastPending: the listing is readable and den's hosts are not all in it
+	// yet. Sleep and look again — this is ordinary propagation.
+	fastPending
+	// fastSettled: every host is covered AND the authorizer confirmed the rule
+	// is live. The only verdict that attaches.
+	fastSettled
+)
+
+// fastSettle answers the round in ONE listing plus ONE authoritative check,
+// instead of one `sbx policy check` per host.
+//
+// WHY IT EXISTS. den's allowlist reached 26 hosts on a real stack, and the
+// sequential sweep cost ~12 s of a ~36 s spawn — for ~100 ms of actual policy
+// work, the rest being 26 × the cost of starting the `sbx` binary
+// (maxProbeConcurrency has the numbers).
+//
+// WHY IT IS NOT JUST THE LISTING. Measured on 2026-08-05, with two independent
+// pollers so neither sampling order biases the other: on four consecutive
+// spawns `policy ls` showed the rule 83–172 ms BEFORE `policy check` allowed the
+// host it uniquely covers — the same sign every time. Small, but the wrong
+// direction: a listing-only verdict would attach into a policy the authorizer
+// has not applied yet, which is the half-start §7 forbids, just narrower. So the
+// listing is used for what only it can say cheaply — WHAT the rule contains —
+// and the authorizer is still asked whether that rule is LIVE.
+//
+// WHY ONE CHECK IS ENOUGH. den's whole allowlist lands as a SINGLE scoped rule
+// (`caps.network.allow` of the mixin, one rule id, verified against sbx v0.35.0),
+// so its propagation is atomic: a host that only that rule covers is allowed if
+// and only if the rule is live. Hence the witness below is chosen among hosts no
+// OTHER active rule mentions verbatim. When no such host exists, every host is
+// already covered elsewhere and the scoped rule's liveness cannot change any
+// verdict — hosts[0] is then a witness like any other.
+//
+// WHY VERBATIM MATCHING IS SOUND. den does not model sbx's glob semantics
+// (`**.foo.com:443`) and must not: re-implementing an authorizer is how the two
+// diverge. It does not need to, either — it looks up the exact strings it wrote
+// into the mixin itself, so this is set membership, not pattern matching. The
+// asymmetry is deliberate and always in the safe direction: a host covered ONLY
+// by someone else's glob is simply not recognized, and falls back to the
+// authoritative pass.
+//
+// A sandbox-scoped rule does not survive `den rm` (verified: zero scoped rules
+// remain afterwards, and the id rotates on every creation), so a stale rule from
+// a previous sandbox of the same name cannot answer for a fresh one.
+func fastSettle(ctx context.Context, r sbx.Runner, sandbox string, hosts []string) (fastVerdict, []string) {
+	output, err := r.Run(ctx, "policy", "ls", sandbox, "--json")
+	if err != nil {
+		return fastUnusable, nil
+	}
+	rules, ok := readRules(output)
+	if !ok {
+		return fastUnusable, nil
+	}
+
+	// Two sets, because WHICH rule carries a host is what makes it a witness.
+	fromScoped, fromOther := map[string]bool{}, map[string]bool{}
+	for _, rule := range rules {
+		if rule.ResourceType != "network" || rule.Status != "active" {
+			continue
+		}
+		if rule.Decision != "allow" {
+			// A `deny` — or any decision den has never seen — brings a
+			// precedence question this function deliberately does not answer.
+			// The authorizer already knows it: hand the whole round over.
+			return fastUnusable, nil
+		}
+		target := fromOther
+		if strings.HasPrefix(rule.Scope, "sandbox") {
+			target = fromScoped
+		}
+		for _, res := range rule.Resources {
+			target[res] = true
+		}
+	}
+
+	var missing []string
+	for _, h := range hosts {
+		if !fromScoped[h] && !fromOther[h] {
+			missing = append(missing, h)
+		}
+	}
+	if len(missing) > 0 {
+		return fastPending, missing
+	}
+
+	witness := hosts[0]
+	for _, h := range hosts {
+		if fromScoped[h] && !fromOther[h] {
+			witness = h
+			break
+		}
+	}
+	allowed, hint, err := hostAllowed(ctx, r, sandbox, witness)
+	if err != nil || hint != nil {
+		// hint != nil means the check itself FAILED while still returning an
+		// exploitable refusal — and that is precisely the case stillBlockedTimeout's
+		// hint was built for. Keeping the refusal here and dropping the hint would
+		// loop to the timeout on "check the nest's and stack's allowlist" while sbx
+		// was broken every round: the exact false lead hostAllowed's comment names.
+		// Rather than carry a second hint channel through the fast path, the round
+		// is handed to the authoritative pass, which already produces that
+		// diagnostic — and it is the honest move anyway, since a witness whose
+		// verdict cost an error proves nothing about the rule being live.
+		return fastUnusable, nil
+	}
+	if !allowed {
+		// The rule is listed but not yet applied — the 83–172 ms window above.
+		// Reported as the one host den can honestly name: the witness really is
+		// blocked, and it is the one whose blockage proves the rule is not live.
+		return fastPending, []string{witness}
+	}
+	return fastSettled, nil
+}
+
+// policyRule is the subset of `sbx policy ls --json`'s rule shape den reads.
+// Everything else in that document is ignored on purpose: the fewer fields den
+// binds, the fewer ways an sbx release can turn the fast path into a refusal.
+type policyRule struct {
+	Scope        string   `json:"scope"`
+	ResourceType string   `json:"resource_type"`
+	Decision     string   `json:"decision"`
+	Status       string   `json:"status"`
+	Resources    []string `json:"resources"`
+}
+
+// readRules extracts the rules from the listing, and reports whether the
+// document was one den recognizes at all.
+//
+// The bool is not an error: an unrecognized listing is NOT a failure here, it
+// is a reason to go ask the authorizer host by host — the path that worked
+// before this function existed. That is why nothing in this file turns a
+// schema change in `policy ls` into a refusal to attach, where readVerdict,
+// which reads the authoritative answer, does exactly that.
+//
+// `rules` is a POINTER so that a document simply lacking the field — some other
+// sbx command's output, a usage message that happens to be JSON — is
+// distinguishable from a genuine empty rule set.
+func readRules(output []byte) ([]policyRule, bool) {
+	if len(bytes.TrimSpace(output)) == 0 {
+		return nil, false
+	}
+	var doc struct {
+		Rules *[]policyRule `json:"rules"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(output)).Decode(&doc); err != nil {
+		return nil, false
+	}
+	if doc.Rules == nil {
+		return nil, false
+	}
+	return *doc.Rules, true
 }
 
 // stillBlockedTimeout builds the fail-closed timeout error: the loop's

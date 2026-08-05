@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -654,9 +655,14 @@ func TestSettleRespectsTimeoutAndInterval(t *testing.T) {
 			if want := time.Duration(c.sleeps) * c.interval; h.elapsed() != want {
 				t.Errorf("elapsed time %s, want %s: the deadline isn't Now()+Timeout", h.elapsed(), want)
 			}
-			// One probe per round, and one round more than sleeps.
-			if n := len(f.Calls); n != c.sleeps+1 {
-				t.Errorf("%d probes, want %d", n, c.sleeps+1)
+			// TWO calls per round, and one round more than sleeps: the
+			// `policy ls` fast path is attempted first, and this Fake's
+			// `{"allowed": false}` is not a rule listing — so every round falls
+			// back on the authoritative per-host probe. That fallback is the
+			// point of the count: it proves an unrecognized listing costs one
+			// wasted call and changes NOTHING else about the loop's cadence.
+			if n := len(f.Calls); n != 2*(c.sleeps+1) {
+				t.Errorf("%d calls, want %d (one listing + one probe per round)", n, 2*(c.sleeps+1))
 			}
 		})
 	}
@@ -938,15 +944,303 @@ func TestSettleTruncatesAHugeOutput(t *testing.T) {
 	}
 }
 
+// listing builds a `sbx policy ls <sandbox> --json` response: one scoped rule
+// carrying scopedHosts, plus one global rule carrying globalHosts.
+func listing(sandbox string, scopedHosts, globalHosts []string) (string, sbx.Response) {
+	quote := func(hs []string) string {
+		if len(hs) == 0 {
+			return ""
+		}
+		return `"` + strings.Join(hs, `","`) + `"`
+	}
+	doc := `{"rules":[
+		{"id":"global-1","scope":"global","applies_to":"all","resource_type":"network",
+		 "decision":"allow","status":"active","resources":[` + quote(globalHosts) + `]},
+		{"id":"scoped-1","scope":"sandbox:` + sandbox + `","applies_to":"sandbox:` + sandbox + `",
+		 "resource_type":"network","decision":"allow","status":"active","resources":[` + quote(scopedHosts) + `]}
+	]}`
+	return "policy ls " + sandbox + " --json", sbx.Response{Output: []byte(doc)}
+}
+
+// THE point of the fast path: one listing plus ONE authoritative check, whatever
+// the allowlist's length. The sequential sweep cost one `sbx` process per host,
+// and a process is ~390 ms of the ~486 ms a check costs — on a 26-host stack
+// that was ~12 s of a ~36 s spawn.
+func TestSettleAnswersALongAllowlistInTwoCalls(t *testing.T) {
+	o, slept := testOptions(t)
+	hosts := []string{"a.test:443", "b.test:443", "c.test:443", "d.test:443", "e.test:443"}
+	key, resp := listing("api", hosts, []string{"unrelated.test:443"})
+	responses := allowed("api", hosts...)
+	responses[key] = resp
+	f := &sbx.Fake{Responses: responses, Default: sbx.Response{Err: errors.New("unscripted call")}}
+
+	if err := Settle(context.Background(), f, "api", hosts, o); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if *slept != 0 {
+		t.Errorf("nothing had to propagate: %d sleep(s)", *slept)
+	}
+	if n := len(f.Calls); n != 2 {
+		t.Errorf("%d calls for %d hosts, want 2 (one listing + one witness); calls: %v", n, len(hosts), f.Calls)
+	}
+}
+
+// The listing alone must NEVER be enough. Measured on 2026-08-05: `policy ls`
+// showed the rule 83–172 ms before `policy check` allowed the host it uniquely
+// covers, on four consecutive spawns. Attaching on the listing alone is the
+// half-start §7 forbids, only narrower.
+func TestSettleDoesNotAttachOnTheListingAlone(t *testing.T) {
+	h := newClock()
+	hosts := []string{"scoped.test:443"}
+	key, resp := listing("api", hosts, nil)
+	f := &sbx.Fake{
+		Responses: map[string]sbx.Response{key: resp},
+		Default:   sbx.Response{Output: []byte(`{"allowed": false}`)},
+	}
+
+	err := Settle(context.Background(), f, "api", hosts, h.options(6*time.Second, 2*time.Second))
+	if err == nil {
+		t.Fatal("the rule is listed but the authorizer refuses: den must not attach")
+	}
+	if !strings.Contains(err.Error(), "fail-closed") {
+		t.Errorf("the refusal must be the fail-closed timeout; got: %v", err)
+	}
+}
+
+// The witness is the host NO other rule mentions: den's allowlist lands as a
+// single scoped rule, so a host only that rule covers is allowed exactly when
+// the rule is live. Picking a globally-covered host instead would return
+// "allowed" from someone else's rule and prove nothing.
+func TestSettlePicksAWitnessNoOtherRuleCovers(t *testing.T) {
+	o, _ := testOptions(t)
+	hosts := []string{"everywhere.test:443", "only-here.test:443"}
+	key, resp := listing("api", hosts, []string{"everywhere.test:443"})
+	responses := allowed("api", "only-here.test:443")
+	responses[key] = resp
+	f := &sbx.Fake{Responses: responses, Default: sbx.Response{Err: errors.New("unscripted call")}}
+
+	if err := Settle(context.Background(), f, "api", hosts, o); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasCalled("policy", "check", "network", "--sandbox", "api", "--json", "only-here.test:443") {
+		t.Errorf("the witness must be the host no global rule covers; calls: %v", f.Calls)
+	}
+	if f.HasCalled("policy", "check", "network", "--sandbox", "api", "--json", "everywhere.test:443") {
+		t.Errorf("the globally-covered host proves nothing and must not be the witness; calls: %v", f.Calls)
+	}
+}
+
+// A host not in the listing yet is ordinary propagation — the very thing the
+// loop exists for. It must SLEEP, not fall back on the whole per-host sweep:
+// collapsing the two would make a round-1 miss cost the listing PLUS the sweep,
+// i.e. slower than before precisely when the loop is doing its job.
+func TestSettleSleepsRatherThanSweepingWhenTheRuleIsIncomplete(t *testing.T) {
+	h := newClock()
+	hosts := []string{"present.test:443", "absent.test:443"}
+	key, resp := listing("api", []string{"present.test:443"}, nil)
+	f := &sbx.Fake{
+		Responses: map[string]sbx.Response{key: resp},
+		Default:   sbx.Response{Output: []byte(`{"allowed": true}`)},
+	}
+
+	err := Settle(context.Background(), f, "api", hosts, h.options(4*time.Second, 2*time.Second))
+	if err == nil {
+		t.Fatal("a host never listed must end in the fail-closed timeout")
+	}
+	if !strings.Contains(err.Error(), "absent.test:443") {
+		t.Errorf("the message must name the host still missing; got: %v", err)
+	}
+	if strings.Contains(err.Error(), "present.test:443") {
+		t.Errorf("a host already covered must not be listed as blocked; got: %v", err)
+	}
+	// 3 rounds (2 sleeps + 1), one listing each, and NO per-host probe.
+	if n := len(f.Calls); n != 3 {
+		t.Errorf("%d calls, want 3 listings and no sweep; calls: %v", n, f.Calls)
+	}
+}
+
+// A `deny` rule brings a precedence question den deliberately does not model.
+// Modelling it would mean re-implementing the authorizer, which is how the two
+// diverge; so the whole round goes back to the authoritative per-host pass.
+func TestSettleFallsBackOnTheSweepWhenADenyRuleExists(t *testing.T) {
+	o, _ := testOptions(t)
+	hosts := []string{"a.test:443"}
+	doc := `{"rules":[
+		{"id":"scoped-1","scope":"sandbox:api","resource_type":"network","decision":"allow",
+		 "status":"active","resources":["a.test:443"]},
+		{"id":"deny-1","scope":"global","resource_type":"network","decision":"deny",
+		 "status":"active","resources":["a.test:443"]}
+	]}`
+	responses := allowed("api", "a.test:443")
+	responses["policy ls api --json"] = sbx.Response{Output: []byte(doc)}
+	f := &sbx.Fake{Responses: responses}
+
+	if err := Settle(context.Background(), f, "api", hosts, o); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasCalled("policy", "check", "network", "--sandbox", "api", "--json", "a.test:443") {
+		t.Errorf("a deny rule must send the round to the authorizer; calls: %v", f.Calls)
+	}
+}
+
+// A listing den does not recognize is NOT a refusal — unlike an unreadable
+// `policy check`, which is. The difference is deliberate: the fast path is an
+// optimization, so an sbx release that reshapes `policy ls` must cost den a
+// wasted call, never a sandbox it declines to attach.
+func TestSettleFallsBackOnAnUnrecognizedListing(t *testing.T) {
+	cases := map[string]string{
+		"no rules field":  `{"policies": []}`,
+		"not json at all": `usage: sbx policy ls [SANDBOX]`,
+		"empty output":    ``,
+	}
+	for name, out := range cases {
+		t.Run(name, func(t *testing.T) {
+			o, _ := testOptions(t)
+			responses := allowed("api", "a.test:443")
+			responses["policy ls api --json"] = sbx.Response{Output: []byte(out)}
+			f := &sbx.Fake{Responses: responses}
+
+			if err := Settle(context.Background(), f, "api", []string{"a.test:443"}, o); err != nil {
+				t.Fatalf("an unrecognized listing must not refuse the attach: %v", err)
+			}
+			if !f.HasCalled("policy", "check", "network", "--sandbox", "api", "--json", "a.test:443") {
+				t.Errorf("the authoritative probe must have run; calls: %v", f.Calls)
+			}
+		})
+	}
+}
+
+// The fast path must not swallow the hint. A witness check that FAILS while
+// still returning an exploitable refusal is exactly the case the hint exists
+// for: without this, the loop times out on "check the nest's and stack's
+// allowlist" while sbx was broken every round — the false lead hostAllowed's
+// comment names — and the remedy would be doubly wrong, since the allowlist is
+// fine and the rule simply is not live.
+func TestSettleKeepsTheHintWhenTheWitnessCheckFails(t *testing.T) {
+	h := newClock()
+	hosts := []string{"witness.test:443"}
+	key, resp := listing("api", hosts, nil)
+	f := &sbx.Fake{
+		Responses: map[string]sbx.Response{
+			key: resp,
+			"policy check network --sandbox api --json witness.test:443": {
+				Output: []byte(`{"allowed": false}`),
+				Err:    errors.New(`sandbox "api" not found`),
+			},
+		},
+	}
+
+	err := Settle(context.Background(), f, "api", hosts, h.options(4*time.Second, 2*time.Second))
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	msg := err.Error()
+	i, j := strings.Index(msg, "Hint"), strings.Index(msg, `sandbox "api" not found`)
+	if i < 0 || j < 0 {
+		t.Fatalf("the failure observed every round must survive the fast path, under the \"Hint\" framing; got: %v", err)
+	}
+	if j < i {
+		t.Errorf("the error must not precede its framing: it would read as the cause; got: %v", err)
+	}
+}
+
+// den does not model globs, and must not: a host covered only by someone
+// else's `**.foo.test:443` is simply not recognized verbatim, and the round
+// falls back on the authorizer. The asymmetry is always in the safe direction.
+func TestSettleDoesNotResolveGlobsItself(t *testing.T) {
+	h := newClock()
+	key, resp := listing("api", nil, []string{"**.foo.test:443"})
+	f := &sbx.Fake{
+		Responses: map[string]sbx.Response{key: resp},
+		Default:   sbx.Response{Output: []byte(`{"allowed": false}`)},
+	}
+
+	err := Settle(context.Background(), f, "api", []string{"api.foo.test:443"}, h.options(4*time.Second, 2*time.Second))
+	if err == nil {
+		t.Fatal("a host matched only by a glob must not be declared covered")
+	}
+	if !strings.Contains(err.Error(), "api.foo.test:443") {
+		t.Errorf("the message must name the host; got: %v", err)
+	}
+}
+
+// The authoritative sweep runs concurrently now (maxProbeConcurrency). Its
+// messages were all defined by the sequential walk's ORDER, so the results are
+// consumed in allowlist order whatever the completion order: the hint must
+// still pair with the LAST blocked host of the list, not the last goroutine to
+// finish.
+func TestSettleKeepsAllowlistOrderUnderConcurrency(t *testing.T) {
+	h := newClock()
+	key := func(host string) string { return "policy check network --sandbox api --json " + host }
+	responses := map[string]sbx.Response{}
+	hosts := make([]string, 0, 12)
+	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"} {
+		host := name + ".test"
+		hosts = append(hosts, host)
+		responses[key(host)] = sbx.Response{
+			Output: []byte(`{"allowed": false}`),
+			Err:    errors.New("down: " + name),
+		}
+	}
+	f := &sbx.Fake{Responses: responses, Default: sbx.Response{Output: []byte(`{"allowed": false}`)}}
+
+	err := Settle(context.Background(), f, "api", hosts, h.options(2*time.Second, 2*time.Second))
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	// "l" is last in the allowlist: the sequential loop kept ITS error, and the
+	// concurrent one must keep the same, run after run.
+	if !strings.Contains(err.Error(), "check of l.test (down: l)") {
+		t.Errorf("the hint must be the last host in ALLOWLIST order; got: %v", err)
+	}
+	for _, h := range hosts {
+		if !strings.Contains(err.Error(), h) {
+			t.Errorf("every blocked host must be listed, %s is missing; got: %v", h, err)
+		}
+	}
+}
+
+// Same property on the error path: the sweep returns the error of the FIRST
+// host in allowlist order that failed without a verdict, not of whichever
+// goroutine happened to fail first.
+func TestSettleReportsTheFirstErrorInAllowlistOrder(t *testing.T) {
+	o, _ := testOptions(t)
+	key := func(host string) string { return "policy check network --sandbox api --json " + host }
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		key("a.test"): {Output: []byte(`{"allowed": true}`)},
+		key("b.test"): {Err: errors.New("boom on b")},
+		key("c.test"): {Err: errors.New("boom on c")},
+	}}
+
+	err := Settle(context.Background(), f, "api", []string{"a.test", "b.test", "c.test"}, o)
+	if err == nil {
+		t.Fatal("an sbx failing without a verdict must fail Settle")
+	}
+	if !strings.Contains(err.Error(), "boom on b") {
+		t.Errorf("the first failure in allowlist order must be the one returned; got: %v", err)
+	}
+	if strings.Contains(err.Error(), "boom on c") {
+		t.Errorf("only one error is returned; got: %v", err)
+	}
+}
+
 // fakeFleetingHint: "passes.test" fails at the transport level while
 // returning a refusal, then passes; "blocked.test" stays refused, never
 // erroring.
-type fakeFleetingHint struct{ calls int }
+// The mutex here and in fakePerHost is not decoration: the authoritative sweep
+// probes hosts concurrently (probeAll), so a counting double is called from
+// several goroutines at once and `go test -race` reports it.
+type fakeFleetingHint struct {
+	mu    sync.Mutex
+	calls int
+}
 
 func (f *fakeFleetingHint) Run(_ context.Context, args ...string) ([]byte, error) {
 	if args[len(args)-1] != "passes.test" {
 		return []byte(`{"allowed": false}`), nil
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	if f.calls == 1 {
 		return []byte(`{"allowed": false}`), errors.New("fleeting glitch on passes.test")
@@ -977,11 +1271,14 @@ func (f *fakeCanceling) Stream(_ context.Context, _ io.Writer, _ ...string) erro
 
 // fakeProgressive allows the host starting from the n-th call.
 type fakeProgressive struct {
+	mu           sync.Mutex
 	calls        int
 	allowedAfter int
 }
 
 func (f *fakeProgressive) Run(_ context.Context, _ ...string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	if f.calls >= f.allowedAfter {
 		return []byte(`{"allowed": true}`), nil
@@ -997,6 +1294,7 @@ func (f *fakeProgressive) Stream(_ context.Context, _ io.Writer, _ ...string) er
 // and only allows each one starting from the n-th call CONCERNING IT. A host
 // absent from allowedAfter passes on the first try.
 type fakePerHost struct {
+	mu           sync.Mutex
 	calls        map[string]int
 	allowedAfter map[string]int
 }
@@ -1006,6 +1304,8 @@ func (f *fakePerHost) Run(_ context.Context, args ...string) ([]byte, error) {
 		return nil, errors.New("empty argv")
 	}
 	host := args[len(args)-1]
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.calls == nil {
 		f.calls = make(map[string]int)
 	}
