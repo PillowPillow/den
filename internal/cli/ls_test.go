@@ -318,6 +318,11 @@ func TestLsSurvivesACorruptRecord(t *testing.T) {
 // while the user only ever typed "corp:api".
 func TestLsShowsTheBranchAsTypedAndThePrefixedNest(t *testing.T) {
 	dir := testDenHome(t)
+	// The source nest itself, so it is DECLARED: `den nest ls` lists it as a
+	// first-class object, and the mark must agree with that listing rather
+	// than with which local file happens to share its flattened name.
+	writeUnder(t, dir, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: /dev/api }\n")
 	writeManifest(t, dir, manifest.Manifest{
 		Sandbox: "corp-api.feat-12",
 		Nest:    manifest.Nest{Ref: "corp:api", File: filepath.Join(dir, "sources", "corp", "nests", "api.yaml")},
@@ -355,13 +360,56 @@ func TestLsShowsTheBranchAsTypedAndThePrefixedNest(t *testing.T) {
 	if !strings.Contains(line, "feature/12") {
 		t.Errorf("the WORKTREE column must show the branch as typed; line: %q", line)
 	}
-	// The record changes what is DISPLAYED, not what is judged: `declared` is
-	// keyed by the files under <denHome>/nests, so the mark keeps being decided
-	// on the sandbox-derived name. A source nest is declared in no local file,
-	// and it carried that mark before this feature too.
+	// The record changes what is DISPLAYED, not what is judged: the mark keeps
+	// being decided on the sandbox-derived name ("corp-api"), but `declared`
+	// now folds in every installed source's nests under that same flattened
+	// form — and sources/corp/nests/api.yaml above is exactly such a nest, so
+	// it must carry no mark at all.
+	if strings.Contains(line, "?") {
+		t.Errorf("a nest declared in an installed source must carry no mark; line: %q", line)
+	}
+}
+
+// Same live sandbox and the same manifest as the test above, but the source
+// nest file itself is absent — the source was never installed, or it was
+// removed after the sandbox was created. The mark must still fire: a
+// manifest record only changes what is DISPLAYED (spec doctrine, see the
+// test above), it is not proof that the nest still exists.
+func TestLsMarksASourceSandboxWhoseSourceNestIsGone(t *testing.T) {
+	dir := testDenHome(t)
+	writeManifest(t, dir, manifest.Manifest{
+		Sandbox: "corp-api.feat-12",
+		Nest:    manifest.Nest{Ref: "corp:api", File: filepath.Join(dir, "sources", "corp", "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{
+			Name: "feat-12", Branch: "feature/12", Layout: "central",
+			Root: filepath.Join(dir, "worktrees"),
+		},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginKey, Key: "api", Repo: "/dev/api",
+			Mount: filepath.Join(dir, "worktrees", "feat-12", "api"), Worktree: true,
+		}},
+	})
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"corp-api.feat-12","status":"running"}]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if fields := strings.Fields(l); len(fields) > 0 && fields[0] == "corp-api.feat-12" {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("the sandbox must be listed; got:\n%s", out)
+	}
 	if !strings.Contains(line, "corp:api ?") {
-		t.Errorf("the reference must be displayed with the mark the sandbox name earns, "+
-			"not instead of it; line: %q", line)
+		t.Errorf("a source sandbox whose source nest no longer exists must still be marked; line: %q", line)
 	}
 }
 

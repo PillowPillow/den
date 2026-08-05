@@ -68,6 +68,25 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			for _, n := range nests {
 				declared[n.Name] = true
 			}
+			// Every installed source's nests fold in too, under the
+			// FLATTENED reference: listSourceNests names them
+			// "<source>:<name>", but a source sandbox never carries that
+			// string — ":" is outside sbx's --name charset, so spawn
+			// rewrote it to "-" (config.FlattenedSourceSeparator) before
+			// `sbx create` ever saw it. Split with config.SplitSourceRef
+			// and rejoin with the constant rather than a "-" literal: that
+			// is the one guarantee that this side of the rewrite and
+			// FlattenSandboxComponent's can never disagree.
+			//
+			// Fail-open, same contract as listSourceNests itself: a
+			// missing sources/, or one source whose own nests/ cannot be
+			// read, contributes nothing here — the sandbox keeps the mark
+			// it carried before sources existed, never an error.
+			srcNests, _ := listSourceNests(home)
+			for _, n := range srcNests {
+				src, name := config.SplitSourceRef(n.Name)
+				declared[src+config.FlattenedSourceSeparator+name] = true
+			}
 
 			recorded := make(map[string]manifest.Manifest, len(manifests))
 			for _, m := range manifests {
@@ -79,11 +98,14 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			for _, b := range boxes {
 				nestName := b.Nest()
 				// The MARK is decided on the sandbox-derived name, before the
-				// record replaces the displayed string: `declared` is keyed by
-				// the names of the files under <denHome>/nests, and a source
-				// reference is not one of them — keying it on the reference
-				// would flag every source sandbox as undeclared for a reason
-				// that has nothing to do with whether it is.
+				// record replaces the displayed string: b.Nest() is exactly
+				// the string `sbx ls` reports, and `declared` now holds both
+				// the names of the files under <denHome>/nests AND every
+				// installed source's nests under their flattened form (see
+				// the loop above) — so a nest declared in a source is no
+				// longer reported as undeclared. A source sandbox whose nest
+				// is gone — the source removed, or the file deleted — still
+				// earns the mark, same as a deleted local nest always has.
 				undeclared := !declared[nestName]
 				// The record, when there is one, is the ONLY place these two
 				// strings survive: flattening rewrote the branch on its way
