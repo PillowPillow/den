@@ -2532,7 +2532,7 @@ func switchTo(t *testing.T, dir, branch string) {
 
 // A repo WITH NO COMMIT AT ALL must produce den's own diagnostic, not
 // git's contradictory message. Found by exercising the assembled binary:
-// `den api -w feat1` against a virgin `git init` used to produce
+// `den spawn api -w feat1` against a virgin `git init` used to produce
 //
 //	den: creating worktree "feat1" of /.../monorepo: git worktree add
 //	     --no-track -b feat1 /.../worktrees/feat1/monorepo (in /.../monorepo):
@@ -2633,7 +2633,7 @@ func TestEnsureStillCreatesTheWorktreeForARepoWithACommit(t *testing.T) {
 	}
 }
 
-// CommonGitDir is what `den <nest> -w` mounts next to the worktree: the
+// CommonGitDir is what `den spawn -w` mounts next to the worktree: the
 // repo's `.git`, without its working tree. The nominal case is an ordinary
 // repo.
 func TestCommonGitDirReturnsTheRepoGit(t *testing.T) {

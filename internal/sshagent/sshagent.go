@@ -115,7 +115,7 @@ func countIdentities(stdout string) int {
 }
 
 // probeTimeout bounds ONE `ssh-add -l`. The probe runs on the mainline
-// `den <nest>` path and in `den doctor`, and it talks to a socket whose far
+// `den spawn` path and in `den doctor`, and it talks to a socket whose far
 // end den does not own: a stalled agent proxy — a forwarded SSH_AUTH_SOCK
 // whose other end went away, a 1Password/gpg-agent replacement wedged on a
 // prompt — ACCEPTS the connection and then never answers. Unbounded, that

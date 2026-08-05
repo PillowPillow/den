@@ -39,8 +39,8 @@ const nonInteractiveEquivalents = "`--only repo,...` and `--without repo,...` ma
 // coincidence — see TestInteractiveProducesTheSameArgvAsTheEquivalentWithout.
 func interactiveWithout(d Deps, n *nest.Nest) ([]string, error) {
 	// Nothing to ask comes FIRST, before the terminal check: a nest with no
-	// optional repo needs no answer, so it needs no terminal either — `den api
-	// -i --detach` from a script keeps working, and says why it asked nothing
+	// optional repo needs no answer, so it needs no terminal either — `den spawn
+	// api -i --detach` from a script keeps working, and says why it asked nothing
 	// rather than drawing an empty list.
 	if !hasOptionalRepo(n.Repos) {
 		fmt.Fprintf(d.Out, "nest %s declares no optional repo: nothing to choose, every repo is mounted\n", n.Name)
@@ -109,7 +109,7 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 	}
 
 	// Everything checked is the starting point: `-i` confirmed as-is must
-	// produce exactly what `den <nest>` alone produces.
+	// produce exactly what `den spawn` alone produces.
 	keep := make([]bool, len(optional))
 	for i := range keep {
 		keep[i] = true

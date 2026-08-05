@@ -113,7 +113,7 @@ func Find(boxes []Sandbox, name string) *Sandbox {
 
 // IsStopped reports whether the sandbox is at rest — attachable, but at the
 // cost of a restart the caller should announce: it takes several seconds, and
-// a silent `den <nest>` during that time looks like a hang.
+// a silent `den spawn` during that time looks like a hang.
 //
 // Kept SEPARATE from CheckAttachable ON PURPOSE: "should we warn?" and
 // "should we refuse?" are two different questions, and conflating them is
@@ -121,8 +121,7 @@ func Find(boxes []Sandbox, name string) *Sandbox {
 func (s Sandbox) IsStopped() bool { return s.Status == StatusStopped }
 
 // CheckAttachable refuses a sandbox den must not open a shell into. It's the
-// guard shared by `den <nest>` (spawn-or-attach) and `den sh`: both end in an
-// `sbx exec`.
+// guard shared by `den spawn` and `den sh`: both end in an `sbx exec`.
 //
 // TWO statuses pass, and the second is the 2026-07-29 smoke-test fix:
 //
@@ -137,7 +136,7 @@ func (s Sandbox) IsStopped() bool { return s.Status == StatusStopped }
 // A WHITELIST regardless: anything that is neither is refused. A blacklist
 // would let through any status a later sbx version introduced — including an
 // error status — and den has no way to know that list here. The accepted
-// price: a transitory startup status could make a `den <nest>` launched too
+// price: a transitory startup status could make a `den spawn` launched too
 // early fail. The message renders the status read, which makes the case
 // diagnosable and reportable.
 //

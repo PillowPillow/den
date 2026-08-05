@@ -539,7 +539,7 @@ func TestResolveRefusesACommandLinePathEqualToADeclaredOne(t *testing.T) {
 	// only ever tilde-expands a declared path (nest.go:129), it never Cleans
 	// it. A positional's path IS Cleaned, in parseRepoArg. If the duplicate
 	// check compared raw strings instead of Clean(a) == Clean(b), this case —
-	// exactly the one the finding names, `den api ~/dev/api` colliding with an
+	// exactly the one the finding names, `den spawn api ~/dev/api` colliding with an
 	// already-declared repo — would be missed and fall through to the
 	// basename message instead.
 	n := &Nest{

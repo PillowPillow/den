@@ -293,7 +293,7 @@ func TestSpawnAttachesWithoutRecreatingWhenSandboxExists(t *testing.T) {
 	}
 	// The settle-loop must run on THIS branch too — it's the one every spawn
 	// after the first takes. Without this assertion, a settle-loop folded
-	// into the `create` branch only would stay green while `den api`
+	// into the `create` branch only would stay green while `den spawn api`
 	// attaches a shell without ever checking the policy.
 	if !f.HasCalled("policy", "check", "network", "--sandbox", "api", "--json", "github.com") {
 		t.Errorf("the settle-loop must also run on a live sandbox; calls: %v", f.Calls)
@@ -409,7 +409,7 @@ func TestSpawnDoesNotInventAWorkdirWhenTheVMMountsNothing(t *testing.T) {
 // D1: a sandbox found but NOT RUNNING is not a live sandbox.
 //
 // Before this check, sbx.Exists returned only a bool and discarded Status:
-// `den api` on an `exited` VM printed "already live: attaching" then ran
+// `den spawn api` on an `exited` VM printed "already live: attaching" then ran
 // `sbx exec` against a stopped VM.
 //
 // F2: a STOPPED sandbox is resumed, not destroyed — sbx parks idle
@@ -693,7 +693,7 @@ func countCalls(f *sbx.Fake, prefix ...string) int {
 // other than `running` aren't recognized. A denylist would attach on any
 // status a later sbx version might introduce, including an error status.
 // The accepted cost: a transient startup status makes a too-early
-// `den api` fail, with a message naming the status read.
+// `den spawn api` fail, with a message naming the status read.
 func TestSpawnRefusesASandboxThatIsNotRunning(t *testing.T) {
 	for _, status := range []string{"exited", "paused", "Running", ""} {
 		t.Run("status="+status, func(t *testing.T) {
@@ -779,7 +779,7 @@ func TestSpawnWarnsWhenConfigHasDriftedUnderTheSandbox(t *testing.T) {
 	if !strings.Contains(out, "warning") {
 		t.Errorf("the drift must be announced as a warning;\n%s", out)
 	}
-	// We WARN, we don't refuse: refusing would break a `den api` that
+	// We WARN, we don't refuse: refusing would break a `den spawn api` that
 	// worked yesterday over a harmless YAML change (decision settled, see
 	// T12 §6).
 	if len(f.Attaches) != 1 {
@@ -816,7 +816,7 @@ func TestSpawnDoesNotWarnWithoutDrift(t *testing.T) {
 //
 // The tricky case is a cache/ surviving the sandbox: spec §3 declares
 // cache/ reconstructible and den doesn't purge it, so `sbx rm` followed by
-// `den api` finds the DEFUNCT sandbox's mixin still on disk. A warning
+// `den spawn api` finds the DEFUNCT sandbox's mixin still on disk. A warning
 // hoisted outside the "live" branch would fire there, on a sandbox that
 // actually gets the exact configuration.
 func TestSpawnDoesNotWarnOnTheCreateBranch(t *testing.T) {
@@ -847,7 +847,7 @@ func TestSpawnDoesNotWarnOnTheCreateBranch(t *testing.T) {
 // The on-disk mixin is the create's REFERENCE: it must not be rewritten
 // while the sandbox is already live.
 //
-// Otherwise drift erases itself: the first `den api` warns and overwrites
+// Otherwise drift erases itself: the first `den spawn api` warns and overwrites
 // the reference along the way, and the second stays silent — even though
 // the VM still hasn't moved. The costliest defect of the lot: it makes
 // detection MUTE exactly where it matters, without ever failing anything.
@@ -1324,7 +1324,7 @@ func TestSpawnAddsNoWorkspaceOutsideMountMode(t *testing.T) {
 // F3: kits go into `sbx create`'s `--kit` argv, exactly as ssh.dir goes in
 // as a workspace — same plan invariant #3 (never pass sbx a path den
 // hasn't guaranteed). The asymmetry was the defect: kit checks lived only
-// in `doctor`, so `den api` exited 0 and sent sbx nonexistent paths for
+// in `doctor`, so `den spawn api` exited 0 and sent sbx nonexistent paths for
 // anyone who skipped `den doctor`.
 func TestSpawnRefusesAMissingKit(t *testing.T) {
 	for _, kit := range []string{"transverse", "devx-kit"} { // plural `kits:`, then singular `kit:`
@@ -1363,7 +1363,7 @@ func TestSpawnRefusesAMissingKit(t *testing.T) {
 // An EMPTY entry in `kits:` (plural) must be ignored, as it already is by
 // doctor and by sbx.CreateArgv. F3's first pass filtered only the
 // SINGULAR `kit:` when empty: `kits: ["", "transverse"]` passed
-// `den doctor` as "all clear" yet made `den <nest>` refuse with a
+// `den doctor` as "all clear" yet made `den spawn` refuse with a
 // "kit not found: " on an empty path — two judges of the same field
 // disagreeing, the very defect T2-min-5 names.
 //
@@ -1907,7 +1907,7 @@ func TestSpawnWarnsOnStderrWhenTheForwardedAgentIsUnreachable(t *testing.T) {
 // `git push` when returning to a sandbox that is already running. Every other
 // test in this block asserts `create`, so the whole SSH warning could sit
 // inside the create-only branch and the suite would stay green while the
-// second `den api` of the day — the common case, since a sandbox is created
+// second `den spawn api` of the day — the common case, since a sandbox is created
 // once and re-entered daily — silently forwarded an empty agent.
 //
 // Hence the two assertions together: NO create happened (this really is the
@@ -1979,7 +1979,7 @@ func TestSpawnWarnsOnTheAttachBranchWhenTheForwardedAgentIsEmpty(t *testing.T) {
 // to look for a dead socket that does not exist. `den doctor` already decides
 // the opposite for the SAME machine state
 // (doctor.TestRunDoesNotQueryTheAgentWhenTheSocketIsAbsent): the two must not
-// contradict each other on one `den <nest>`.
+// contradict each other on one `den spawn`.
 //
 // The probe returns StateUnreachable deliberately — the state that used to
 // produce the wrong sentence — so the message can only come from the socket
@@ -2107,7 +2107,7 @@ func TestSpawnToleratesANilSSHAgentProbe(t *testing.T) {
 }
 
 // WarnEmptySSHAgentOnReentry is what `den sh` calls, and its first contract is
-// that the message is the SAME one `den <nest>` prints: two surfaces describing
+// that the message is the SAME one `den spawn` prints: two surfaces describing
 // one machine state must not word it two ways, and the fix that acts without a
 // respawn is precisely what makes the warning worth printing on a re-entry.
 func TestWarnEmptySSHAgentOnReentryWarnsOnAnEmptyAgent(t *testing.T) {
@@ -2126,7 +2126,7 @@ func TestWarnEmptySSHAgentOnReentryWarnsOnAnEmptyAgent(t *testing.T) {
 }
 
 // The one place where re-entry DIVERGES from the preflight, and the reason it
-// has its own function rather than reusing the call site of `den <nest>`.
+// has its own function rather than reusing the call site of `den spawn`.
 //
 // An absent SSH_AUTH_SOCK in the shell running `den sh` says nothing about the
 // sandbox: a live VM forwards the socket it inherited at its `sbx create`, from
@@ -2157,7 +2157,7 @@ func TestWarnEmptySSHAgentOnReentryStaysSilentWithoutASocket(t *testing.T) {
 
 // The healthy case stays silent, and so do the modes that forward no agent —
 // the properties that keep the two tests above from being satisfied by a
-// function that warns unconditionally. Shared with `den <nest>` by
+// function that warns unconditionally. Shared with `den spawn` by
 // construction (both go through warnEmptySSHAgent), asserted here because
 // "shared by construction" is exactly what a refactor breaks.
 func TestWarnEmptySSHAgentOnReentryStaysSilentWhenNothingIsWrong(t *testing.T) {
@@ -2431,7 +2431,7 @@ func TestSpawnDoesNotCheckTheImageOfANotBuildableStack(t *testing.T) {
 // An `image:` pinned by DIGEST is left alone, and not even asked about: `sbx
 // template ls --json` reports a repository and a tag and no digest, so the
 // inventory cannot confirm or deny the pin. Reading that silence as "absent"
-// would refuse a `den <nest>` over an image that is present — the false refusal
+// would refuse a `den spawn` over an image that is present — the false refusal
 // the whole normalization exists to prevent.
 func TestSpawnDoesNotCheckADigestPinnedImage(t *testing.T) {
 	denHome, _ := denTest(t)
@@ -2475,7 +2475,7 @@ func TestSpawnCreatesAnywayWhenTheImageInventoryIsUnreadable(t *testing.T) {
 }
 
 // Attaching needs no image: the VM stopped needing it the moment it was
-// created. Refusing here would refuse a `den <nest>` that works.
+// created. Refusing here would refuse a `den spawn` that works.
 func TestSpawnDoesNotCheckTheImageWhenAttaching(t *testing.T) {
 	denHome, repo := denTest(t)
 	withBuildableStack(t, denHome)
@@ -2513,7 +2513,7 @@ func TestSpawnDoesNotCheckTheImageOfAPullableStack(t *testing.T) {
 	}
 }
 
-// `den corp:backend` spawns from the source's nest and the source's stacks:
+// `den spawn corp:backend` spawns from the source's nest and the source's stacks:
 // a plain directory under sources/ is a valid installed source for Spawn,
 // which never runs git — the layout alone is what Locate reads.
 func TestSpawnFromSourceNest(t *testing.T) {
@@ -3146,7 +3146,7 @@ func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEverything(t *testing.T) {
 
 func TestSpawnTreatsTwoDifferentPositionalSetsAsTheSameSandbox(t *testing.T) {
 	// Decision 7 of the spec: positionals are NOT part of the identity.
-	// `den scratch ~/dev/a` and `den scratch ~/dev/b` both name the sandbox
+	// `den spawn scratch ~/dev/a` and `den spawn scratch ~/dev/b` both name the sandbox
 	// "scratch"; the second attaches the first and mounts nothing new. This is
 	// the likeliest way to get bitten by a scratch nest, and the warning is the
 	// only signal.
@@ -3181,8 +3181,8 @@ func TestSpawnTreatsTwoDifferentPositionalSetsAsTheSameSandbox(t *testing.T) {
 // mounts went silent about the start directory too — an ordinary day-2
 // gesture, not a rare reordering.
 //
-// `den scratch ~/dev/a ~/dev/b` creates the VM: Workspaces = [a, b, …],
-// Workdir() = a. Next day, wanting only b: `den scratch ~/dev/b`. b IS
+// `den spawn scratch ~/dev/a ~/dev/b` creates the VM: Workspaces = [a, b, …],
+// Workdir() = a. Next day, wanting only b: `den spawn scratch ~/dev/b`. b IS
 // mounted — nothing "missing" — yet the attach still runs with workdir = a,
 // frozen at the original create. The user typed "I have come to work in b"
 // and lands in a, told nothing: exactly the harm this function exists to

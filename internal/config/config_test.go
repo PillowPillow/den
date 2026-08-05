@@ -268,7 +268,7 @@ func TestLoadGlobalRepoKeys(t *testing.T) {
 
 // --- D1: Validate() had only ONE caller, doctor.go:59 -----------------------
 //
-// Consequence measured before the fix: `den <nest>`, `den ls`, `den sh` and
+// Consequence measured before the fix: `den spawn`, `den ls`, `den sh` and
 // `den rm` loaded without ever validating. The three tests below lock down
 // the three regressions that allowed.
 

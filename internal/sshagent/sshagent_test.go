@@ -286,7 +286,7 @@ func stubStalledSSHAdd(t *testing.T, body string) string {
 }
 
 // A probe that never comes back is worse than the risk it reports: `ssh-add -l`
-// runs on the mainline `den <nest>` path and in `den doctor`, so an agent that
+// runs on the mainline `den spawn` path and in `den doctor`, so an agent that
 // accepts the connection and stays silent used to suspend den forever on an
 // ADVISORY check. Measured before the bound existed: 10.003 s for a stub that
 // stalls 10 s, i.e. exactly as long as the stall lasts.
@@ -324,7 +324,7 @@ func TestSystemExecBoundsAStalledSSHAdd(t *testing.T) {
 
 			if elapsed > 2*time.Second {
 				t.Errorf("the probe took %v to return with a %v bound: the stub stalls for 10 s, "+
-					"so nothing cuts it short and a wedged agent blocks `den <nest>` for as long "+
+					"so nothing cuts it short and a wedged agent blocks `den spawn` for as long "+
 					"as it stalls", elapsed, bound)
 			}
 			// A deadline-killed process comes back as an *exec.ExitError whose

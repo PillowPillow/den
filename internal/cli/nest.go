@@ -70,10 +70,6 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 			if err := w.Flush(); err != nil {
 				return err
 			}
-			// LOCAL nests only: a source nest is addressed "<source>:<name>",
-			// which can never equal a bare subcommand name, so it never
-			// shadows one.
-			warnAboutShadowedNests(cmd, nests)
 
 			allBroken := slices.Concat(broken, srcBroken)
 			if len(allBroken) > 0 {
@@ -91,7 +87,7 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 
 // listSourceNests iterates every installed source (`os.ReadDir(source.Root)`)
 // and returns its nests and broken nests, both named "<source>:<name>" — the
-// same reference `den <nest>`, `den sh`/`rm`/`ports` and `den nest show` all
+// same reference `den spawn`, `den sh`/`rm`/`ports` and `den nest show` all
 // accept for that nest. Renaming here, not at the call site: nest.ListNests
 // itself knows nothing of sources, and every caller wants the SAME prefixed
 // form, so there is one place to get it right.
@@ -129,35 +125,6 @@ func listSourceNests(home string) (nests []*nest.Nest, broken []nest.BrokenNest)
 	return nests, broken
 }
 
-// warnAboutShadowedNests reports the nests that carry a subcommand's name.
-// Those are declared, listed and resolved by `den nest show`, but `den <name>`
-// will ALWAYS run the subcommand: cobra finds it before the argument reaches
-// the root's RunE. They can never be spawned, and nothing else says so.
-//
-// On stderr, so `den nest ls | ...` stays pipeable, and nothing at all when
-// there is no collision: a permanent warning stops being read.
-//
-// The comparison covers the names AND the aliases of root.Commands(), exactly
-// what cobra consults to route an argument, and never a hardcoded list. The
-// match is EXACT: a nest named "l" is not shadowed by `ls`.
-func warnAboutShadowedNests(cmd *cobra.Command, nests []*nest.Nest) {
-	commands := map[string]bool{}
-	for _, sub := range cmd.Root().Commands() {
-		commands[sub.Name()] = true
-		for _, alias := range sub.Aliases {
-			commands[alias] = true
-		}
-	}
-	for _, n := range nests {
-		if commands[n.Name] {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"warning: nest %q is shadowed by the `den %s` subcommand — "+
-					"`den %s` will run the command, never this nest. Rename it to be able to spawn it.\n",
-				n.Name, n.Name, n.Name)
-		}
-	}
-}
-
 func newNestShowCmd(denHome *string) *cobra.Command {
 	var opts nest.Options
 	cmd := &cobra.Command{
@@ -177,7 +144,7 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			// args[0] may be a source reference ("corp:api"): source.Locate
 			// is the SOLE place that turns it into a root to load the nest
 			// from — same mirror of internal/spawn.Spawn (spawn.go) kept
-			// deliberately identical, so `den nest show` and `den <nest>`
+			// deliberately identical, so `den nest show` and `den spawn`
 			// never resolve the SAME reference to two different nests.
 			nestRoot, srcName, bareNest, err := source.Locate(home, args[0])
 			if err != nil {
@@ -191,7 +158,7 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			// Stack origin — through spawn.ResolveStack, the SAME function
 			// internal/spawn.Spawn calls: both refusals it can raise (an
 			// absent `stack:` inside a source, a prefixed one) must stay
-			// word-identical between `den nest show` and `den <nest>`, or
+			// word-identical between `den nest show` and `den spawn`, or
 			// the two would resolve the same reference to two different
 			// diagnoses. Only the subject (args[0], what the user typed) is
 			// this call site's own.
@@ -204,7 +171,7 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// The dry-run of `den <nest> [repo...]`: same resolution, no side
+			// The dry-run of `den spawn <nest> [repo...]`: same resolution, no side
 			// effect. Reading the working directory here mirrors internal/spawn
 			// — internal/nest never reads it itself.
 			opts.Repos = args[1:]

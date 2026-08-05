@@ -12,7 +12,7 @@ import (
 //
 // A `-` and not a `.`: the period is the `<nest>.<worktree>` separator, and
 // `devx.build` would decompose into a worktree named "build" — a name
-// `den <nest> -w build` really produces. The hyphen keeps the build sandbox a
+// `den spawn <nest> -w build` really produces. The hyphen keeps the build sandbox a
 // single component, which is what `sbx.SplitName` then reads it as.
 const buildSuffix = "-build"
 

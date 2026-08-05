@@ -37,7 +37,7 @@ func newSourceCmd(denHome *string, git worktree.Git) *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"source %q installed — its objects are addressed %s:<name> (e.g. `den %s:<nest>`)\n",
+				"source %q installed — its objects are addressed %s:<name> (e.g. `den spawn %s:<nest>`)\n",
 				resolved, resolved, resolved)
 			return nil
 		},

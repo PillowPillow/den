@@ -58,7 +58,7 @@ obligatoire** : un nom qui commence par `-` ou `+` est indiscernable d'un flag, 
 `sbx create --name` que pour den lui-même (`den nest show -api` échoue sur un flag inconnu avant
 même d'atteindre la résolution du nest). Un `-w feature/123` est donc refusé avec un message
 actionnable, jamais normalisé en silence : normaliser casserait l'aller-retour
-`den <nest> -w <wt>` → nom de sandbox → `den ls`.
+`den spawn <nest> -w <wt>` → nom de sandbox → `den ls`.
 
 ---
 
@@ -173,7 +173,7 @@ est un refus au **chargement** (`config.LoadStack`), jamais une valeur que den c
 refus voisins ci-dessus : le vide voyage dans **trois** directions, et seule la première se voit.
 
 1. **Constructible.** La stack se construit entièrement, `sbx template save <S>-build ""` s'exécute,
-   den annonce le succès. Le `den <nest>` suivant répond « image&nbsp;&nbsp;n'est pas construite —
+   den annonce le succès. Le `den spawn` suivant répond « image&nbsp;&nbsp;n'est pas construite —
    lance `den build devx` » (l'espace doublé est la place de l'image), c'est-à-dire exactement ce que
    l'utilisateur vient de faire. C'est la **boucle fermée** du §6 : den possédant `template save` en
    corrige le NOM, rien n'en corrigeait la vacuité.
@@ -215,10 +215,10 @@ agents:                              # optionnel : override du config_dir PAR ag
 
 **`repos:` est facultatif.** Un nest qui n'en déclare aucun reste un objet spawnable complet — il
 porte sa stack, son egress, son env, ses ports et ses profils agents — et reçoit ses dépôts en
-positionnels : `den scratch ~/dev/a ~/dev/b`. Les positionnels sont additifs et passent **devant**
-les `repos:` déclarés, parce que `Workspaces[0]` décide du répertoire où démarre le shell attaché.
-Ils n'entrent pas dans l'identité : `den scratch ~/dev/a` et `den scratch ~/dev/b` visent la même
-sandbox `scratch`. Détail : `2026-08-04-adhoc-repos-design.md`.
+positionnels : `den spawn scratch ~/dev/a ~/dev/b`. Les positionnels sont additifs et passent
+**devant** les `repos:` déclarés, parce que `Workspaces[0]` décide du répertoire où démarre le shell
+attaché. Ils n'entrent pas dans l'identité : `den spawn scratch ~/dev/a` et `den spawn scratch
+~/dev/b` visent la même sandbox `scratch`. Détail : `2026-08-04-adhoc-repos-design.md`.
 
 **Règles de fusion** (cascade) : `global ← stack ← nest ← flags CLI`.
 **Egress effectif** = `baseline ∪ stack.egress ∪ nest.egress` (dédupliqué), appliqué **scopé à la
@@ -231,7 +231,7 @@ sandbox**.
 | Commande | Rôle |
 |---|---|
 | `den init` | crée un den home à partir de l'exemple embarqué (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`) ; refuse si `config.yaml` existe déjà |
-| `den <nest> [repo...] [-w <wt>] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell ; les `repo...` sont des repos montés à la volée, additifs aux `repos:` du nest et placés devant eux |
+| `den spawn <nest> [repo...] [-w <wt>] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell ; les `repo...` sont des repos montés à la volée, additifs aux `repos:` du nest et placés devant eux |
 | `den ls` | sandboxes vivantes (`sbx ls --json` filtré sur le motif de nommage, colonnes nom/nest/worktree/statut/workspaces) |
 | `den sh <name>` | shell dans une sandbox existante |
 | `den ports <name> [--add H:C]` | **publie à la demande** la fenêtre déclarée + affiche le tableau |
@@ -245,7 +245,7 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
 
 ---
 
-## 6. Data flow du spawn — `den <nest> [-w <wt>] …`
+## 6. Data flow du spawn — `den spawn <nest> [-w <wt>] …`
 
 1. **Résolution.** Charge `config.yaml` + `nests/<nest>.yaml` + `stacks/<stack>/stack.yaml`.
    Fusion en cascade.
@@ -330,7 +330,7 @@ Le modèle #8 laissait le nom de l'image s'écrire **deux fois sans lien** : `im
 après le script — le code de sortie, et c'est tout. Éditer l'un sans l'autre produisait ceci :
 
 1. `den build devx` → le script tourne, sort en 0, den annonce le succès ;
-2. `den <nest>` → `checkStackImage` ne trouve pas `image:` dans l'inventaire → « lance
+2. `den spawn` → `checkStackImage` ne trouve pas `image:` dans l'inventaire → « lance
    `den build devx` » ;
 3. …ce que l'utilisateur vient de faire, avec succès.
 
@@ -718,9 +718,9 @@ Quatre verdicts, et ce qu'ils coûtent :
   invisible. C'est le silence de #18 reconstitué à l'intérieur du correctif de #27.
 
 **La porte tient sur les DEUX chemins depuis l'issue #27.** Elle ne tenait d'abord que sur
-`den <nest>` : `den sh` est une commande à part, qui ne passe pas par la séquence du §6, et sur le
+`den spawn` : `den sh` est une commande à part, qui ne passe pas par la séquence du §6, et sur le
 banc la sandbox `gamma` dont la porte venait d'être prouvée fermée (`fail … exit=1`) refusait
-`den <nest> --agent broken` **et** donnait un shell en silence à `den sh gamma`. Une garantie tenue
+`den spawn <nest> --agent broken` **et** donnait un shell en silence à `den sh gamma`. Une garantie tenue
 par une porte sur deux est plus trompeuse que pas de garantie du tout, d'autant que `den sh` sur une
 sandbox **arrêtée** la redémarre — c'est-à-dire exactement le « une sandbox démarre » dont parle le
 §9.1. L'arbitrage du verdict vit désormais dans **une seule fonction** (`spawn.reportFreshness`) :
@@ -780,7 +780,7 @@ comme le reste pour que les trois états soient rejouables sans agent réel sur 
 - `den doctor` **nomme le compte d'identités** quand tout va bien — `[ok] ssh.mode agent-forward,
   SSH_AUTH_SOCK=… (N identities)`. Un `[ok]` muet ne laisserait repérer ni un socket périmé ni un
   agent qui a perdu ses clés ;
-- `den <nest>` en `agent-forward` **avertit sur stderr**, avant le `sbx create` et aussi quand il
+- `den spawn` en `agent-forward` **avertit sur stderr**, avant le `sbx create` et aussi quand il
   attache à une sandbox déjà vivante. Sur stderr et pas stdout : c'est l'environnement de den qui
   est en cause, pas la sandbox que le reste de la sortie décrit.
 
@@ -815,7 +815,7 @@ nest. Cache `~/.den/cache/` reconstructible, jamais source de vérité.
 | Mise à jour de l'agent impossible au boot | **Fail-closed** après 3 tentatives (§9.1) : le kit sort non-zéro. Layeré en dernier → aucun autre kit lésé. Diagnostic dans `/var/log/sbx-kit-startup.log` — que **den lit** : il **refuse** d'ouvrir la sandbox et cite la ligne (§9.2) |
 | Nom de sandbox déjà vivant | **Spawn-or-attach** (pas une erreur) : attache |
 | Sandbox **arrêtée**, et l'opération exige une VM vivante (`den ports`) | den la **démarre**, l'annonce sur stderr, puis **relit** son état. Voir la décision ci-dessous |
-| Sandbox **arrêtée** sous `den <nest> --detach` | den ne démarre rien et **ne dit pas `ready`** : il dit qu'elle reste arrêtée, que son état est préservé, et quelles commandes la relancent |
+| Sandbox **arrêtée** sous `den spawn --detach` | den ne démarre rien et **ne dit pas `ready`** : il dit qu'elle reste arrêtée, que son état est préservé, et quelles commandes la relancent |
 
 **Une décision, deux situations** (issues #16 et #17, écrite ici parce qu'elle gouverne deux
 commandes) :
@@ -827,7 +827,7 @@ Le §2 (« den refuse plutôt que de normaliser en silence ») porte sur l'**int
 l'utilisateur — une clé mal tapée, une contradiction de drapeaux. Publier un port n'a rien
 d'ambigu : ça exige un endpoint. Un refus nommerait bien l'état et le remède, mais la seule suite
 possible serait de lancer une commande qui démarre la VM — celle que den refusait de faire. F2 avait
-déjà tranché dans ce sens pour `den sh` et `den <nest>`, où `sbx exec` redémarre de façon
+déjà tranché dans ce sens pour `den sh` et `den spawn`, où `sbx exec` redémarre de façon
 transparente ; `sbx ports` ne partage pas ce comportement, d'où un `500 Internal Server Error: … no
 container endpoint with IP address found` qui ne nommait ni la cause ni le remède.
 
@@ -862,7 +862,7 @@ internal/
   agent/                 # résolution agent + mixin généré (env + egress)
   build/                 # graphe `parent`, ordre, arbitrage d'image, séquence de build (§6)
   doctor/                # diagnostic de la configuration et de l'environnement
-  spawn/                 # orchestration de `den <nest>` (§6), hors cli pour rester testable
+  spawn/                 # orchestration de `den spawn` (§6), hors cli pour rester testable
 ```
 
 **Tests (TDD) :**
@@ -1046,7 +1046,7 @@ sbx template save SANDBOX TAG [-o/--output FICHIER]
   ⚠️ RÉFÉRENCE NUE : `save … den-smoke3:v1` produit `docker.io/library/den-smoke3:v1` dans
      `template ls --json`. Les deux côtés complètent IDENTIQUEMENT — l'hypothèse de
      `sbx.NormalizeImageRef` est mesurée, pas extrapolée. C'était la mesure dont dépendait la boucle
-     ouverte de #8 : si les complétions avaient divergé, `den build` aurait réussi et `den <nest>`
+     ouverte de #8 : si les complétions avaient divergé, `den build` aurait réussi et `den spawn`
      aurait réclamé un build à perpétuité. Le `flavor` est HÉRITÉ de la base, pas recalculé.
 
   ⚠️ ÉCRASEMENT d'un `TAG` existant : succès SILENCIEUX, sortie 0, et un `id` NEUF. Pas de refus,
@@ -1238,7 +1238,7 @@ Elles ne sont **pas** des bugs connus — ce sont les endroits où la suite ne p
 > - **la liste blanche de statut** : les seuls statuts que `sbx ls --json` a produits sont `running`
 >   et `stopped`. Aucune valeur transitoire n'a jamais été observée — mais rien n'oblige une à
 >   apparaître : c'est un **point de donnée**, pas une fermeture ;
-> - **la borne de drainage de 2 s** : `den <nest> --detach` rend la main en 6 à 7,6 s, jamais à une
+> - **la borne de drainage de 2 s** : `den spawn --detach` rend la main en 6 à 7,6 s, jamais à une
 >   valeur épinglée sur 2,0 s, donc la borne ne s'est jamais déclenchée. Ni confirmée ni falsifiée.
 
 **A1→A9 d'une part, A10 et A11 de l'autre, ne sont pas de la même espèce.** A1→A9 portent sur le
@@ -1264,8 +1264,8 @@ casse plus den ; il reste utile de la vérifier, mais ce n'est plus bloquant.
 | A7 | La réponse ne dépend que de `(sandbox, hôte)`, jamais transitoire | Un `sbx` qui flanche une fois (VM pas encore prête) ferait échouer tout le settle | **Oui**, même correctif qu'A1 |
 | A8 | La sandbox existe et tourne quand `policy check` est appelé | Idem A1 | **Oui** pour la garde de nom de sandbox |
 | A9 | `sbx` ne rend **jamais** `allowed:false` en échouant pour une raison **étrangère à la policy** | Une sandbox inexistante diagnostiquée `not found` **tout en** rendant `allowed:false` : den brûlerait ses 60 s en accusant l'allowlist | **Oui** — la dernière erreur runner observée est jointe au message de timeout, la vraie cause reste visible |
-| A10 | `sbx` **propage `SSH_AUTH_SOCK` de son propre environnement jusque dans la microVM** — c'est tout ce sur quoi repose `ssh.mode: agent-forward`, qui est le **défaut** | Un `git push` sur un remote SSH depuis la VM échoue en `Permission denied (publickey)` alors que `den doctor` affiche `[ok] ssh.mode agent-forward, SSH_AUTH_SOCK=… (N identities)` sur l'hôte — c'est-à-dire une sonde hôte qui a bel et bien **vu des clés**. Un socket présent devant un agent vide ou mort ne falsifie plus rien : c'est désormais un `[warn]`, pas un `[ok]` (§10) | **Partiellement.** Ce que den contrôle est prouvé : le process `sbx` hérite bien de l'environnement de den (`cmd.Env` laissé nil, tenu par `TestExec{Run,Attach}TransmetLEnvironnementDeDen`), et `den doctor` **avertit** dans les trois états où l'agent hôte ne donnerait rien — variable absente ou vide, agent joignable mais sans identité, agent injoignable (§10) —, `den <nest>` faisant le même constat sur stderr. Ce que den ne peut pas contrôler — le saut hôte → microVM — n'a **aucun** substitut : si l'hypothèse est fausse, le repli est `ssh.mode: mount`, qui lui est testé |
-| A11 | `sbx` **monte chaque workspace au MÊME chemin absolu dans la VM que sur l'hôte** : le chemin hôte d'un workspace est aussi son chemin in-VM. C'est ce qui rend légitimes (1) la substitution de `{config_dir}` par un chemin **hôte** dans `CLAUDE_CONFIG_DIR` (`internal/nest/resolve.go`, `jetonConfigDir`) et (2) le `-w <chemin hôte>` de **toutes** les attaches (`sbx exec -it -w …`, `den <nest>` comme `den sh`) | **Deux symptômes sans lien apparent, et aucun message d'erreur.** (1) L'agent redemande `/login` **à chaque spawn** : `CLAUDE_CONFIG_DIR` pointe un chemin qui n'existe pas dans la VM, l'agent y crée un profil neuf — c'est précisément ce que `config_dir` existe pour éviter, et rien ne le signale. (2) `sbx exec -w <chemin hôte>` échoue, ou dépose le shell ailleurs que dans le code. Le smoke tranche en une ligne : `sbx exec <sandbox> pwd` après un `den <nest>`, comparé au premier workspace de `sbx ls --json` | **NON.** Aucun repli, aucune neutralisation : den n'a **aucun** moyen d'apprendre le chemin in-VM sans `sbx`. Même espèce qu'A10 — comportement d'**exécution de la microVM**, pour lequel « vert contre `sbx.Fake` » ne veut rien dire. Si elle est fausse, il faudra une source de vérité pour le chemin in-VM (sonde `sbx exec … pwd`, ou un champ de `sbx ls --json`) |
+| A10 | `sbx` **propage `SSH_AUTH_SOCK` de son propre environnement jusque dans la microVM** — c'est tout ce sur quoi repose `ssh.mode: agent-forward`, qui est le **défaut** | Un `git push` sur un remote SSH depuis la VM échoue en `Permission denied (publickey)` alors que `den doctor` affiche `[ok] ssh.mode agent-forward, SSH_AUTH_SOCK=… (N identities)` sur l'hôte — c'est-à-dire une sonde hôte qui a bel et bien **vu des clés**. Un socket présent devant un agent vide ou mort ne falsifie plus rien : c'est désormais un `[warn]`, pas un `[ok]` (§10) | **Partiellement.** Ce que den contrôle est prouvé : le process `sbx` hérite bien de l'environnement de den (`cmd.Env` laissé nil, tenu par `TestExec{Run,Attach}TransmetLEnvironnementDeDen`), et `den doctor` **avertit** dans les trois états où l'agent hôte ne donnerait rien — variable absente ou vide, agent joignable mais sans identité, agent injoignable (§10) —, `den spawn` faisant le même constat sur stderr. Ce que den ne peut pas contrôler — le saut hôte → microVM — n'a **aucun** substitut : si l'hypothèse est fausse, le repli est `ssh.mode: mount`, qui lui est testé |
+| A11 | `sbx` **monte chaque workspace au MÊME chemin absolu dans la VM que sur l'hôte** : le chemin hôte d'un workspace est aussi son chemin in-VM. C'est ce qui rend légitimes (1) la substitution de `{config_dir}` par un chemin **hôte** dans `CLAUDE_CONFIG_DIR` (`internal/nest/resolve.go`, `jetonConfigDir`) et (2) le `-w <chemin hôte>` de **toutes** les attaches (`sbx exec -it -w …`, `den spawn` comme `den sh`) | **Deux symptômes sans lien apparent, et aucun message d'erreur.** (1) L'agent redemande `/login` **à chaque spawn** : `CLAUDE_CONFIG_DIR` pointe un chemin qui n'existe pas dans la VM, l'agent y crée un profil neuf — c'est précisément ce que `config_dir` existe pour éviter, et rien ne le signale. (2) `sbx exec -w <chemin hôte>` échoue, ou dépose le shell ailleurs que dans le code. Le smoke tranche en une ligne : `sbx exec <sandbox> pwd` après un `den spawn`, comparé au premier workspace de `sbx ls --json` | **NON.** Aucun repli, aucune neutralisation : den n'a **aucun** moyen d'apprendre le chemin in-VM sans `sbx`. Même espèce qu'A10 — comportement d'**exécution de la microVM**, pour lequel « vert contre `sbx.Fake` » ne veut rien dire. Si elle est fausse, il faudra une source de vérité pour le chemin in-VM (sonde `sbx exec … pwd`, ou un champ de `sbx ls --json`) |
 
 ### Hypothèses assumées de den lui-même
 
@@ -1274,7 +1274,7 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
 
 - **La liste blanche de statut `{"running"}`** (tâche 14, `internal/sbx/ls.go`) : den ne considère
   vivante qu'une sandbox dont le statut est exactement `running`. Un statut **transitoire**
-  (`starting`, `booting`, `resuming`…) serait donc traité comme « absente », et `den <nest>`
+  (`starting`, `booting`, `resuming`…) serait donc traité comme « absente », et `den spawn`
   tenterait de recréer une sandbox en train de démarrer. **Comportement non changé** : la liste
   blanche est le choix sûr tant que l'ensemble réel des statuts de `sbx` n'est pas connu.
   *Falsifié par :* un `sbx ls --json` réel montrant un statut intermédiaire.
@@ -1292,7 +1292,7 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
   30,0 s et succès avant la borne, **échec** avec la borne seule, 2,0 s et succès avec le
   correctif).
   *Falsifié par :* au premier smoke réel, un `pgrep -P` sur le `sbx create` — ou, plus simplement,
-  un `den <nest>` qui ne rend la main qu'après exactement 2 s alors que `sbx` a répondu tout de
+  un `den spawn` qui ne rend la main qu'après exactement 2 s alors que `sbx` a répondu tout de
   suite (signe que la borne a bien servi).
 - **`ssh.mode: agent-forward` n'ajoute AUCUN argument** — vérifié dans `internal/spawn/spawn.go` :
   seul le mode `mount` produit un effet (un workspace en plus, et le contrôle d'existence de

@@ -114,3 +114,6 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
 - Il n'y a plus de `Makefile` : le runner est `Taskfile.yml` depuis le 2026-08-04. Les plans
   datés et les handoffs sous `docs/superpowers/` disent encore `make lint && make test` — c'est
   correct **à leur date** et ils ne sont pas réécrits. Traduire en `task check` en les lisant.
+- Les plans et handoffs datés sous `docs/superpowers/` disent `den <nest>` pour spawner. C'était
+  vrai à leur date : la forme nue a été remplacée par `den spawn <nest>` le 2026-08-05 (spec
+  `2026-08-05-spawn-command-design.md`). Traduire en lisant, comme pour `make` → `task`.

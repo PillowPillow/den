@@ -132,7 +132,7 @@ func TestExecErrorDetailIsTheCauseWithoutTheArgv(t *testing.T) {
 }
 
 // Same requirement on Attach: it's what `den sh` and the final attach of
-// `den <nest>` go through. There's no reason the message should read
+// `den spawn` go through. There's no reason the message should read
 // differently on one side or the other.
 func TestExecAttachMissingBinaryProducesAnActionableMessage(t *testing.T) {
 	const bin = "den-binary-that-does-not-exist-x7q"
@@ -813,7 +813,7 @@ func TestExecStreamTransmitsDenEnvironment(t *testing.T) {
 }
 
 // Same property on Attach. It matters just as much: `den sh` and the final
-// attach of `den <nest>` go through it, and a stripped environment wouldn't
+// attach of `den spawn` go through it, and a stripped environment wouldn't
 // be any more visible there than on Run.
 //
 // The witness goes through a FILE rather than stdout, because Attach

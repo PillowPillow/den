@@ -175,7 +175,7 @@ func Plan(ctx context.Context, chain []*config.Stack, target Target, force bool,
 // right there, and every message den can produce is otherwise individually
 // correct while never mentioning that the file is no longer read: `den build`
 // skips the stack ("no `provision.steps`"), `den build <stack>` lands here, and
-// `den <nest>` silently stops warning about the missing image. Three true
+// `den spawn` silently stops warning about the missing image. Three true
 // answers, none naming the cause — the same closed loop, one level up. Naming
 // the dead file here is what breaks it, and this is the message the user reaches
 // by asking for the build explicitly.

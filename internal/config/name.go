@@ -54,7 +54,7 @@ const FlattenedSourceSeparator = "-"
 
 // FlattenSandboxComponent renders the "nameable" version of a name: every
 // character outside the charset becomes a "-". This is what lets
-// `den <nest> -w feature/123` work on the real branch "feature/123" while
+// `den spawn <nest> -w feature/123` work on the real branch "feature/123" while
 // naming its sandbox "<nest>.feature-123".
 //
 // Flattening is not injective: "feat/try" and "feat-try" render the same

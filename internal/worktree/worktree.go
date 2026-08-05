@@ -658,7 +658,7 @@ func identify(ctx context.Context, g Git, worktreePath string) (root, common str
 // CommonGitDir returns a repository's common git directory — its `.git`, the one
 // holding the admin dir, the objects and the refs.
 //
-// That is what `den <nest> -w` mounts in the microVM NEXT TO the worktree: a
+// That is what `den spawn -w` mounts in the microVM NEXT TO the worktree: a
 // linked worktree's `.git` is only a file "gitdir: <repo>/.git/worktrees/<name>",
 // and without that directory mounted every git command in the VM answers
 // "fatal: not a git repository".

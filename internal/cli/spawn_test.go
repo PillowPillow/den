@@ -1,37 +1,17 @@
 package cli
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
 	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
 )
-
-// The root becoming the spawn command, existing subcommands must especially
-// not be swallowed as nest names.
-//
-// DEN_HOME is pinned to an empty directory in EVERY test going through run():
-// if the root captured a token it should not, the spawn would run against the
-// machine's REAL ~/.den — and the real `sbx`.
-func TestSubcommandsStayPriority(t *testing.T) {
-	t.Setenv("DEN_HOME", t.TempDir())
-
-	out, err := run(t, "version")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.HasPrefix(out, "den ") {
-		t.Errorf("`den version` must stay the version command; got: %q", out)
-	}
-}
 
 func TestDenWithNoArgumentPrintsHelp(t *testing.T) {
 	t.Setenv("DEN_HOME", t.TempDir())
@@ -49,11 +29,11 @@ func TestDenWithNoArgumentPrintsHelp(t *testing.T) {
 // the one the spawn consults. An empty den home fails at the very first step
 // (reading config.yaml), which is enough to name the consulted directory
 // without ever calling `sbx` — absent from this machine.
-func TestDenNestRoutesToTheSpawn(t *testing.T) {
+func TestSpawnRoutesToTheSpawn(t *testing.T) {
 	t.Setenv("DEN_HOME", t.TempDir())
 	dir := t.TempDir()
 
-	if _, err := run(t, "api", "--den-home", dir); err == nil {
+	if _, err := run(t, "spawn", "api", "--den-home", dir); err == nil {
 		t.Fatal("an empty den home must fail the spawn")
 	} else if !strings.Contains(err.Error(), filepath.Join(dir, "config.yaml")) {
 		t.Errorf("the spawn must consult the given --den-home; got: %v", err)
@@ -64,11 +44,11 @@ func TestDenNestRoutesToTheSpawn(t *testing.T) {
 // (hence DEN_HOME, then ~/.den). This case is what distinguishes "we call
 // config.Home" from "we pass the flag's raw value": raw, it is "" and the
 // spawn would read a "config.yaml" relative to cwd.
-func TestDenNestWithoutFlagGoesThroughDenHome(t *testing.T) {
+func TestSpawnWithoutFlagGoesThroughDenHome(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DEN_HOME", dir)
 
-	if _, err := run(t, "api"); err == nil {
+	if _, err := run(t, "spawn", "api"); err == nil {
 		t.Fatal("an empty den home must fail the spawn")
 	} else if !strings.Contains(err.Error(), filepath.Join(dir, "config.yaml")) {
 		t.Errorf("the spawn must resolve the den home through DEN_HOME; got: %v", err)
@@ -79,11 +59,16 @@ func TestDenNestWithoutFlagGoesThroughDenHome(t *testing.T) {
 // Same reason as runDoctor: without injection, the flag-to-spawn.Options
 // wiring is unverifiable anywhere, and any test reaching `sbx create` would
 // try to run the real binary.
+//
+// The tree is BARE — the spawn and nothing else. Tests that need den's real
+// command list (the refusal, the suggestion) go through run() (NewRootCmd)
+// in root_test.go instead — TestUnknownFirstArgumentListsTheCommands and
+// TestUnknownFirstArgumentSuggestsTheCloseCommand.
 func runSpawn(t *testing.T, home string, deps spawn.Deps, args ...string) (string, error) {
 	t.Helper()
 	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
-	configureSpawn(root, &home, deps)
-	return executeCmd(t, root, args...)
+	root.AddCommand(newSpawnCmd(&home, deps))
+	return executeCmd(t, root, append([]string{"spawn"}, args...)...)
 }
 
 // denHomeSpawnable: a minimal den home on which a complete spawn succeeds.
@@ -144,7 +129,7 @@ func fakeSpawnDeps() (*sbx.Fake, spawn.Deps) {
 	// path that consults Git. Whoever wants to prove Git's injection supplies
 	// a fake explicitly (root_deps_test.go).
 	//
-	// Out stays nil: configureSpawn overwrites it on every run with
+	// Out stays nil: newSpawnCmd overwrites it on every run with
 	// cmd.OutOrStdout(), and Spawn falls back to io.Discard if it is missing.
 	return f, spawn.Deps{
 		Sbx:       f,
@@ -154,10 +139,10 @@ func fakeSpawnDeps() (*sbx.Fake, spawn.Deps) {
 	}
 }
 
-// Every flag of `den <nest>` must reach spawn.Options.
+// Every flag of `den spawn` must reach spawn.Options.
 //
 // The wiring is precisely what nobody tests, and an unwired flag is SILENT:
-// `den api -w feat` would create a sandbox "api" on the repo's main checkout,
+// `den spawn api -w feat` would create a sandbox "api" on the repo's main checkout,
 // without a worktree, and the user would only discover it by looking at their
 // branch from inside the VM.
 //
@@ -204,10 +189,16 @@ func TestFlagsReachSpawnOptions(t *testing.T) {
 // given den home, with a fake sbx.Runner. The Fake is returned so the caller can
 // assert the ABSENCE of a call as much as its presence.
 //
-// runSpawn does not fit the D1 tests: it builds a BARE root, with no subcommand,
-// and D1's suggestion reads precisely off root.Commands(). Against that root, the
-// absence of a suggestion would be true by construction — the test would pass
-// proving nothing.
+// runSpawn does not fit the tests through here: its tree carries no
+// --den-home flag (home is a direct pointer, not a registered flag) and no
+// sibling commands — it exists for flag-wiring tests that inject spawn.Deps
+// by hand and stop at the first spawn.Options error. The tests below drive
+// den through --den-home like a real invocation, and
+// TestANestHomonymOfASubcommandSpawnsNormally specifically needs a real `ls`
+// subcommand registered alongside the spawn to prove the collision no longer
+// happens — against runSpawn's bare root there is no subcommand to collide
+// with, so the property would hold true by construction of the stub, not by
+// anything den does.
 //
 // deps.Git and deps.Policy stay those of SystemDeps(), which is safe HERE for
 // a precise reason: the den homes built above declare no `egress:` (the
@@ -238,166 +229,47 @@ func runFullRoot(t *testing.T, home string, args ...string) (*sbx.Fake, string, 
 	return f, out, err
 }
 
-// D1, property 1 — THE design constraint. A nest REALLY named "doctr" spawns
-// normally: the suggestion must never stand in front of an object that
-// exists.
+// A nest that carries a SUBCOMMAND'S OWN NAME spawns. Not a lookalike — the
+// name itself.
 //
-// Refusing up front any argument close to a subcommand — the obvious fix —
-// would break exactly this case: den would list an object in `den nest ls`
-// that it then refuses to address. This is the defect found in T3 with
-// `-api`, and this test is what prevents reintroducing it.
+// Until 2026-08-05 this was impossible: cobra routed `den ls` to the
+// subcommand before the argument reached the root's RunE, so a nest named `ls`
+// was unreachable for life. den knew, and warned about it in `den nest ls`
+// (warnAboutShadowedNests, deleted with this change) — a warning is not a fix.
+// Making the spawn a subcommand removes the collision instead of commenting
+// on it, and this test is what says so.
 func TestANestHomonymOfASubcommandSpawnsNormally(t *testing.T) {
 	home := denHomeSpawnable(t)
-	if err := os.WriteFile(filepath.Join(home, "nests", "doctr.yaml"),
+	if err := os.WriteFile(filepath.Join(home, "nests", "ls.yaml"),
 		[]byte("stack: devx\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	f, _, err := runFullRoot(t, home, "doctr")
+	f, _, err := runFullRoot(t, home, "spawn", "ls")
 	if err != nil {
-		t.Fatalf("a nest named \"doctr\" must spawn; got: %v", err)
+		t.Fatalf("a nest named \"ls\" must spawn; got: %v", err)
 	}
 	// Without this assertion, a spawn that did nothing at all would pass: it
-	// must be sandbox "doctr" that actually spawns.
+	// must be sandbox "ls" that actually spawns.
+	//
+	// A positional check on call[2], not strings.Contains(joined, "ls"): the
+	// old check matched "ls" anywhere in the whole argv, TMPDIR paths
+	// included, so it happened to discriminate today but would go silently
+	// tautological the moment a mount path or test name contained "ls".
+	// CreateArgv (internal/sbx/argv.go) fixes the shape — call[0] "create",
+	// call[1] "--name", call[2] the sandbox name — so that is the position
+	// this test actually needs to pin.
 	var created bool
 	for _, call := range f.Calls {
-		joined := strings.Join(call, " ")
-		if strings.HasPrefix(joined, "create ") && strings.Contains(joined, "doctr") {
+		if len(call) > 2 && call[0] == "create" && call[2] == "ls" {
 			created = true
 		}
 	}
 	if !created {
-		t.Errorf("no `create` for sandbox \"doctr\"; calls: %v", f.Calls)
+		t.Errorf("no `create` for sandbox \"ls\"; calls: %v", f.Calls)
 	}
 	if len(f.Attaches) != 1 {
 		t.Errorf("the spawn must attach; attaches: %v", f.Attaches)
-	}
-}
-
-// D1, property 2 — the typo. `den doctr` with no nest file must suggest
-// `den doctor`, WITHOUT ceasing to name the expected file: the path is what
-// lets a user who really wanted a nest understand where den looked for it.
-func TestATypoOnASubcommandIsSuggested(t *testing.T) {
-	home := denHomeSpawnable(t)
-
-	_, _, err := runFullRoot(t, home, "doctr")
-	if err == nil {
-		t.Fatal("a nonexistent nest must fail the spawn")
-	}
-	if !strings.Contains(err.Error(), "doctor") {
-		t.Errorf("the error must suggest the close subcommand; got: %v", err)
-	}
-	if !strings.Contains(err.Error(), filepath.Join(home, "nests", "doctr.yaml")) {
-		t.Errorf("the error must keep naming the expected nest file; got: %v", err)
-	}
-}
-
-// D1, property 3 — a FAR name suggests nothing. An absurd suggestion ("did
-// you mean den doctor?" for `den zzzz`) would cost more than it is worth: it
-// would make the user doubt their own nest name.
-//
-// The test checks the ABSENCE of the suggestion template, not the absence of
-// the word "doctor": the latter would be absent even from a den that
-// suggested anything at random.
-func TestAFarNameSuggestsNothing(t *testing.T) {
-	home := denHomeSpawnable(t)
-
-	_, _, err := runFullRoot(t, home, "zzzz")
-	if err == nil {
-		t.Fatal("a nonexistent nest must fail the spawn")
-	}
-	if strings.Contains(err.Error(), "did you mean") {
-		t.Errorf("no suggestion must be made for a far name; got: %v", err)
-	}
-	if !strings.Contains(err.Error(), filepath.Join(home, "nests", "zzzz.yaml")) {
-		t.Errorf("the error must name the expected nest file; got: %v", err)
-	}
-}
-
-// D1, property 4 — a nest that IS PRESENT but unreadable suggests nothing
-// either. "doctr" does exist here: suggesting `den doctor` would send the user
-// to fix a typo they did not make, instead of looking at their file.
-//
-// The unreadability comes from a DIRECTORY in place of the file (EISDIR), not
-// a chmod 0000: the suite runs as root, where permissions block nothing and
-// the test would pass exercising nothing.
-func TestANestThatExistsButIsUnreadableSuggestsNothing(t *testing.T) {
-	home := denHomeSpawnable(t)
-	if err := os.MkdirAll(filepath.Join(home, "nests", "doctr.yaml"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	_, _, err := runFullRoot(t, home, "doctr")
-	if err == nil {
-		t.Fatal("an unreadable nest must fail the spawn")
-	}
-	if strings.Contains(err.Error(), "did you mean") {
-		t.Errorf("a nest that EXISTS must not be redirected to a subcommand; got: %v", err)
-	}
-}
-
-// The suggestion only concerns the name ACTUALLY TYPED. Today, the spawn
-// sequence only loads that one nest and the case is unreachable from the
-// command line: the test therefore calls withSuggestion directly, rather than
-// leaving the guard unproven. The day the spawn loads a second nest (an
-// `extends:`, envisioned in spec §14), that other nest's absence would say
-// nothing about a command-line typo, and suggesting `den doctor` would be a
-// non sequitur.
-func TestTheSuggestionOnlyConcernsTheTypedName(t *testing.T) {
-	root := NewRootCmd()
-	failing := func(name string) error {
-		return &nest.NestNotFoundError{
-			Name: name,
-			Path: "/den/nests/" + name + ".yaml",
-			Err:  fs.ErrNotExist,
-		}
-	}
-
-	// The typed name is CLOSE to `doctor` in BOTH cases: that is what isolates
-	// the guard. If the typed name were far, the absence of a suggestion would
-	// come from the distance rather than the guard, and the test would prove
-	// nothing.
-	if err := withSuggestion(root, "doctr", failing("doctr")); !strings.Contains(err.Error(), "doctor") {
-		t.Errorf("the typed name is the one that failed: the suggestion must come; got: %v", err)
-	}
-	err := withSuggestion(root, "doctr", failing("fullstack"))
-	if strings.Contains(err.Error(), "did you mean") {
-		t.Errorf("the missing nest (\"fullstack\") is not the one the user typed "+
-			"(\"doctr\"): no suggestion must be made; got: %v", err)
-	}
-}
-
-// A source reference never gets a suggestion, deliberately: `source.Locate`
-// strips the prefix before LoadNest ever runs, so a source nest's own
-// NotFoundError names only the BARE nest ("doctr", not "corp:doctr") — the
-// guard must still recognize this as "the very name the user typed" (it is,
-// once the prefix is accounted for) and STILL decline to suggest, since no
-// subcommand ever carries a ":" and there is nothing plausible to offer.
-//
-// Without the source-aware comparison this passed for the wrong reason: the
-// bare "doctr" never equalled the full "corp:doctr", so the old guard bailed
-// out on every source reference by accident, not by design — indistinguishable
-// from the case this test exists to rule out (M1 of Task 9's review).
-func TestASourceReferenceNeverSuggestsASubcommand(t *testing.T) {
-	root := NewRootCmd()
-	failing := func(name string) error {
-		return &nest.NestNotFoundError{
-			Name: name,
-			Path: "/den/sources/corp/nests/" + name + ".yaml",
-			Err:  fs.ErrNotExist,
-		}
-	}
-
-	// The typed name is CLOSE to `doctor` past its source prefix — the exact
-	// shape that would earn a suggestion for a bare name (see the test
-	// above) — and must still get none.
-	err := withSuggestion(root, "corp:doctr", failing("doctr"))
-	if strings.Contains(err.Error(), "did you mean") {
-		t.Errorf("a source reference must never be suggested as a mistyped "+
-			"subcommand; got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "corp/nests/doctr.yaml") {
-		t.Errorf("the underlying nest-not-found error must still be returned intact; got: %v", err)
 	}
 }
 
@@ -449,9 +321,9 @@ func denHomeWithOptionalRepo(t *testing.T) string {
 func runSpawnWithInput(t *testing.T, home string, deps spawn.Deps, input string, args ...string) (string, error) {
 	t.Helper()
 	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
-	configureSpawn(root, &home, deps)
+	root.AddCommand(newSpawnCmd(&home, deps))
 	root.SetIn(strings.NewReader(input))
-	return executeCmd(t, root, args...)
+	return executeCmd(t, root, append([]string{"spawn"}, args...)...)
 }
 
 // -i must reach spawn.Options. Proven by the contradiction it is the only
@@ -549,18 +421,5 @@ func TestSeveralPositionalsAllReachSpawnOptions(t *testing.T) {
 	}
 	if len(f.Calls) != 0 {
 		t.Errorf("no sbx call must have happened; calls: %v", f.Calls)
-	}
-}
-
-func TestATypoOnASubcommandIsStillSuggestedWithPositionals(t *testing.T) {
-	// `den doctr /dev/a` must keep suggesting `den doctor`. The suggestion is
-	// pinned to nest.NestNotFoundError, not to the argument count — and this
-	// test is what keeps that true now that extra arguments are legal.
-	_, _, err := runFullRoot(t, denHomeSpawnable(t), "doctr", "/dev/a")
-	if err == nil {
-		t.Fatal("expected a failure: there is no nest named doctr")
-	}
-	if !strings.Contains(err.Error(), "den doctor") {
-		t.Errorf("error = %q, expected it to suggest `den doctor`", err)
 	}
 }

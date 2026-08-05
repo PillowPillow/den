@@ -134,7 +134,7 @@ func TestParseRepoArgRefusesReadOnlySuffix(t *testing.T) {
 	}{
 		{"bare suffix", "/dev/api:ro"},
 		// A shell-quoted argument can carry leading/trailing whitespace
-		// (`den scratch " /dev/api:ro "`). The refusal must still trigger: it
+		// (`den spawn scratch " /dev/api:ro "`). The refusal must still trigger: it
 		// is judged on a trimmed copy of raw, not on raw itself, precisely so
 		// this case is not missed.
 		{"suffix padded with whitespace", " /dev/api:ro "},
@@ -230,7 +230,7 @@ func TestCheckUniqueNamesRefusesTheSamePathTwiceOnTheCommandLine(t *testing.T) {
 	}
 }
 
-// A command-line path can also repeat a DECLARED one — `den api ~/dev/api`
+// A command-line path can also repeat a DECLARED one — `den spawn api ~/dev/api`
 // when `api` is already in repos:. Unlike the all-command-line case, this one
 // has an unambiguous remedy: keep the declared entry, drop the positional.
 func TestCheckUniqueNamesRefusesACommandLinePathEqualToADeclaredOne(t *testing.T) {

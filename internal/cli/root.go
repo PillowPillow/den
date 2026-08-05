@@ -4,11 +4,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -88,7 +90,7 @@ func NewRootCmd() *cobra.Command {
 }
 
 // NewRootCmdWith takes its world accesses as a parameter, so tests can exercise
-// `den ls` and `den <nest>` without sbx (or git) being installed: EVERY system
+// `den ls` and `den spawn` without sbx (or git) being installed: EVERY system
 // access comes from the caller, none is hard-wired here.
 //
 // denHome is declared HERE, not at package level, so two command trees built in
@@ -102,7 +104,20 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 		Short:         "Simple, repeatable sbx sandboxes",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// See unknownCommand: a non-nil Args is what replaces cobra's bare
+		// "unknown command" with den's own listing, and the RunE below is what
+		// keeps ValidateArgs reachable at all.
+		Args: unknownCommand,
+		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
+	// Explicit, because cobra does NOT apply it on this path: its default of 2
+	// is set in findSuggestions(), which serves the "unknown command" branch
+	// den never takes (root.Args is non-nil, so Find's legacyArgs branch that
+	// calls findSuggestions is never reached — the RunE above governs a
+	// different gate, Runnable(), and is not why suggestions are bypassed).
+	// unknownCommandError calls SuggestionsFor directly, and at 0 it returns
+	// prefix matches only — `den doctr` would suggest nothing.
+	root.SuggestionsMinimumDistance = 2
 	root.PersistentFlags().StringVar(&denHome, "den-home", "",
 		"den config directory (default: $DEN_HOME or ~/.den)")
 
@@ -121,7 +136,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
 	// `den sh` gets the SSH probe and the OS too: re-entering a sandbox whose
 	// forwarded agent has been emptied fails `git push` exactly as a fresh
-	// `den <nest>` would, and this is the surface that re-enters most often.
+	// `den spawn` would, and this is the surface that re-enters most often.
 	// runtime.GOOS is named here, at the wiring site, like the spawn's below.
 	root.AddCommand(newShCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS, deps.Freshness))
 	root.AddCommand(newRmCmd(&denHome, deps.Sbx, deps.Git))
@@ -142,30 +157,28 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// den home at all.
 	root.AddCommand(newLintCmd())
 
-	// spawn.Deps is ASSEMBLED here from the very fields newLsCmd just got:
-	// deps.Sbx is the single source. Out is left unset, configureSpawn
-	// overwrites it on every run with cmd.OutOrStdout() (the only way to follow
-	// a test's SetOut).
-	//
-	// LAST: configureSpawn sets Args on the root, which only makes sense once
-	// every subcommand is registered.
-	configureSpawn(root, &denHome, spawn.Deps{
+	// `den spawn` is ASSEMBLED here from the very fields newLsCmd just got:
+	// deps.Sbx is the single source. Out/Err/In are left unset, newSpawnCmd's
+	// RunE overwrites them on every run from the command itself (the only way
+	// to follow a test's SetOut).
+	root.AddCommand(newSpawnCmd(&denHome, spawn.Deps{
 		Sbx:       deps.Sbx,
 		Git:       deps.Git,
 		Policy:    deps.Policy,
 		Freshness: deps.Freshness,
 		SSHAgent:  deps.SSHAgent,
 		IsTTY:     deps.IsTTY,
-		// The real OS, named at the wiring site like every other system access:
-		// spawn has no SystemDeps constructor to hold it (see spawn.Deps), and a
-		// field left implicit here is a dependency the reader has to hunt for.
+		// The real OS, named at the wiring site like every other system
+		// access: spawn has no SystemDeps constructor to hold it (see
+		// spawn.Deps), and a field left implicit here is a dependency the
+		// reader has to hunt for.
 		GOOS: runtime.GOOS,
-		// The real clock for the source-staleness hint (spawn.Deps.Now):
-		// nil is what the package's own tests want (no source touched, no
-		// clock owed), but a live den wiring this field to nothing would
-		// silently drop the hint for every user, forever.
+		// The real clock for the source-staleness hint (spawn.Deps.Now): nil
+		// is what the package's own tests want (no source touched, no clock
+		// owed), but a live den wiring this field to nothing would silently
+		// drop the hint for every user, forever.
 		Now: time.Now,
-	})
+	}))
 	return root
 }
 
@@ -184,8 +197,8 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 // cancellation chain — Run reads ctx.Err() itself because a killed process's
 // own error otherwise hides it — so any command that shells out through
 // Runner.Run already "recognizes a Ctrl-C" instead of just dying with it. And
-// Runner.Attach (the interactive `exec -it` path used by `den <nest>`, `den
-// sh`, spawn) deliberately sets cmd.Cancel = nil, so this context ending
+// Runner.Attach (the interactive `exec -it` path used by `den spawn` and `den
+// sh`) deliberately sets cmd.Cancel = nil, so this context ending
 // does nothing to an attached shell — the tty driver delivers a Ctrl-C typed
 // inside it directly to the sandbox's foreground process, not through here.
 // Checked, not assumed: in both callers (internal/cli/sh.go, spawn.Spawn at
@@ -286,4 +299,88 @@ func argsBetween(min, max int) cobra.PositionalArgs {
 		return fmt.Errorf("%s: %s, %s — usage: %s",
 			cmd.CommandPath(), expected, detail, cmd.UseLine())
 	}
+}
+
+// unknownCommand is the root's Args validator, and the root has one for a
+// reason worth writing down: WITHOUT it, cobra's own legacyArgs answers
+// `unknown command "api" for "den"` and stops there. It never lists the
+// commands, because the list lives in the USAGE, and the root sets
+// SilenceUsage — lifting that flag would dump the full usage under every
+// subcommand's failure too (cobra checks the root's flag as well as the
+// command's), which is precisely what it was set to prevent.
+//
+// So den writes the message itself. Two cobra constraints govern the shape,
+// both read in cobra's source rather than assumed:
+//
+//  1. Find() only falls back on legacyArgs when the found command's Args is
+//     nil. A non-nil Args on the root therefore REPLACES cobra's message with
+//     this one — which is the point.
+//  2. execute() returns flag.ErrHelp on !Runnable() BEFORE calling
+//     ValidateArgs. A root without a RunE would print its help and exit 0 on
+//     `den api`. The root keeps a RunE for that reason alone; it is reached
+//     only when this validator let the call through, i.e. with no argument.
+//
+// A flag error still wins over this one: ParseFlags runs before ValidateArgs,
+// so `den api --detach` says `unknown flag: --detach`. Accepted — both are
+// non-zero refusals, and making the argument win would mean disabling flag
+// parsing on the root, costing --den-home and --help.
+func unknownCommand(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return unknownCommandError(cmd, args[0])
+}
+
+// unknownCommandError renders the refusal: what den did not understand, what
+// it does understand, and where the bare form went.
+//
+// Split from unknownCommand so it can be tested against a throwaway tree
+// instead of den's real command list — the shape of the message is not the
+// same contract as its content, and the latter is frozen once, in a golden.
+//
+// The list comes from root.Commands(), NEVER from a constant: a command added
+// tomorrow appears here without anyone thinking about it. cobra sorts that
+// slice by name, so the order is deterministic and a golden can hold it.
+//
+// The migration line is STATIC. A kinder version would read the den home to
+// say "api is a nest, type `den spawn api`" — rejected: it would put a
+// fallible config.Home, hence a second class of error, on the most banal
+// error path of the whole CLI. The fixed line carries the whole migration for
+// nothing.
+func unknownCommandError(root *cobra.Command, arg string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "unknown command %q", arg)
+	if candidates := root.SuggestionsFor(arg); len(candidates) > 0 {
+		quoted := make([]string, len(candidates))
+		for i, c := range candidates {
+			quoted[i] = fmt.Sprintf("`den %s`", c)
+		}
+		fmt.Fprintf(&b, "\n\ndid you mean %s?", strings.Join(quoted, " or "))
+	}
+	// The padding is cobra's own (minNamePadding = 11, widened by any longer
+	// name), so this block is indistinguishable from what `den help` prints.
+	// A reader must not have to notice they are looking at a second renderer.
+	//
+	// `|| sub.Name() == "help"`, matching cobra's OWN defaultUsageTemplate: its
+	// IsAvailableCommand excludes the parent's helpCommand specifically (its
+	// own doc says so), which is why cobra's built-in listing special-cases the
+	// name instead of relying on that method alone. Without the same
+	// exception, `help` would silently vanish from this list while still
+	// working as a command.
+	pad := 11
+	for _, sub := range root.Commands() {
+		if (sub.IsAvailableCommand() || sub.Name() == "help") && len(sub.Name()) > pad {
+			pad = len(sub.Name())
+		}
+	}
+	b.WriteString("\n\nCommands:")
+	for _, sub := range root.Commands() {
+		if !sub.IsAvailableCommand() && sub.Name() != "help" {
+			continue
+		}
+		fmt.Fprintf(&b, "\n  %-*s %s", pad, sub.Name(), sub.Short)
+	}
+	b.WriteString("\n\n`den <nest>` no longer spawns: use `den spawn <nest>`.")
+	b.WriteString("\nRun `den help <command>` for details.")
+	return errors.New(b.String())
 }
