@@ -244,6 +244,17 @@ func TestASpawnFlagOnTheRootIsRefused(t *testing.T) {
 		t.Run(flag, func(t *testing.T) {
 			if _, err := run(t, flag); err == nil {
 				t.Errorf("`den %s` must be refused: that flag belongs to `den spawn`", flag)
+			} else if !strings.Contains(err.Error(), "unknown flag") &&
+				!strings.Contains(err.Error(), "unknown shorthand flag") {
+				// `-w` and `--only` take a value: a future PersistentFlags on
+				// the root that merely re-registers them (without wiring)
+				// would still fail here — "flag needs an argument: 'w' in
+				// -w" — and an err == nil check alone would stay green
+				// straight through that regression. Pinning the error to
+				// "unknown flag"/"unknown shorthand flag" is what keeps this
+				// test honest about refusing the flag as UNRECOGNIZED, not
+				// merely as malformed.
+				t.Errorf("`den %s` must be refused as UNKNOWN, not merely fail; got: %v", flag, err)
 			}
 		})
 	}
@@ -411,9 +422,9 @@ func TestUnknownCommandErrorSuggestsNothingForAFarName(t *testing.T) {
 }
 
 // SuggestionsMinimumDistance at 0 makes SuggestionsFor return prefix matches
-// ONLY. This test is what keeps Task 2's move of that assignment honest: drop
-// it while moving configureSpawn's body and `den doctr` silently stops
-// suggesting anything.
+// ONLY. This test is what keeps the 2026-08-05 move of that assignment
+// honest: drop it while moving configureSpawn's body and `den doctr` silently
+// stops suggesting anything.
 func TestUnknownCommandErrorNeedsTheSuggestionDistance(t *testing.T) {
 	root := testTree()
 	root.SuggestionsMinimumDistance = 0

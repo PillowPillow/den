@@ -112,9 +112,11 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	}
 	// Explicit, because cobra does NOT apply it on this path: its default of 2
 	// is set in findSuggestions(), which serves the "unknown command" branch
-	// den never takes (the root has a RunE). unknownCommandError calls
-	// SuggestionsFor directly, and at 0 it returns prefix matches only —
-	// `den doctr` would suggest nothing.
+	// den never takes (root.Args is non-nil, so Find's legacyArgs branch that
+	// calls findSuggestions is never reached — the RunE above governs a
+	// different gate, Runnable(), and is not why suggestions are bypassed).
+	// unknownCommandError calls SuggestionsFor directly, and at 0 it returns
+	// prefix matches only — `den doctr` would suggest nothing.
 	root.SuggestionsMinimumDistance = 2
 	root.PersistentFlags().StringVar(&denHome, "den-home", "",
 		"den config directory (default: $DEN_HOME or ~/.den)")

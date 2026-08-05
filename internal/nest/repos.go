@@ -269,7 +269,7 @@ func parseRepoArgs(cwd string, raws []string) ([]Repo, error) {
 //  2. ExpandPath, like `repos:`, `ssh.dir` and `config_dir`. It handles the
 //     tilde and NOTHING else.
 //  3. absolutize against cwd. This step, and only this step, is what makes
-//     `den scratch .` work: sbx.checkWorkspace rejects every relative path,
+//     `den spawn scratch .` work: sbx.checkWorkspace rejects every relative path,
 //     because it would resolve against a working directory nothing guarantees
 //     by the time sbx uses it.
 func parseRepoArg(cwd, raw string) (Repo, error) {

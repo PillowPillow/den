@@ -239,7 +239,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 	}
 	// The working directory is read HERE, once, and handed to internal/nest,
-	// which stays pure: `den scratch .` is then assertable without a test having
+	// which stays pure: `den spawn scratch .` is then assertable without a test having
 	// to chdir. os.Getwd is world access, like the os.Stat probes at step 2 —
 	// this side of the boundary is where it belongs.
 	//
@@ -348,7 +348,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				// (parseRepoArg, internal/nest/repos.go) so a directory legitimately
 				// named with leading/trailing spaces survives intact — but that only
 				// pays off if this check names it verbatim. Under %s the padding
-				// blends into the surrounding text and `den api " /dev/api "` prints
+				// blends into the surrounding text and `den spawn api " /dev/api "` prints
 				// exactly like a clean path. And unlike the declared branch below,
 				// this one names no remedy: the origin alone tells the user where the
 				// path came from, not what to do about it.
@@ -1346,9 +1346,9 @@ func reportMissingGitDirs(out io.Writer, sandboxName string, mounted, expected [
 // The mount half is presence: is each expected path anywhere in what the VM
 // mounts. The start-directory half is Decision 4 — the FIRST repo this
 // invocation named wins the attach's `-w` — and it can fail on its own even
-// when nothing is missing: `den scratch ~/dev/a ~/dev/b` creates a VM with
-// Workspaces = [a, b, …] and Workdir() = a; the next day, `den scratch
-// ~/dev/b` resolves to expected = [b], which the VM already mounts — nothing
+// when nothing is missing: `den spawn scratch ~/dev/a ~/dev/b` creates a VM
+// with Workspaces = [a, b, …] and Workdir() = a; the next day, `den spawn
+// scratch ~/dev/b` resolves to expected = [b], which the VM already mounts — nothing
 // "missing" — yet the attach still runs with workdir = a, frozen at the
 // original create. A presence-only check goes silent on exactly that ordinary
 // "ask for a subset of what's already mounted" gesture, which is the harm

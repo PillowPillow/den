@@ -270,7 +270,7 @@ func TestFind(t *testing.T) {
 		t.Errorf("Find(absent) must return nil")
 	}
 	// The name is matched WHOLE: "api" must not capture "api.feat12", or a
-	// `den api` would attach into the worktree's sandbox.
+	// `den spawn api` would attach into the worktree's sandbox.
 	if b := Find([]Sandbox{{Name: "api.feat12"}}, "api"); b != nil {
 		t.Errorf("Find must not match by prefix; got %v", b)
 	}

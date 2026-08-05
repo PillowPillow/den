@@ -208,7 +208,7 @@ func gitInTest(t *testing.T, dir string, args ...string) string {
 // 16th hostile configuration: a broken stack that NOBODY uses must not
 // prevent spawning a nest whose stack is healthy.
 //
-// Measured on the binary before the fix: `den api` failed printing the YAML
+// Measured on the binary before the fix: `den spawn api` failed printing the YAML
 // error of an unrelated stack, although nest api references devx, perfectly
 // valid. This is the doctrine T16 established for nests, never applied to
 // stacks until now.

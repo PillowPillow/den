@@ -2532,7 +2532,7 @@ func switchTo(t *testing.T, dir, branch string) {
 
 // A repo WITH NO COMMIT AT ALL must produce den's own diagnostic, not
 // git's contradictory message. Found by exercising the assembled binary:
-// `den api -w feat1` against a virgin `git init` used to produce
+// `den spawn api -w feat1` against a virgin `git init` used to produce
 //
 //	den: creating worktree "feat1" of /.../monorepo: git worktree add
 //	     --no-track -b feat1 /.../worktrees/feat1/monorepo (in /.../monorepo):

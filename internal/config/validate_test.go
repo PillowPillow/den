@@ -395,10 +395,10 @@ func TestValidateSortsAgentsDeterministically(t *testing.T) {
 //
 // Measured on the binary, with `worktree_root: wt-relative`:
 //
-//	den doctor            → "config consistent", rc=0
-//	den api -w feat1      → worktree REALLY created in
-//	                        <repo>/wt-relative/feat1/myrepo, branch feat1 created,
-//	                        THEN fails on "workspace #1 is not absolute"
+//	den doctor              → "config consistent", rc=0
+//	den spawn api -w feat1  → worktree REALLY created in
+//	                          <repo>/wt-relative/feat1/myrepo, branch feat1 created,
+//	                          THEN fails on "workspace #1 is not absolute"
 //
 // Two faults in one: den pollutes the user's repo, who must clean up a
 // worktree and a branch by hand; and the refusal arrives AFTER the side

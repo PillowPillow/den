@@ -61,7 +61,9 @@ func TestSpawnWithoutFlagGoesThroughDenHome(t *testing.T) {
 // try to run the real binary.
 //
 // The tree is BARE — the spawn and nothing else. Tests that need den's real
-// command list (the refusal, the suggestion) go through runFullRoot instead.
+// command list (the refusal, the suggestion) go through run() (NewRootCmd)
+// in root_test.go instead — TestUnknownFirstArgumentListsTheCommands and
+// TestUnknownFirstArgumentSuggestsTheCloseCommand.
 func runSpawn(t *testing.T, home string, deps spawn.Deps, args ...string) (string, error) {
 	t.Helper()
 	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
@@ -140,7 +142,7 @@ func fakeSpawnDeps() (*sbx.Fake, spawn.Deps) {
 // Every flag of `den spawn` must reach spawn.Options.
 //
 // The wiring is precisely what nobody tests, and an unwired flag is SILENT:
-// `den api -w feat` would create a sandbox "api" on the repo's main checkout,
+// `den spawn api -w feat` would create a sandbox "api" on the repo's main checkout,
 // without a worktree, and the user would only discover it by looking at their
 // branch from inside the VM.
 //
@@ -187,10 +189,16 @@ func TestFlagsReachSpawnOptions(t *testing.T) {
 // given den home, with a fake sbx.Runner. The Fake is returned so the caller can
 // assert the ABSENCE of a call as much as its presence.
 //
-// runSpawn does not fit the D1 tests: it builds a BARE root, with no subcommand,
-// and D1's suggestion reads precisely off root.Commands(). Against that root, the
-// absence of a suggestion would be true by construction — the test would pass
-// proving nothing.
+// runSpawn does not fit the tests through here: its tree carries no
+// --den-home flag (home is a direct pointer, not a registered flag) and no
+// sibling commands — it exists for flag-wiring tests that inject spawn.Deps
+// by hand and stop at the first spawn.Options error. The tests below drive
+// den through --den-home like a real invocation, and
+// TestANestHomonymOfASubcommandSpawnsNormally specifically needs a real `ls`
+// subcommand registered alongside the spawn to prove the collision no longer
+// happens — against runSpawn's bare root there is no subcommand to collide
+// with, so the property would hold true by construction of the stub, not by
+// anything den does.
 //
 // deps.Git and deps.Policy stay those of SystemDeps(), which is safe HERE for
 // a precise reason: the den homes built above declare no `egress:` (the
@@ -243,10 +251,17 @@ func TestANestHomonymOfASubcommandSpawnsNormally(t *testing.T) {
 	}
 	// Without this assertion, a spawn that did nothing at all would pass: it
 	// must be sandbox "ls" that actually spawns.
+	//
+	// A positional check on call[2], not strings.Contains(joined, "ls"): the
+	// old check matched "ls" anywhere in the whole argv, TMPDIR paths
+	// included, so it happened to discriminate today but would go silently
+	// tautological the moment a mount path or test name contained "ls".
+	// CreateArgv (internal/sbx/argv.go) fixes the shape — call[0] "create",
+	// call[1] "--name", call[2] the sandbox name — so that is the position
+	// this test actually needs to pin.
 	var created bool
 	for _, call := range f.Calls {
-		joined := strings.Join(call, " ")
-		if strings.HasPrefix(joined, "create ") && strings.Contains(joined, "ls") {
+		if len(call) > 2 && call[0] == "create" && call[2] == "ls" {
 			created = true
 		}
 	}
