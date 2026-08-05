@@ -161,69 +161,6 @@ func TestNestShowRespectsSelectionFlags(t *testing.T) {
 	}
 }
 
-// M-1 — a nest carrying a subcommand's name is listed by `den nest ls` and
-// resolved by `den nest show`, but `den <name>` will ALWAYS run the
-// subcommand: it is never spawnable. This is the defect found in T3 with
-// `-api` — den names an object it then refuses to address — and exactly the
-// counterpart of D1's suggestion, which only holds in the other direction.
-//
-// The warning goes on STDERR: the list must stay pipeable without a warning
-// slipping in, and that is exactly what executeCmd (which merges both
-// streams) cannot distinguish.
-func TestNestLsWarnsAboutNestsShadowedByASubcommand(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "nests"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"api", "ls", "version"} {
-		if err := os.WriteFile(filepath.Join(dir, "nests", name+".yaml"),
-			[]byte("stack: devx\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmd(), "nest", "ls", "--den-home", dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// The list itself does not change: the shadowed nests EXIST.
-	for _, name := range []string{"api", "ls", "version"} {
-		if !strings.Contains(stdout, name) {
-			t.Errorf("nest %q must stay listed; stdout = %q", name, stdout)
-		}
-	}
-	for _, shadowed := range []string{"ls", "version"} {
-		if !strings.Contains(stderr, shadowed) {
-			t.Errorf("shadowed nest %q must be reported; stderr = %q", shadowed, stderr)
-		}
-	}
-	// And especially no false positive: "api" is shadowed by nothing.
-	if strings.Contains(stderr, "api") {
-		t.Errorf("\"api\" is shadowed by no subcommand; stderr = %q", stderr)
-	}
-	// The warning must not pollute the pipeable output.
-	if strings.Contains(stdout, "shadowed") || strings.Contains(stdout, "warning") {
-		t.Errorf("the warning must go on stderr, not stdout; stdout = %q", stdout)
-	}
-}
-
-// Without a shadowed nest, stderr must stay EMPTY: a permanent warning is a
-// warning nobody reads anymore.
-func TestNestLsWarnsAboutNothingWithoutACollision(t *testing.T) {
-	dir := testDenHomeWithNest(t, "api")
-
-	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmd(), "nest", "ls", "--den-home", dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(stdout, "api") {
-		t.Errorf("stdout = %q, expected the nest listed", stdout)
-	}
-	if stderr != "" {
-		t.Errorf("stderr = %q, expected empty: no nest is shadowed", stderr)
-	}
-}
-
 // `den nest show corp:api` reads the nest AND its stack from the source's own
 // root (sources/corp/{nests,stacks}), never from ~/.den — same doctrine as
 // spawn.go: source.Locate is the sole place a reference becomes a root.

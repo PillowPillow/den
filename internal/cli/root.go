@@ -104,7 +104,18 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 		Short:         "Simple, repeatable sbx sandboxes",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// See unknownCommand: a non-nil Args is what replaces cobra's bare
+		// "unknown command" with den's own listing, and the RunE below is what
+		// keeps ValidateArgs reachable at all.
+		Args: unknownCommand,
+		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
+	// Explicit, because cobra does NOT apply it on this path: its default of 2
+	// is set in findSuggestions(), which serves the "unknown command" branch
+	// den never takes (the root has a RunE). unknownCommandError calls
+	// SuggestionsFor directly, and at 0 it returns prefix matches only —
+	// `den doctr` would suggest nothing.
+	root.SuggestionsMinimumDistance = 2
 	root.PersistentFlags().StringVar(&denHome, "den-home", "",
 		"den config directory (default: $DEN_HOME or ~/.den)")
 
@@ -144,30 +155,28 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// den home at all.
 	root.AddCommand(newLintCmd())
 
-	// spawn.Deps is ASSEMBLED here from the very fields newLsCmd just got:
-	// deps.Sbx is the single source. Out is left unset, configureSpawn
-	// overwrites it on every run with cmd.OutOrStdout() (the only way to follow
-	// a test's SetOut).
-	//
-	// LAST: configureSpawn sets Args on the root, which only makes sense once
-	// every subcommand is registered.
-	configureSpawn(root, &denHome, spawn.Deps{
+	// `den spawn` is ASSEMBLED here from the very fields newLsCmd just got:
+	// deps.Sbx is the single source. Out/Err/In are left unset, newSpawnCmd's
+	// RunE overwrites them on every run from the command itself (the only way
+	// to follow a test's SetOut).
+	root.AddCommand(newSpawnCmd(&denHome, spawn.Deps{
 		Sbx:       deps.Sbx,
 		Git:       deps.Git,
 		Policy:    deps.Policy,
 		Freshness: deps.Freshness,
 		SSHAgent:  deps.SSHAgent,
 		IsTTY:     deps.IsTTY,
-		// The real OS, named at the wiring site like every other system access:
-		// spawn has no SystemDeps constructor to hold it (see spawn.Deps), and a
-		// field left implicit here is a dependency the reader has to hunt for.
+		// The real OS, named at the wiring site like every other system
+		// access: spawn has no SystemDeps constructor to hold it (see
+		// spawn.Deps), and a field left implicit here is a dependency the
+		// reader has to hunt for.
 		GOOS: runtime.GOOS,
-		// The real clock for the source-staleness hint (spawn.Deps.Now):
-		// nil is what the package's own tests want (no source touched, no
-		// clock owed), but a live den wiring this field to nothing would
-		// silently drop the hint for every user, forever.
+		// The real clock for the source-staleness hint (spawn.Deps.Now): nil
+		// is what the package's own tests want (no source touched, no clock
+		// owed), but a live den wiring this field to nothing would silently
+		// drop the hint for every user, forever.
 		Now: time.Now,
-	})
+	}))
 	return root
 }
 
@@ -349,15 +358,22 @@ func unknownCommandError(root *cobra.Command, arg string) error {
 	// The padding is cobra's own (minNamePadding = 11, widened by any longer
 	// name), so this block is indistinguishable from what `den help` prints.
 	// A reader must not have to notice they are looking at a second renderer.
+	//
+	// `|| sub.Name() == "help"`, matching cobra's OWN defaultUsageTemplate: its
+	// IsAvailableCommand excludes the parent's helpCommand specifically (its
+	// own doc says so), which is why cobra's built-in listing special-cases the
+	// name instead of relying on that method alone. Without the same
+	// exception, `help` would silently vanish from this list while still
+	// working as a command.
 	pad := 11
 	for _, sub := range root.Commands() {
-		if sub.IsAvailableCommand() && len(sub.Name()) > pad {
+		if (sub.IsAvailableCommand() || sub.Name() == "help") && len(sub.Name()) > pad {
 			pad = len(sub.Name())
 		}
 	}
 	b.WriteString("\n\nCommands:")
 	for _, sub := range root.Commands() {
-		if !sub.IsAvailableCommand() {
+		if !sub.IsAvailableCommand() && sub.Name() != "help" {
 			continue
 		}
 		fmt.Fprintf(&b, "\n  %-*s %s", pad, sub.Name(), sub.Short)

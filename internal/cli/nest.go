@@ -70,10 +70,6 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 			if err := w.Flush(); err != nil {
 				return err
 			}
-			// LOCAL nests only: a source nest is addressed "<source>:<name>",
-			// which can never equal a bare subcommand name, so it never
-			// shadows one.
-			warnAboutShadowedNests(cmd, nests)
 
 			allBroken := slices.Concat(broken, srcBroken)
 			if len(allBroken) > 0 {
@@ -127,35 +123,6 @@ func listSourceNests(home string) (nests []*nest.Nest, broken []nest.BrokenNest)
 		}
 	}
 	return nests, broken
-}
-
-// warnAboutShadowedNests reports the nests that carry a subcommand's name.
-// Those are declared, listed and resolved by `den nest show`, but `den <name>`
-// will ALWAYS run the subcommand: cobra finds it before the argument reaches
-// the root's RunE. They can never be spawned, and nothing else says so.
-//
-// On stderr, so `den nest ls | ...` stays pipeable, and nothing at all when
-// there is no collision: a permanent warning stops being read.
-//
-// The comparison covers the names AND the aliases of root.Commands(), exactly
-// what cobra consults to route an argument, and never a hardcoded list. The
-// match is EXACT: a nest named "l" is not shadowed by `ls`.
-func warnAboutShadowedNests(cmd *cobra.Command, nests []*nest.Nest) {
-	commands := map[string]bool{}
-	for _, sub := range cmd.Root().Commands() {
-		commands[sub.Name()] = true
-		for _, alias := range sub.Aliases {
-			commands[alias] = true
-		}
-	}
-	for _, n := range nests {
-		if commands[n.Name] {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"warning: nest %q is shadowed by the `den %s` subcommand — "+
-					"`den %s` will run the command, never this nest. Rename it to be able to spawn it.\n",
-				n.Name, n.Name, n.Name)
-		}
-	}
 }
 
 func newNestShowCmd(denHome *string) *cobra.Command {

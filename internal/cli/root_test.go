@@ -58,7 +58,7 @@ func run(t *testing.T, args ...string) (string, error) {
 // git — it is main_test.go's TestMain that makes this hermetic to the machine
 // running the suite, not this helper.
 //
-// No caller of THIS helper goes through configureSpawn's RunE (`den ls` never
+// No caller of THIS helper goes through newSpawnCmd's RunE (`den ls` never
 // calls it). runFullRoot (spawn_test.go) does exercise it: it builds its
 // accesses the same way, and explains on the spot why that is safe there — a
 // den home without `egress:` (no 60s settle-loop) and without a git repo (no
@@ -185,33 +185,67 @@ func TestDenHomeIsScopedPerInstance(t *testing.T) {
 	}
 }
 
-// The root having become the spawn command, an unknown first argument is no
-// longer "an unknown command": it is a NEST NAME, and the failure must name
-// the expected file rather than talk about a command.
+// The whole refusal is a contract, so it is frozen whole.
 //
-// DEN_HOME is pinned: without it, this test would only pass on machines with
-// no real ~/.den, and would read the developer's actual den home elsewhere.
-func TestUnknownFirstArgumentIsANestNotFound(t *testing.T) {
-	dir := testDenHomeWithNest(t, "api")
-	// config.yaml must exist AND be VALID, or the spawn fails one step too
-	// early and the error no longer says anything about the requested nest.
-	// Since D1, config.LoadGlobal rejects an inconsistent config: a file
-	// reduced to `defaults:` — what the earlier version wrote — is no longer
-	// enough, and it would be the missing agent registry, not the nest, that
-	// gets reported.
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"),
-		[]byte("agents:\n  claude:\n    config_dir: /tmp/den/claude\n    update: \"claude update\"\n"+
-			"defaults:\n  agent: claude\n  stack: devx\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("DEN_HOME", dir)
+// This test replaces TestUnknownFirstArgumentIsANestNotFound, which asserted
+// the exact opposite — that `den doesnotexist` reported a missing nest FILE.
+// That was the price of "the root IS the spawn command" (spec §11), and the
+// spec of 2026-08-05 stopped paying it.
+//
+// A golden rather than a handful of Contains: the point is that den answers
+// with EVERYTHING it can do. A test that checked three lines would go green on
+// a listing that had silently lost the other eleven.
+func TestUnknownFirstArgumentListsTheCommands(t *testing.T) {
+	// DEN_HOME is pinned even though this path never reads it: if the refusal
+	// ever regressed into a spawn, the test would otherwise run against the
+	// developer's real ~/.den — and the real `sbx`.
+	t.Setenv("DEN_HOME", t.TempDir())
 
-	_, err := run(t, "doesnotexist")
+	_, err := run(t, "api")
 	if err == nil {
-		t.Fatal("expected an error for an unknown nest, got nil")
+		t.Fatal("an unknown first argument must be refused: `den <nest>` no longer spawns")
 	}
-	if !strings.Contains(err.Error(), filepath.Join(dir, "nests", "doesnotexist.yaml")) {
-		t.Errorf("the error must name the expected nest file; got: %v", err)
+
+	path := filepath.Join("testdata", "unknown-command.golden")
+	want, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("reading %s: %v", path, readErr)
+	}
+	if got := err.Error() + "\n"; got != string(want) {
+		t.Errorf("the refusal is a contract.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// The suggestion, against den's REAL command list: Task 1 pins its shape on a
+// throwaway tree, this pins that the root actually carries the distance.
+func TestUnknownFirstArgumentSuggestsTheCloseCommand(t *testing.T) {
+	t.Setenv("DEN_HOME", t.TempDir())
+
+	_, err := run(t, "doctr")
+	if err == nil {
+		t.Fatal("`den doctr` must be refused")
+	}
+	if !strings.Contains(err.Error(), "`den doctor`") {
+		t.Errorf("error = %q, expected it to suggest `den doctor`", err)
+	}
+}
+
+// The flag that used to vanish. Before 2026-08-05 the six spawn flags lived on
+// root.Flags(), so `den --detach` parsed cleanly, fell through to cmd.Help()
+// and exited 0 — the flag silently discarded, which §2 forbids. Now the root
+// does not know it.
+//
+// Without this test, a future PersistentFlags on the root reopens the hole
+// without a sound.
+func TestASpawnFlagOnTheRootIsRefused(t *testing.T) {
+	t.Setenv("DEN_HOME", t.TempDir())
+
+	for _, flag := range []string{"--detach", "-w", "--only"} {
+		t.Run(flag, func(t *testing.T) {
+			if _, err := run(t, flag); err == nil {
+				t.Errorf("`den %s` must be refused: that flag belongs to `den spawn`", flag)
+			}
+		})
 	}
 }
 
@@ -220,19 +254,22 @@ func TestUnknownFirstArgumentIsANestNotFound(t *testing.T) {
 // that one site was missed, a wrong count on seven sites out of eight being
 // indistinguishable from a finished job.
 //
-// The root itself is no longer one of these sites: since the positionals
-// opened (den <nest> [repo...]), root.Args is cobra.ArbitraryArgs, which never
-// rejects on count — every argument past the first is a repo, and nothing
-// caps how many a spawn may mount. `den build` takes its place as the table's
-// exercise of the `max == 1, min == 0` branch ("at most one argument
-// expected") — without a case for it, that wording is asserted nowhere in the
-// package once the root stops producing it.
+// The root itself is not one of these sites: its Args is unknownCommand, which
+// refuses on identity, not on count. `den spawn` is the site that exercises
+// the "one argument expected" wording with an unbounded maximum — every
+// argument past the first is a repo, and nothing caps how many a spawn may
+// mount, so its "too many" branch is unreachable by design.
 func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 	cases := []struct {
 		name     string
 		args     []string
 		expected string
 	}{
+		{
+			"spawn, missing argument",
+			[]string{"spawn"},
+			"den spawn: one argument expected, none received — usage: den spawn <nest> [repo...] [flags]",
+		},
 		{
 			"build, too many arguments",
 			[]string{"build", "a", "b"},

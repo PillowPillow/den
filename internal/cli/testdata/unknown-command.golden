@@ -1,0 +1,20 @@
+unknown command "api"
+
+Commands:
+  build       Build stack images, in dependency order
+  completion  Generate the autocompletion script for the specified shell
+  doctor      Diagnose den's configuration and environment
+  help        Help about any command
+  init        Create a den home from the shipped example
+  lint        Validate a source checkout (stacks, nests, references, confinement)
+  ls          List live sandboxes
+  nest        Inspect the declared nests
+  ports       Show where a sandbox's declared ports land on the host
+  rm          Destroy a sandbox (the agent profile persists)
+  sh          Open a shell in an existing sandbox
+  source      Manage team source repositories (stacks/nests shared over git)
+  spawn       Spawn or attach a nest's sandbox
+  version     Print den's version
+
+`den <nest>` no longer spawns: use `den spawn <nest>`.
+Run `den help <command>` for details.

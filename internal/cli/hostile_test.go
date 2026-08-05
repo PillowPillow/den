@@ -64,7 +64,7 @@ func denHomeHostile(t *testing.T) (string, string) {
 func TestNonSandboxableWorktreeIsRefusedWithoutCreatingAnything(t *testing.T) {
 	home, _ := denHomeHostile(t)
 
-	f, _, err := runFullRoot(t, home, "api", "-w", "+wip")
+	f, _, err := runFullRoot(t, home, "spawn", "api", "-w", "+wip")
 	if err == nil {
 		t.Fatal("a worktree named \"+wip\" must be refused")
 	}
@@ -101,7 +101,7 @@ func TestANestWithNoRepoStillMountsTheAgentProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, _, err := runFullRoot(t, home, "api")
+	f, _, err := runFullRoot(t, home, "spawn", "api")
 	if err != nil {
 		t.Fatalf("a nest with no repo must stay spawnable: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestRelativeWorktreeRootIsRefusedNamingTheField(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, _, err := runFullRoot(t, home, "api", "-w", "feat1")
+	f, _, err := runFullRoot(t, home, "spawn", "api", "-w", "feat1")
 	if err == nil {
 		t.Fatal("a relative worktree_root must be refused")
 	}
@@ -222,7 +222,7 @@ func TestABrokenStackDoesNotPreventSpawningAHealthyNest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, _, err := runFullRoot(t, home, "api")
+	f, _, err := runFullRoot(t, home, "spawn", "api")
 	if err != nil {
 		t.Fatalf("nest api uses devx, healthy: the spawn must succeed; got: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestANestWhoseStackIsBrokenFailsNamingTheFault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, _, err := runFullRoot(t, home, "api")
+	f, _, err := runFullRoot(t, home, "spawn", "api")
 	if err == nil {
 		t.Fatal("a nest whose stack is unreadable must not spawn")
 	}
