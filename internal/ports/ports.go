@@ -160,8 +160,8 @@ func ParseAdd(value string) (Port, error) {
 		}
 		if hostIP != Loopback {
 			return Port{}, fmt.Errorf(
-				"--add %q: %s is not a bind address den offers — den publishes on %s and nothing else "+
-					"(spec §8): the microVM is the boundary, and a LAN bind pierces it host-side; for remote "+
+				"--add %q: %s is not a bind address den offers — den publishes on %s and nothing else: "+
+					"the microVM is the boundary, and a LAN bind pierces it host-side; for remote "+
 					"access use a tunnel (`ssh -L HOST_PORT:%s:HOST_PORT you@host`), which delegates "+
 					"authentication to SSH",
 				value, hostIP, Loopback, Loopback)
@@ -288,7 +288,7 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 	// reasons in whole blocks of WindowSize — would never see it coming.
 	if len(decls) > WindowSize {
 		return nil, fmt.Errorf(
-			"nest %q declares %d ports, the window holds %d (spec §8) — remove ports from `ports.publish:`, "+
+			"nest %q declares %d ports, the window holds %d — remove ports from `ports.publish:`, "+
 				"or split the nest: an 11th port would land in another nest's window",
 			n.Name, len(decls), WindowSize)
 	}
@@ -334,7 +334,7 @@ func Resolve(n *nest.Nest, o Options, s Scanner) (*Resolution, error) {
 			}
 		}
 		return nil, fmt.Errorf(
-			"nest %q: %s is not a bind address den offers — den publishes on %s and nothing else (spec §8): "+
+			"nest %q: %s is not a bind address den offers — den publishes on %s and nothing else: "+
 				"the microVM is the boundary, and a LAN bind pierces it host-side; for remote access use a "+
 				"tunnel (`ssh -L HOST_PORT:%s:HOST_PORT you@host`), which delegates authentication to SSH",
 			n.Name, o.HostIP, Loopback, Loopback)

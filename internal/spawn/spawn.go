@@ -936,7 +936,7 @@ func checkFreshness(ctx context.Context, d Deps, sandboxName string, detach bool
 			return agent.ReadFreshness(ctx, d.Sbx, sandboxName)
 		}
 		return agent.WaitFreshness(ctx, d.Sbx, sandboxName, d.Freshness, func() {
-			fmt.Fprintf(d.Out, "waiting for agent freshness (spec §9.1)...\n")
+			fmt.Fprintf(d.Out, "waiting for agent freshness...\n")
 		})
 	}
 	verdict, err := read()
@@ -986,7 +986,7 @@ func CheckFreshnessOnReentry(ctx context.Context, r sbx.Runner, out io.Writer, s
 		return reportFreshness(out, sandboxName, verdict, reentryPending)
 	}
 	verdict, err := agent.WaitFreshness(ctx, r, sandboxName, o, func() {
-		fmt.Fprintf(out, "waiting for agent freshness (spec §9.1)...\n")
+		fmt.Fprintf(out, "waiting for agent freshness...\n")
 	})
 	if err != nil {
 		return err
@@ -1014,7 +1014,7 @@ func reportFreshness(out io.Writer, sandboxName string, verdict agent.GateVerdic
 		// that says "the gate failed" without it sends the user back into the
 		// VM to read what den has already read.
 		return fmt.Errorf(
-			"sandbox %s: the agent-freshness gate of spec §9.1 FAILED — %s.\n  %s\n"+
+			"sandbox %s: the agent-freshness gate FAILED — %s.\n  %s\n"+
 				"den does not open a sandbox whose agent it knows to be stale. Fix the agent's "+
 				"`update:` command in the registry, then `den rm %s` and relaunch; the whole journal "+
 				"is `sbx exec %s cat %s`",
@@ -1028,7 +1028,7 @@ func reportFreshness(out io.Writer, sandboxName string, verdict agent.GateVerdic
 		// two other sandbox-level warnings, land here for the same reason.
 		fmt.Fprintf(out,
 			"warning: sandbox %s: %s — its agent is whatever the image carries, and den cannot say "+
-				"how old that is; `den rm %s` and relaunch to get the §9.1 gate\n",
+				"how old that is; `den rm %s` and relaunch to get the freshness gate\n",
 			sandboxName, verdict.Reason, sandboxName)
 	default:
 		// GatePending. On the attach path this means the budget ran out; under
@@ -1042,7 +1042,7 @@ func reportFreshness(out io.Writer, sandboxName string, verdict agent.GateVerdic
 		// the refusal three lines above. Nothing is wrong here: den has no
 		// verdict yet, says so, and says when it will have one.
 		fmt.Fprintf(out,
-			"note: sandbox %s: the agent-freshness gate of spec §9.1 has not reported yet — "+
+			"note: sandbox %s: the agent-freshness gate has not reported yet — "+
 				"den did not wait for it%s, so the agent may still be updating (or may have failed "+
 				"to). den re-reads the verdict on the next attach; the journal is "+
 				"`sbx exec %s cat %s`\n",

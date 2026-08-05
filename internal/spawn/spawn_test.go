@@ -564,7 +564,7 @@ func TestSpawnRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
 			// The log line travels with the refusal — §9.1 makes the journal the
 			// diagnosis, and a message without it sends the user into the VM to
 			// read what den already read.
-			for _, want := range []string{"§9.1", "exit=1", agent.KitLogPath} {
+			for _, want := range []string{"agent-freshness gate", "exit=1", agent.KitLogPath} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal must carry %q; got: %v", want, err)
 				}

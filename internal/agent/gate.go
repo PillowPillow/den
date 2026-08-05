@@ -281,8 +281,8 @@ func ReadFreshness(ctx context.Context, r sbx.Runner, sandbox string) (GateVerdi
 	output, err := r.Run(ctx, "exec", sandbox, "cat", KitLogPath)
 	if err != nil {
 		return GateVerdict{}, fmt.Errorf(
-			"reading the agent-freshness journal of sandbox %s (%s): %w — §9.1 makes the agent "+
-				"update fail-closed, and den cannot tell whether it passed without this file",
+			"reading the agent-freshness journal of sandbox %s (%s): %w — the agent "+
+				"update is fail-closed, and den cannot tell whether it passed without this file",
 			sandbox, KitLogPath, err)
 	}
 	return ParseKitLog(output, MixinName(sandbox)), nil

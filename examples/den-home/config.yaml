@@ -2,7 +2,7 @@
 agents:
   claude:
     env: { CLAUDE_CONFIG_DIR: "{config_dir}" }
-    # IN-VM paths added to PATH before the update command (cf. spec §9.1).
+    # IN-VM paths added to PATH before the update command.
     bin_dirs: ["$HOME/.local/bin", "$HOME/.claude/local"]
     update: "claude update"
 defaults:
