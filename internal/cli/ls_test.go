@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/sbx"
 )
 
@@ -217,5 +218,96 @@ func TestLsNoSandbox(t *testing.T) {
 	// above a zero-row table.
 	if strings.Contains(out, "NAME") {
 		t.Errorf("no table header must appear when the list is empty; got:\n%s", out)
+	}
+}
+
+// lsManifest records a sandbox with one den-created worktree at the given
+// mount. No directory is created: `den ls` reads the record, never the disk.
+func lsManifest(t *testing.T, denHome, sandbox, mount string) {
+	t.Helper()
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  sandbox,
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: filepath.Dir(filepath.Dir(mount))},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: "/dev/api", Mount: mount, Worktree: true,
+		}},
+	})
+}
+
+// Proof 11 — `sbx create` failed after the worktrees existed. The record is
+// the only trace, and `den ls` is where the user looks.
+func TestLsSignalsAnOrphanedRecord(t *testing.T) {
+	dir := testDenHome(t)
+	mount := filepath.Join(dir, "worktrees", "feat12", "api")
+	lsManifest(t, dir, "api.feat12", mount)
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"web","status":"running"}]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "api.feat12") {
+		t.Errorf("the orphaned record must be named; got:\n%s", out)
+	}
+	if !strings.Contains(out, mount) {
+		t.Errorf("the directory left on disk must be named; got:\n%s", out)
+	}
+	// The live sandbox is still listed: the extra never replaces the table.
+	if !strings.Contains(out, "web") {
+		t.Errorf("the live sandbox must still be listed; got:\n%s", out)
+	}
+}
+
+// "No live sandbox but four recorded worktrees" is exactly the state worth
+// reporting, so the empty-list shortcut must not skip the scan.
+func TestLsSignalsOrphansEvenWithNoLiveSandbox(t *testing.T) {
+	dir := testDenHome(t)
+	mount := filepath.Join(dir, "worktrees", "feat12", "api")
+	lsManifest(t, dir, "api.feat12", mount)
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "no live sandbox") {
+		t.Errorf("the absence message must survive; got:\n%s", out)
+	}
+	if strings.Contains(out, "NAME") {
+		t.Errorf("no table header must appear when the list is empty; got:\n%s", out)
+	}
+	if !strings.Contains(out, "api.feat12") || !strings.Contains(out, mount) {
+		t.Errorf("the orphan must still be reported; got:\n%s", out)
+	}
+}
+
+// `den ls` is the command you type when everything is broken. It must never
+// fail over its own extra: fail-open, strictly.
+func TestLsSurvivesACorruptRecord(t *testing.T) {
+	dir := testDenHome(t)
+	if err := os.MkdirAll(manifest.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifest.Dir(dir), "x.yaml"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api","status":"running"}]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("den ls must never fail over a creation record: %v", err)
+	}
+	if !strings.Contains(out, "api") {
+		t.Errorf("the live sandbox must still be listed; got:\n%s", out)
 	}
 }
