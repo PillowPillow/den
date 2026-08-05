@@ -4,11 +4,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -286,4 +288,81 @@ func argsBetween(min, max int) cobra.PositionalArgs {
 		return fmt.Errorf("%s: %s, %s — usage: %s",
 			cmd.CommandPath(), expected, detail, cmd.UseLine())
 	}
+}
+
+// unknownCommand is the root's Args validator, and the root has one for a
+// reason worth writing down: WITHOUT it, cobra's own legacyArgs answers
+// `unknown command "api" for "den"` and stops there. It never lists the
+// commands, because the list lives in the USAGE, and the root sets
+// SilenceUsage — lifting that flag would dump the full usage under every
+// subcommand's failure too (cobra checks the root's flag as well as the
+// command's), which is precisely what it was set to prevent.
+//
+// So den writes the message itself. Two cobra constraints govern the shape,
+// both read in cobra's source rather than assumed:
+//
+//  1. Find() only falls back on legacyArgs when the found command's Args is
+//     nil. A non-nil Args on the root therefore REPLACES cobra's message with
+//     this one — which is the point.
+//  2. execute() returns flag.ErrHelp on !Runnable() BEFORE calling
+//     ValidateArgs. A root without a RunE would print its help and exit 0 on
+//     `den api`. The root keeps a RunE for that reason alone; it is reached
+//     only when this validator let the call through, i.e. with no argument.
+//
+// A flag error still wins over this one: ParseFlags runs before ValidateArgs,
+// so `den api --detach` says `unknown flag: --detach`. Accepted — both are
+// non-zero refusals, and making the argument win would mean disabling flag
+// parsing on the root, costing --den-home and --help.
+func unknownCommand(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return unknownCommandError(cmd, args[0])
+}
+
+// unknownCommandError renders the refusal: what den did not understand, what
+// it does understand, and where the bare form went.
+//
+// Split from unknownCommand so it can be tested against a throwaway tree
+// instead of den's real command list — the shape of the message is not the
+// same contract as its content, and the latter is frozen once, in a golden.
+//
+// The list comes from root.Commands(), NEVER from a constant: a command added
+// tomorrow appears here without anyone thinking about it. cobra sorts that
+// slice by name, so the order is deterministic and a golden can hold it.
+//
+// The migration line is STATIC. A kinder version would read the den home to
+// say "api is a nest, type `den spawn api`" — rejected: it would put a
+// fallible config.Home, hence a second class of error, on the most banal
+// error path of the whole CLI. The fixed line carries the whole migration for
+// nothing.
+func unknownCommandError(root *cobra.Command, arg string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "unknown command %q", arg)
+	if candidates := root.SuggestionsFor(arg); len(candidates) > 0 {
+		quoted := make([]string, len(candidates))
+		for i, c := range candidates {
+			quoted[i] = fmt.Sprintf("`den %s`", c)
+		}
+		fmt.Fprintf(&b, "\n\ndid you mean %s?", strings.Join(quoted, " or "))
+	}
+	// The padding is cobra's own (minNamePadding = 11, widened by any longer
+	// name), so this block is indistinguishable from what `den help` prints.
+	// A reader must not have to notice they are looking at a second renderer.
+	pad := 11
+	for _, sub := range root.Commands() {
+		if sub.IsAvailableCommand() && len(sub.Name()) > pad {
+			pad = len(sub.Name())
+		}
+	}
+	b.WriteString("\n\nCommands:")
+	for _, sub := range root.Commands() {
+		if !sub.IsAvailableCommand() {
+			continue
+		}
+		fmt.Fprintf(&b, "\n  %-*s %s", pad, sub.Name(), sub.Short)
+	}
+	b.WriteString("\n\n`den <nest>` no longer spawns: use `den spawn <nest>`.")
+	b.WriteString("\nRun `den help <command>` for details.")
+	return errors.New(b.String())
 }

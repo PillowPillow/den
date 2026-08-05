@@ -298,3 +298,101 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 		})
 	}
 }
+
+// testTree builds a throwaway root with two subcommands, for the tests of
+// unknownCommandError below.
+//
+// A hand-built tree rather than NewRootCmd(): the message's SHAPE is what
+// these tests pin — the padding, the order, the suggestion — and pinning it
+// against den's real command list would make every future `AddCommand` break
+// tests that are not about it. The real list is frozen ONCE, in the golden of
+// TestUnknownFirstArgumentListsTheCommands.
+func testTree() *cobra.Command {
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.SuggestionsMinimumDistance = 2
+	root.AddCommand(&cobra.Command{
+		Use: "doctor", Short: "Diagnose", Run: func(*cobra.Command, []string) {},
+	})
+	root.AddCommand(&cobra.Command{
+		Use: "ls", Short: "List live sandboxes", Run: func(*cobra.Command, []string) {},
+	})
+	return root
+}
+
+// The refusal must carry THREE things, and this test exists because any one of
+// them can be dropped without the others noticing: what den did not
+// understand, what den does understand, and where the bare form went.
+func TestUnknownCommandErrorNamesTheArgumentAndTheCommands(t *testing.T) {
+	err := unknownCommandError(testTree(), "api")
+	if err == nil {
+		t.Fatal("an unknown command must produce an error")
+	}
+	got := err.Error()
+
+	if !strings.Contains(got, `unknown command "api"`) {
+		t.Errorf("the refusal must quote what den did not understand; got:\n%s", got)
+	}
+	// The Short matters as much as the name: a bare list of names is a
+	// vocabulary, not a contract.
+	if !strings.Contains(got, "  ls          List live sandboxes") {
+		t.Errorf("every command must come with its Short, cobra-padded; got:\n%s", got)
+	}
+	if !strings.Contains(got, "`den spawn <nest>`") {
+		t.Errorf("the refusal must carry the migration line; got:\n%s", got)
+	}
+	// No `den: ` prefix: cmd/den/main.go already prints one, and a second
+	// would read as a doubled program name.
+	if strings.HasPrefix(got, "den:") {
+		t.Errorf("the error value must not prefix itself with `den: `; got:\n%s", got)
+	}
+}
+
+// The suggestion is what `withSuggestion` used to graft onto a nest-resolution
+// failure. It moves here, where it answers the question actually asked —
+// "which command did you mean" — instead of "this nest does not exist, and by
+// the way".
+func TestUnknownCommandErrorSuggestsACloseCommand(t *testing.T) {
+	got := unknownCommandError(testTree(), "doctr").Error()
+
+	if !strings.Contains(got, "`den doctor`") {
+		t.Errorf("a one-letter typo must suggest the command; got:\n%s", got)
+	}
+}
+
+// A far name suggests nothing: a suggestion offered at random teaches the
+// reader to skip the line that matters.
+func TestUnknownCommandErrorSuggestsNothingForAFarName(t *testing.T) {
+	got := unknownCommandError(testTree(), "zzzz").Error()
+
+	if strings.Contains(got, "did you mean") {
+		t.Errorf("no suggestion must be made for a far name; got:\n%s", got)
+	}
+	// The list is still there: a far name is exactly when the reader needs it.
+	if !strings.Contains(got, "Commands:") {
+		t.Errorf("the command list must come even without a suggestion; got:\n%s", got)
+	}
+}
+
+// SuggestionsMinimumDistance at 0 makes SuggestionsFor return prefix matches
+// ONLY. This test is what keeps Task 2's move of that assignment honest: drop
+// it while moving configureSpawn's body and `den doctr` silently stops
+// suggesting anything.
+func TestUnknownCommandErrorNeedsTheSuggestionDistance(t *testing.T) {
+	root := testTree()
+	root.SuggestionsMinimumDistance = 0
+
+	if got := unknownCommandError(root, "doctr").Error(); strings.Contains(got, "den doctor") {
+		t.Errorf("at distance 0 cobra suggests nothing: this test pins the field, not the wording; got:\n%s", got)
+	}
+}
+
+// Zero argument is the ONLY case that must pass: it is `den` alone, which
+// prints the help.
+func TestUnknownCommandAcceptsNoArgument(t *testing.T) {
+	if err := unknownCommand(testTree(), nil); err != nil {
+		t.Errorf("`den` alone must be accepted, the RunE prints the help; got: %v", err)
+	}
+	if err := unknownCommand(testTree(), []string{"api"}); err == nil {
+		t.Error("a first argument that is not a command must be refused")
+	}
+}
