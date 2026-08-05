@@ -234,12 +234,17 @@ func checkNest(root string, stacks config.Stacks, n *nest.Nest) []error {
 	return append(errs, checkNestRepos(n)...)
 }
 
-// checkNestRepos refuses a `path:` that can only mean something on the machine
-// that authored it — the nest-side counterpart of checkDeclaredPath's first
-// refusal, which a stack has had all along while a nest had no check at all.
-// A source nest shipping `path: /Users/alice/dev/x` linted clean and then
-// failed on every colleague's machine, which is exactly the class of fault
-// `den lint` exists to catch before the push.
+// checkNestRepos refuses ANY `path:` in a source nest's `repos:` — a stack
+// has had checkDeclaredPath from the start, while a nest had no check at all.
+// The rule is not "no ABSOLUTE path": a source is cloned onto machines with
+// different layouts, and a work repo lives entirely outside the checkout, so
+// a RELATIVE path is just as meaningless as an absolute one — it resolves
+// against whatever directory each teammate happened to launch den from, not
+// against anything the source itself defines. A source nest shipping
+// `path: ../../dev/api` linted clean and then failed (or silently pointed at
+// the wrong repo) on every colleague's machine, which is exactly the class of
+// fault `den lint` exists to catch before the push. So the check has no
+// `filepath.IsAbs` branch at all: `path:` is either empty (skip) or refused.
 //
 // The REMEDY is not checkDeclaredPath's, and deliberately so: telling the
 // author to "declare it relative" is right for a stack's `kit:` (relative to
@@ -255,14 +260,15 @@ func checkNest(root string, stacks config.Stacks, n *nest.Nest) []error {
 func checkNestRepos(n *nest.Nest) []error {
 	var errs []error
 	for _, r := range n.Repos {
-		if r.Path == "" || !filepath.IsAbs(r.Path) {
+		if r.Path == "" {
 			continue
 		}
 		errs = append(errs, fmt.Errorf(
-			"nest %q: `path: %s` is a machine path — a source is cloned onto machines with "+
-				"different layouts, and a work repo lives outside the checkout, so no path can "+
-				"travel. Declare `key: <name>` instead and let each machine map it under `repos:` "+
-				"in its own config.yaml", n.Name, r.Path))
+			"nest %q: `path: %s` cannot travel — a source is cloned onto machines with "+
+				"different layouts, and a work repo lives outside the checkout, so neither an "+
+				"absolute path nor one relative to it means anything on a colleague's machine. "+
+				"Declare `key: <name>` instead and let each machine map it under `repos:` in its "+
+				"own config.yaml", n.Name, r.Path))
 	}
 	return errs
 }

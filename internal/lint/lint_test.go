@@ -381,6 +381,39 @@ func TestRunRefusesAnAbsoluteRepoPathInANest(t *testing.T) {
 	}
 }
 
+// A RELATIVE repo path is the same fault wearing a different hat: it resolves
+// against whatever directory each teammate happened to launch den from, not
+// against anything the source itself defines, so `../dev/api` is just as
+// unshareable as an absolute path and must be refused by name.
+func TestRunRefusesARelativeRepoPathInANest(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml": "image: devx:v1\nbase: claude\n",
+		"nests/api.yaml":         "stack: devx\nrepos:\n  - { path: ../dev/api }\n",
+	})
+	errs := Run(root)
+	if len(errs) == 0 {
+		t.Fatal("a relative repo path in a source nest must be refused")
+	}
+	joined := errsString(errs)
+	for _, want := range []string{`nest "api"`, "../dev/api", "key:", "repos:"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("findings %v lack %q", errs, want)
+		}
+	}
+}
+
+// The absence of `..` does not save it: `dev/api` still resolves against the
+// launching directory, not the source, and must be refused too.
+func TestRunRefusesARelativeRepoPathWithoutDotDotInANest(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml": "image: devx:v1\nbase: claude\n",
+		"nests/api.yaml":         "stack: devx\nrepos:\n  - { path: dev/api }\n",
+	})
+	if len(Run(root)) == 0 {
+		t.Fatal("a relative repo path with no `..` must still be refused")
+	}
+}
+
 // "~/dev/x" is the same fault wearing a different hat: LoadNest expands it to
 // an absolute path on the authoring machine, and it names a directory only
 // that machine has.
