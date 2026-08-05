@@ -565,6 +565,121 @@ func TestResolveRefusesACommandLinePathEqualToADeclaredOne(t *testing.T) {
 	}
 }
 
+// Two DISTINCT keys are a legal team nest, and the collision is created by
+// THIS machine's mapping: both directories are named `api`. Neither existing
+// pass sees it — the paths differ, so checkNoDuplicatePaths is silent, and the
+// keys differ, so checkUniqueNames is too — yet worktree.Path names the
+// worktree directory after that basename, so under -w the two would land on the
+// same directory. Left to worktree.Ensure, the refusal comes only after the
+// FIRST worktree has been created: exactly the orphan the pre-flight ordering
+// exists to prevent.
+func TestResolveRefusesTwoKeysMountingTheSameBasename(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"api-v1": "/dev/a/api", "api-v2": "/dev/b/api"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{{Key: "api-v1"}, {Key: "api-v2"}}}
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal: both keys map to a directory named \"api\"")
+	}
+	// The keys are what the user can act on: the nest names them, and the
+	// mapping to fix is `repos:` in config.yaml. The paths alone would leave
+	// them to reverse the mapping by hand.
+	for _, want := range []string{"api-v1", "api-v2", "/dev/a/api", "/dev/b/api", `"api"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected it to name %s", err, want)
+		}
+	}
+	if !strings.Contains(err.Error(), "rename one of the directories") {
+		t.Errorf("error = %q, expected it to name the remedy — den refuses rather than "+
+			"normalizing, so the refusal owes the user a way out", err)
+	}
+	// The diagnosis must rest on what den itself controls and can verify —
+	// worktree.Path. An earlier draft also blamed the `sbx create` workspaces:
+	// den passes HOST paths there, so what becomes of two distinct ones inside
+	// the VM is a claim about sbx's mount behavior that nothing has measured,
+	// and under §14.1's open hypothesis A11 they would not collide at all.
+	for _, forbidden := range []string{"sbx", "workspace"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Errorf("error = %q, must not assert %q in a user-facing refusal: sbx behavior "+
+				"is a hypothesis to document, never an assertion", err, forbidden)
+		}
+	}
+}
+
+// The mixed pair: a key whose mapped directory collides with a basename
+// declared as a plain path in the same nest.
+func TestResolveRefusesAKeyMountingTheBasenameOfADeclaredPath(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"front": "/dev/x/api"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{{Key: "front"}, {Path: "/dev/y/api"}}}
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal: `front` maps to /dev/x/api, colliding with /dev/y/api")
+	}
+	for _, want := range []string{"front", "/dev/x/api", "/dev/y/api", `"api"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected it to name %s", err, want)
+		}
+	}
+}
+
+// The same hole reached from the command line: the positional is merged into
+// the list before the pass runs, so it is judged like any other repo.
+func TestResolveRefusesAKeyMountingTheBasenameOfACommandLineRepo(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"front": "/dev/x/api"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{{Key: "front"}}}
+	_, err := Resolve("/d", g, stacksTest(), n, Options{
+		Repos: []string{"/dev/y/api"},
+		Cwd:   "/work",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal: the positional's basename collides with `front`'s mapped directory")
+	}
+	for _, want := range []string{"front", "/dev/x/api", "/dev/y/api", "command line", `"api"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected it to name %s", err, want)
+		}
+	}
+}
+
+// The refusal is on the BASENAME, not on having two keys: the ordinary team
+// nest must still resolve. A pass that refused any two key-typed repos would
+// pass the tests above and break every real nest.
+func TestResolveAcceptsTwoKeysMountingDistinctBasenames(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"api": "/dev/a/api", "web": "/dev/b/web"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{{Key: "api"}, {Key: "web"}}}
+	r, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err != nil {
+		t.Fatalf("two keys mounting distinct directories must resolve: %v", err)
+	}
+	if got := paths(r.Repos); !slices.Equal(got, []string{"/dev/a/api", "/dev/b/web"}) {
+		t.Errorf("Repos = %v, expected both mapped paths", got)
+	}
+}
+
+// Precedence: two keys pointing at the SAME directory are a basename collision
+// too, but "declared twice" is the sharper diagnosis — the basename message
+// would send the reader hunting for a second, distinct directory that does not
+// exist. The new pass must therefore run after checkNoDuplicatePaths, not
+// instead of it.
+func TestResolveKeysOnTheSamePathKeepTheDuplicatePathMessage(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"api-v1": "/dev/a/api", "api-v2": "/dev/a/api"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{{Key: "api-v1"}, {Key: "api-v2"}}}
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal: both keys map to the same directory")
+	}
+	if !strings.Contains(err.Error(), "declared twice") {
+		t.Errorf("error = %q, expected the SAME-PATH message", err)
+	}
+	if strings.Contains(err.Error(), "both mount a directory named") {
+		t.Errorf("error = %q, expected the duplicate-path diagnosis to win over the basename one", err)
+	}
+}
+
 func TestResolveWithoutCommandLineReposIsUnchanged(t *testing.T) {
 	// The nominal path: no positional, no Cwd, and the declared list is exactly
 	// what it was before this feature existed.

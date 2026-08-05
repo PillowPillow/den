@@ -240,6 +240,14 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 	if err := checkUniqueNames(repos, "spawn"); err != nil {
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
+	// And only HERE, never in LoadNest: the basename worktree.Path derives the
+	// worktree directory from is the one out of the personal mapping, which does
+	// not exist until resolveRepoKeys has run just above. A team nest declaring
+	// `key: api-v1` and `key: api-v2` is perfectly legal — it is this machine's
+	// `repos:` pointing both at a directory named `api` that cannot be honored.
+	if err := checkUniqueMountBasenames(repos, "spawn"); err != nil {
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
+	}
 
 	return &Resolved{
 		DenHome:        denHome,
