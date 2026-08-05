@@ -81,6 +81,11 @@ construction, pas par un test qui surveille une politesse.
 — la branche « trop d'arguments » est inatteignable parce que les arguments au-delà du premier sont
 des repos, sans plafond — reste exact.
 
+`root.Use` revient à `"den"`. Il vaut déjà ça (`root.go:102`) et n'était écrasé en
+`"den <nest> [repo...]"` que par `configureSpawn` ; supprimer l'écrasement suffit. Conséquence à ne
+pas découvrir dans un golden : `argsBetween` rend `cmd.UseLine()`, donc les erreurs d'arité du spawn
+citent désormais `den spawn <nest> [repo...]` — plus précis qu'avant, mais le texte change.
+
 ---
 
 ## 4. Le refus, et pourquoi il n'est pas gratuit
@@ -146,10 +151,22 @@ Trois propriétés de ce message, chacune décidée :
   pas la suggestion elle-même. Et elle redevient exacte : elle répond désormais à « quelle commande
   voulais-tu », alors qu'elle répondait à « ce nest n'existe pas, et au fait ».
 
+**Un flag inconnu gagne sur la commande inconnue.** `cobra.execute()` appelle `ParseFlags` — donc
+`FlagErrorFunc` en cas d'échec — **avant** `ValidateArgs`. Sur `den api --detach`, l'utilisateur lit
+donc `unknown flag: --detach`, pas `unknown command "api"`. C'est accepté et non corrigé : les deux
+sont des refus non-zéro, et faire gagner l'argument exigerait de désactiver le parsing de flags sur
+le root, ce qui coûterait `--den-home` et `--help`. Écrit ici pour qu'un lecteur du message ci-dessus
+ne le croie pas universel.
+
 `root.SuggestionsMinimumDistance = 2`, posé explicitement dans `configureSpawn` avec le commentaire
 « cobra ne l'applique pas sur ce chemin », **reste nécessaire** : `unknownCommand` appellera
 `SuggestionsFor` directement, exactement comme `withSuggestion` le faisait, sans passer par
-`findSuggestions()` qui porte le défaut. La ligne déménage, elle ne meurt pas.
+`findSuggestions()` qui porte le défaut de 2. À 0, `SuggestionsFor` ne rend que les préfixes et
+`den doctr` ne suggère plus rien. **La ligne déménage dans `NewRootCmdWith`**, à côté des
+assignations `Use` / `SilenceUsage` du root — elle ne part pas avec `configureSpawn`. Un implémenteur
+qui la supprime avec le reste ne casse rien de visible : seul
+`TestUnknownFirstArgumentSuggestsTheCloseCommand` (§7) le rattrape, et une spec ne doit pas confier
+un fait de câblage à un test.
 
 ---
 
@@ -233,6 +250,11 @@ Les conventions du dépôt tiennent : aucun `t.Parallel()`, aucun socket, aucun 
 | idem §11 | les deux lignes du tableau qui nomment `den <nest>` (sandbox arrêtée sous `--detach`, spawn-or-attach) |
 | `README.md` | l. 81 (tableau des commandes), 97 (« Options of `den <nest>` »), 177, 295, 361, 372 |
 | `CLAUDE.md` | la mention `den <nest> [repo...]` de la section « What this is » |
+
+**Le changelog porte la rupture.** Livrer un breaking en **mineure** est légitime — den n'a pas
+encore d'utilisateur — mais c'est alors la seule trace qu'un lecteur aura. L'entrée v1.3.0 doit dire
+que `den <nest>` a disparu et nommer `den spawn <nest>`, comme le fait la ligne de migration du §4.
+Même exigence, autre artefact.
 
 Le §11 de la spec 2026-07-27 garde son analyse de l'identité par le nom : elle porte sur les noms de
 sandbox, que ce changement ne touche pas. Seules ses mentions de la **forme de commande** bougent.
