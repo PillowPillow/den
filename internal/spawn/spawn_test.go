@@ -1363,7 +1363,7 @@ func TestSpawnRefusesAMissingKit(t *testing.T) {
 // An EMPTY entry in `kits:` (plural) must be ignored, as it already is by
 // doctor and by sbx.CreateArgv. F3's first pass filtered only the
 // SINGULAR `kit:` when empty: `kits: ["", "transverse"]` passed
-// `den doctor` as "all clear" yet made `den <nest>` refuse with a
+// `den doctor` as "all clear" yet made `den spawn` refuse with a
 // "kit not found: " on an empty path — two judges of the same field
 // disagreeing, the very defect T2-min-5 names.
 //
@@ -1979,7 +1979,7 @@ func TestSpawnWarnsOnTheAttachBranchWhenTheForwardedAgentIsEmpty(t *testing.T) {
 // to look for a dead socket that does not exist. `den doctor` already decides
 // the opposite for the SAME machine state
 // (doctor.TestRunDoesNotQueryTheAgentWhenTheSocketIsAbsent): the two must not
-// contradict each other on one `den <nest>`.
+// contradict each other on one `den spawn`.
 //
 // The probe returns StateUnreachable deliberately — the state that used to
 // produce the wrong sentence — so the message can only come from the socket
@@ -2107,7 +2107,7 @@ func TestSpawnToleratesANilSSHAgentProbe(t *testing.T) {
 }
 
 // WarnEmptySSHAgentOnReentry is what `den sh` calls, and its first contract is
-// that the message is the SAME one `den <nest>` prints: two surfaces describing
+// that the message is the SAME one `den spawn` prints: two surfaces describing
 // one machine state must not word it two ways, and the fix that acts without a
 // respawn is precisely what makes the warning worth printing on a re-entry.
 func TestWarnEmptySSHAgentOnReentryWarnsOnAnEmptyAgent(t *testing.T) {
@@ -2126,7 +2126,7 @@ func TestWarnEmptySSHAgentOnReentryWarnsOnAnEmptyAgent(t *testing.T) {
 }
 
 // The one place where re-entry DIVERGES from the preflight, and the reason it
-// has its own function rather than reusing the call site of `den <nest>`.
+// has its own function rather than reusing the call site of `den spawn`.
 //
 // An absent SSH_AUTH_SOCK in the shell running `den sh` says nothing about the
 // sandbox: a live VM forwards the socket it inherited at its `sbx create`, from
@@ -2157,7 +2157,7 @@ func TestWarnEmptySSHAgentOnReentryStaysSilentWithoutASocket(t *testing.T) {
 
 // The healthy case stays silent, and so do the modes that forward no agent —
 // the properties that keep the two tests above from being satisfied by a
-// function that warns unconditionally. Shared with `den <nest>` by
+// function that warns unconditionally. Shared with `den spawn` by
 // construction (both go through warnEmptySSHAgent), asserted here because
 // "shared by construction" is exactly what a refactor breaks.
 func TestWarnEmptySSHAgentOnReentryStaysSilentWhenNothingIsWrong(t *testing.T) {
@@ -2431,7 +2431,7 @@ func TestSpawnDoesNotCheckTheImageOfANotBuildableStack(t *testing.T) {
 // An `image:` pinned by DIGEST is left alone, and not even asked about: `sbx
 // template ls --json` reports a repository and a tag and no digest, so the
 // inventory cannot confirm or deny the pin. Reading that silence as "absent"
-// would refuse a `den <nest>` over an image that is present — the false refusal
+// would refuse a `den spawn` over an image that is present — the false refusal
 // the whole normalization exists to prevent.
 func TestSpawnDoesNotCheckADigestPinnedImage(t *testing.T) {
 	denHome, _ := denTest(t)
@@ -2475,7 +2475,7 @@ func TestSpawnCreatesAnywayWhenTheImageInventoryIsUnreadable(t *testing.T) {
 }
 
 // Attaching needs no image: the VM stopped needing it the moment it was
-// created. Refusing here would refuse a `den <nest>` that works.
+// created. Refusing here would refuse a `den spawn` that works.
 func TestSpawnDoesNotCheckTheImageWhenAttaching(t *testing.T) {
 	denHome, repo := denTest(t)
 	withBuildableStack(t, denHome)

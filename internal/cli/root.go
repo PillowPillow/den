@@ -90,7 +90,7 @@ func NewRootCmd() *cobra.Command {
 }
 
 // NewRootCmdWith takes its world accesses as a parameter, so tests can exercise
-// `den ls` and `den <nest>` without sbx (or git) being installed: EVERY system
+// `den ls` and `den spawn` without sbx (or git) being installed: EVERY system
 // access comes from the caller, none is hard-wired here.
 //
 // denHome is declared HERE, not at package level, so two command trees built in
@@ -134,7 +134,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
 	// `den sh` gets the SSH probe and the OS too: re-entering a sandbox whose
 	// forwarded agent has been emptied fails `git push` exactly as a fresh
-	// `den <nest>` would, and this is the surface that re-enters most often.
+	// `den spawn` would, and this is the surface that re-enters most often.
 	// runtime.GOOS is named here, at the wiring site, like the spawn's below.
 	root.AddCommand(newShCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS, deps.Freshness))
 	root.AddCommand(newRmCmd(&denHome, deps.Sbx, deps.Git))
@@ -195,8 +195,8 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 // cancellation chain — Run reads ctx.Err() itself because a killed process's
 // own error otherwise hides it — so any command that shells out through
 // Runner.Run already "recognizes a Ctrl-C" instead of just dying with it. And
-// Runner.Attach (the interactive `exec -it` path used by `den <nest>`, `den
-// sh`, spawn) deliberately sets cmd.Cancel = nil, so this context ending
+// Runner.Attach (the interactive `exec -it` path used by `den spawn` and `den
+// sh`) deliberately sets cmd.Cancel = nil, so this context ending
 // does nothing to an attached shell — the tty driver delivers a Ctrl-C typed
 // inside it directly to the sandbox's foreground process, not through here.
 // Checked, not assumed: in both callers (internal/cli/sh.go, spawn.Spawn at

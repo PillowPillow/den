@@ -269,7 +269,7 @@ func (o GateOptions) maxRounds() int {
 
 // ReadFreshness reads KitLogPath ONCE and answers what it says about this
 // sandbox. It is the whole of the gate for a caller that will not stand and
-// wait — `den <nest> --detach`, where nobody is at a prompt — and a caller that
+// wait — `den spawn --detach`, where nobody is at a prompt — and a caller that
 // will still needs a verdict already in the journal: a re-attach onto a sandbox
 // whose gate failed an hour ago is exactly a log that carries one.
 //
@@ -301,7 +301,7 @@ func ReadFreshness(ctx context.Context, r sbx.Runner, sandbox string) (GateVerdi
 // The read is `sbx exec <sandbox> cat <KitLogPath>`, which RESTARTS a stopped
 // sandbox. That is why the caller must not reach here for a sandbox it has
 // decided to leave stopped: waking a VM to inspect it contradicts the decision
-// `den <nest> --detach` makes about the very same VM (internal/cli/ports.go,
+// `den spawn --detach` makes about the very same VM (internal/cli/ports.go,
 // wakeForPorts, states the rule both obey).
 func WaitFreshness(ctx context.Context, r sbx.Runner, sandbox string, o GateOptions,
 	onWait func()) (GateVerdict, error) {

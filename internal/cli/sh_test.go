@@ -103,7 +103,7 @@ func TestShUnknownName(t *testing.T) {
 }
 
 // F2, on the OTHER path: `den sh` must resume a stopped sandbox, like
-// `den <nest>`. Proven HERE and not only in internal/spawn — nothing at the
+// `den spawn`. Proven HERE and not only in internal/spawn — nothing at the
 // level of sbx.CheckAttachable guarantees newShCmd calls it, and a policy
 // widened on only one side would reopen the defect on the other.
 func TestShResumesAStoppedSandbox(t *testing.T) {
@@ -120,10 +120,10 @@ func TestShResumesAStoppedSandbox(t *testing.T) {
 	}
 }
 
-// The same guard as on `den <nest>`, on the OTHER path: both end in an
+// The same guard as on `den spawn`, on the OTHER path: both end in an
 // `sbx exec`, and both are wrong on a VM den knows nothing about. A `den sh`
 // that opens a shell in an `exited` sandbox is no less wrong than a
-// `den <nest>` that does — and it is the very same defect, not a cousin.
+// `den spawn` that does — and it is the very same defect, not a cousin.
 func TestShRefusesASandboxThatIsNotRunning(t *testing.T) {
 	for _, status := range []string{"exited", "paused", "Running", ""} {
 		t.Run("status="+status, func(t *testing.T) {
@@ -171,10 +171,10 @@ func shGateRead(sandbox string) string {
 	return "exec " + sandbox + " cat /var/log/sbx-kit-startup.log"
 }
 
-// #18's hole, entered through the other door. `den <nest>` holds the §9.1 gate
+// #18's hole, entered through the other door. `den spawn` holds the §9.1 gate
 // since PR #26 — it refuses a sandbox whose agent den KNOWS was not updated —
 // but `den sh` does not go through spawn.Spawn at all, and on the bench the
-// very same sandbox that `den <nest>` refused handed out a shell in silence.
+// very same sandbox that `den spawn` refused handed out a shell in silence.
 //
 // A guarantee held by one door out of two is more misleading than no guarantee:
 // §9.1 says "a sandbox never starts with a stale agent", and `den sh` on a
@@ -370,7 +370,7 @@ func shDenHome(t *testing.T, sshBlock string) string {
 
 // A sandbox is created once and re-entered daily, most often with `den sh` —
 // and `den sh` said nothing about an empty forwarded agent, on any OS, while
-// `den <nest>` warned on both its branches. The forwarded socket being a live
+// `den spawn` warned on both its branches. The forwarded socket being a live
 // proxy, an agent emptied since the VM booted denies `git push` inside it just
 // as silently on re-entry: same machine state, same consequence, same warning.
 //

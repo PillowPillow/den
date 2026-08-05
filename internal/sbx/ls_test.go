@@ -136,7 +136,7 @@ func TestLsUnreadableOutput(t *testing.T) {
 // even if a descendant still held the pipe open. The direct child's output is
 // complete (measured, see runner_test.go), but that's exactly the kind of
 // property an os/exec or sbx change could silently drop — and a silently
-// amputated sandbox list would make `den <nest>` recreate a sandbox that's
+// amputated sandbox list would make `den spawn` recreate a sandbox that's
 // already running.
 func TestLsTruncatedOutput(t *testing.T) {
 	complete := `{"sandboxes":[{"name":"api","status":"running"},{"name":"web","status":"running"}]}`
@@ -231,7 +231,7 @@ func TestLsDoesNotRepeatTheSubcommand(t *testing.T) {
 }
 
 // And the first-contact case, seen from Ls — the path taken by the FOUR
-// commands that touch sbx (`den ls`, `den <nest>`, `den sh`, `den rm`): all of
+// commands that touch sbx (`den ls`, `den spawn`, `den sh`, `den rm`): all of
 // them call Ls before anything else.
 func TestLsMissingBinaryProducesAnActionableMessage(t *testing.T) {
 	f := &Fake{Default: Response{Err: &ExecError{
@@ -276,7 +276,7 @@ func TestFind(t *testing.T) {
 	}
 }
 
-// CheckAttachable is the guard shared by `den <nest>` and `den sh`: both paths
+// CheckAttachable is the guard shared by `den spawn` and `den sh`: both paths
 // end in an `sbx exec`.
 //
 // "stopped" PASSES, and it's measured, not assumed (2026-07-29 smoke test,
@@ -328,7 +328,7 @@ func TestCheckAttachable(t *testing.T) {
 
 // IsStopped distinguishes the two attachable statuses, because one of the two
 // deserves to be said: resuming takes several seconds, and a silent
-// `den <nest>` during that time looks like a hang.
+// `den spawn` during that time looks like a hang.
 //
 // It's also what keeps the code from sliding back into refusing: "should we
 // warn?" is separate from "should we refuse?", and a caller must not answer

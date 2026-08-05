@@ -160,7 +160,7 @@ func LoadStack(denHome, name string) (*Stack, error) {
 	// further than any origin mistake, in three directions at once:
 	//
 	//   - a BUILDABLE stack builds in full, then `sbx template save <n>-build ""`
-	//     runs and den announces success. The next `den <nest>` answers
+	//     runs and den announces success. The next `den spawn` answers
 	//     "image  is not built — run `den build devx`" — note the doubled space
 	//     where the image goes — which is what the user just did, successfully.
 	//     A closed loop whose two messages are individually exact: the precise
@@ -189,7 +189,7 @@ func LoadStack(denHome, name string) (*Stack, error) {
 		return nil, fmt.Errorf(
 			"stack %q: no `image:` in %s — den has no reference to save the built image under, "+
 				"nor to spawn from. Declare `image: <name>:<tag>`; den saves a build under that "+
-				"exact string, and `den <nest>` looks for it there",
+				"exact string, and `den spawn` looks for it there",
 			name, path)
 	}
 

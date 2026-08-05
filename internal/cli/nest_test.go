@@ -226,7 +226,7 @@ func TestNestShowRefusesAPrefixedStackInsideASource(t *testing.T) {
 // spawn.ResolveStack extraction, `den nest show` called
 // `config.LoadStacks(home)` unconditionally and never consulted
 // source.Locate for the STACK reference at all, so this nest resolved under
-// `den <nest>` but refused under `den nest show` with an unrelated "stack
+// `den spawn` but refused under `den nest show` with an unrelated "stack
 // not found" — a divergence nobody asked to fix and nothing pinned. This
 // test is that pin: it fails if `den nest show` ever regresses to reading
 // only the personal den home for the stack.

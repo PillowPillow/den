@@ -58,7 +58,7 @@ func Templates(ctx context.Context, r Runner) ([]Template, error) {
 	// WITHOUT the "images" key — sbx renaming it — must be an error and not a
 	// silent empty list. Silence here is expensive in a precise way: an empty
 	// list reads as "no image is built", so `den build` would rebuild
-	// everything and `den <nest>` would refuse every spawn with "run `den
+	// everything and `den spawn` would refuse every spawn with "run `den
 	// build`" on a machine where every image is present.
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(output, &fields); err != nil {

@@ -7,6 +7,16 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.3.0 — 2026-08-05
+
+### Changed
+
+- **BREAKING — `den <nest>` ne spawne plus : `den spawn <nest>`.** Le spawn est une sous-commande
+  comme les autres. Ses six flags (`-w`, `--agent`, `--without`, `--only`, `--detach`, `-i`) ont
+  quitté le root, où `den --detach` seul les avalait en silence. Un premier argument inconnu liste
+  désormais tout ce que den sait faire, et un nest homonyme d'une sous-commande — `ls`, `rm`, `sh`
+  — redevient spawnable : `den spawn ls`.
+
 ## v1.2.0 — 2026-08-05
 
 ### Added

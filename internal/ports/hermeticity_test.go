@@ -154,7 +154,7 @@ func TestSpawnDoesNotTransitivelyDependOnPorts(t *testing.T) {
 	// trusting that it found no internal/ports — an empty/broken walk (a
 	// wrong dir join, say) would make the check below pass for the wrong
 	// reason. internal/spawn is known to depend on internal/worktree
-	// (worktree.Ensure backs `den <nest> -w`).
+	// (worktree.Ensure backs `den spawn -w`).
 	if !visited[mod+"/internal/worktree"] {
 		t.Fatalf("scan did not reach internal/spawn's known dependency internal/worktree — either the walk itself is broken (not the layering it is meant to guard), or spawn's dependency set changed and this anchor needs re-pointing to a package spawn really imports; visited=%v", visited)
 	}

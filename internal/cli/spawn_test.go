@@ -137,7 +137,7 @@ func fakeSpawnDeps() (*sbx.Fake, spawn.Deps) {
 	}
 }
 
-// Every flag of `den <nest>` must reach spawn.Options.
+// Every flag of `den spawn` must reach spawn.Options.
 //
 // The wiring is precisely what nobody tests, and an unwired flag is SILENT:
 // `den api -w feat` would create a sandbox "api" on the repo's main checkout,

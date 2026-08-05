@@ -78,7 +78,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | Command | Role |
 |---|---|
 | `den init` | creates a den home from the shipped example (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`); refuses if `config.yaml` already exists |
-| `den <nest> [repo...]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise; extra repos are mounted on the fly |
+| `den spawn <nest> [repo...]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise; extra repos are mounted on the fly |
 | `den ls` | lists live sandboxes, with their nest and worktree |
 | `den sh <name>` | opens a shell in an existing sandbox |
 | `den ports <name>` | publishes the nest's declared ports into that sandbox and prints where they land on the host |
@@ -94,7 +94,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den doctor` | diagnoses the configuration and the environment, and reports records whose sandbox is gone; `--fix` reclaims their worktrees (`--force` if one is dirty) |
 | `den version` | binary version |
 
-Options of `den <nest>`:
+Options of `den spawn`:
 
 | Option | Effect |
 |---|---|
@@ -107,7 +107,7 @@ Options of `den <nest>`:
 
 `-w` takes a **branch** name, and a branch name often contains a `/`.
 The branch keeps the name as typed — that is the name in `git log` and in the PR — while the
-sandbox name and the worktree directory take a flattened form: `den api -w feature/123` works on
+sandbox name and the worktree directory take a flattened form: `den spawn api -w feature/123` works on
 branch `feature/123` in a sandbox `api.feature-123`. That is the name it appears under in
 `den ls`, and the one `den sh` and `den rm` expect.
 
@@ -122,11 +122,11 @@ to be declared there to enter the sandbox: the paths that follow the nest name a
 `repos:` entries, worktree included.
 
 ```bash
-den scratch ~/dev/a ~/dev/b     # a nest with no `repos:` — both repos come from the command line
-den api ~/dev/hotfix            # additive: api's repos PLUS hotfix
-den scratch .                   # the current directory
-den api -w feat/x ~/dev/hotfix  # -w propagates a worktree to hotfix, same as api's own repos
-den nest show scratch ~/dev/a   # what would be mounted, without creating anything
+den spawn scratch ~/dev/a ~/dev/b     # a nest with no `repos:` — both repos come from the command line
+den spawn api ~/dev/hotfix            # additive: api's repos PLUS hotfix
+den spawn scratch .                   # the current directory
+den spawn api -w feat/x ~/dev/hotfix  # -w propagates a worktree to hotfix, same as api's own repos
+den nest show scratch ~/dev/a         # what would be mounted, without creating anything
 ```
 
 The first repo on the command line becomes the directory where the shell starts. Mounts are frozen
@@ -174,7 +174,7 @@ spawn would do without spawning it. It has no `-w`: a worktree changes the sandb
 resolved nest.
 
 A stopped sandbox — which `sbx` does on its own after a few minutes of inactivity — is not a
-failure: `den <nest>` and `den sh` pick it back up, with its state.
+failure: `den spawn` and `den sh` pick it back up, with its state.
 
 ## Ports
 
@@ -292,7 +292,7 @@ provision:
   steps: [./provision/glab.sh]
 ```
 
-- **`image:` is required**, on every stack. It is the single name den saves into and `den <nest>`
+- **`image:` is required**, on every stack. It is the single name den saves into and `den spawn`
   looks for, which is what keeps the two from ever disagreeing.
 - **`base:` or `parent:`, never both.** `base:` names the sbx agent a root stack starts from
   (`claude`); `parent:` names another stack, and the build starts from *its* image. A stack that
@@ -358,7 +358,7 @@ nest's egress policy.
 - A **pre-existing `<stack>-build` sandbox is a refusal**, not a cleanup: that is a legal nest name,
   so removing it blindly could destroy a sandbox of yours. The message names `sbx rm --force`.
 
-`den <nest>` uses the same inventory: if the stack declares `provision.steps` and its image was
+`den spawn` uses the same inventory: if the stack declares `provision.steps` and its image was
 never built, den stops and tells you to run `den build <stack>`. Without that check the failure
 surfaces as sbx's own `403 Forbidden: pull failed for image "X"` — sbx treats an unknown template as
 a registry pull, so the message talks about authorization rather than about a missing build. A stack
@@ -369,7 +369,7 @@ build to suggest.
 
 If your `~/.den` predates this model, every stack still has a `stacks/<name>/build.sh` and **den no
 longer reads it**. Nothing breaks and nothing is deleted, but until you migrate, `den build` skips
-every stack ("no `provision.steps`, nothing for den to build") and `den <nest>` stops warning about
+every stack ("no `provision.steps`, nothing for den to build") and `den spawn` stops warning about
 missing images.
 
 To migrate a stack: split what the script does into one file per stage under `stacks/<name>/provision/`,
@@ -387,9 +387,9 @@ only from a VPN, and unrelated to the product's own GitHub. den clones it under
 
 ```bash
 $ den source add git@gitlab.corp:dev/stacks.git --name corp
-source "corp" installed — its objects are addressed corp:<name> (e.g. `den corp:<nest>`)
+source "corp" installed — its objects are addressed corp:<name> (e.g. `den spawn corp:<nest>`)
 
-$ den corp:backend
+$ den spawn corp:backend
 # resolves the nest "backend" and its stack inside the "corp" source, then
 # spawns (or attaches to) the sandbox "corp-backend"
 
@@ -437,7 +437,7 @@ repo key "review-mgmt" is not mapped on this machine — add `review-mgmt: <loca
 den performs itself. Local nests can use `key:` too — it is one mechanism, not a sources-only one.
 
 Keys are resolved **after** `--without`/`--only`, so an unmapped key on an *optional* repo is
-escapable: a teammate who simply does not have the front-end checkout runs `den corp:backend
+escapable: a teammate who simply does not have the front-end checkout runs `den spawn corp:backend
 --without front-app` and spawns without it. The refusal says so itself when the repo is optional.
 A key on a repo that is still selected always refuses — den never drops a repo on its own — and
 a *required* one is never offered the escape, since `--without` refuses required repos outright.

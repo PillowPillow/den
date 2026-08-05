@@ -136,7 +136,7 @@ func TestLoadStackRefusesAnEmptyFile(t *testing.T) {
 // THE closed diagnostic loop this whole branch exists to eliminate, caught one
 // stage earlier than the loop itself: a BUILDABLE stack with no `image:` used
 // to build in full, run `sbx template save <n>-build ""`, and report success —
-// after which `den <nest>` demanded the `den build` that had just succeeded.
+// after which `den spawn` demanded the `den build` that had just succeeded.
 // den owning `template save` makes the name correct by construction; only this
 // refusal makes it non-empty.
 func TestLoadStackRefusesABuildableStackWithNoImage(t *testing.T) {
@@ -396,7 +396,7 @@ func TestLoadStackWithoutKits(t *testing.T) {
 // A broken stack does NOT hide the healthy stacks.
 //
 // Before this, LoadStack would fail and LoadStacks would propagate the error
-// in bulk: a typo in a stack nobody uses would fail `den <nest>` and
+// in bulk: a typo in a stack nobody uses would fail `den spawn` and
 // `den nest show` on a nest referencing a perfectly healthy stack. This is
 // the same doctrine ListNests applies to nests.
 func TestLoadStacksABrokenStackDoesNotHideTheHealthyOnes(t *testing.T) {

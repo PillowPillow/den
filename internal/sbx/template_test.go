@@ -57,7 +57,7 @@ func TestTemplatesKeepsSbxOrder(t *testing.T) {
 
 // A valid JSON object WITHOUT the key must be an error, never a silent empty
 // list — the doctrine Ls states. Silence costs a specific thing here: an empty
-// inventory reads as "no image is built", so `den <nest>` would refuse every
+// inventory reads as "no image is built", so `den spawn` would refuse every
 // spawn on a machine where every image is present.
 func TestTemplatesRefusesAJSONWithoutTheImagesKey(t *testing.T) {
 	f := &Fake{Responses: map[string]Response{

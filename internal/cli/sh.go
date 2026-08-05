@@ -59,7 +59,7 @@ func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Resul
 				return err
 			}
 			if b := sbx.Find(boxes, name); b != nil {
-				// Same guard as `den <nest>`, through the same helper: both
+				// Same guard as `den spawn`, through the same helper: both
 				// paths end in an `sbx exec`. A STOPPED VM passes, `sbx exec`
 				// restarts it.
 				if err := b.CheckAttachable(); err != nil {
@@ -70,7 +70,7 @@ func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Resul
 					fmt.Fprintf(cmd.OutOrStdout(),
 						"sandbox %s is stopped: it restarts on attach (its state is kept)\n", b.Name)
 				}
-				// The §9.1 gate, on the door spawn does not own. `den <nest>`
+				// The §9.1 gate, on the door spawn does not own. `den spawn`
 				// refuses a sandbox whose agent den knows to be stale; this
 				// command reached the same sandbox and said nothing (issue #27).
 				// It runs AFTER the stopped-sandbox line above, which is what
@@ -110,7 +110,7 @@ func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Resul
 // user is about to re-enter would inherit an SSH agent holding no key.
 //
 // Why `den sh` warns at all: `spawn.WarnEmptySSHAgentOnReentry` holds that
-// argument, and the divergence from `den <nest>`'s preflight (an absent socket
+// argument, and the divergence from `den spawn`'s preflight (an absent socket
 // says nothing here) with it. This function is the part that belongs to the
 // CLI: finding ssh.mode without letting the search cost anything.
 //

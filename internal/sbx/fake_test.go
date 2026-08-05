@@ -53,7 +53,7 @@ func TestFakeDefaultResponse(t *testing.T) {
 	}
 }
 
-// Attach is recorded as a call: tests for `den <nest>` must be able to assert
+// Attach is recorded as a call: tests for `den spawn` must be able to assert
 // THAT the attach happened, and with which arguments.
 func TestFakeAttachIsRecorded(t *testing.T) {
 	f := &Fake{}

@@ -109,7 +109,7 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 	}
 
 	// Everything checked is the starting point: `-i` confirmed as-is must
-	// produce exactly what `den <nest>` alone produces.
+	// produce exactly what `den spawn` alone produces.
 	keep := make([]bool, len(optional))
 	for i := range keep {
 		keep[i] = true

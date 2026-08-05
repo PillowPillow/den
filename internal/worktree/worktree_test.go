@@ -2633,7 +2633,7 @@ func TestEnsureStillCreatesTheWorktreeForARepoWithACommit(t *testing.T) {
 	}
 }
 
-// CommonGitDir is what `den <nest> -w` mounts next to the worktree: the
+// CommonGitDir is what `den spawn -w` mounts next to the worktree: the
 // repo's `.git`, without its working tree. The nominal case is an ordinary
 // repo.
 func TestCommonGitDirReturnsTheRepoGit(t *testing.T) {
