@@ -7,6 +7,40 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.2.0 — 2026-08-05
+
+### Added
+- Repos on the fly: `den <nest> [repo...]` mounts the paths typed on the command line
+  alongside the nest's own `repos:`, so working on a checkout for one session no longer
+  means editing `nests/<n>.yaml` and then editing it back. A positional is a repo like any
+  other — `-w` gives it a worktree too — and it comes first in `sbx create`'s workspaces, so
+  the attached shell starts in what you just asked for. `:ro` is refused on a positional, and
+  `--without` / `--only` keep addressing only the declared list.
+- Team sources: a private git repo carrying `stacks/`, `lib/`, `kits/` and `nests/` becomes a
+  set of objects addressed `<source>:<name>`. `den source add <url> [--name n]` clones it
+  under `~/.den/sources/<n>/` and validates it, removing the clone when it is invalid;
+  `den source update [n]` fast-forwards one source or every installed one and refuses rather
+  than overwrite local or unpushed work; `den source ls` lists name, HEAD, last fetch and URL;
+  `den source rm <n>` refuses on a dirty tree or on commits no remote has, unless `--force`.
+  Only `den source update` touches the network — a spawn never fetches.
+- `repos:` in `~/.den/config.yaml` maps a repo key to a path on this machine, so a nest shared
+  through a source can write `key:` or `url:` instead of a path only its author has.
+- `den lint <path>` validates a checkout — strict YAML, the stack DAG, bare references, and
+  path confinement — which is what a team source's CI runs, and the same judge `den source
+  add` and `den source update` use, so lint can never accept what a spawn would refuse.
+- den records what it mounted, under `<den-home>/state/sandboxes/<sandbox>.yaml`, instead of
+  re-deriving it from the nest at removal time. `den rm` and `den ls` replay that record, and
+  `den doctor` reports records whose sandbox is gone — a `sbx rm` run outside den, a failed
+  boot — with `--fix` reclaiming their worktrees and `--force` when one is dirty. Nothing is
+  ever deleted without being named, and a sandbox created before the records existed still
+  falls back on the old derivation.
+
+### Fixed
+- `den --version` answers `dev` again for a binary built with a plain `go build`. Go 1.24
+  started stamping a VCS pseudo-version into build info, which den reported as though it were
+  a released version — a version string nobody can check out, on a bug report naming no code.
+  `go install …/cmd/den@vX` still reports its tag.
+
 ## v1.1.0 — 2026-08-04
 
 ### Added
