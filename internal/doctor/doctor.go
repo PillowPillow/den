@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/sshagent"
 )
@@ -418,4 +419,81 @@ func Run(denHome string, d Deps) []Check {
 	}
 
 	return checks
+}
+
+// LiveSandboxes answers "which sandboxes are alive" — INCLUDING the case
+// where the question could not be asked. A bare []string cannot hold that:
+// empty would mean "none alive", and every healthy sandbox would then be
+// reported as an orphan the moment sbx is missing from PATH.
+//
+// This package never asks the question itself. internal/cli owns deps.Sbx and
+// answers it, exactly as it owns the mutation in `--fix`: doctor stays what
+// its package comment says it is — no side effects, no network.
+type LiveSandboxes struct {
+	Known bool
+	Names []string
+}
+
+// Orphan is a creation record whose sandbox is gone, with the directories den
+// created for it and never reclaimed.
+type Orphan struct {
+	Sandbox   string
+	Worktrees []string
+}
+
+// Orphans is a PURE function: given the live list and the records read off
+// disk, it says which records no longer have a VM. Deliberately no IO — that
+// is what lets `den ls`, `den doctor` and `den doctor --fix` share one verdict
+// instead of three that could disagree about what den is allowed to move.
+//
+// An unknown live list yields NOTHING, rather than everything: see
+// LiveSandboxes.
+func Orphans(live LiveSandboxes, manifests []manifest.Manifest) []Orphan {
+	if !live.Known {
+		return nil
+	}
+	alive := make(map[string]bool, len(live.Names))
+	for _, n := range live.Names {
+		alive[n] = true
+	}
+	var out []Orphan
+	for _, m := range manifests {
+		if alive[m.Sandbox] {
+			continue
+		}
+		o := Orphan{Sandbox: m.Sandbox}
+		for _, r := range m.Repos {
+			// Only what den created. A repo mounted as-is is the user's own
+			// working directory and has no business in a cleanup list.
+			if r.Worktree {
+				o.Worktrees = append(o.Worktrees, r.Mount)
+			}
+		}
+		out = append(out, o)
+	}
+	return out
+}
+
+// OrphanCheck renders the verdict as a diagnostic. A WARNING, not a failure:
+// leftover directories are a legitimate state — a `den rm --keep-worktrees`
+// produces one on purpose — and a `den doctor` that exits non-zero over them
+// teaches the user to stop reading it.
+func OrphanCheck(live LiveSandboxes, manifests []manifest.Manifest) Check {
+	if !live.Known {
+		return Check{Name: "orphans", Level: LevelOK,
+			Detail: "skipped: den could not list live sandboxes, so a record without a VM " +
+				"cannot be told apart from a healthy one — see the sbx line above"}
+	}
+	orphans := Orphans(live, manifests)
+	if len(orphans) == 0 {
+		return Check{Name: "orphans", Level: LevelOK, Detail: "none"}
+	}
+	var parts []string
+	for _, o := range orphans {
+		parts = append(parts, fmt.Sprintf("%s (%d worktree(s))", o.Sandbox, len(o.Worktrees)))
+	}
+	return Check{Name: "orphans", Level: LevelWarning, Detail: fmt.Sprintf(
+		"%s: recorded by den but no live sandbox — the worktrees are still on disk; "+
+			"reclaim them with `den doctor --fix` (add --force if one carries uncommitted changes)",
+		strings.Join(parts, ", "))}
 }

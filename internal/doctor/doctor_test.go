@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/sshagent"
 )
 
@@ -1309,5 +1311,70 @@ func TestTheStacksLineStaysGreenWithoutABrokenStack(t *testing.T) {
 	}
 	if !strings.Contains(c.Detail, "0 unreadable") {
 		t.Errorf("expected \"0 unreadable\"; got: %q", c.Detail)
+	}
+}
+
+// A record with no live sandbox is an orphan: `sbx rm` run outside den, a
+// failed boot, or a `den rm --keep-worktrees`. Only the directories den
+// created are named — a repo mounted as-is belongs to the user.
+func TestOrphansNamesRecordsWithoutALiveSandbox(t *testing.T) {
+	live := LiveSandboxes{Known: true, Names: []string{"web"}}
+	ms := []manifest.Manifest{
+		{Sandbox: "api.feat12", Repos: []manifest.Repo{
+			{Name: "api", Mount: "/wt/feat12/api", Worktree: true},
+			{Name: "hotfix", Mount: "/tmp/hotfix", Worktree: false},
+		}},
+		{Sandbox: "web", Repos: []manifest.Repo{{Name: "web", Mount: "/wt/web", Worktree: true}}},
+	}
+	got := Orphans(live, ms)
+	if len(got) != 1 || got[0].Sandbox != "api.feat12" {
+		t.Fatalf("only the sandbox with no live VM is an orphan: %#v", got)
+	}
+	if !reflect.DeepEqual(got[0].Worktrees, []string{"/wt/feat12/api"}) {
+		t.Errorf("only den-created directories are named: %#v", got[0].Worktrees)
+	}
+}
+
+// Proof 14 — with sbx absent the live list is UNKNOWN, and every healthy
+// sandbox would look like an orphan. The check is skipped and says so; the sbx
+// line above it already carries the real problem.
+func TestOrphanCheckIsSkippedWhenTheLiveListIsUnknown(t *testing.T) {
+	if got := Orphans(LiveSandboxes{}, []manifest.Manifest{{Sandbox: "api"}}); len(got) != 0 {
+		t.Errorf("an unknown live list makes nobody an orphan: %#v", got)
+	}
+	c := OrphanCheck(LiveSandboxes{}, []manifest.Manifest{{Sandbox: "api"}})
+	if c.Blocking() || c.Level != LevelOK {
+		t.Errorf("an unknown live list must not accuse anyone: %#v", c)
+	}
+	if !strings.Contains(c.Detail, "skipped") {
+		t.Errorf("the skip must be visible: %q", c.Detail)
+	}
+}
+
+// An orphan is a warning, never a failure: leftover directories are not a
+// broken installation, and turning `den doctor` red over them would train the
+// user to ignore it.
+func TestOrphanCheckWarnsAndNamesTheRemedy(t *testing.T) {
+	c := OrphanCheck(
+		LiveSandboxes{Known: true},
+		[]manifest.Manifest{{Sandbox: "api.feat12", Repos: []manifest.Repo{
+			{Mount: "/wt/feat12/api", Worktree: true}}}})
+	if c.Level != LevelWarning {
+		t.Errorf("orphans warn, they do not fail: %#v", c)
+	}
+	if !strings.Contains(c.Detail, "api.feat12") {
+		t.Errorf("the orphan must be named: %q", c.Detail)
+	}
+	if !strings.Contains(c.Detail, "den doctor --fix") {
+		t.Errorf("the remedy must be named: %q", c.Detail)
+	}
+}
+
+// Nothing recorded, nothing to say — but the check still reports, so a healthy
+// den home does not leave a hole where the line usually is.
+func TestOrphanCheckIsOKWithNoRecordAtAll(t *testing.T) {
+	c := OrphanCheck(LiveSandboxes{Known: true}, nil)
+	if c.Level != LevelOK || c.Detail != "none" {
+		t.Errorf("no record means nothing to reclaim: %#v", c)
 	}
 }
