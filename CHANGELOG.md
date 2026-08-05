@@ -11,11 +11,12 @@ not repeated here.
 
 ### Changed
 
-- **BREAKING — `den <nest>` ne spawne plus : `den spawn <nest>`.** Le spawn est une sous-commande
-  comme les autres. Ses six flags (`-w`, `--agent`, `--without`, `--only`, `--detach`, `-i`) ont
-  quitté le root, où `den --detach` seul les avalait en silence. Un premier argument inconnu liste
-  désormais tout ce que den sait faire, et un nest homonyme d'une sous-commande — `ls`, `rm`, `sh`
-  — redevient spawnable : `den spawn ls`.
+- **BREAKING — `den <nest>` no longer spawns: `den spawn <nest>`.** The spawn is a
+  subcommand like any other. Its six flags (`-w`, `--agent`, `--without`, `--only`,
+  `--detach`, `-i`) left the root, where `den --detach` alone swallowed them in
+  silence. An unknown first argument now lists everything den can do, and a nest
+  homonymous with a subcommand — `ls`, `rm`, `sh` — becomes spawnable again:
+  `den spawn ls`.
 
 ## v1.2.0 — 2026-08-05
 
