@@ -245,6 +245,46 @@ not (`No matching allow rule (default deny)`).
 
 Treat `egress:` as *access you would not otherwise have*, not as a sandbox firewall.
 
+## Agent profile — a `.claude` dedicated to den
+
+Every agent in the registry owns a **profile directory**, `<den home>/agents/<agent>` by default
+(so `~/.den/agents/claude`). den creates it if it is missing, mounts it read-write at the same
+absolute path as on the host, and exports the registry's `env:` into the sandbox — for Claude that
+is `CLAUDE_CONFIG_DIR={config_dir}`, which makes that directory the agent's config root inside the
+VM. `agents.<name>.config_dir` in `config.yaml` moves it globally; a nest's own `agents:` block
+moves it for that nest alone (`den nest show` prints the resolved path).
+
+The point is that it is **one profile shared by every sandbox**, and `den rm` does not touch it:
+configure it once and every spawn — every nest, every worktree — starts from it. That is what makes
+a den-dedicated `.claude` worth having, separate from the one your host agent uses.
+
+Recommended `~/.den/agents/claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_FORK_SUBAGENT": "1",
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "2"
+  },
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "sandbox": {
+    "enabled": false
+  }
+}
+```
+
+`1` and `2` are floors, not ceilings — raise them if your workflows fan out further. The two
+`env:` values must stay JSON **strings**. The last two keys drop the agent's own permission prompts
+and its nested sandbox, which is the trade-off worth stating plainly rather than selling: a microVM
+is not a vacuum. Your repos are mounted from the host at the same absolute path, read-write —
+including the `-w` worktrees that may carry uncommitted work — and `ssh.mode: agent-forward` (the
+default) means the forwarded agent inside the VM holds your push access. `egress:` does not narrow
+that either (see above). What the VM does buy is a blast radius bounded by *what den mounted*, which
+is recorded per sandbox and replayed by `den ls` / `den rm` / `den doctor` — enough to let the agent
+run unprompted, not enough to treat it as unattended.
+
 ## Agent freshness
 
 The agent is updated **at boot**, not baked into the image, through the `update:` command of the
