@@ -3,26 +3,28 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/PillowPillow/den/internal/doctor"
+	"github.com/PillowPillow/den/internal/manifest"
+	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sshagent"
+	"github.com/PillowPillow/den/internal/worktree"
 )
 
 // runDoctor runs `den doctor` on a given den home with injected system
 // access. The test must owe nothing to the machine running it: without this
 // injection, the command's exit contract ("non-zero if a check fails") is
 // unverifiable anywhere.
+// The sbx it scripts answers "no live sandbox": these tests carry no creation
+// record, so the orphan check has nothing to compare and stays silent either
+// way — runDoctorWithSbx is the helper for the tests that do exercise it.
 func runDoctor(t *testing.T, home string, deps doctor.Deps) (string, error) {
 	t.Helper()
-	cmd := newDoctorCmd(&home, deps)
-	out := &bytes.Buffer{}
-	cmd.SetOut(out)
-	cmd.SetErr(out)
-	cmd.SetArgs(nil)
-	err := cmd.Execute()
-	return out.String(), err
+	return runDoctorWithSbx(t, home, deps, &sbx.Fake{Responses: lsWith()})
 }
 
 func TestDoctorSucceedsWhenEverythingIsFine(t *testing.T) {
@@ -208,5 +210,136 @@ func TestDoctorFailsOnMissingConfig(t *testing.T) {
 	}
 	if !strings.Contains(out, "config.yaml") {
 		t.Errorf("output = %q, expected a mention of config.yaml", out)
+	}
+}
+
+// runDoctorWithSbx is runDoctor with a scripted sbx and real git: `den doctor`
+// now asks which sandboxes are live (the orphan check) and, under --fix, moves
+// worktrees. Both accesses are injected for the reason the whole file exists —
+// the suite must owe nothing to the machine running it.
+func runDoctorWithSbx(t *testing.T, home string, deps doctor.Deps, runner sbx.Runner, args ...string) (string, error) {
+	t.Helper()
+	cmd := newDoctorCmd(&home, deps, runner, worktree.NewGit())
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+// orphanFixture records a sandbox with one REAL worktree and returns the
+// worktree's path. The record is what `den doctor` reads; the sandbox itself
+// never exists, which is exactly the state under test.
+func orphanFixture(t *testing.T, home, sandbox string) string {
+	t.Helper()
+	root := filepath.Join(home, "worktrees")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	wt := createWorktree(t, repo, root, "feat12")
+	writeManifest(t, home, manifest.Manifest{
+		Sandbox:  sandbox,
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(home, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	return wt
+}
+
+// Proof 12 — a `den rm --keep-worktrees` leaves a record on purpose, and
+// doctor is what makes it addressable.
+func TestDoctorReportsAnOrphanRecord(t *testing.T) {
+	home := testDenHome(t)
+	orphanFixture(t, home, "api.feat12")
+	f := &sbx.Fake{Responses: lsWith()}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("leftover directories are not a broken installation: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[warn]") || !strings.Contains(out, "api.feat12") {
+		t.Errorf("the orphaned record must be reported and named; got:\n%s", out)
+	}
+	if !strings.Contains(out, "den doctor --fix") {
+		t.Errorf("the remedy must be named; got:\n%s", out)
+	}
+}
+
+// --fix sends the orphaned worktrees to the trash and only then drops the
+// record. Same strictness as rm: den never deletes, it moves.
+func TestDoctorFixReclaimsOrphanedWorktrees(t *testing.T) {
+	home := testDenHome(t)
+	wt := orphanFixture(t, home, "api.feat12")
+	f := &sbx.Fake{Responses: lsWith()}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f, "--fix")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the orphaned worktree must be reclaimed: %v", err)
+	}
+	if !strings.Contains(out, filepath.Join(home, "trash")) {
+		t.Errorf("the output must say where the work went; got:\n%s", out)
+	}
+	if _, err := manifest.Read(home, "api.feat12"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the record goes once what it lists is reclaimed: %v", err)
+	}
+}
+
+// Proof 13 — a dirty worktree stops --fix, exactly as it stops rm. --force is
+// the same consent, with the same effect: the trash, never deletion.
+func TestDoctorFixRefusesADirtyWorktreeUnlessForced(t *testing.T) {
+	home := testDenHome(t)
+	wt := orphanFixture(t, home, "api.feat12")
+	if err := os.WriteFile(filepath.Join(wt, "draft.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &sbx.Fake{Responses: lsWith()}
+
+	if _, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f, "--fix"); err == nil {
+		t.Fatal("uncommitted work must stop --fix")
+	}
+	if _, err := os.Stat(filepath.Join(wt, "draft.txt")); err != nil {
+		t.Errorf("the uncommitted work must be intact: %v", err)
+	}
+	if _, err := manifest.Read(home, "api.feat12"); err != nil {
+		t.Errorf("the record must survive a refused reclaim — it is the only trace "+
+			"of the directory still on disk: %v", err)
+	}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f, "--fix", "--force")
+	if err != nil {
+		t.Fatalf("with --force the reclaim must go through: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("%s must have left its place: %v", wt, err)
+	}
+	if !strings.Contains(out, filepath.Join(home, "trash")) {
+		t.Errorf("--force moves to the trash, it never deletes; got:\n%s", out)
+	}
+}
+
+// Proof 14, end to end: sbx unreachable means the live list is unknown, and
+// den must not accuse a healthy sandbox.
+func TestDoctorSkipsTheOrphanCheckWhenSbxCannotAnswer(t *testing.T) {
+	home := testDenHome(t)
+	orphanFixture(t, home, "api.feat12")
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Err: errors.New("sbx: command not found")},
+	}}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("an unanswerable question is not a failing check: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "skipped") {
+		t.Errorf("the skip must be visible; got:\n%s", out)
+	}
+	if strings.Contains(out, "api.feat12") {
+		t.Errorf("den must accuse nobody when it cannot tell orphans from healthy "+
+			"sandboxes; got:\n%s", out)
 	}
 }

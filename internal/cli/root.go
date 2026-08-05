@@ -117,7 +117,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	})
 	root.AddCommand(newInitCmd(&denHome))
 	root.AddCommand(newNestCmd(&denHome))
-	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor))
+	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor, deps.Sbx, deps.Git))
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
 	// `den sh` gets the SSH probe and the OS too: re-entering a sandbox whose
 	// forwarded agent has been emptied fails `git push` exactly as a fresh
