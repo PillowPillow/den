@@ -5,6 +5,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // Response is what the Fake returns for a given call.
@@ -19,6 +20,21 @@ type Response struct {
 // policy, cli and agent all need it, and a double per package would drift
 // from the real contract right away. `internal/` already bounds its scope.
 type Fake struct {
+	// mu guards the recording fields, NOT the scripted ones.
+	//
+	// It exists because policy.Settle probes the allowlist concurrently
+	// (probeAll): without it, `go test -race` reports a genuine data race on
+	// the Calls append, and the recording can silently lose a call. The
+	// scripted fields (Responses, Default, AttachErr) stay unguarded on
+	// purpose — a test writes them BEFORE handing the Fake to production code,
+	// and guarding them would suggest they may be rewritten mid-run.
+	//
+	// Consequence a test must know: under a concurrent caller the ORDER in
+	// Calls is the order calls STARTED to be recorded, not the allowlist's.
+	// Assert on presence (HasCalled) or on counts, never on the index of a
+	// call that a concurrent pass produced.
+	mu sync.Mutex
+
 	// Calls records every invocation, Run and Attach alike, in order. It's what
 	// general assertions check.
 	Calls [][]string
@@ -48,7 +64,9 @@ type Fake struct {
 // caller that mutates the received result must not corrupt later calls that
 // fall back on the same Responses entry or on Default.
 func (f *Fake) Run(_ context.Context, args ...string) ([]byte, error) {
+	f.mu.Lock()
 	f.Calls = append(f.Calls, slices.Clone(args))
+	f.mu.Unlock()
 	if r, ok := f.Responses[strings.Join(args, " ")]; ok {
 		return slices.Clone(r.Output), r.Err
 	}
@@ -71,7 +89,9 @@ func (f *Fake) Run(_ context.Context, args ...string) ([]byte, error) {
 // Stream cannot report one either (os/exec's copier swallows it into the
 // process's own outcome).
 func (f *Fake) Stream(_ context.Context, out io.Writer, args ...string) error {
+	f.mu.Lock()
 	f.Calls = append(f.Calls, slices.Clone(args))
+	f.mu.Unlock()
 	r, ok := f.Responses[strings.Join(args, " ")]
 	if !ok {
 		r = f.Default
@@ -81,8 +101,10 @@ func (f *Fake) Stream(_ context.Context, out io.Writer, args ...string) error {
 }
 
 func (f *Fake) Attach(_ context.Context, args ...string) error {
+	f.mu.Lock()
 	f.Calls = append(f.Calls, slices.Clone(args))
 	f.Attaches = append(f.Attaches, slices.Clone(args))
+	f.mu.Unlock()
 	return f.AttachErr
 }
 
@@ -90,6 +112,8 @@ func (f *Fake) Attach(_ context.Context, args ...string) error {
 // Assertion by prefix, not equality: a test checking "a create did happen"
 // must not break because one more path got mounted.
 func (f *Fake) HasCalled(prefix ...string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, a := range f.Calls {
 		if len(a) >= len(prefix) && slices.Equal(a[:len(prefix)], prefix) {
 			return true
@@ -103,6 +127,8 @@ func (f *Fake) HasCalled(prefix ...string) bool {
 // an interactive shell was wired up, or that no attach happened (policy
 // blocked, `--detach`).
 func (f *Fake) HasAttached(prefix ...string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, a := range f.Attaches {
 		if len(a) >= len(prefix) && slices.Equal(a[:len(prefix)], prefix) {
 			return true
