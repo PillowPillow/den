@@ -100,7 +100,18 @@ func withSuggestion(root *cobra.Command, name string, err error) error {
 	// The reported name must be the one the user typed: if the spawn sequence
 	// ever loaded ANOTHER nest, its absence would say nothing about a typo on
 	// the command line.
-	if notFound.Name != name {
+	//
+	// For a source reference ("corp:api"), NestNotFoundError.Name is the BARE
+	// name alone — source.Locate strips the prefix before spawn.go's LoadNest
+	// ever runs (internal/spawn/spawn.go) — so the comparison is against the
+	// bare portion of `name` too, never the full reference. That still
+	// EXCLUDES every source reference from a suggestion, deliberately and not
+	// by the accident a raw `notFound.Name != name` would be reduced to: no
+	// subcommand ever carries a ":", so there is nothing a source reference
+	// could plausibly be a typo of, and root.SuggestionsFor's distance check
+	// is not the mechanism that should be trusted to notice that on its own.
+	src, bareName := config.SplitSourceRef(name)
+	if src != "" || notFound.Name != bareName {
 		return err
 	}
 	candidates := root.SuggestionsFor(name)

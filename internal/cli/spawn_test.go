@@ -367,6 +367,40 @@ func TestTheSuggestionOnlyConcernsTheTypedName(t *testing.T) {
 	}
 }
 
+// A source reference never gets a suggestion, deliberately: `source.Locate`
+// strips the prefix before LoadNest ever runs, so a source nest's own
+// NotFoundError names only the BARE nest ("doctr", not "corp:doctr") — the
+// guard must still recognize this as "the very name the user typed" (it is,
+// once the prefix is accounted for) and STILL decline to suggest, since no
+// subcommand ever carries a ":" and there is nothing plausible to offer.
+//
+// Without the source-aware comparison this passed for the wrong reason: the
+// bare "doctr" never equalled the full "corp:doctr", so the old guard bailed
+// out on every source reference by accident, not by design — indistinguishable
+// from the case this test exists to rule out (M1 of Task 9's review).
+func TestASourceReferenceNeverSuggestsASubcommand(t *testing.T) {
+	root := NewRootCmd()
+	failing := func(name string) error {
+		return &nest.NestNotFoundError{
+			Name: name,
+			Path: "/den/sources/corp/nests/" + name + ".yaml",
+			Err:  fs.ErrNotExist,
+		}
+	}
+
+	// The typed name is CLOSE to `doctor` past its source prefix — the exact
+	// shape that would earn a suggestion for a bare name (see the test
+	// above) — and must still get none.
+	err := withSuggestion(root, "corp:doctr", failing("doctr"))
+	if strings.Contains(err.Error(), "did you mean") {
+		t.Errorf("a source reference must never be suggested as a mistyped "+
+			"subcommand; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "corp/nests/doctr.yaml") {
+		t.Errorf("the underlying nest-not-found error must still be returned intact; got: %v", err)
+	}
+}
+
 // --detach is the only flag whose value has no observable effect before the
 // very end of the sequence: it is proven by the DIFFERENCE with the same
 // spawn without the flag. Asserting the mere absence of an attach would prove

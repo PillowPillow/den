@@ -52,6 +52,23 @@ reapplied to a live VM — den warns about mixin drift and missing git dirs inst
 `internal/cli` must import none of `net`, `hash/fnv`, `os/exec` — both invariants are locked by
 `internal/ports/hermeticity_test.go`, which fails with an import-graph message if you break them.
 
+**What den mounted is recorded, not re-derived.** `internal/manifest` writes
+`<denHome>/state/sandboxes/<sandbox>.yaml` on the create branch, before `sbx create`; `den rm`,
+`den ls` and `den doctor` replay it. Every reader falls back on the old derivation when the file is
+absent or unreadable — `den rm` must never refuse and strand a live VM (doctrine T13/T16), and den
+never deletes a record it could not read (it may belong to a newer den). `state/` is not `cache/`:
+it is never purged.
+
+**Team sources** live under `sources/<n>/` (`internal/source`) — plain git clones carrying the
+den-home partial layout (`stacks/`, `lib/`, `kits/`, `nests/`, no `config.yaml`: personal config
+never travels through a source). References are `<source>:<name>` on the personal side (`corp:backend`,
+CLI/`defaults.stack`/local nests only); **inside** a source, `stack:`/`parent:` are bare and resolve
+in that source alone — a prefixed reference there is a lint refusal, because the install name is
+chosen per machine and the source's own CI knows none. `internal/lint` is the single checkout
+validator (confinement, DAG, bare references, spec 2026-08-04 §5) shared by `den lint`, `den source
+add` (post-clone, refuses **and deletes** the clone) and `den source update` (pre-fast-forward,
+fail-closed) — one judge, so lint can never accept what a spawn would later refuse.
+
 ## Test conventions
 
 - No test calls `t.Parallel()`, opens a socket, or spawns a process. Keep it that way — hermeticity

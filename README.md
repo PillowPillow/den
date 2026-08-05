@@ -86,7 +86,12 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den build [<stack>]` | builds stack images in `parent` order, playing each stack's `provision.steps` in a throwaway build VM |
 | `den nest ls` | lists the declared nests |
 | `den nest show <n>` | shows a fully resolved nest (stack, agent, egress, repos) |
-| `den doctor` | diagnoses the configuration and the environment |
+| `den source add <url> [--name n]` | clones a team source under `~/.den/sources/<n>/` and validates it; refuses (and removes the clone) if invalid |
+| `den source update [n]` | fetches and fast-forwards one source, or every installed source when none is named; refuses rather than overwrite local or unpushed work |
+| `den source ls` | lists installed sources: name, HEAD, last fetch, URL |
+| `den source rm <n> [--force]` | removes an installed source; refuses on a dirty working tree or commits unreachable from any remote-tracking ref, unless `--force` |
+| `den lint <path>` | validates a checkout (stacks, nests, references, path confinement) — what a team source's CI runs |
+| `den doctor` | diagnoses the configuration and the environment, and reports records whose sandbox is gone; `--fix` reclaims their worktrees (`--force` if one is dirty) |
 | `den version` | binary version |
 
 Options of `den <nest>`:
@@ -138,24 +143,30 @@ creating anything otherwise.
 command line is dropped by not typing it. Naming an undeclared repo on either flag is not a no-op:
 den refuses the whole spawn with `repo "<name>" unknown in this nest`.
 
-**`den rm` does not clean the worktree of a repo given on the command line.** A positional is not
-part of the sandbox identity, so den persists it nowhere and `den rm` — which recovers what to
-clean from the sandbox name alone, through the nest's `repos:` — cannot know it existed. After
-`den api -w feat ~/dev/hotfix`, `den rm api.feat` leaves `worktree_root/feat/hotfix` and its git
-registration behind. Remove it yourself, naming the worktree — `git worktree remove` takes its path
-and refuses a dirty one without `-f`:
+**`den rm` reclaims the worktree of a repo given on the command line too.** At creation den writes
+down what it actually mounted, under `~/.den/state/sandboxes/<sandbox>.yaml`, and the teardown
+replays that record instead of re-deriving it from today's configuration. So a positional — declared
+in no file at all — is reclaimed like the rest, and so is a worktree whose `worktree_root` moved,
+whose repo key stopped being mapped, or whose nest was deleted since the spawn. A repo mounted
+as-is, that den did not create, is never touched.
 
-```bash
-git -C ~/dev/hotfix worktree remove ~/.den/worktrees/feat/hotfix
-```
+A sandbox created before the records existed (or outside den) has none: `den rm` then falls back on
+the old derivation through the nest's `repos:`, saying so — that answer is only accurate if neither
+the nest nor `config.yaml` changed since. Under the `per-repo` layout a leftover from such a sandbox
+sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den added to that
+repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to remove.
 
-The same is true of a repo deleted from `repos:` before the teardown. Under the `per-repo` layout
-the leftover sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den added
-to that repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to
-remove.
+Options of `den rm`: `--keep-worktrees` (keep the worktrees, and their record, so `den doctor` can
+still find them), `--force` (reclaim them even if they carry uncommitted changes; without it, den
+refuses **before** touching the VM).
 
-Options of `den rm`: `--keep-worktrees` (keep the worktrees), `--force` (delete them even if they
-carry uncommitted changes; without it, den refuses **before** touching the VM).
+`den doctor` reports records whose sandbox is gone — a `sbx rm` run outside den, a failed boot, a
+`den rm --keep-worktrees` — as a warning naming the directories still on disk; `den doctor --fix`
+reclaims them, `--force` when one is dirty. `den ls` names them too. Nothing is ever deleted: den
+moves worktrees to `~/.den/trash/`.
+
+`~/.den/state/` holds those records and is **never purged automatically** — unlike `~/.den/cache/`,
+it is not reconstructible.
 
 `den nest show` takes `--agent`, `--only` and `--without` — the same three as a spawn, and for the
 same reason: resolution is what they act on, so showing a nest under them is how you read what a
@@ -367,6 +378,159 @@ list them in `steps:`, move any shared function library into `includes:`, and de
 scripts could do and steps cannot: read host files (only `includes:`/`steps:` text enters the VM),
 and pick their own shell (den sends `bash -lc`). `versions.lock` is out of the model — den claims
 nothing about tool versioning, and pins stay where they already are, in the scripts.
+
+## Team sources
+
+A **source** is a team's stacks and nests shared through a private git repo — typically reachable
+only from a VPN, and unrelated to the product's own GitHub. den clones it under
+`~/.den/sources/<name>/`; its objects are then addressed `<name>:<nest>`.
+
+```bash
+$ den source add git@gitlab.corp:dev/stacks.git --name corp
+source "corp" installed — its objects are addressed corp:<name> (e.g. `den corp:<nest>`)
+
+$ den corp:backend
+# resolves the nest "backend" and its stack inside the "corp" source, then
+# spawns (or attaches to) the sandbox "corp-backend"
+
+$ den source update
+source "corp" updated
+```
+
+`add` clones and lints the checkout in the same step: an invalid source is refused **and its own
+clone removed**, so a bad push never leaves a half-usable directory behind. Bare `den source
+update` refreshes every installed source; `den source update corp` refreshes just one. `den
+source rm corp` deletes the clone; it refuses on local changes or on commits unreachable from any
+remote-tracking ref (unpushed work, or a team repo that rewrote its history — see below),
+`--force` deletes anyway. Contributing back is just an ordinary git workflow: edit
+`~/.den/sources/corp/` directly, commit, push — den adds no ritual on top.
+
+### Repo keys — what makes a nest shareable
+
+A shared nest cannot carry machine-specific paths. Its `repos:` entries carry `key:` instead of
+`path:`, and each person maps that key to their own local checkout:
+
+```yaml
+# sources/corp/nests/backend.yaml (inside the source repo)
+stack: dgdevx        # bare reference — resolved inside the source itself, never prefixed
+repos:
+  - { key: review-mgmt }
+  - { key: front-app, optional: true, url: git@gitlab.corp:front/app.git }
+```
+
+```yaml
+# ~/.den/config.yaml (personal, per machine)
+repos:
+  review-mgmt: ~/dev/review-mgmt
+  front-app: ~/dev/front
+```
+
+An unmapped key is a refusal **before any side effect** — no clone is ever attempted on the
+user's behalf:
+
+```
+repo key "review-mgmt" is not mapped on this machine — add `review-mgmt: <local path>` under
+`repos:` in ~/.den/config.yaml
+```
+
+`url:` only enriches that message; it exists to tell you what to clone, never to trigger a clone
+den performs itself. Local nests can use `key:` too — it is one mechanism, not a sources-only one.
+
+Keys are resolved **after** `--without`/`--only`, so an unmapped key on an *optional* repo is
+escapable: a teammate who simply does not have the front-end checkout runs `den corp:backend
+--without front-app` and spawns without it. The refusal says so itself when the repo is optional.
+A key on a repo that is still selected always refuses — den never drops a repo on its own — and
+a *required* one is never offered the escape, since `--without` refuses required repos outright.
+
+### Addressing
+
+A source's stacks and nests are addressed `<source>:<name>` (`corp:dgdevx`, `corp:backend`); a
+local object stays unprefixed. Inside a source, references (`stack:` on a nest, `parent:` on a
+stack) are always **bare** and resolve within that source itself — a prefixed reference there is a
+lint failure, because the install name (`--name`) is chosen per machine and the team repo's own CI
+knows none.
+
+`:` is not legal in an `sbx create --name`, so a nest loaded from a source spawns under a
+flattened sandbox name: `corp:backend` becomes sandbox `corp-backend` — the same flattening `-w`
+already applies to branch names. A flattening collision (a local nest already named `corp-backend`,
+say) is refused at spawn, never silently renamed.
+
+`den sh`, `den rm` and `den ports` take **either** spelling: the reference you typed
+(`corp:backend`, `corp:backend.feat12`) or the literal name `den ls` prints (`corp-backend`,
+`corp-backend.feat12`). The literal one is decoded back to its source, which is unambiguous
+precisely because spawn refused both competing decompositions up front.
+
+The one case where the flattened name stops working is an ambiguity created **after** the spawn —
+you write a local nest `corp-backend.yaml`, or install a second source that also decomposes the
+name. den refuses rather than guessing which nest declares the sandbox's repos, and the prefixed
+spelling `corp:backend` keeps working throughout. If the source is **uninstalled** after the
+spawn, the flattened name has nothing left to decode from and den can only report the missing
+local nest; `den source add` it again, or destroy the sandbox with `den rm --keep-worktrees`.
+
+### Fail-closed updates
+
+`den source update` is the only thing that touches the network — a spawn never fetches, so
+everything keeps working off-VPN. It fetches, then lints the fetched tree **before** fast-forwarding
+(in a throwaway detached worktree, never touching the checked-out branch until the lint passes): a
+typo pushed by a teammate fails that lint and the local clone stays on its last good state, unchanged.
+It also refuses to fast-forward over a dirty working tree or unpushed commits — den never discards
+contributions it cannot restore. If the team repo rewrote its history, fast-forwarding itself
+becomes impossible; the refusal explains that `den source rm` may itself refuse (the fetch that
+triggered it just orphaned those same commits) and points at `den source rm --force` followed by
+`den source add` for a clone with nothing local worth keeping.
+
+At spawn, den never fetches — it just reads the clone as it stands. If the source has not been
+fetched in over 7 days, den prints a **hint**, never a refusal:
+
+```
+hint: source "corp" was last fetched more than 7 days ago — den source update corp
+```
+
+### `den lint <path>`
+
+The same validation `source add`/`source update` run: strict YAML, `parent:` resolvable and
+acyclic, declared paths (`kit`, `kits`, `provision.includes`/`steps`) existing and confined to the
+checkout, bare (never prefixed) internal references, a nest with no `stack:`, and a nest whose
+`repos:` carries an **absolute** `path:` (`/Users/alice/dev/x`, or a `~/` that expands to one) —
+that names a directory only the authoring machine has. Declare `key:` instead and let each
+teammate map it. A *relative* `path:` is not currently refused, though it is no more shareable:
+treat `key:` as the only form that travels. It reports every finding at once, not one per push.
+A stack's illegal name, missing `image:`, or a repo entry with both (or neither) `path:` and
+`key:` are refused too — those surface as the load error on the offending file, which can end the
+report early on that one file rather than join the itemized list above. Point it at a checkout to
+run it standalone, e.g. from the team repo's own CI:
+
+```bash
+den lint .
+```
+
+It reads no den home and touches no git or `sbx` — an argument is a filesystem path, nothing more.
+
+### Known limitations
+
+A local object and a source object that share a **bare name** (`devx` locally, `corp:devx` from a
+source) address different files everywhere — but a few things downstream are keyed by the bare
+name alone, and are therefore shared between them:
+
+- The **port window** when neither nest declares `ports.base:`: it is hashed from the bare nest
+  name. They don't double-bind (the scan in [Ports](#ports) above shifts the second one to the
+  next free block), but one of the two loses its stable, bookmarkable URL.
+- The **build scratch directory** `cache/build/<stack>` and the throwaway sandbox name
+  `<stack>-build`. Harmless when the two builds run one after the other; `den build devx` and
+  `den build corp:devx` running concurrently collide.
+- The declared **`image:` tag**. Two stacks in different roots that declare the same `image:`
+  collide in sbx's global template store: `den build corp:devx` overwrites whatever the local
+  `devx` built, and the local nest then spawns from the team's image with no warning. Unlike the
+  others this one is author-chosen rather than derived, so it is avoidable — give a team stack a
+  distinctive tag (`corp-devx:v1`) and the collision cannot arise.
+
+One more, and it is the collision arriving late: a local nest named `corp-backend` spawns without
+any check (den only tests a flattening collision when the reference it was given carried a source
+prefix), so a live `corp-backend` may have come from either nest. den refuses the flattened name
+rather than guess. `corp:backend` still works if that is where the sandbox came from; if it came
+from the local nest, nothing reaches it and it has to be destroyed and re-spawned once the names
+no longer collide. Renaming the local nest is the lasting fix — a rename inside a source is
+reverted by its next `den source update`.
 
 ## Design
 

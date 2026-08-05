@@ -322,6 +322,38 @@ func TestResolveRefusesRelativeDenHome(t *testing.T) {
 	}
 }
 
+// A key-typed repo's Path is filled from the personal mapping before repo
+// selection runs.
+func TestResolveRepoKeys(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"api": "/home/u/dev/api"}
+	n := &Nest{Name: "n", Stack: "devx", Repos: []Repo{{Key: "api"}}}
+	r, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r.Repos[0].Path != "/home/u/dev/api" {
+		t.Errorf("Path = %q", r.Repos[0].Path)
+	}
+}
+
+// A key with no local mapping is a refusal BEFORE any side effect, naming
+// the file to fix and — when the nest declared one — the clone command.
+func TestResolveRepoKeyMissing(t *testing.T) {
+	g := globalTest()
+	n := &Nest{Name: "n", Stack: "devx",
+		Repos: []Repo{{Key: "api", URL: "git@gitlab.corp:a/api.git"}}}
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	for _, want := range []string{"api", "repos:", "config.yaml", "git@gitlab.corp:a/api.git"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
 func TestResolveEnvNeverNil(t *testing.T) {
 	g := &config.Global{
 		Agents:         map[string]config.Agent{"claude": {ConfigDir: "/p", Update: "u"}},
@@ -336,6 +368,79 @@ func TestResolveEnvNeverNil(t *testing.T) {
 	}
 	if r.Env == nil {
 		t.Error("Env must be an empty map, never nil: the mixin iterates over it without a guard")
+	}
+}
+
+// The spec's own §2.4 nest: one required key, one OPTIONAL key, and only the
+// required one mapped. Before this, key resolution ran before selection, so
+// `optional:` meant something for a `path:` entry (--without could drop a
+// missing one) and nothing at all for a `key:` entry — the very axis the
+// marker exists for.
+func deselectableKeyNest() (*config.Global, *Nest) {
+	g := globalTest()
+	g.Repos = map[string]string{"review-mgmt": "/dev/review-mgmt"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{
+		{Key: "review-mgmt"},
+		{Key: "front-app", Optional: true, URL: "git@gitlab.corp:front/app.git"},
+	}}
+	return g, n
+}
+
+func TestResolveWithoutEscapesAnUnmappedOptionalKey(t *testing.T) {
+	g, n := deselectableKeyNest()
+	r, err := Resolve("/d", g, stacksTest(), n, Options{Without: []string{"front-app"}})
+	if err != nil {
+		t.Fatalf("--without must escape an unmapped OPTIONAL key: %v", err)
+	}
+	if got := names(r.Repos); len(got) != 1 || got[0] != "review-mgmt" {
+		t.Errorf("Repos = %v, expected [review-mgmt]", got)
+	}
+	if r.Repos[0].Path != "/dev/review-mgmt" {
+		t.Errorf("Repos[0].Path = %q, expected the mapped path", r.Repos[0].Path)
+	}
+}
+
+func TestResolveOnlyEscapesAnUnmappedOptionalKey(t *testing.T) {
+	g, n := deselectableKeyNest()
+	r, err := Resolve("/d", g, stacksTest(), n, Options{Only: []string{"review-mgmt"}})
+	if err != nil {
+		t.Fatalf("--only must escape an unmapped OPTIONAL key: %v", err)
+	}
+	if got := names(r.Repos); len(got) != 1 || got[0] != "review-mgmt" {
+		t.Errorf("Repos = %v, expected [review-mgmt]", got)
+	}
+}
+
+// Fail-loud stays: a key that is still SELECTED refuses, and because this one
+// is optional the refusal must hand over the escape rather than leave the
+// teammate who simply does not have that repo to guess it.
+func TestResolveUnmappedSelectedOptionalKeyNamesWithout(t *testing.T) {
+	g, n := deselectableKeyNest()
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal: front-app is selected and unmapped")
+	}
+	for _, want := range []string{"front-app", "--without front-app", "git@gitlab.corp:front/app.git"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
+// A REQUIRED unmapped key is not escapable and must not be told it is:
+// --without refuses required repos outright.
+func TestResolveUnmappedRequiredKeyDoesNotOfferWithout(t *testing.T) {
+	g, n := deselectableKeyNest()
+	g.Repos = nil
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "review-mgmt") {
+		t.Errorf("error %q must name the required key", err)
+	}
+	if strings.Contains(err.Error(), "--without review-mgmt") {
+		t.Errorf("error %q offers --without on a REQUIRED repo, which selectRepos refuses", err)
 	}
 }
 
@@ -457,6 +562,121 @@ func TestResolveRefusesACommandLinePathEqualToADeclaredOne(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "command line") {
 		t.Errorf("error = %q, expected it to point at the fixable half", err)
+	}
+}
+
+// Two DISTINCT keys are a legal team nest, and the collision is created by
+// THIS machine's mapping: both directories are named `api`. Neither existing
+// pass sees it — the paths differ, so checkNoDuplicatePaths is silent, and the
+// keys differ, so checkUniqueNames is too — yet worktree.Path names the
+// worktree directory after that basename, so under -w the two would land on the
+// same directory. Left to worktree.Ensure, the refusal comes only after the
+// FIRST worktree has been created: exactly the orphan the pre-flight ordering
+// exists to prevent.
+func TestResolveRefusesTwoKeysMountingTheSameBasename(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"api-v1": "/dev/a/api", "api-v2": "/dev/b/api"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{{Key: "api-v1"}, {Key: "api-v2"}}}
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal: both keys map to a directory named \"api\"")
+	}
+	// The keys are what the user can act on: the nest names them, and the
+	// mapping to fix is `repos:` in config.yaml. The paths alone would leave
+	// them to reverse the mapping by hand.
+	for _, want := range []string{"api-v1", "api-v2", "/dev/a/api", "/dev/b/api", `"api"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected it to name %s", err, want)
+		}
+	}
+	if !strings.Contains(err.Error(), "rename one of the directories") {
+		t.Errorf("error = %q, expected it to name the remedy — den refuses rather than "+
+			"normalizing, so the refusal owes the user a way out", err)
+	}
+	// The diagnosis must rest on what den itself controls and can verify —
+	// worktree.Path. An earlier draft also blamed the `sbx create` workspaces:
+	// den passes HOST paths there, so what becomes of two distinct ones inside
+	// the VM is a claim about sbx's mount behavior that nothing has measured,
+	// and under §14.1's open hypothesis A11 they would not collide at all.
+	for _, forbidden := range []string{"sbx", "workspace"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Errorf("error = %q, must not assert %q in a user-facing refusal: sbx behavior "+
+				"is a hypothesis to document, never an assertion", err, forbidden)
+		}
+	}
+}
+
+// The mixed pair: a key whose mapped directory collides with a basename
+// declared as a plain path in the same nest.
+func TestResolveRefusesAKeyMountingTheBasenameOfADeclaredPath(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"front": "/dev/x/api"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{{Key: "front"}, {Path: "/dev/y/api"}}}
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal: `front` maps to /dev/x/api, colliding with /dev/y/api")
+	}
+	for _, want := range []string{"front", "/dev/x/api", "/dev/y/api", `"api"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected it to name %s", err, want)
+		}
+	}
+}
+
+// The same hole reached from the command line: the positional is merged into
+// the list before the pass runs, so it is judged like any other repo.
+func TestResolveRefusesAKeyMountingTheBasenameOfACommandLineRepo(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"front": "/dev/x/api"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{{Key: "front"}}}
+	_, err := Resolve("/d", g, stacksTest(), n, Options{
+		Repos: []string{"/dev/y/api"},
+		Cwd:   "/work",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal: the positional's basename collides with `front`'s mapped directory")
+	}
+	for _, want := range []string{"front", "/dev/x/api", "/dev/y/api", "command line", `"api"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected it to name %s", err, want)
+		}
+	}
+}
+
+// The refusal is on the BASENAME, not on having two keys: the ordinary team
+// nest must still resolve. A pass that refused any two key-typed repos would
+// pass the tests above and break every real nest.
+func TestResolveAcceptsTwoKeysMountingDistinctBasenames(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"api": "/dev/a/api", "web": "/dev/b/web"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{{Key: "api"}, {Key: "web"}}}
+	r, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err != nil {
+		t.Fatalf("two keys mounting distinct directories must resolve: %v", err)
+	}
+	if got := paths(r.Repos); !slices.Equal(got, []string{"/dev/a/api", "/dev/b/web"}) {
+		t.Errorf("Repos = %v, expected both mapped paths", got)
+	}
+}
+
+// Precedence: two keys pointing at the SAME directory are a basename collision
+// too, but "declared twice" is the sharper diagnosis — the basename message
+// would send the reader hunting for a second, distinct directory that does not
+// exist. The new pass must therefore run after checkNoDuplicatePaths, not
+// instead of it.
+func TestResolveKeysOnTheSamePathKeepTheDuplicatePathMessage(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"api-v1": "/dev/a/api", "api-v2": "/dev/a/api"}
+	n := &Nest{Name: "backend", Stack: "devx", Repos: []Repo{{Key: "api-v1"}, {Key: "api-v2"}}}
+	_, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err == nil {
+		t.Fatal("expected a refusal: both keys map to the same directory")
+	}
+	if !strings.Contains(err.Error(), "declared twice") {
+		t.Errorf("error = %q, expected the SAME-PATH message", err)
+	}
+	if strings.Contains(err.Error(), "both mount a directory named") {
+		t.Errorf("error = %q, expected the duplicate-path diagnosis to win over the basename one", err)
 	}
 }
 

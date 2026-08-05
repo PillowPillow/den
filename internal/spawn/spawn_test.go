@@ -17,6 +17,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
@@ -2504,11 +2505,384 @@ func TestSpawnDoesNotCheckTheImageOfAPullableStack(t *testing.T) {
 	fake := &sbx.Fake{}
 	// A stack with no provision.steps: not buildable.
 	s := &config.Stack{Name: "pulled", Image: "ghcr.io/acme/base:v3"}
-	if err := checkStackImage(context.Background(), Deps{Sbx: fake}, s); err != nil {
+	if err := checkStackImage(context.Background(), Deps{Sbx: fake}, s, s.Name); err != nil {
 		t.Fatalf("checkStackImage refused a pullable stack: %v", err)
 	}
 	if fake.HasCalled("template", "ls") {
 		t.Error("den read the inventory for a stack it cannot build — it has no remedy to offer")
+	}
+}
+
+// `den corp:backend` spawns from the source's nest and the source's stacks:
+// a plain directory under sources/ is a valid installed source for Spawn,
+// which never runs git — the layout alone is what Locate reads.
+func TestSpawnFromSourceNest(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	// The sandbox name is the FLATTENED reference: ":" is not in sbx's
+	// `--name` charset.
+	if !f.HasCalled("create", "--name", "corp-api", "--template", "teamstack:v1") {
+		t.Errorf("expected a create for sandbox corp-api, image teamstack:v1; calls: %v", f.Calls)
+	}
+}
+
+// The intersection of the two features that met in this merge: a nest from a
+// SOURCE, mounted alongside a repo given on the command line. Neither branch
+// could test it — one had no positionals, the other no sources — and the
+// composition is exactly where a wiring gap would hide, since Cwd is read on
+// the spawn path shared by both kinds of nest. If the source branch ever
+// stopped feeding it, this spawn would die on "nest.Options.Cwd is unset",
+// which the user reads as a defect in den, on a command that is correct.
+func TestSpawnFromSourceNestMountsCommandLineRepos(t *testing.T) {
+	denHome, _ := denTest(t)
+	declared := t.TempDir()
+	hotfix := filepath.Join(t.TempDir(), "hotfix")
+	createRepo(t, hotfix)
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+declared+" }\n")
+
+	f, d := fakeDeps()
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "corp:api", Repos: []string{hotfix}, Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	got := workspacesOf(callStartingWith(f, "create"))
+	expected := []string{hotfix, declared, filepath.Join(denHome, "agents", "claude")}
+	if !slices.Equal(got, expected) {
+		t.Errorf("workspaces = %v, expected %v — the positional comes first, the source "+
+			"nest's own repo after", got, expected)
+	}
+}
+
+// A local nest whose file name equals the flattened source reference would
+// make `den ls`/`den sh`/`den rm` ambiguous between the two: refused before
+// any side effect, naming both files.
+func TestSpawnSourceNestRefusesLocalHomonym(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	write(t, filepath.Join(denHome, "nests", "corp-api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d)
+	if err == nil {
+		t.Fatal("expected a refusal of the ambiguous flattened name, got nil")
+	}
+	sourceNestPath := filepath.Join(denHome, "sources", "corp", "nests", "api.yaml")
+	localNestPath := filepath.Join(denHome, "nests", "corp-api.yaml")
+	for _, want := range []string{sourceNestPath, localNestPath} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected it to name %s", err.Error(), want)
+		}
+	}
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	}
+	// The strong form of "no side effect precedes the refusal", the same one
+	// TestSpawnRefusesInvalidConfiguration asserts: not just that sbx was
+	// never called, but that nothing was written to disk either.
+	if _, statErr := os.Stat(filepath.Join(denHome, "agents", "claude")); statErr == nil {
+		t.Error("the agent profile must not have been created before the refusal")
+	}
+}
+
+// Two DIFFERENT installed sources can flatten to the identical sandbox name:
+// source "corp" nest "a-b" and source "corp-a" nest "b" both flatten to
+// "corp-a-b". Both are legal names on their own — this is the collision the
+// local-homonym guard above does NOT catch, since neither nest is local.
+func TestSpawnRefusesCrossSourceSandboxNameCollision(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "a-b.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	write(t, filepath.Join(denHome, "sources", "corp-a", "stacks", "teamstack", "stack.yaml"),
+		"image: other:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp-a", "nests", "b.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:a-b", Detach: true}, d)
+	if err == nil {
+		t.Fatal("expected a refusal of the cross-source sandbox-name collision, got nil")
+	}
+	for _, want := range []string{
+		filepath.Join(denHome, "sources", "corp", "nests", "a-b.yaml"),
+		filepath.Join(denHome, "sources", "corp-a", "nests", "b.yaml"),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected it to name %s", err.Error(), want)
+		}
+	}
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	}
+	if _, statErr := os.Stat(filepath.Join(denHome, "agents", "claude")); statErr == nil {
+		t.Error("the agent profile must not have been created before the refusal")
+	}
+}
+
+// A nest loaded FROM a source may only reference its stack bare: a prefixed
+// reference would resolve differently per machine (whichever name the OTHER
+// source happens to be installed under) and CI has neither installed.
+func TestSpawnSourceNestRefusesPrefixedStackRef(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: corp:teamstack\nrepos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d)
+	if err == nil {
+		t.Fatal("expected a refusal of the prefixed stack reference, got nil")
+	}
+	if !strings.Contains(err.Error(), "bare") {
+		t.Errorf("error = %q, expected it to name the bare-reference rule", err.Error())
+	}
+	// Discriminating assertions, not just "bare": the subject must be
+	// o.Nest ("corp:api", what was typed), never n.Name ("api", the bare
+	// filename LoadNest fills in) — a `Contains("api")` alone would pass
+	// against EITHER form and so pin nothing. And the file to fix must be
+	// the SOURCE nest's, under sources/corp/nests/, not some denHome-rooted
+	// guess.
+	if !strings.Contains(err.Error(), "corp:api") {
+		t.Errorf("error = %q, expected the subject to be the prefixed reference %q, "+
+			"not the bare filename LoadNest sets n.Name to", err.Error(), "corp:api")
+	}
+	if want := filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"); !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %q, expected it to name the source nest file %s", err.Error(), want)
+	}
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	}
+	if _, statErr := os.Stat(filepath.Join(denHome, "agents", "claude")); statErr == nil {
+		t.Error("the agent profile must not have been created before the refusal")
+	}
+}
+
+// A source nest cannot fall back on the PERSONAL defaults.stack: doing so
+// would either spawn a different stack per teammate, or — worse — spawn the
+// source's own stack of the same name in silence. `den lint`'s checkNest
+// already refuses this; spawn must refuse it identically rather than let a
+// nest that lint rejects still be spawnable.
+func TestSpawnSourceNestRefusesMissingStack(t *testing.T) {
+	denHome, _ := denTest(t) // defaults.stack: devx, and denHome/stacks/devx exists
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"repos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d)
+	if err == nil {
+		t.Fatal("expected a refusal of the missing `stack:`, got nil")
+	}
+	if !strings.Contains(err.Error(), "defaults.stack") {
+		t.Errorf("error = %q, expected it to name the personal-default rule", err.Error())
+	}
+	// Discriminating assertions, not just "defaults.stack": the subject must
+	// be o.Nest ("corp:api", what was typed), never n.Name ("api", the bare
+	// filename LoadNest fills in) — a `Contains("api")` alone would pass
+	// against EITHER form and so pin nothing. And the file to fix must be
+	// the SOURCE nest's, under sources/corp/nests/, not some denHome-rooted
+	// guess.
+	if !strings.Contains(err.Error(), "corp:api") {
+		t.Errorf("error = %q, expected the subject to be the prefixed reference %q, "+
+			"not the bare filename LoadNest sets n.Name to", err.Error(), "corp:api")
+	}
+	if want := filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"); !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %q, expected it to name the source nest file %s", err.Error(), want)
+	}
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	}
+	if _, statErr := os.Stat(filepath.Join(denHome, "agents", "claude")); statErr == nil {
+		t.Error("the agent profile must not have been created before the refusal")
+	}
+}
+
+// A LOCAL nest may prefix its stack reference; the sandbox name stays the
+// nest's ordinary, unflattened one — the NEST is local, only the stack came
+// from a source.
+func TestSpawnLocalNestWithSourceStack(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "nests", "n.yaml"),
+		"stack: corp:teamstack\nrepos:\n  - { path: "+repo+" }\n")
+
+	f, d := fakeDeps()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "n", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if !f.HasCalled("create", "--name", "n", "--template", "teamstack:v1") {
+		t.Errorf("expected sandbox name to stay \"n\" (unflattened); calls: %v", f.Calls)
+	}
+}
+
+// The staleness hint fires once per source touched, on Err, and never blocks
+// or reaches the network — it's read entirely off FETCH_HEAD/HEAD's mtime.
+func TestSpawnHintsOnStaleSource(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	headPath := filepath.Join(denHome, "sources", "corp", ".git", "HEAD")
+	write(t, headPath, "ref: refs/heads/main\n")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(headPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	_, d := fakeDeps()
+	d.Now = func() time.Time { return time.Now() }
+	errBuf := &bytes.Buffer{}
+	d.Err = errBuf
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if !strings.Contains(errBuf.String(), "den source update corp") {
+		t.Errorf("Err = %q, expected a staleness hint naming `den source update corp`", errBuf.String())
+	}
+	// The nest and its stack are the SAME source ("corp"): the hint must
+	// fire once, not twice — the dedupe this test exists to pin.
+	if n := strings.Count(errBuf.String(), "den source update corp"); n != 1 {
+		t.Errorf("hint printed %d times, expected exactly 1 (once per distinct source): %q", n, errBuf.String())
+	}
+}
+
+// Now == nil skips the hint entirely and must not panic: hand-built test
+// Deps elsewhere in this file owe nothing to the clock.
+func TestSpawnNoStalenessHintWhenNowIsNil(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	headPath := filepath.Join(denHome, "sources", "corp", ".git", "HEAD")
+	write(t, headPath, "ref: refs/heads/main\n")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(headPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	_, d := fakeDeps()
+	errBuf := &bytes.Buffer{}
+	d.Err = errBuf
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("Err = %q, expected no hint when Deps.Now is nil", errBuf.String())
+	}
+}
+
+// A spawn that touches no source at all must stay silent even when d.Now is
+// set AND a stale source happens to be installed — the hint is scoped to the
+// sources THIS spawn actually resolved through, never a blanket sweep of
+// everything under sources/.
+func TestSpawnNoStalenessHintForPurelyLocalSpawn(t *testing.T) {
+	denHome, _ := denTest(t) // local nest "api", local stack "devx", no source referenced
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	headPath := filepath.Join(denHome, "sources", "corp", ".git", "HEAD")
+	write(t, headPath, "ref: refs/heads/main\n")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(headPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	_, d := fakeDeps()
+	d.Now = func() time.Time { return time.Now() }
+	errBuf := &bytes.Buffer{}
+	d.Err = errBuf
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("Err = %q, expected no hint for a purely local spawn (nest and stack both local)", errBuf.String())
+	}
+}
+
+// A LOCAL nest with a prefixed `stack:` touches a source through the STACK
+// alone (stackSrcName), never through srcName (which stays "" — the nest
+// itself is local). The hint must still fire, naming that source.
+func TestSpawnHintsOnStaleSourceThroughStackOnly(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: teamstack:v1\n")
+	write(t, filepath.Join(denHome, "nests", "n.yaml"),
+		"stack: corp:teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	headPath := filepath.Join(denHome, "sources", "corp", ".git", "HEAD")
+	write(t, headPath, "ref: refs/heads/main\n")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(headPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	_, d := fakeDeps()
+	d.Now = func() time.Time { return time.Now() }
+	errBuf := &bytes.Buffer{}
+	d.Err = errBuf
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "n", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if !strings.Contains(errBuf.String(), "den source update corp") {
+		t.Errorf("Err = %q, expected a staleness hint naming `den source update corp` "+
+			"(the stack's source, though the nest itself is local)", errBuf.String())
+	}
+}
+
+// The remedy must name the stack the way the USER can reach it. `den build
+// devx` and `den build corp:devx` address two different stacks in two
+// different roots, and on a den that owns a local `devx` the wrong one is not
+// even a refusal: it succeeds, builds another image, and this spawn still
+// fails. A remedy that names a command sending the user somewhere else is
+// worse than one that fails.
+func TestSpawnRefusalNamesTheSourcePrefixedStack(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := t.TempDir()
+	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
+		"image: corp-teamstack:v1\nbase: claude\nprovision:\n  steps: [./provision/setup.sh]\n")
+	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
+	f, d := fakeDeps()
+	answerTemplates(f, `{"images":[]}`)
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:api"}, d)
+	if err == nil {
+		t.Fatal("expected a refusal on an image no build ever produced")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "den build corp:teamstack") {
+		t.Errorf("message = %q, want the prefixed remedy `den build corp:teamstack`", msg)
+	}
+	if strings.Contains(msg, "den build teamstack;") {
+		t.Errorf("message = %q names the BARE stack, which addresses a different (local) stack", msg)
 	}
 }
 
@@ -2879,5 +3253,165 @@ func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEverythingInOrder(t *testing.T)
 	if strings.Contains(out.String(), "den rm scratch") {
 		t.Errorf("log = %q, expected no warning: this attach asked for exactly what's mounted, "+
 			"in the same order", out.String())
+	}
+}
+
+// What spawn mounted is what the manifest says — including the repo given on
+// the command line, which is declared in no file at all and which no later
+// re-derivation could ever find.
+func TestSpawnWritesTheManifestOfWhatItMounted(t *testing.T) {
+	denHome, repo := denTest(t)
+	hotfix := filepath.Join(t.TempDir(), "hotfix")
+	createRepo(t, hotfix)
+	_, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Worktree: "feature/12", Repos: []string{hotfix}}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m, err := manifest.Read(denHome, "api.feature-12")
+	if err != nil {
+		t.Fatalf("the manifest must exist after a create: %v", err)
+	}
+	if m.Nest.Ref != "api" || m.Nest.File != filepath.Join(denHome, "nests", "api.yaml") {
+		t.Errorf("the nest must be recorded by both its reference and its file: %#v", m.Nest)
+	}
+	if m.Worktree == nil || m.Worktree.Branch != "feature/12" {
+		t.Fatalf("the branch as typed must survive flattening: %#v", m.Worktree)
+	}
+	if m.Worktree.Name != "feature-12" || m.Worktree.Layout != "central" {
+		t.Errorf("the worktree den created is recorded as it was created: %#v", m.Worktree)
+	}
+	var adhoc, declared *manifest.Repo
+	for i := range m.Repos {
+		switch m.Repos[i].Origin {
+		case manifest.OriginCommandLine:
+			adhoc = &m.Repos[i]
+		case manifest.OriginPath:
+			declared = &m.Repos[i]
+		}
+	}
+	if adhoc == nil {
+		t.Fatalf("the command-line repo must be recorded: %#v", m.Repos)
+	}
+	if adhoc.Repo != hotfix {
+		t.Errorf("the repo the worktree came from must be recorded: %#v", adhoc)
+	}
+	if !adhoc.Worktree {
+		t.Errorf("under -w, den created this repo's worktree too: %#v", adhoc)
+	}
+	if adhoc.Mount != filepath.Join(denHome, "worktrees", "feature-12", "hotfix") {
+		t.Errorf("the MOUNT is the path sbx received, worktree included: %#v", adhoc)
+	}
+	if declared == nil || declared.Repo != repo {
+		t.Errorf("the declared repo must be recorded as a plain path: %#v", m.Repos)
+	}
+}
+
+// The manifest describes what THIS VM received at its create. Rewriting it on
+// attach would destroy that reference — the same doctrine, and the same
+// regression, as TestSpawnDoesNotRewriteTheMixinOfALiveSandbox.
+func TestSpawnDoesNotRewriteTheManifestOfALiveSandbox(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("first spawn: unexpected error: %v", err)
+	}
+	path, err := manifest.Path(denHome, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("create must have written %s: %v", path, err)
+	}
+
+	// The nest gains a repo, and the sandbox is now live: an attach that
+	// rewrote the record would erase what the VM actually mounts.
+	other := filepath.Join(t.TempDir(), "web")
+	createRepo(t, other)
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n  - { path: "+other+" }\n")
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("attach: unexpected error: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(reference) {
+		t.Errorf("the creation record was rewritten on a live sandbox;\nbefore:\n%s\nafter:\n%s",
+			reference, after)
+	}
+}
+
+// Attaching compares two different things that used to be conflated: what the
+// configuration says today versus what the VM mounts (reportUnmountedRepos),
+// and what the configuration says today versus what den ACTUALLY mounted at
+// creation. Only the second has an honest remedy — den never remounts anything
+// on a live VM, so the answer is `den rm` then respawn.
+func TestAttachReportsANestChangedSinceCreation(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("first spawn: unexpected error: %v", err)
+	}
+
+	// The nest gains a repo AFTER the create. The VM keeps mounting exactly
+	// what it was created with.
+	other := filepath.Join(t.TempDir(), "web")
+	createRepo(t, other)
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n  - { path: "+other+" }\n")
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	log.Reset()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("attach: unexpected error: %v", err)
+	}
+	got := log.String()
+	if !strings.Contains(got, "nest changed since sandbox api was created") {
+		t.Errorf("an edited nest must be named as such, not as a VM missing a mount;\n%s", got)
+	}
+	if !strings.Contains(got, other) {
+		t.Errorf("the message must name what the configuration now resolves to;\n%s", got)
+	}
+	if !strings.Contains(got, "den rm api") {
+		t.Errorf("the only remedy den can honestly offer must be named;\n%s", got)
+	}
+}
+
+// No record, or a record that still matches: nothing to say. A warning that
+// fires on every attach stops being read.
+func TestAttachSaysNothingWhenTheNestIsUnchanged(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("first spawn: unexpected error: %v", err)
+	}
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	log.Reset()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("attach: unexpected error: %v", err)
+	}
+	if strings.Contains(log.String(), "nest changed") {
+		t.Errorf("an unchanged nest must produce no warning;\n%s", log.String())
 	}
 }

@@ -83,15 +83,21 @@ actionnable, jamais normalisé en silence : normaliser casserait l'aller-retour
     fullstack.yaml
   kits/                    # kits transverses non-egress, layerés avant `kit` (cf. §4.2)
     ssh-known-hosts/
+  sources/<n>/             # clones git de sources d'équipe (même layout partiel) — spec 2026-08-04
   worktrees/               # worktrees générés (layout central par défaut)
     <wt>/<repo>/
   cache/                   # optionnel, reconstructible — jamais source de vérité
     build/<stack>/         #   dossier vide monté dans la VM de build (§6)
+  state/                   # trace des créations — JAMAIS purgé automatiquement
+    sandboxes/<sandbox>.yaml #   ce que den a réellement monté (spec 2026-08-05)
 ```
 
 `lib/` n'a **aucune sémantique pour den** : c'est l'emplacement conventionnel des fichiers qu'une
 stack cite dans `includes:`, rien de plus. den ne lit que `stacks/*/stack.yaml` et les chemins que
 ceux-ci déclarent ; un `lib/` absent n'est un défaut que pour la stack qui le référence.
+
+`state/` **n'est pas un cache** — un repo monté depuis la ligne de commande n'est reconstructible
+depuis rien, et le fichier est la seule trace d'un worktree pouvant porter du travail non commité.
 
 La **vérité de « ce qui tourne »** vient de `sbx ls --json` : l'identité de chaque sandbox est
 attribuée à un nest (et un worktree) par décomposition de son **nom** — **pas de base de données
@@ -231,8 +237,9 @@ sandbox**.
 | `den ports <name> [--add H:C]` | **publie à la demande** la fenêtre déclarée + affiche le tableau |
 | `den rm <name> [--keep-worktrees]` | teardown (profil agent persiste ; worktrees nettoyés sauf `--keep`) |
 | `den build [<stack>] [--force]` | build image(s), ordre DAG |
-| `den doctor` | valide config, teste egress, présence/login sbx |
+| `den doctor [--fix] [--force]` | valide config, teste egress, présence/login sbx ; signale les manifestes sans sandbox et, sous `--fix`, récupère leurs worktrees (spec 2026-08-05) |
 | `den nest ls` / `den nest show <n> [repo...]` | inspecter les nests déclarés |
+| `den source add\|update\|ls\|rm`, `den lint <path>` | sources d'équipe (clones git partagés) — voir spec 2026-08-04 |
 
 Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <name>`.
 
@@ -282,6 +289,12 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
    `sbx run` : celui-ci lance la commande du flavor de l'image (souvent `claude`), n'a aucun flag
    pour la remplacer, et son `-- ARGS` ne fait qu'*ajouter* des arguments. **Les ports ne sont PAS
    publiés au spawn** → `den ports <nest>` à la demande.
+
+**Limite connue du teardown — LEVÉE le 2026-08-05** (spec `2026-08-05-sandbox-manifest-design.md`,
+D3/D4) : den écrit à la création un manifeste `state/sandboxes/<sandbox>.yaml` de ce qu'il a
+réellement monté, et `den rm` le rejoue au lieu de re-dériver. Le positionnel est donc nettoyé comme
+le reste, et la « moitié asymétrique » décrite ci-dessous n'a jamais été implémentée : elle est
+sans objet. Le paragraphe est conservé pour l'historique du raisonnement.
 
 **Limite connue du teardown.** `den rm` ne nettoie PAS le worktree d'un repo passé en positionnel.
 Un positionnel ne fait pas partie de l'identité (décision 7) : den ne le persiste nulle part, et

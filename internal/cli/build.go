@@ -6,6 +6,7 @@ import (
 	"github.com/PillowPillow/den/internal/build"
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/source"
 	"github.com/spf13/cobra"
 )
 
@@ -33,14 +34,40 @@ func newBuildCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			stacks, err := config.LoadStacks(home)
-			if err != nil {
-				return err
-			}
 
 			target := ""
 			if len(args) == 1 {
 				target = args[0]
+			}
+
+			// A target may be a source reference ("corp:teamstack"):
+			// source.Locate is the SOLE place that turns it into a root to
+			// load stacks from, exactly as spawn.go resolves a nest or stack
+			// reference. A BARE target (or no target at all) leaves
+			// stacksRoot at the personal den home unchanged — which is also
+			// what keeps a bare `den build` building the LOCAL stacks only:
+			// it never touches source.Locate, so an installed source never
+			// enters a graph nobody asked it to join. A source's images are
+			// built by whoever maintains it.
+			stacksRoot := home
+			// The REFERENCE the user typed is kept alongside the bare name
+			// the graph is keyed by, because every `den build ...` remedy
+			// build.Plan prints must name a command addressing THIS stack:
+			// `den build devx` and `den build corp:devx` are two different
+			// stacks in two different roots, and on a den owning both, the
+			// bare one builds successfully and fixes nothing.
+			planTarget := build.LocalTarget(target)
+			if target != "" {
+				var bareTarget string
+				if stacksRoot, _, bareTarget, err = source.Locate(home, target); err != nil {
+					return err
+				}
+				planTarget = build.Target{Name: bareTarget, Ref: target}
+				target = bareTarget
+			}
+			stacks, err := config.LoadStacks(stacksRoot)
+			if err != nil {
+				return err
 			}
 
 			chain, excluded, err := build.Chain(stacks, target)
@@ -89,7 +116,7 @@ func newBuildCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			// The inventory is passed even when the plan will not consult it:
 			// SbxImages reads `sbx template ls --json` lazily, so `den build`
 			// (all) and `--force` still spend no process on it.
-			steps, err := build.Plan(cmd.Context(), chain, target, force, &build.SbxImages{Runner: runner})
+			steps, err := build.Plan(cmd.Context(), chain, planTarget, force, &build.SbxImages{Runner: runner})
 			if err != nil {
 				return err
 			}

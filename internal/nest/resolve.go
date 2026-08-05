@@ -116,6 +116,61 @@ func resolveAgent(g *config.Global, n *Nest, flagAgent string) (string, config.A
 	return name, a, configDir, nil
 }
 
+// resolveRepoKeys fills the Path of every key-typed repo from the personal
+// mapping. Refusal BEFORE any side effect, naming the exact file and line to
+// add — and the clone command when the nest declared one (spec 2026-08-04
+// §2.4). denHome locates config.yaml through GlobalPath: the message and the
+// reader must never disagree on where that file lives.
+//
+// It runs on the SELECTED repos, after selectRepos, and the order is the
+// whole point rather than an implementation detail. Resolving first made the
+// unmapped-key refusal inescapable: `--without front-app` and `--only
+// review-mgmt` both died on front-app before selection ever ran, so
+// `optional:` meant something for a `path:` entry (a missing one could be
+// dropped) and nothing for a `key:` one — the very axis the marker exists
+// for, and the spec's own §2.4 example is exactly that nest. selectRepos
+// keys off Repo.Name(), which returns the Key for a key-typed entry, so it
+// needs no Path and the reorder costs nothing.
+//
+// What does NOT change is the doctrine: a key on a repo that is still
+// SELECTED refuses, loudly, and den drops nothing on its own. The refusal
+// only gains the escape when there IS one — see withoutClause.
+func resolveRepoKeys(denHome string, mapping map[string]string, repos []Repo) ([]Repo, error) {
+	out := slices.Clone(repos)
+	for i, r := range out {
+		if r.Key == "" {
+			continue
+		}
+		path, ok := mapping[r.Key]
+		if !ok {
+			hint := ""
+			if r.URL != "" {
+				hint = fmt.Sprintf(" (clone: %s)", r.URL)
+			}
+			return nil, fmt.Errorf(
+				"repo key %q is not mapped on this machine — add `%s: <local path>` under `repos:` "+
+					"in %s%s%s", r.Key, r.Key, config.GlobalPath(denHome), hint, withoutClause(r))
+		}
+		out[i].Path = path
+	}
+	return out, nil
+}
+
+// withoutClause offers `--without <name>` — but only on an OPTIONAL repo,
+// because only there does it work. A teammate who simply does not have the
+// front-end repo needs to be told the escape rather than left to discover
+// that the flag exists; a teammate missing a REQUIRED repo must not be sent
+// to a flag selectRepos refuses outright ("is a required repo of this nest,
+// it cannot be removed"), which would be a remedy naming a command that
+// itself fails.
+func withoutClause(r Repo) string {
+	if !r.Optional {
+		return ""
+	}
+	return fmt.Sprintf(
+		" — or, since this repo is optional, leave it out of this spawn with `--without %s`", r.Name())
+}
+
 // Resolve applies the full global ← stack ← nest ← flags cascade.
 //
 // stacks is a config.Stacks rather than a map: the verdict "is this stack
@@ -150,7 +205,18 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
 
+	// SELECTION FIRST, then key resolution — see resolveRepoKeys for why the
+	// order is load-bearing: reversed, no flag could escape an unmapped key.
 	repos, err := selectRepos(n.Repos, o.Without, o.Only)
+	if err != nil {
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
+	}
+	// Key resolution BEFORE the positionals are merged in, so the merged list
+	// holds nothing but real paths: checkNoDuplicatePaths below compares them,
+	// and an unresolved key (Path still empty) would silently sit out the very
+	// comparison that catches `den backend ~/dev/review-mgmt` repeating a repo
+	// the nest already maps to that same directory.
+	repos, err = resolveRepoKeys(denHome, g.Repos, repos)
 	if err != nil {
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
@@ -172,6 +238,14 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 	// positional colliding with a declared basename makes --without, the
 	// worktree path and the sbx positional ambiguous at once.
 	if err := checkUniqueNames(repos, "spawn"); err != nil {
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
+	}
+	// And only HERE, never in LoadNest: the basename worktree.Path derives the
+	// worktree directory from is the one out of the personal mapping, which does
+	// not exist until resolveRepoKeys has run just above. A team nest declaring
+	// `key: api-v1` and `key: api-v2` is perfectly legal — it is this machine's
+	// `repos:` pointing both at a directory named `api` that cannot be honored.
+	if err := checkUniqueMountBasenames(repos, "spawn"); err != nil {
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
 

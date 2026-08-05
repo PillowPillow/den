@@ -1,0 +1,24 @@
+schema: 1
+sandbox: corp-api.feat12
+nest:
+    ref: corp:api
+    file: /home/x/.den/sources/corp/nests/api.yaml
+worktree:
+    name: feat12
+    branch: feature/12
+    layout: central
+    root: /home/x/.den/worktrees
+repos:
+    - name: api
+      origin: key
+      key: api
+      repo: /home/x/dev/api
+      mount: /home/x/.den/worktrees/feat12/api
+      worktree: true
+    - name: hotfix
+      origin: command-line
+      repo: /tmp/hotfix
+      mount: /tmp/hotfix
+      worktree: false
+git_dirs:
+    - /home/x/dev/api/.git

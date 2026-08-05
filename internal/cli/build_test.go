@@ -331,3 +331,52 @@ func TestBuildRefusesANamedStackItCannotBuild(t *testing.T) {
 		t.Errorf("built = %v, want nothing built", builtStacks(f))
 	}
 }
+
+// A source reference builds the stack from the SOURCE's own stacks/, not
+// ~/.den/stacks — same doctrine as spawn.go: config.LoadStacks reads whatever
+// root source.Locate names, and the graph (parent chain, image inventory)
+// resolves entirely within that one root.
+//
+// A LOCAL stack of the SAME name, declaring a DIFFERENT image, is the
+// discriminating fixture: without it, "teamstack" resolves from either root
+// and the test cannot tell "loaded from the source" from "loaded from
+// wherever it happened to be found". With it, only the image actually built
+// says which root won.
+func TestBuildAcceptsASourceReference(t *testing.T) {
+	denHome := t.TempDir()
+	buildStack(t, denHome, "teamstack",
+		"image: local-teamstack:v1\nbase: claude\nprovision:\n  steps: [step.sh]\n")
+	buildStack(t, filepath.Join(denHome, "sources", "corp"), "teamstack",
+		"image: teamstack:v1\nbase: claude\nprovision:\n  steps: [step.sh]\n")
+	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": noPriorSandboxes}}
+
+	if _, _, err := runBuild(t, f, "--den-home", denHome, "build", "corp:teamstack"); err != nil {
+		t.Fatalf("den build corp:teamstack: %v", err)
+	}
+	if got := strings.Join(builtStacks(f), ","); got != "teamstack" {
+		t.Errorf("built = %v, want just teamstack", builtStacks(f))
+	}
+	if !f.HasCalled("template", "save", "teamstack-build", "teamstack:v1") {
+		t.Errorf("expected the SOURCE's image (teamstack:v1) to be built; calls: %v", f.Calls)
+	}
+	if f.HasCalled("template", "save", "teamstack-build", "local-teamstack:v1") {
+		t.Errorf("the LOCAL stack of the same name must not have been built; calls: %v", f.Calls)
+	}
+}
+
+// Bare `den build`, with no argument, builds the LOCAL stacks only: a
+// source's images are built by whoever maintains it, and an installed source
+// must not silently enter the graph of a build nobody asked it to join.
+func TestBuildWithoutAnArgumentIgnoresInstalledSources(t *testing.T) {
+	home := buildDenHome(t)
+	buildStack(t, filepath.Join(home, "sources", "corp"), "teamstack",
+		"image: teamstack:v1\nbase: claude\nprovision:\n  steps: [step.sh]\n")
+	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": noPriorSandboxes}}
+
+	if _, _, err := runBuild(t, f, "--den-home", home, "build"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Join(builtStacks(f), ","); got != "base,mid,leaf" {
+		t.Errorf("built = %v, want base,mid,leaf (the source's teamstack must be absent)", builtStacks(f))
+	}
+}

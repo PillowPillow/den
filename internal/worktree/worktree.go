@@ -265,7 +265,21 @@ type Target struct {
 	// it survives in the repository.
 	Worktree string
 	RepoPath string
-	Force    bool
+	// WorktreePath is the directory as RECORDED at creation
+	// (internal/manifest). When set it WINS over the Path() calculation
+	// below, and that is the whole point: Path() re-derives from the layout
+	// and root in force TODAY, so a worktree_root moved since the spawn made
+	// Remove aim at a directory that never existed while the real one stayed
+	// on disk, silently.
+	//
+	// The calculation survives for callers that have no record — a sandbox
+	// created before manifests existed, or one created outside den. Layout,
+	// Root and Worktree stay REQUIRED even with WorktreePath set: the trash
+	// fallback location (fallbackTrash) and the parent-directory cleanup
+	// (removeParentDir) read them, and neither is derivable from the final
+	// path alone.
+	WorktreePath string
+	Force        bool
 }
 
 // Remove moves the worktree to the trash and returns the path of the entry it
@@ -288,7 +302,10 @@ type Target struct {
 // pointing at a now-pruned registration. Files are recovered, not a working
 // worktree. Commits were never at stake — the branch survives in the repository.
 func Remove(ctx context.Context, g Git, c Target) (string, error) {
-	repoPath, worktreePath, force := c.RepoPath, Path(c.Layout, c.Root, c.Worktree, c.RepoPath), c.Force
+	repoPath, worktreePath, force := c.RepoPath, c.WorktreePath, c.Force
+	if worktreePath == "" {
+		worktreePath = Path(c.Layout, c.Root, c.Worktree, c.RepoPath)
+	}
 
 	// BEFORE anything else: with nowhere to put the directory, den does nothing
 	// at all. An earlier version refused only after the dirtiness check, and then

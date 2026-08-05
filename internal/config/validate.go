@@ -132,6 +132,14 @@ func (g *Global) Validate() []error {
 
 	errs = append(errs, g.ValidateWorktree()...)
 
+	for _, key := range slices.Sorted(maps.Keys(g.Repos)) {
+		if strings.TrimSpace(g.Repos[key]) == "" {
+			errs = append(errs, fmt.Errorf(
+				"repos.%s: blank — this key is what a nest's `key:` resolves to; "+
+					"set a real path, or remove the entry", key))
+		}
+	}
+
 	return errs
 }
 

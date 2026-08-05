@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/worktree"
 )
@@ -710,5 +712,566 @@ func TestRmGivesAFreshDeadlineToEachRepo(t *testing.T) {
 	if secondRemaining < gitProbeTimeout-400*time.Millisecond {
 		t.Errorf("the second repo inherits a spent budget (%v remaining out of %v): "+
 			"the deadline is not set for each repo", secondRemaining, gitProbeTimeout)
+	}
+}
+
+// A source reference names a sandbox that was never spawned under its
+// prefixed name: ":" is not in sbx's charset, so spawn (spawn.go) named the
+// live VM "corp-api", the FLATTENED reference. `den rm corp:api` must find
+// and destroy THAT sandbox.
+//
+// No worktree fixture here on purpose: a colon reference names a sandbox
+// spawned WITHOUT `-w` (flattening the whole argument would mangle a
+// worktree suffix's own "." separator, so den does not offer that
+// combination — see rm.go). cleanWorktrees is therefore exercised through
+// its ordinary, unchanged path: `sbx.SplitName("corp-api")` reports no
+// worktree, and it returns immediately.
+func TestRmAcceptsASourceReference(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	f := &sbx.Fake{Responses: lsWith("corp-api")}
+
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp:api"); err != nil {
+		t.Fatalf("den rm corp:api: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "corp-api") {
+		t.Errorf("expected the flattened sandbox corp-api to be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// README's second known limitation, closed: `den rm corp-api.feat12`
+// destroyed the sandbox correctly but could not reverse-decode "corp-api"
+// back into the source "corp", so the nest that declares the worktree's repos
+// was never found and cleanup degraded to a warning — the worktree was left
+// on disk. The decode now finds it, and the worktree really is moved to trash.
+func TestRmCleansTheWorktreeOfAFlattenedSourceSandbox(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, `agents:
+  claude:
+    config_dir: /profile/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+worktree_layout: central
+worktree_root: `+filepath.Join(denHome, "worktrees")+`
+`)
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "stacks", "devx", "stack.yaml"),
+		"image: devx:v1\n")
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+
+	if _, err := worktree.Ensure(context.Background(), worktree.NewGit(), "central",
+		filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp-api.feat12")
+	if err != nil {
+		t.Fatalf("den rm corp-api.feat12: %v", err)
+	}
+	if !strings.Contains(out, "moved to trash") {
+		t.Errorf("the source nest's worktree must be cleaned up, not warned about; got:\n%s", out)
+	}
+	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// The prefixed spelling reaches the same worktree'd sandbox: flattening the
+// whole argument would rewrite the "." and address "corp-api-feat12".
+func TestRmAcceptsAWorktreedSourceReference(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome,
+		"rm", "corp:api.feat12", "--keep-worktrees"); err != nil {
+		t.Fatalf("den rm corp:api.feat12: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+		t.Errorf("expected corp-api.feat12 to be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// A SOURCE nest declares its repos by `key:` — that is what makes it
+// shareable — and LoadNest leaves Key entries with an EMPTY Path (only
+// nest.Resolve fills it from the personal mapping). Now that the decode
+// actually reaches such a nest, cleanup has to resolve the key the same way
+// spawn did when it created the worktree.
+func TestRmResolvesRepoKeysWhenCleaningWorktrees(t *testing.T) {
+	denHome := t.TempDir()
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeConfig(t, denHome, `agents:
+  claude:
+    config_dir: /profile/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+worktree_layout: central
+worktree_root: `+filepath.Join(denHome, "worktrees")+`
+repos:
+  api: `+repo+`
+`)
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { key: api }\n")
+
+	if _, err := worktree.Ensure(context.Background(), worktree.NewGit(), "central",
+		filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp-api.feat12")
+	if err != nil {
+		t.Fatalf("den rm corp-api.feat12: %v", err)
+	}
+	if !strings.Contains(out, "moved to trash") {
+		t.Errorf("a key-typed repo's worktree must be cleaned up; got:\n%s", out)
+	}
+}
+
+// The same nest with the key NOT mapped. An unresolved key leaves Path empty,
+// and worktree.Path("central", root, wt, "") joins to root/<wt> — the whole
+// sandbox's worktree DIRECTORY rather than one repo's subdirectory. den must
+// skip that repo and say so, never move a directory it cannot attribute.
+func TestRmSkipsAnUnmappedRepoKeyRatherThanTrashingTheWholeWorktreeDir(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, `agents:
+  claude:
+    config_dir: /profile/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+worktree_layout: central
+worktree_root: `+filepath.Join(denHome, "worktrees")+`
+`)
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { key: api }\n")
+
+	dir := filepath.Join(denHome, "worktrees", "feat12", "api")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f,
+		"--den-home", denHome, "rm", "corp-api.feat12")
+	if err != nil {
+		t.Fatalf("an unmapped key must not fail the removal: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(denHome, "worktrees", "feat12")); statErr != nil {
+		t.Errorf("den moved the whole worktree directory for a repo it could not locate: %v", statErr)
+	}
+	if !strings.Contains(stderr, "api") {
+		t.Errorf("the skipped repo must be named on stderr; got:\n%s", stderr)
+	}
+	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+	_ = stdout
+}
+
+// The prefixed spelling WITH cleanup enabled — the path nothing exercised:
+// TestRmAcceptsAWorktreedSourceReference passes --keep-worktrees (so
+// cleanWorktrees never runs) and the two cleanup tests use the bare
+// "corp-api.feat12". Here nestOfSandbox's explicit-reference branch decides
+// which repos' directories get removed, so a wrong nest means removing the
+// wrong ones.
+func TestRmCleansTheWorktreeOfAPrefixedSourceReference(t *testing.T) {
+	denHome := t.TempDir()
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeConfig(t, denHome, `agents:
+  claude:
+    config_dir: /profile/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+worktree_layout: central
+worktree_root: `+filepath.Join(denHome, "worktrees")+`
+`)
+	writeUnder(t, denHome, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+
+	if _, err := worktree.Ensure(context.Background(), worktree.NewGit(), "central",
+		filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp:api.feat12")
+	if err != nil {
+		t.Fatalf("den rm corp:api.feat12: %v", err)
+	}
+	if !strings.Contains(out, "moved to trash") {
+		t.Errorf("the source nest's worktree must be cleaned up; got:\n%s", out)
+	}
+	// The trash entry is named <timestamp>-<sandbox>-<repo>: asserting the
+	// repo suffix is what proves the SOURCE nest's `repos:` were read, not
+	// merely that something was moved.
+	if !strings.Contains(out, "corp-api.feat12-api") {
+		t.Errorf("the trash entry must name the source nest's declared repo; got:\n%s", out)
+	}
+	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// worktreeConfig is minimalConfig with the two worktree settings `den rm`
+// validates. Written out because the manifest path must be assertable against
+// a config.yaml that says something DIFFERENT from the record — that
+// divergence is the whole point of the feature.
+func worktreeConfig(root string) string {
+	return minimalConfig + "worktree_layout: central\nworktree_root: " + root + "\n"
+}
+
+// createWorktree creates a REAL worktree of repo under root, the way a spawn
+// would have. It takes the ROOT rather than the final path because that is
+// what worktree.Ensure takes, and the final path is precisely what these tests
+// must observe rather than assume.
+func createWorktree(t *testing.T, repo, root, branch string) string {
+	t.Helper()
+	path, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"central", root, worktree.Name{Dir: branch, Branch: branch}, repo)
+	if err != nil {
+		t.Fatalf("preparing the worktree of %s: %v", repo, err)
+	}
+	return path
+}
+
+// writeManifest drops a creation record for a sandbox, the way spawn would
+// have. Tests that need one build it here rather than running a spawn: the rm
+// path must be assertable on a record whose configuration no longer exists.
+func writeManifest(t *testing.T, denHome string, m manifest.Manifest) {
+	t.Helper()
+	if err := manifest.Write(denHome, m); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Proof 3 — the hole this feature exists to close. A repo mounted from the
+// command line is declared in NO file: before the manifest, its worktree was
+// never reclaimed and nothing said so.
+func TestRmReclaimsACommandLineRepoWorktree(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	repo := filepath.Join(t.TempDir(), "hotfix")
+	createTestRepo(t, repo)
+	wt := createWorktree(t, repo, root, "feat12")
+
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feat12",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "hotfix", Origin: manifest.OriginCommandLine,
+			Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the command-line worktree must be reclaimed: %v", err)
+	}
+	if _, err := manifest.Read(denHome, "api.feat12"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the manifest must be removed once everything it lists is reclaimed: %v", err)
+	}
+}
+
+// Proof 8 — a repo mounted as-is is the user's own working directory. den does
+// not dispose of it, and `worktree: false` is the bit that says so.
+func TestRmNeverTouchesARepoMountedAsIs(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox: "api",
+		Nest:    manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: repo, Worktree: false,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api")}
+
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(repo); err != nil {
+		t.Errorf("a repo mounted as-is must survive rm: %v", err)
+	}
+	if _, err := manifest.Read(denHome, "api"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the record of a destroyed sandbox must go with it: %v", err)
+	}
+}
+
+// Proof 4 — the nest is gone, and it no longer matters: the record does not
+// need it.
+func TestRmCleansUpEvenWhenTheNestWasDeleted(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	wt := createWorktree(t, repo, root, "feat12")
+
+	// No nests/api.yaml at all: the derivation this replaces would have given
+	// up here with a warning, leaving the directory on disk.
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feat12",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the worktree must be reclaimed without the nest: %v", err)
+	}
+	if strings.Contains(out, "unreadable") {
+		t.Errorf("the nest is not consulted at all, so nothing about it must be reported; got:\n%s", out)
+	}
+}
+
+// Proof 5 — worktree_root moved in config.yaml between the spawn and the rm.
+// The recorded mount still names the real directory.
+func TestRmReclaimsTheOriginalDirectoryAfterWorktreeRootMoved(t *testing.T) {
+	denHome := t.TempDir()
+	original := filepath.Join(t.TempDir(), "worktrees-then")
+	writeConfig(t, denHome, worktreeConfig(filepath.Join(t.TempDir(), "worktrees-now")))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	wt := createWorktree(t, repo, original, "feat12")
+
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feat12",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: original},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the directory that really exists must be reclaimed, not the one today's "+
+			"worktree_root implies: %v", err)
+	}
+}
+
+// Proof 6 — a key unmapped since the spawn. rm.go used to abandon the
+// directory with a warning; the record carries the path itself.
+func TestRmReclaimsAWorktreeWhoseKeyIsNoLongerMapped(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	// `repos:` is EMPTY: the mapping that resolved this key at spawn time is
+	// gone from this machine.
+	writeConfig(t, denHome, worktreeConfig(root)+"repos: {}\n")
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { key: api }\n")
+	wt := createWorktree(t, repo, root, "feat12")
+
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feat12",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginKey, Key: "api",
+			Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the record carries the path, so the key mapping is not needed: %v", err)
+	}
+	if strings.Contains(out, "not mapped") {
+		t.Errorf("nothing must be abandoned over an unmapped key; got:\n%s", out)
+	}
+}
+
+// Proof 7 — --without at spawn. The record holds the repos this spawn really
+// mounted, so a repo it excluded is not reclaimed by association.
+func TestRmDoesNotReclaimARepoTheSpawnExcluded(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	api := filepath.Join(t.TempDir(), "api")
+	web := filepath.Join(t.TempDir(), "web")
+	createTestRepo(t, api)
+	createTestRepo(t, web)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+api+" }\n  - { path: "+web+" }\n")
+	mounted := createWorktree(t, api, root, "feat12")
+	// A worktree of the EXCLUDED repo, under the same root: it belongs to
+	// another spawn, and the nest alone cannot tell the two apart.
+	excluded := createWorktree(t, web, root, "feat12")
+
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feat12",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: api, Mount: mounted, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(mounted); !os.IsNotExist(err) {
+		t.Errorf("the recorded worktree must be reclaimed: %v", err)
+	}
+	if _, err := os.Stat(excluded); err != nil {
+		t.Errorf("a repo this spawn never mounted must be left alone: %v", err)
+	}
+}
+
+// --keep-worktrees keeps the RECORD too: the directories survive, and doctor
+// must still be able to find them.
+func TestRmKeepWorktreesKeepsTheManifest(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	wt := createWorktree(t, repo, root, "feat12")
+
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feat12",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome,
+		"rm", "api.feat12", "--keep-worktrees")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("--keep-worktrees must preserve %s: %v", wt, err)
+	}
+	if _, err := manifest.Read(denHome, "api.feat12"); err != nil {
+		t.Errorf("the record must survive with the directories it names: %v", err)
+	}
+	path, err := manifest.Path(denHome, "api.feat12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, path) {
+		t.Errorf("the kept record must be named, so the user can act on it; got:\n%s", out)
+	}
+}
+
+// Proof 9 — a sandbox from before this feature. The old derivation still
+// runs, and the user is told the answer is only as good as an unchanged
+// configuration.
+func TestRmFallsBackAndSaysSoWithoutAManifest(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	wt := createWorktree(t, repo, root, "feat12")
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the legacy derivation must still reclaim the worktree: %v", err)
+	}
+	if !strings.Contains(out, "no creation record") {
+		t.Errorf("the fallback must be announced; got: %s", out)
+	}
+}
+
+// Proof 10 — a corrupt record must never block. The file is named, the
+// derivation takes over, and above all the VM is destroyed: a `den rm` that
+// refuses leaves a live sandbox nobody can remove (doctrine T13/T16).
+func TestRmWarnsAndStillDestroysOnACorruptManifest(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	wt := createWorktree(t, repo, root, "feat12")
+
+	path, err := manifest.Path(denHome, "api.feat12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("a corrupt record must never fail the rm: %v", err)
+	}
+	if !strings.Contains(out, path) {
+		t.Errorf("the unreadable file must be named; got:\n%s", out)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the derivation must take over and reclaim the worktree: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+	// den read nothing of that file, so it cannot know it is worthless: a
+	// record written by a NEWER den lands in this same branch, and deleting it
+	// would destroy that den's only trace of a live sandbox. The message
+	// carries the remedy instead.
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("den must leave a file it could not read alone: %v", err)
+	}
+	if !strings.Contains(out, "by hand") {
+		t.Errorf("the message must say what to do with the file it leaves behind; got:\n%s", out)
 	}
 }

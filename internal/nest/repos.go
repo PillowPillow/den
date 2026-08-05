@@ -57,9 +57,21 @@ func checkUniqueNames(repos []Repo, scope string) error {
 // equality would call different, silently falling through to the basename
 // message this check exists to preempt. Raw equality was the rejected
 // alternative for exactly that reason.
+//
+// A key-typed entry is SKIPPED, not compared: its Path is empty until Resolve
+// fills it from the personal mapping, and filepath.Clean("") is "." — so two
+// unrelated `key:` repos would both land on "." and LoadNest would refuse a
+// perfectly legal nest with a message naming a path nobody wrote. Their
+// uniqueness is not lost, it is enforced one loop later, on Name(), which
+// returns the Key for exactly these entries. Once Resolve HAS filled the
+// paths, the merged check sees them as ordinary paths and two keys pointing
+// at the same directory still collide here.
 func checkNoDuplicatePaths(repos []Repo, scope string) error {
 	seen := make(map[string]Repo, len(repos))
 	for _, r := range repos {
+		if r.Path == "" {
+			continue
+		}
 		clean := filepath.Clean(r.Path)
 		if previous, ok := seen[clean]; ok {
 			return duplicatePathError(previous, r, scope)
@@ -106,6 +118,77 @@ func duplicatePathError(a, b Repo, scope string) error {
 	}
 }
 
+// checkUniqueMountBasenames rejects two repos whose MOUNT basename collides —
+// two different identities pointing at directories that happen to share a
+// last component (`api-v1 -> /dev/a/api`, `api-v2 -> /dev/b/api`).
+//
+// It exists because Repo.Name() and the on-disk name parted ways when `key:`
+// arrived: Name() returns the KEY for a key-typed entry, while worktree.Path
+// still derives the directory from the repository path — under the default
+// central layout it joins <worktree_root>/<wt>/Base(repoPath). So a pair of
+// distinct keys walks past checkNoDuplicatePaths (the paths do differ) and past
+// checkUniqueNames (the keys do differ), and then, under -w, targets one single
+// directory. Before `key:`, Name() WAS the basename and checkUniqueNames caught
+// this pre-flight; this pass restores that coverage without taking the key
+// back, because the key is precisely the shareable identity a team nest needs
+// --without/--only to address.
+//
+// worktree.Path is the ONLY collision claimed here, and deliberately so. An
+// earlier draft of this comment and of the message below also asserted that the
+// two would collide as `sbx create` workspaces. That is not den's to assert:
+// the workspaces it passes are HOST paths (sbx.Config.Workspaces), so what
+// becomes of two distinct ones inside the VM is a statement about sbx's mount
+// behavior — and under §14.1's own open hypothesis A11 (each workspace mounted
+// at the same absolute path in the VM as on the host) /dev/a/api and /dev/b/api
+// would NOT collide at all. Nothing has measured it; anything about sbx is a
+// hypothesis to document, never an assertion (see configDirToken, resolve.go),
+// and it has no business in a user-facing refusal.
+//
+// Leaving it to worktree.Ensure was the rejected alternative. It does refuse —
+// checkOwnership sees a directory belonging to another repository — but only
+// after the FIRST worktree has been created, which is the one orphaned
+// worktree per spawn that the whole ordering of internal/spawn (spec §6:
+// everything rejectable from config alone happens before the first side
+// effect) exists to prevent.
+//
+// It refuses unconditionally even though the collision it names needs -w, and
+// needs the central layout (per-repo puts the worktree under <repo>/.den/<wt>,
+// which does not collide). Narrowing it to the case that bites would be a
+// behavior CHANGE, not a fix: before `key:`, Name() was the basename and
+// checkUniqueNames refused this pair whatever the flags — so refusing
+// unconditionally is what preserves the pre-branch verdict. It also keeps
+// nest.Resolve free of any notion of -w, a spawn-time flag the cascade does not
+// receive and should not start threading.
+//
+// Runs LAST, after checkNoDuplicatePaths and checkUniqueNames, so the two
+// sharper diagnoses win where they apply: the same path given twice and the
+// same short name given twice are both basename collisions too, and this
+// message misdescribes either one.
+//
+// An entry whose Path is still empty is skipped, the same tolerance
+// checkNoDuplicatePaths documents and for the same reason — LoadNest never
+// fills a key's path, and Base("") is ".", which would collide two unrelated
+// keys under a name nobody wrote.
+func checkUniqueMountBasenames(repos []Repo, scope string) error {
+	seen := make(map[string]Repo, len(repos))
+	for _, r := range repos {
+		if r.Path == "" {
+			continue
+		}
+		base := filepath.Base(r.Path)
+		if previous, ok := seen[base]; ok {
+			return fmt.Errorf(
+				"repos %s and %s both mount a directory named %q — den names each worktree directory "+
+					"after that last component (<worktree_root>/<worktree>/%s), so under -w the two would "+
+					"land on the same directory; rename one of the directories, or drop one of the two "+
+					"entries from the %s",
+				repoOrigin(previous), repoOrigin(r), base, base, scope)
+		}
+		seen[base] = r
+	}
+	return nil
+}
+
 // repoOrigin names where a repo came from, for the collision message. Named
 // with the "repo" prefix, not "origin" alone, because this package sits next
 // to git: a bare `origin` reads as the remote, not as "declared file vs.
@@ -114,11 +197,31 @@ func duplicatePathError(a, b Repo, scope string) error {
 // A declared repo shows its path ALONE, which keeps LoadNest's message exactly
 // what it was: at load time the command line does not exist, and mentioning it
 // would send the user to correct something that had no part in the collision.
+//
+// A key-typed entry is named "key <k>", not by its path: before Resolve it HAS
+// none, and a bare empty string would leave the reader with half a collision to
+// hunt. Once resolveRepoKeys HAS filled the path, the key still leads and the
+// path follows in parentheses — both halves are needed and neither substitutes
+// for the other. The key is the line to edit under `repos:` in config.yaml (the
+// nest's `key: api-v1` is not itself wrong, and on a teammate's machine the same
+// nest is fine); the path is the directory the collision is actually about, and
+// checkUniqueMountBasenames' remedy — rename one of them — cannot be acted on
+// without seeing it. Reporting the path alone was the rejected form: it names a
+// directory the user never typed, leaving them to reverse the mapping by hand.
+//
+// The AdHoc arm comes first without ambiguity — a positional's Path is never
+// empty (parseRepoArg refuses a blank one) and it never carries a Key.
 func repoOrigin(r Repo) string {
-	if r.AdHoc {
+	switch {
+	case r.AdHoc:
 		return r.Path + " (command line)"
+	case r.Key != "" && r.Path != "":
+		return "key " + r.Key + " (" + r.Path + ")"
+	case r.Path == "":
+		return "key " + r.Key
+	default:
+		return r.Path
 	}
-	return r.Path
 }
 
 // parseRepoArgs turns the command line's positionals into repos.

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/doctor"
@@ -116,7 +117,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	})
 	root.AddCommand(newInitCmd(&denHome))
 	root.AddCommand(newNestCmd(&denHome))
-	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor))
+	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor, deps.Sbx, deps.Git))
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
 	// `den sh` gets the SSH probe and the OS too: re-entering a sandbox whose
 	// forwarded agent has been emptied fails `git push` exactly as a fresh
@@ -133,6 +134,13 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// exist (SbxImages) AND to run the create/exec/stop/save/rm sequence
 	// itself (build.Execute) — there is no second runner to inject for it.
 	root.AddCommand(newBuildCmd(&denHome, deps.Sbx))
+	// `den source` reads the SAME injected Git as `den rm` (deps.Git) — the
+	// whole tree tests against file:// remotes, never the real network.
+	root.AddCommand(newSourceCmd(&denHome, deps.Git))
+	// `den lint` validates an arbitrary checkout: stacks, nests, references,
+	// confinement. Deliberately den-home-agnostic, so a CI runner needs no
+	// den home at all.
+	root.AddCommand(newLintCmd())
 
 	// spawn.Deps is ASSEMBLED here from the very fields newLsCmd just got:
 	// deps.Sbx is the single source. Out is left unset, configureSpawn
@@ -152,6 +160,11 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 		// spawn has no SystemDeps constructor to hold it (see spawn.Deps), and a
 		// field left implicit here is a dependency the reader has to hunt for.
 		GOOS: runtime.GOOS,
+		// The real clock for the source-staleness hint (spawn.Deps.Now):
+		// nil is what the package's own tests want (no source touched, no
+		// clock owed), but a live den wiring this field to nothing would
+		// silently drop the hint for every user, forever.
+		Now: time.Now,
 	})
 	return root
 }

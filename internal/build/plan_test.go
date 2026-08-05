@@ -58,7 +58,7 @@ func plan(t *testing.T, files map[string]string, target string, force bool, imag
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}
-	steps, err := Plan(context.Background(), chain, target, force, images)
+	steps, err := Plan(context.Background(), chain, LocalTarget(target), force, images)
 	if err != nil {
 		t.Fatalf("planning: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestPlanRefusesWhenTheInventoryFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}
-	_, err = Plan(context.Background(), chain, "delta", false,
+	_, err = Plan(context.Background(), chain, LocalTarget("delta"), false,
 		&fakeImages{err: errors.New("sbx template ls --json: exit status 1")})
 	if err == nil {
 		t.Fatal("expected a refusal when the image inventory cannot be read")
@@ -268,7 +268,7 @@ var _ Images = (*SbxImages)(nil)
 // and for this cause there is no --force that would help.
 func TestPlanSkipsANotBuildableStack(t *testing.T) {
 	pullable := &config.Stack{Name: "pulled", Image: "ghcr.io/acme/base:v3"}
-	steps, err := Plan(context.Background(), []*config.Stack{pullable}, "", false, nil)
+	steps, err := Plan(context.Background(), []*config.Stack{pullable}, Target{}, false, nil)
 	if err != nil {
 		t.Fatalf("Plan refused a pullable stack: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestPlanSkipsANotBuildableStack(t *testing.T) {
 // read as success for a build they asked for specifically.
 func TestPlanRefusesANamedStackItCannotBuild(t *testing.T) {
 	pullable := &config.Stack{Name: "pulled", Image: "ghcr.io/acme/base:v3"}
-	_, err := Plan(context.Background(), []*config.Stack{pullable}, "pulled", false, nil)
+	_, err := Plan(context.Background(), []*config.Stack{pullable}, LocalTarget("pulled"), false, nil)
 	if err == nil {
 		t.Fatal("Plan accepted a named stack with no provision.steps")
 	}
@@ -365,7 +365,7 @@ func TestPlanRefusesANamedTargetWithNoProvisionSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building the chain: %v", err)
 	}
-	_, err = Plan(context.Background(), chain, "zeta", false, &fakeImages{})
+	_, err = Plan(context.Background(), chain, LocalTarget("zeta"), false, &fakeImages{})
 	if err == nil {
 		t.Fatal("expected a refusal on a target den has no provision.steps for")
 	}
@@ -376,5 +376,28 @@ func TestPlanRefusesANamedTargetWithNoProvisionSteps(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message = %q, want it to contain %q", msg, want)
 		}
+	}
+}
+
+// Same defect as internal/spawn's image refusal, one command removed: the
+// remedy has to name the reference the USER typed. `den build delta --force`
+// on a den that also owns a local `delta` addresses that local stack, and
+// says nothing about the source stack the plan was actually arbitrating.
+func TestPlanRemedyNamesTheSourceReference(t *testing.T) {
+	chain, _, err := Chain(loadStacks(t, buildableFixture), "delta")
+	if err != nil {
+		t.Fatalf("building the chain: %v", err)
+	}
+	_, err = Plan(context.Background(), chain, Target{Name: "delta", Ref: "corp:delta"}, false,
+		&fakeImages{err: errors.New("sbx template ls --json: exit status 1")})
+	if err == nil {
+		t.Fatal("expected a refusal when the image inventory cannot be read")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "den build corp:delta --force") {
+		t.Errorf("message = %q, want the prefixed remedy", msg)
+	}
+	if strings.Contains(msg, "den build delta --force") {
+		t.Errorf("message = %q names the BARE stack, which addresses a different (local) stack", msg)
 	}
 }

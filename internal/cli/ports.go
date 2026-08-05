@@ -7,7 +7,6 @@ import (
 	"text/tabwriter"
 
 	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/ports"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/spf13/cobra"
@@ -40,7 +39,19 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 		Short: "Show where a sandbox's declared ports land on the host",
 		Args:  exactlyOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
+			// The SANDBOX name is the flattened reference: ":" is not in sbx's
+			// `--name` charset, so a nest loaded from a source never spawns
+			// under its prefixed name (spawn.go) — the live VM this command
+			// must find is already "corp-api", not "corp:api".
+			//
+			// Computed here, before ANYTHING is asked of sbx or the den home:
+			// it needs neither, so a bad `--den-home` still gets the ordinary
+			// "sandbox not found" rather than a config error unrelated to
+			// what was typed.
+			name, nameErr := sandboxNameOf(args[0])
+			if nameErr != nil {
+				return nameErr
+			}
 
 			// `--add` FIRST, before a single call is made to sbx: what it can
 			// refuse — a bind address that is not the loopback, a value that is
@@ -80,23 +91,47 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 			if err := b.CheckAttachable(); err != nil {
 				return err
 			}
-			// A STOPPED sandbox is woken, here, before anything is read or
-			// published — see wakeForPorts for why waking and not refusing.
-			if b, err = wakeForPorts(cmd, runner, b); err != nil {
-				return err
-			}
-
-			// The den home is read HERE rather than at the top like `den rm`:
-			// everything above answers from `sbx ls --json` alone, so a sandbox
-			// that does not exist is reported as such even on a machine whose
-			// den home cannot be located.
-			nestName, _ := sbx.SplitName(name)
+			// NO CONFIGURATION REFUSAL LANDS AFTER THE WAKE BELOW — which is
+			// the guarantee this ordering buys, and not the broader "nothing
+			// can fail after the wake": `ports.Resolve` and `publishPorts`
+			// both still return errors further down, and they must, since
+			// scanning the host and publishing into the VM are the work the
+			// command exists to do and neither is knowable beforehand. What
+			// moved up is everything answerable from FILES ALONE.
+			//
+			// The den home and the nest used to be read after it, on
+			// the argument that `sbx ls --json` alone should answer a sandbox
+			// that does not exist — and half of that still holds, which is why
+			// this sits BELOW sbx.Find and CheckAttachable: an absent sandbox
+			// is still reported as absent on a machine whose den home cannot
+			// be located. What did not hold is the other half. wakeForPorts
+			// STARTS a microVM, and a nest lookup below it meant den booting a
+			// VM and only then refusing over a config file it could have read
+			// first — the shape this command already rejects everywhere else
+			// (see the `--add` parsing above, refused before a single sbx
+			// call).
 			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
 			}
-			n, err := nest.LoadNest(home, nestName)
+			// The nest FILE, unlike the sandbox, is not addressed by the
+			// flattened name: a source nest never lives under <denHome>/nests,
+			// so "corp-api" has to be DECODED back to the source and bare name
+			// that produced it rather than read literally, which would look
+			// for a nests/corp-api.yaml that by construction never exists.
+			// nestOfSandbox works from the live sandbox name for BOTH
+			// spellings — the user may equally have typed `corp:api` or the
+			// `corp-api` that `den ls` prints and that den's own --detach
+			// message recommends.
+			n, err := nestOfSandbox(home, args[0], name)
 			if err != nil {
+				return err
+			}
+
+			// A STOPPED sandbox is woken, here, after everything refusable and
+			// before anything is published — see wakeForPorts for why waking
+			// and not refusing.
+			if b, err = wakeForPorts(cmd, runner, b); err != nil {
 				return err
 			}
 

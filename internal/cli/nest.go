@@ -11,6 +11,8 @@ import (
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
+	"github.com/PillowPillow/den/internal/source"
+	"github.com/PillowPillow/den/internal/spawn"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +39,14 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(nests) == 0 && len(broken) == 0 {
+			// Every installed source's own nests, prefixed "<source>:<name>"
+			// — the same reference spawn, `den sh`/`rm`/`ports` and `den
+			// nest show` all accept for that nest. A broken or unreadable
+			// sources/ must not hide the local listing (srcNests doctrine
+			// below).
+			srcNests, srcBroken := listSourceNests(home)
+
+			if len(nests) == 0 && len(broken) == 0 && len(srcNests) == 0 && len(srcBroken) == 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "no nest declared in %s/nests\n", home)
 				return nil
 			}
@@ -51,21 +60,73 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 				}
 				fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", n.Name, n.Stack, len(n.Repos), base)
 			}
+			for _, n := range srcNests {
+				base := "auto"
+				if n.Ports.Base > 0 {
+					base = fmt.Sprint(n.Ports.Base)
+				}
+				fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", n.Name, n.Stack, len(n.Repos), base)
+			}
 			if err := w.Flush(); err != nil {
 				return err
 			}
+			// LOCAL nests only: a source nest is addressed "<source>:<name>",
+			// which can never equal a bare subcommand name, so it never
+			// shadows one.
 			warnAboutShadowedNests(cmd, nests)
 
-			if len(broken) > 0 {
+			allBroken := slices.Concat(broken, srcBroken)
+			if len(allBroken) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout())
-				for _, b := range broken {
+				for _, b := range allBroken {
 					fmt.Fprintf(cmd.OutOrStdout(), "! %s: %v\n", b.Name, b.Err)
 				}
-				return fmt.Errorf("%d unreadable nest(s) out of %d", len(broken), len(nests)+len(broken))
+				return fmt.Errorf("%d unreadable nest(s) out of %d",
+					len(allBroken), len(nests)+len(srcNests)+len(allBroken))
 			}
 			return nil
 		},
 	}
+}
+
+// listSourceNests iterates every installed source (`os.ReadDir(source.Root)`)
+// and returns its nests and broken nests, both named "<source>:<name>" — the
+// same reference `den <nest>`, `den sh`/`rm`/`ports` and `den nest show` all
+// accept for that nest. Renaming here, not at the call site: nest.ListNests
+// itself knows nothing of sources, and every caller wants the SAME prefixed
+// form, so there is one place to get it right.
+//
+// Fail-open: a missing or unreadable sources/ returns nothing rather than an
+// error — `den nest ls`'s contract is to show what is LOCAL even when a
+// source is unreachable, same doctrine as spawn.go's crossSourceCollision.
+// One EXCEPTION: a source directory that exists but whose OWN nests/ cannot
+// be read (permissions, not-a-directory) is reported as a single broken
+// entry named after the source — silently dropping an installed source
+// would be a worse surprise than naming it broken.
+func listSourceNests(home string) (nests []*nest.Nest, broken []nest.BrokenNest) {
+	entries, err := os.ReadDir(source.Root(home))
+	if err != nil {
+		return nil, nil
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		srcName := e.Name()
+		srcNests, srcBroken, err := nest.ListNests(source.Dir(home, srcName))
+		if err != nil {
+			broken = append(broken, nest.BrokenNest{Name: config.JoinSourceRef(srcName, ""), Err: err})
+			continue
+		}
+		for _, n := range srcNests {
+			n.Name = config.JoinSourceRef(srcName, n.Name)
+			nests = append(nests, n)
+		}
+		for _, b := range srcBroken {
+			broken = append(broken, nest.BrokenNest{Name: config.JoinSourceRef(srcName, b.Name), Err: b.Err})
+		}
+	}
+	return nests, broken
 }
 
 // warnAboutShadowedNests reports the nests that carry a subcommand's name.
@@ -112,11 +173,34 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			stacks, err := config.LoadStacks(home)
+
+			// args[0] may be a source reference ("corp:api"): source.Locate
+			// is the SOLE place that turns it into a root to load the nest
+			// from — same mirror of internal/spawn.Spawn (spawn.go) kept
+			// deliberately identical, so `den nest show` and `den <nest>`
+			// never resolve the SAME reference to two different nests.
+			nestRoot, srcName, bareNest, err := source.Locate(home, args[0])
 			if err != nil {
 				return err
 			}
-			n, err := nest.LoadNest(home, args[0])
+			n, err := nest.LoadNest(nestRoot, bareNest)
+			if err != nil {
+				return err
+			}
+
+			// Stack origin — through spawn.ResolveStack, the SAME function
+			// internal/spawn.Spawn calls: both refusals it can raise (an
+			// absent `stack:` inside a source, a prefixed one) must stay
+			// word-identical between `den nest show` and `den <nest>`, or
+			// the two would resolve the same reference to two different
+			// diagnoses. Only the subject (args[0], what the user typed) is
+			// this call site's own.
+			stackRoot, _, ref, err := spawn.ResolveStack(home, g, nestRoot, srcName, bareNest, n, args[0])
+			if err != nil {
+				return err
+			}
+			n.Stack = ref
+			stacks, err := config.LoadStacks(stackRoot)
 			if err != nil {
 				return err
 			}
@@ -135,7 +219,12 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			writeResolution(cmd.OutOrStdout(), r)
+			// args[0], not r.Nest.Name: LoadNest sets Name to the bare
+			// filename ("api", not "corp:api" — the filename is
+			// authoritative, spec §2), so the header dropped the prefix the
+			// user typed. On a den that also owns a LOCAL "api", that header
+			// named a different nest than the one printed below it.
+			writeResolution(cmd.OutOrStdout(), args[0], r)
 			return nil
 		},
 	}
@@ -145,8 +234,12 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 	return cmd
 }
 
-func writeResolution(w io.Writer, r *nest.Resolved) {
-	fmt.Fprintf(w, "nest:   %s\n", r.Nest.Name)
+// ref is the reference the user typed, and it is what the header shows —
+// see the call site for why r.Nest.Name is the wrong string. The STACK line
+// stays bare: a source nest's `stack:` resolves inside that same source, so
+// there is no second prefix for the reader to reconcile.
+func writeResolution(w io.Writer, ref string, r *nest.Resolved) {
+	fmt.Fprintf(w, "nest:   %s\n", ref)
 	fmt.Fprintf(w, "stack:  %s (image %s)\n", r.Stack.Name, r.Stack.Image)
 	fmt.Fprintf(w, "agent:  %s\n", r.AgentName)
 	fmt.Fprintf(w, "  config_dir: %s\n", r.AgentConfigDir)
