@@ -190,7 +190,7 @@ func TestShRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
 	if err == nil {
 		t.Fatal("a failed §9.1 gate must not lead to a shell")
 	}
-	for _, want := range []string{"api", "§9.1", "/var/log/sbx-kit-startup.log"} {
+	for _, want := range []string{"api", "agent-freshness gate", "/var/log/sbx-kit-startup.log"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal must contain %q; got: %v", want, err)
 		}
@@ -223,8 +223,8 @@ func TestShWaitsForTheGateWhenItStartsAStoppedSandbox(t *testing.T) {
 	if err == nil {
 		t.Fatal("starting a stopped sandbox whose gate failed must not lead to a shell")
 	}
-	if !strings.Contains(err.Error(), "§9.1") {
-		t.Errorf("the refusal must be the §9.1 one; got: %v", err)
+	if !strings.Contains(err.Error(), "agent-freshness gate") {
+		t.Errorf("the refusal must be the freshness-gate one; got: %v", err)
 	}
 	if len(f.Attaches) != 0 {
 		t.Errorf("a refused gate must attach nowhere; attaches: %v", f.Attaches)
@@ -293,7 +293,7 @@ func TestShAttachesAndStaysSilentWhenTheFreshnessGatePassed(t *testing.T) {
 	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
 		t.Errorf("a passing gate must not cost the shell; attaches: %v", f.Attaches)
 	}
-	if strings.Contains(stdout, "§9.1") {
+	if strings.Contains(stdout, "freshness") {
 		t.Errorf("a passing gate is the ordinary outcome and says nothing; got: %q", stdout)
 	}
 }

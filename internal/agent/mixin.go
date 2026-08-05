@@ -59,7 +59,7 @@ func RenderMixin(m Mixin) ([]byte, error) {
 	if len(m.Freshness) == 0 {
 		return nil, fmt.Errorf(
 			"rendering mixin for %s: no freshness command — a sandbox must never "+
-				"start with a stale agent (spec §9.1)", m.SandboxName)
+				"start with a stale agent", m.SandboxName)
 	}
 
 	root := &yaml.Node{Kind: yaml.MappingNode}

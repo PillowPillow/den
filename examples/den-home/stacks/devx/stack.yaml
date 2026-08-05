@@ -1,5 +1,5 @@
 image: devx:v1
-# kit: ./kit           # per-stack kit, layered LAST (spec §9.1). Point it at a
+# kit: ./kit           # per-stack kit, layered LAST. Point it at a
 #   real directory before uncommenting — go:embed cannot ship an empty one,
 #   and `den doctor` reports a kit path that doesn't exist as a failure.
 # kits:               # cross-cutting kits, layered BEFORE `kit`. Order matters.

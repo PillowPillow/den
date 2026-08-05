@@ -95,7 +95,7 @@ func (g *Global) Validate() []error {
 		// too, and the stricter of the two judges must win.
 		if strings.TrimSpace(a.Update) == "" {
 			errs = append(errs, fmt.Errorf(
-				"agents.%s.update: required — a sandbox must never start with a stale agent (spec §9.1)", name))
+				"agents.%s.update: required — a sandbox must never start with a stale agent", name))
 		}
 		for i, d := range a.BinDirs {
 			if err := validateBinDir(d); err != nil {

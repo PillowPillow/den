@@ -31,7 +31,7 @@ func FreshnessCommand(agentName string, a config.Agent) ([]string, error) {
 	if strings.TrimSpace(a.Update) == "" {
 		return nil, fmt.Errorf(
 			"agent %q: no update command declared — a sandbox must never start "+
-				"with a stale agent (spec §9.1)", agentName)
+				"with a stale agent", agentName)
 	}
 
 	// The binary to probe is the first word of the update command. This is a
