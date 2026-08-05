@@ -31,12 +31,19 @@ La spec §11 avait accepté ce prix ; `withSuggestion` (`internal/cli/spawn.go:9
 rustine — elle greffe un « did you mean » sur l'échec de résolution, avec 35 lignes de commentaire
 pour expliquer pourquoi elle ne peut pas faire mieux.
 
-**c) Un trou de contrat silencieux.** `TestSubcommandsStayPriority` verrouille la priorité des
-sous-commandes, `TestANestHomonymOfASubcommandSpawnsNormally` vérifie qu'un nest nommé `doctr`
-spawne. Les deux sont vrais ensemble, et leur conjonction dit : **un nest nommé `ls`, `sh`, `rm`,
-`build`, `doctor`, `init`, `nest`, `ports`, `source`, `lint` ou `version` est injoignable à vie.**
-Rien ne refuse ces noms à la création d'un nest, rien ne les signale, `den nest ls` les affiche.
-L'utilisateur découvre le problème en spawnant autre chose que ce qu'il a écrit.
+**c) Un trou de contrat que den ne sait qu'annoncer.** `TestSubcommandsStayPriority` verrouille la
+priorité des sous-commandes, `TestANestHomonymOfASubcommandSpawnsNormally` vérifie qu'un nest nommé
+`doctr` spawne. Les deux sont vrais ensemble, et leur conjonction dit : **un nest nommé `ls`, `sh`,
+`rm`, `build`, `doctor`, `init`, `nest`, `ports`, `source`, `lint`, `version`, `help` ou
+`completion` est injoignable à vie.**
+
+den le sait et le dit : `warnAboutShadowedNests` (`internal/cli/nest.go:143`) compare chaque nest
+aux noms **et aux alias** de `root.Commands()` et avertit sur stderr — « nest "ls" is shadowed by
+the `den ls` subcommand … Rename it to be able to spawn it ». Une fonction, un appel
+(`nest.go:76`), quinze lignes de commentaire et deux tests (`nest_test.go:173`, `:210`) dont le seul
+objet est de **s'excuser** d'une collision que den ne peut pas résoudre. C'est le meilleur argument
+pour ce chantier : le §5 ci-dessous ne rend pas le message plus aimable, il supprime la collision et
+tout ce qui la commentait.
 
 S'ajoute la complexité de lecture : `NewRootCmdWith` porte un commentaire « LAST : configureSpawn
 pose Args sur le root, ce qui n'a de sens qu'une fois toutes les sous-commandes enregistrées »
@@ -180,6 +187,11 @@ deux espaces de noms partageaient la première position.
 elle passe de `doctr` (un nom qui *ressemble* à une commande) à `ls` (un nom qui **est** une
 commande), cas que la forme nue ne pouvait pas servir.
 
+**`warnAboutShadowedNests` disparaît** (`internal/cli/nest.go:132-159`), avec son appel
+(`nest.go:76`) et ses deux tests (`nest_test.go:173`, `:210`). Un avertissement qui dit « renomme ce
+nest, tu ne pourras jamais le spawner » n'a plus de référent : `den spawn ls` le spawne. Le laisser
+serait pire que du bruit — il donnerait un conseil faux.
+
 La contrainte d'ordre dans `NewRootCmdWith` disparaît : `newSpawnCmd` s'enregistre comme les autres,
 `unknownCommand` se pose sur le root indépendamment.
 
@@ -208,6 +220,10 @@ qu'un spawn fait.
 ---
 
 ## 7. Tests
+
+**Supprimés** (`internal/cli/nest_test.go`) — les deux tests de l'avertissement de collision :
+`TestNestLsWarnsAboutNestsShadowedByASubcommand` et son pendant « stderr reste vide sans
+collision ». Ils gardaient une propriété qui cesse d'exister.
 
 **Supprimés** (`internal/cli/spawn_test.go`) — les six tests de `withSuggestion` :
 `TestATypoOnASubcommandIsSuggested`, `TestAFarNameSuggestsNothing`,
@@ -250,6 +266,15 @@ Les conventions du dépôt tiennent : aucun `t.Parallel()`, aucun socket, aucun 
 | idem §11 | les deux lignes du tableau qui nomment `den <nest>` (sandbox arrêtée sous `--detach`, spawn-or-attach) |
 | `README.md` | l. 81 (tableau des commandes), 97 (« Options of `den <nest>` »), 177, 295, 361, 372 |
 | `CLAUDE.md` | la mention `den <nest> [repo...]` de la section « What this is » |
+| `CHANGELOG.md` | l'entrée v1.3.0 (voir ci-dessous) ; la ligne v1.2.0 « Repos on the fly : `den <nest> [repo...]` » est **historique**, elle ne se réécrit pas |
+
+**Un message de production nomme la forme nue**, et il est le seul :
+`internal/cli/source.go:40` imprime après un `den source add` réussi « its objects are addressed
+`<n>:<name>` (e.g. `den <n>:<nest>`) » → devient `den spawn <n>:<nest>`. `README.md:390` cite cette
+sortie et suit. Les autres occurrences de `den <nest>` dans le code (`internal/sbx/ls.go`,
+`internal/config/*.go`, `internal/worktree/worktree.go`, `internal/agent/gate.go`,
+`internal/cli/nest.go`) sont des **commentaires** : elles nomment un geste utilisateur qui change de
+nom, donc elles se mettent à jour aussi, mais aucune n'est une sortie.
 
 **Le changelog porte la rupture.** Livrer un breaking en **mineure** est légitime — den n'a pas
 encore d'utilisateur — mais c'est alors la seule trace qu'un lecteur aura. L'entrée v1.3.0 doit dire
