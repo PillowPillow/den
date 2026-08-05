@@ -40,9 +40,15 @@ type Repo struct {
 	AdHoc    bool   `yaml:"-"`
 }
 
-// Name is the repo's short name, used by --without/--only and as the
-// worktree directory component. The KEY when set — it is the shareable
+// Name is the repo's selection identity — what --without/--only address it
+// by, and the name den prints for it. The KEY when set — it is the shareable
 // identity — else the path basename.
+//
+// It is NOT the worktree directory component: worktree.Path names that
+// directory after the repository PATH's basename (filepath.Base(repoPath)),
+// which for a key-typed repo diverges from Name(). checkUniqueMountBasenames
+// (repos.go) is the pre-flight that keeps two repos from landing on the same
+// worktree directory when Name() and that basename diverge.
 func (r Repo) Name() string {
 	if r.Key != "" {
 		return r.Key

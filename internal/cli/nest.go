@@ -75,7 +75,7 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 			// shadows one.
 			warnAboutShadowedNests(cmd, nests)
 
-			allBroken := append(broken, srcBroken...)
+			allBroken := slices.Concat(broken, srcBroken)
 			if len(allBroken) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout())
 				for _, b := range allBroken {
@@ -115,15 +115,15 @@ func listSourceNests(home string) (nests []*nest.Nest, broken []nest.BrokenNest)
 		srcName := e.Name()
 		srcNests, srcBroken, err := nest.ListNests(source.Dir(home, srcName))
 		if err != nil {
-			broken = append(broken, nest.BrokenNest{Name: srcName + ":", Err: err})
+			broken = append(broken, nest.BrokenNest{Name: config.JoinSourceRef(srcName, ""), Err: err})
 			continue
 		}
 		for _, n := range srcNests {
-			n.Name = srcName + ":" + n.Name
+			n.Name = config.JoinSourceRef(srcName, n.Name)
 			nests = append(nests, n)
 		}
 		for _, b := range srcBroken {
-			broken = append(broken, nest.BrokenNest{Name: srcName + ":" + b.Name, Err: b.Err})
+			broken = append(broken, nest.BrokenNest{Name: config.JoinSourceRef(srcName, b.Name), Err: b.Err})
 		}
 	}
 	return nests, broken

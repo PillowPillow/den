@@ -906,7 +906,7 @@ func crossSourceCollision(denHome, exclude, flattened string) (path string, foun
 		if !e.IsDir() || e.Name() == exclude {
 			continue
 		}
-		prefix := e.Name() + "-"
+		prefix := e.Name() + config.FlattenedSourceSeparator
 		if !strings.HasPrefix(flattened, prefix) {
 			continue
 		}
