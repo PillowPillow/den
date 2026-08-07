@@ -63,6 +63,32 @@ func denTestSSH(t *testing.T, sshBlock string) (denHome, repo string) {
 	return denHome, repo
 }
 
+// denTestMounts lets the `mounts:` block vary — the counterpart to
+// denTestSSH's `ssh:` lever, for the mounts gated and appended
+// independently of ssh.mode's own "mount" sugar. ssh.mode is fixed to
+// agent-forward: any interaction between the two levers belongs to
+// TestSpawnAddsNoWorkspaceOutsideMountMode, not here.
+func denTestMounts(t *testing.T, mountsBlock string) (denHome, repo string) {
+	t.Helper()
+	denHome = t.TempDir()
+	repo = filepath.Join(t.TempDir(), "api")
+
+	createRepo(t, repo)
+
+	writeConfig(t, denHome, "  mode: agent-forward\n", oneHostEgress+mountsBlock)
+	// Same rationale as denTestSSH: two declared, existing kits, so "the mixin
+	// layers last" isn't trivially true of an empty argv.
+	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
+		"image: devx:v1\nkits: [transverse]\nkit: devx-kit\n")
+	for _, kit := range []string{"transverse", "devx-kit"} {
+		if err := os.MkdirAll(filepath.Join(denHome, "stacks", "devx", kit), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(denHome, "nests", "api.yaml"), "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	return denHome, repo
+}
+
 // createRepo makes a REAL git repo with one commit, the only state
 // `git worktree add` can branch a new worktree from.
 func createRepo(t *testing.T, path string) {
@@ -1249,17 +1275,80 @@ func TestSpawnDoesNotRequireSSHDirOutsideMountMode(t *testing.T) {
 	}
 }
 
-// D3: `none` and `agent-forward` add NO workspace, by design, not by
-// omission. The distinction isn't theoretical: an `if mode == "mount"`
-// with no `else` leaves nobody able to tell "nothing to do" from
-// "forgotten case" apart, and that ambiguity produced the (false)
-// diagnosis that every default sandbox ships without SSH access —
-// agent-forward actually relies on sbx inheriting SSH_AUTH_SOCK, proved by
-// internal/sbx's TestExecRunTransmitsDenEnvironment.
-//
-// What this test locks in, matching spawn.go's comment: the three modes
-// mount the same workspaces, except for ssh.dir, which belongs to mount
-// alone.
+func TestSpawnMountsEveryConfigMountAfterTheRepos(t *testing.T) {
+	// Position matters and is not cosmetic: the FIRST workspace becomes the
+	// attach's `-w` (see the comment at the top of the workspace block). A
+	// mount reaching position 0 would drop the agent's shell into ~/.ssh_sbx
+	// instead of the code.
+	dir := t.TempDir()
+	denHome, repo := denTestMounts(t, "mounts:\n  - host: "+dir+"\n    link: $HOME/x\n")
+	f, d := fakeDeps()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ws := workspacesOf(callStartingWith(f, "create"))
+	if ws[0] != repo {
+		t.Fatalf("workspace[0] = %q, want the repo", ws[0])
+	}
+	if ws[len(ws)-1] != dir {
+		t.Fatalf("last workspace = %q, want the mount %q", ws[len(ws)-1], dir)
+	}
+}
+
+func TestSpawnAppendsROSuffixForReadOnlyMounts(t *testing.T) {
+	// `<path>:ro` is sbx's own read-only syntax, documented in `sbx create --help`.
+	dir := t.TempDir()
+	denHome, _ := denTestMounts(t, "mounts:\n  - host: "+dir+"\n    ro: true\n")
+	f, d := fakeDeps()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ws := workspacesOf(callStartingWith(f, "create"))
+	if got := ws[len(ws)-1]; got != dir+":ro" {
+		t.Fatalf("last workspace = %q, want %q", got, dir+":ro")
+	}
+}
+
+func TestSpawnRefusesAMissingMountHostBeforeAnySideEffect(t *testing.T) {
+	denHome, _ := denTestMounts(t, "mounts:\n  - host: /nope/missing\n    link: $HOME/x\n")
+	f, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+	if err == nil {
+		t.Fatal("want a refusal, got nil")
+	}
+	if !strings.Contains(err.Error(), "mounts[0].host") {
+		t.Fatalf("the refusal must cite the key the user wrote, got: %v", err)
+	}
+	if callStartingWith(f, "create") != nil {
+		t.Fatal("refused AFTER `sbx create` — the gate must precede every side effect")
+	}
+}
+
+func TestSpawnRefusalForSSHDirStillNamesSSHDirAndKeys(t *testing.T) {
+	// The desugaring must not dilute the diagnostic. Before this change the
+	// message named ssh.dir and said what a missing path would cost ("an empty
+	// directory instead of your keys"). Reporting `mounts[0]` here would cite a
+	// key absent from the user's config.yaml, since the entry is generated.
+	denHome, _ := denTestSSH(t, "  mode: mount\n  dir: /nope/missing\n")
+	_, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+	if err == nil {
+		t.Fatal("want a refusal, got nil")
+	}
+	if !strings.Contains(err.Error(), "ssh.dir") {
+		t.Fatalf("want the refusal to name ssh.dir, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "keys") {
+		t.Fatalf("want the keys-specific remedy preserved, got: %v", err)
+	}
+}
+
+// Mount mode adds EXACTLY ONE workspace more than the other two, and it is
+// ssh.dir. Since this change, mount mode has no code path of its own — it
+// desugars into a `mounts:` entry (nest.resolveMounts) — so this test now
+// guards the desugaring rather than an `if` in spawn.go. It stays because
+// the property it asserts is the user-visible one, and it is what catches a
+// sugar that fires in the wrong mode.
 func TestSpawnAddsNoWorkspaceOutsideMountMode(t *testing.T) {
 	// ssh.dir is DECLARED and EXISTS in all three configurations. Without
 	// that, "agent-forward doesn't mount ssh.dir" would be indistinguishable
