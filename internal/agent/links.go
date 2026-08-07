@@ -70,6 +70,25 @@ func LinkCommand(mounts []nest.Mount) []string {
 	return []string{"bash", "-c", b.String()}
 }
 
+// LinkPhaseMarker prefixes EVERY line den_link prints — the success line and
+// all four refusals below. It is den's own string, and it is exported because
+// ParseKitLog reads it back out of the dispatcher journal: it is the only thing
+// that tells a failed link phase apart from a failed freshness command when the
+// run aborted before any later entry was announced.
+//
+// Alternatives rejected. Position in the kit directory cannot do it: a refused
+// link phase is `fail …/000-cmd.sh` with nothing after it (measured 2026-08-07),
+// which is byte-for-byte the shape of a legacy one-entry journal where
+// `000-cmd.sh` IS the freshness command. Threading the entry count from the
+// mixin into the gate would reintroduce exactly the create-vs-attach asymmetry
+// the journal-only reading exists to avoid.
+//
+// The dispatcher captures stderr as well as stdout — measured twice, on the
+// freshness command's `agent …: FATAL …` lines (smoke #2 §D4, 2026-07-31) and
+// on this function's own FATAL lines (2026-08-07) — so the marker reaches the
+// journal from every branch.
+const LinkPhaseMarker = "den mounts: "
+
 // linkFunc is the fail-closed linker, shared by every mount.
 //
 // Two decisions are load-bearing:

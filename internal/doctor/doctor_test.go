@@ -164,7 +164,7 @@ func TestRunNestRepoNotFound(t *testing.T) {
 		if p == "/dev/api" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 	checks := Run(validDenHome(t), d)
 	if allOK(checks) {
@@ -223,7 +223,7 @@ func TestRunKeyRepoMappedAndPresent(t *testing.T) {
 		if p == "" {
 			return nil, errors.New("empty path")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 	checks := Run(dir, d)
 	if !allOK(checks) {
@@ -241,7 +241,7 @@ func TestRunKeyRepoMappedButMissing(t *testing.T) {
 		if p == "/dev/myrepo" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 	checks := Run(dir, d)
 	if allOK(checks) {
@@ -329,7 +329,7 @@ func TestRunReportsABrokenNestWithoutHidingOthers(t *testing.T) {
 		if p == "/dev/healthy-missing" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 
 	checks := Run(dir, d)
@@ -422,7 +422,7 @@ func TestRunStackKitNotFound(t *testing.T) {
 		if p == singularKit || p == pluralKit {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 
 	checks := Run(dir, d)
@@ -502,7 +502,7 @@ func TestDoctorReportsMissingMountHost(t *testing.T) {
 		if p == "/nope/missing" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 	checks := Run(dir, d)
 	line, ok := findExactName(checks, "mounts[0]")
@@ -514,6 +514,74 @@ func TestDoctorReportsMissingMountHost(t *testing.T) {
 	}
 	if !strings.Contains(line.Detail, "/nope/missing") {
 		t.Fatalf("the detail must name the path, got %q", line.Detail)
+	}
+}
+
+// A mount host that EXISTS but is a regular FILE. den mounts directories, and
+// `host: ~/.digitaleo/config.yaml` — the file instead of the directory holding
+// it — is a plausible typo that a bare Stat accepts. The line must say what is
+// actually wrong: "not found" is a false statement about a file that exists.
+func TestDoctorReportsAMountHostThatIsAFile(t *testing.T) {
+	dir := mountDenHome(t, "/dev/mounted/config.yaml")
+	d := okDeps()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/dev/mounted/config.yaml" {
+			return FakeFileInfo(), nil
+		}
+		return FakeDirInfo(), nil
+	}
+	checks := Run(dir, d)
+	line, ok := findExactName(checks, "mounts[0]")
+	if !ok {
+		t.Fatalf("no check named \"mounts[0]\"; checks: %+v", checks)
+	}
+	if line.Level == LevelOK {
+		t.Fatal("den mounts directories: a file host must not report OK")
+	}
+	if !strings.Contains(line.Detail, "not a directory") {
+		t.Errorf("the detail must say what is wrong; got %q", line.Detail)
+	}
+	if strings.Contains(line.Detail, "not found") {
+		t.Errorf("\"not found\" is false of a file that exists; got %q", line.Detail)
+	}
+}
+
+// The same probe on ssh.dir, whose text says "this directory" too. Fixed
+// alongside its twin rather than after it: leaving the identical hole beside a
+// fixed one is how the two drift.
+func TestDoctorReportsAnSSHDirThatIsAFile(t *testing.T) {
+	dir := validDenHome(t)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: mount
+  dir: /dev/keys/id_ed25519
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := okDeps()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/dev/keys/id_ed25519" {
+			return FakeFileInfo(), nil
+		}
+		return FakeDirInfo(), nil
+	}
+	checks := Run(dir, d)
+	line, ok := findExactName(checks, "ssh.dir")
+	if !ok {
+		t.Fatalf("no check named \"ssh.dir\"; checks: %+v", checks)
+	}
+	if line.Level == LevelOK {
+		t.Fatal("in \"mount\" mode den mounts a DIRECTORY: a file ssh.dir must not report OK")
+	}
+	if !strings.Contains(line.Detail, "not a directory") {
+		t.Errorf("the detail must say what is wrong; got %q", line.Detail)
 	}
 }
 
@@ -568,7 +636,7 @@ func TestDoctorIndexesMountsByPositionNotByReportedCount(t *testing.T) {
 		if p == "/nope/missing" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 	checks := Run(dir, d)
 	if _, ok := findExactName(checks, "mounts[0]"); ok {
@@ -725,7 +793,7 @@ ssh:
 		if p == "/dev/ssh-missing" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 
 	checks := Run(dir, d)
@@ -765,7 +833,7 @@ ssh:
 		if p == "/dev/ssh-missing" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 	if checks := Run(dir, d); !allOK(checks) {
 		t.Errorf("in agent-forward, a missing ssh.dir must report nothing; checks: %+v", checks)
@@ -1260,7 +1328,7 @@ func TestRunIgnoresAnEmptyEntryInKits(t *testing.T) {
 		if p == "" {
 			return nil, errors.New("empty path")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 
 	checks := Run(dir, d)

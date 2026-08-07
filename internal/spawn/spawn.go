@@ -422,8 +422,21 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	//
 	// The message cites m.Key — the key the USER wrote. For the ssh.mode sugar
 	// that is `ssh.dir`, not `mounts[0]`, which appears in no config file.
+	//
+	// A path that EXISTS but is not a directory is refused separately, and with
+	// its own sentence: "not found" is false for a file that exists, and
+	// `host: ~/.digitaleo/config.yaml` — naming the file instead of the
+	// directory holding it — is a plausible thing to write. What sbx does with a
+	// FILE workspace has never been measured, and this branch's own doctrine
+	// (spec §14.0/§14.1) says an unmeasured sbx behaviour is a hypothesis, not a
+	// premise: passing one through is precisely what this gate exists to stop.
+	// If sbx materialised an empty directory there, the tool inside the VM would
+	// read an empty directory with no error — the silent wrong-path failure the
+	// whole feature was written to remove.
 	for _, m := range r.Mounts {
-		if _, err := os.Stat(m.Host); err != nil {
+		fi, err := os.Stat(m.Host)
+		switch {
+		case err != nil:
 			if m.Key == "ssh.dir" {
 				return fmt.Errorf(
 					"ssh.dir: %s not found — fix `ssh.dir` in %s: in \"mount\" mode this directory "+
@@ -434,6 +447,18 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			return fmt.Errorf(
 				"%s.host: %s not found — fix `mounts:` in %s: this directory is mounted in the "+
 					"sandbox, and a missing path would mount an empty directory instead of your files",
+				m.Key, m.Host, config.GlobalPath(denHome))
+		case !fi.IsDir():
+			if m.Key == "ssh.dir" {
+				return fmt.Errorf(
+					"ssh.dir: %s is not a directory — fix `ssh.dir` in %s: in \"mount\" mode den "+
+						"mounts that DIRECTORY in the sandbox, so it must name the directory holding "+
+						"your keys, not a file inside it",
+					m.Host, config.GlobalPath(denHome))
+			}
+			return fmt.Errorf(
+				"%s.host: %s is not a directory — fix `mounts:` in %s: den mounts DIRECTORIES, so "+
+					"`host:` must name the directory holding your files, not a file inside it",
 				m.Key, m.Host, config.GlobalPath(denHome))
 		}
 	}
@@ -1015,12 +1040,17 @@ func reportFreshness(out io.Writer, sandboxName string, verdict agent.GateVerdic
 		// journal is what made the 2026-07-27 bug diagnosable, and a message
 		// that says "the gate failed" without it sends the user back into the
 		// VM to read what den has already read.
+		//
+		// The remedy comes from the VERDICT and is not written here: den's kit
+		// runs two commands, and they are fixed in different files (the agent
+		// registry for a stale agent, `mounts:` / `ssh.dir` for a refused link
+		// phase). This sentence used to hardcode the registry, and pointed the
+		// user at it even when the journal said the agent update never ran.
 		return fmt.Errorf(
 			"sandbox %s: the agent-freshness gate FAILED — %s.\n  %s\n"+
-				"den does not open a sandbox whose agent it knows to be stale. Fix the agent's "+
-				"`update:` command in the registry, then `den rm %s` and relaunch; the whole journal "+
-				"is `sbx exec %s cat %s`",
-			sandboxName, verdict.Reason, strings.TrimSpace(verdict.Line),
+				"den does not open a sandbox whose startup it knows to have failed. %s, then "+
+				"`den rm %s` and relaunch; the whole journal is `sbx exec %s cat %s`",
+			sandboxName, verdict.Reason, strings.TrimSpace(verdict.Line), verdict.Remedy,
 			sandboxName, sandboxName, agent.KitLogPath)
 	case agent.GateAbsent:
 		// Out, not Err: both warnings describe THE SANDBOX den is reporting on,

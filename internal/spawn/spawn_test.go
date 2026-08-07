@@ -603,6 +603,122 @@ func TestSpawnRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
 	}
 }
 
+// gateTwoEntry is the journal of a sandbox that carries a LINK PHASE in front
+// of the freshness command — the shape every `mounts:` sandbox has, transcribed
+// from the real VM on 2026-08-07. `freshness` is the leading token of the
+// second entry's verdict line: "ok" or "fail … exit=1".
+//
+// The link phase always passes here. That is the point: it is the passing link
+// phase that used to decide the gate.
+func gateTwoEntry(sandbox, freshness string) string {
+	dir := "/etc/durable-startup.d/002-startup-" + agent.MixinName(sandbox)
+	log := "=== dispatcher run 2026-08-07T10:00:00Z ===\n" +
+		"> " + dir + "/000-cmd.sh\n" +
+		"den mounts: /home/agent/.linkme -> /tmp/linkme\n" +
+		"ok " + dir + "/000-cmd.sh\n" +
+		"> " + dir + "/001-cmd.sh\n"
+	if freshness == "ok" {
+		return log + "agent claude: up to date\nok " + dir + "/001-cmd.sh\n" +
+			"=== dispatcher complete ===\n"
+	}
+	return log + "agent claude: FATAL update failed after 3 attempts (fail-closed)\n" +
+		"fail " + dir + "/001-cmd.sh exit=1\n"
+}
+
+// #18, RETURNED — and this is the end-to-end half of the fixtures in
+// internal/agent/gate_test.go. The gate above it (`gateFailed`) uses a
+// ONE-ENTRY journal, which is why nothing in this suite saw the defect: with a
+// link phase in front, agent.ParseKitLog returned on the link's `ok` and den
+// attached, exit 0, in silence, to a sandbox whose agent update had failed.
+//
+// Both branches, because §9.1's promise is about the sandbox starting and
+// `--detach` starts one too.
+func TestSpawnRefusesASandboxWhoseFreshnessFailedBehindALinkPhase(t *testing.T) {
+	for _, detach := range []bool{false, true} {
+		name := "attach"
+		if detach {
+			name = "detach"
+		}
+		t.Run(name, func(t *testing.T) {
+			denHome, _ := denTest(t)
+			f, d := fakeDeps()
+			gateLog(f, "api", gateTwoEntry("api", "fail"))
+
+			err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: detach}, d)
+			if err == nil {
+				t.Fatal("the link phase's `ok` must not satisfy §9.1: the agent was never updated")
+			}
+			// The freshness verdict is what must travel, not the link's.
+			if !strings.Contains(err.Error(), "001-cmd.sh") {
+				t.Errorf("the refusal must carry the FRESHNESS line; got: %v", err)
+			}
+			// ...and the remedy stays the agent registry: the link phase passed.
+			if !strings.Contains(err.Error(), "`update:`") {
+				t.Errorf("a failed agent update is fixed in the registry; got: %v", err)
+			}
+			if f.HasAttached("exec", "-it") {
+				t.Errorf("a refused gate must not attach; attaches: %v", f.Attaches)
+			}
+		})
+	}
+}
+
+// I1, end to end: the COMPOSED refusal is the only thing the user reads, and it
+// must send them to `mounts:` — not to the agent registry, where nothing is
+// wrong. The negative assertion is the load-bearing half: pointing at the
+// registry for a bad `mounts:` entry is the defect, and the remedy is now
+// interpolated from the verdict precisely so it cannot.
+//
+// The journal is a refused link phase: `001-cmd.sh` never appears, because the
+// dispatcher cut on `exit=1` (measured 2026-08-07).
+func TestSpawnRefusalForARefusedLinkPhaseNamesMountsNotTheAgentRegistry(t *testing.T) {
+	dir := "/etc/durable-startup.d/002-startup-" + agent.MixinName("api")
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	gateLog(f, "api", "=== dispatcher run 2026-08-07T10:00:00Z ===\n"+
+		"> "+dir+"/000-cmd.sh\n"+
+		"den mounts: FATAL /home/agent/.linkme is a non-empty directory (from mounts[0]) "+
+		"— den refuses to replace it\n"+
+		"fail "+dir+"/000-cmd.sh exit=1\n")
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+	if err == nil {
+		t.Fatal("a refused link phase means the freshness command never ran: §9.1 is fail-closed")
+	}
+	for _, want := range []string{"link phase", "mounts:", "from mounts[0]", "exit=1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must carry %q; got: %v", want, err)
+		}
+	}
+	for _, unwanted := range []string{"registry", "`update:`"} {
+		if strings.Contains(err.Error(), unwanted) {
+			t.Errorf("nothing is wrong with the agent registry, %q must not appear; got: %v",
+				unwanted, err)
+		}
+	}
+}
+
+// The counterpart, and it is not redundant: a two-entry journal whose freshness
+// entry PASSED must still pass. Requiring the freshness verdict is only correct
+// if it is actually found — a rule that never passes would turn every mounted
+// sandbox into a 90-second timeout, which is worse than the silence it fixes.
+func TestSpawnPassesTheGateWhenFreshnessPassesBehindALinkPhase(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	gateLog(f, "api", gateTwoEntry("api", "ok"))
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("both entries passed: %v", err)
+	}
+	for _, unwanted := range []string{"warning", "note:"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Errorf("a passing gate is silent, %q leaked; output:\n%s", unwanted, out.String())
+		}
+	}
+}
+
 // A gate that PASSED is silent: the ordinary outcome, and announcing it on
 // every spawn would bury the lines that mean something.
 func TestSpawnSaysNothingWhenTheFreshnessGatePassed(t *testing.T) {
@@ -1309,18 +1425,87 @@ func TestSpawnAppendsROSuffixForReadOnlyMounts(t *testing.T) {
 	}
 }
 
+// T13/T16: a refusal must leave NOTHING behind. Asserted at the same strength
+// as the ssh.dir sibling above — no sbx call at all, no agent profile — and
+// with a WORKTREE requested, because the regression this guards is a gate that
+// slid past step 3: one orphaned git worktree per repo, left for the user to
+// clean up by hand. Checking only "no `create` call" would not have caught it.
 func TestSpawnRefusesAMissingMountHostBeforeAnySideEffect(t *testing.T) {
 	denHome, _ := denTestMounts(t, "mounts:\n  - host: /nope/missing\n    link: $HOME/x\n")
 	f, d := fakeDeps()
-	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "wt"}, d)
 	if err == nil {
 		t.Fatal("want a refusal, got nil")
 	}
 	if !strings.Contains(err.Error(), "mounts[0].host") {
 		t.Fatalf("the refusal must cite the key the user wrote, got: %v", err)
 	}
-	if callStartingWith(f, "create") != nil {
-		t.Fatal("refused AFTER `sbx create` — the gate must precede every side effect")
+	assertNoSideEffect(t, f, denHome)
+}
+
+// A mount host that EXISTS but is a regular file. `host: ~/.digitaleo/config.yaml`
+// — naming the file instead of the directory holding it — is a plausible typo,
+// and a bare os.Stat accepts it: the path goes into `sbx create`'s argv, where
+// sbx's behaviour on a file workspace has never been measured.
+//
+// The message must be its OWN, not the not-found one: "not found" is a false
+// statement about a file that exists, and it would send the user looking for a
+// path they are staring at.
+func TestSpawnRefusesAMountHostThatIsAFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.yaml")
+	write(t, file, "not a directory\n")
+	denHome, _ := denTestMounts(t, "mounts:\n  - host: "+file+"\n    link: $HOME/x\n")
+	f, d := fakeDeps()
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "wt"}, d)
+	if err == nil {
+		t.Fatal("den mounts directories: a file `host:` must be refused, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("the refusal must say what is wrong, not \"not found\"; got: %v", err)
+	}
+	if strings.Contains(err.Error(), "not found") {
+		t.Errorf("\"not found\" is false of a file that exists; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "mounts[0].host") {
+		t.Errorf("the refusal must cite the key the user wrote; got: %v", err)
+	}
+	assertNoSideEffect(t, f, denHome)
+}
+
+// The ssh.mode sugar keeps its own sentence here too, for the reason
+// TestSpawnRefusalForSSHDirStillNamesSSHDirAndKeys states: `mounts[0]` is a key
+// absent from the user's config.yaml.
+func TestSpawnRefusalForAnSSHDirThatIsAFileStillNamesSSHDir(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "id_ed25519")
+	write(t, file, "key\n")
+	denHome, _ := denTestSSH(t, "  mode: mount\n  dir: "+file+"\n")
+	_, d := fakeDeps()
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
+	if err == nil {
+		t.Fatal("want a refusal, got nil")
+	}
+	if !strings.Contains(err.Error(), "ssh.dir") {
+		t.Errorf("want the refusal to name ssh.dir; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("want the file-specific sentence; got: %v", err)
+	}
+}
+
+// assertNoSideEffect is the T13/T16 assertion shared by the refusals that must
+// precede every side effect: no sbx call, no attach, no agent profile on disk.
+func assertNoSideEffect(t *testing.T, f *sbx.Fake, denHome string) {
+	t.Helper()
+	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
+		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	}
+	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
+		t.Error("the agent profile must not have been created before the refusal")
+	}
+	if _, err := os.Stat(filepath.Join(denHome, "worktrees")); err == nil {
+		t.Error("a worktree was created before the refusal — T13/T16: a refusal leaves nothing behind")
 	}
 }
 

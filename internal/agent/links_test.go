@@ -58,6 +58,33 @@ func TestLinkCommandGolden(t *testing.T) {
 	}
 }
 
+// LinkPhaseMarker is what ParseKitLog reads back out of the dispatcher journal
+// to tell a refused LINK phase from a failed freshness command — a distinction
+// position cannot make, since a refused link phase aborts the run before the
+// freshness command is ever announced. If den_link ever stopped printing it on
+// one of its branches, the gate would silently start sending users to the agent
+// registry for a bad `mounts:` entry, and no other test would notice.
+//
+// So: every line den_link can print must carry the marker, and the rendered
+// script must too.
+func TestEveryLinkPhaseOutputCarriesLinkPhaseMarker(t *testing.T) {
+	for _, line := range strings.Split(linkFunc, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "echo ") {
+			continue
+		}
+		if !strings.Contains(trimmed, LinkPhaseMarker) {
+			t.Errorf("den_link prints a line the gate cannot attribute to the link phase:\n  %s", trimmed)
+		}
+	}
+	got := strings.Join(LinkCommand([]nest.Mount{
+		{Host: "/host/a", Link: "$HOME/.aws", Key: "mounts[0]"},
+	}), "\n")
+	if !strings.Contains(got, LinkPhaseMarker) {
+		t.Errorf("the rendered link phase must carry %q:\n%s", LinkPhaseMarker, got)
+	}
+}
+
 func TestLinkCommandRewritesTildeToHOME(t *testing.T) {
 	// bash does not expand `~` inside double quotes, and the link must stay
 	// double-quoted for `$HOME` to expand. Emitting a bare `~` would create a
