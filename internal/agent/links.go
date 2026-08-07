@@ -43,6 +43,12 @@ func LinkCommand(mounts []nest.Mount) []string {
 	b.WriteString("set -uo pipefail\n\n")
 	b.WriteString(linkFunc)
 	for _, m := range linked {
+		// Trimmed again here, even though config.LoadGlobal already trims at load:
+		// this filter loop (line 31) and this emission must agree on ONE value.
+		// `nest.Mount` can also be built directly (tests, and any future caller
+		// that bypasses config), so this is defence in depth, not the primary
+		// guarantee.
+		//
 		// `~` is NOT expanded by bash inside double quotes, but the link MUST be
 		// double-quoted so `$HOME` expands in the VM. Emitting `"~/.ssh"` verbatim
 		// would create a directory literally named `~` in the startup script's cwd —
@@ -50,7 +56,7 @@ func LinkCommand(mounts []nest.Mount) []string {
 		// failure this whole feature exists to remove. `~/x` and `$HOME/x` denote the
 		// same VM path, so rewriting is lossless, and it is done HERE rather than in
 		// config so the config surface keeps the form the user wrote.
-		link := m.Link
+		link := strings.TrimSpace(m.Link)
 		if strings.HasPrefix(link, "~/") {
 			link = "$HOME/" + strings.TrimPrefix(link, "~/")
 		}
@@ -83,8 +89,22 @@ func LinkCommand(mounts []nest.Mount) []string {
 // DIRECTORY does not replace it, it silently creates DST/<basename> INSIDE it.
 // The tool then reads the wrong path with no error — the exact failure mode
 // this feature was written to remove.
+//
+// Refuse a MISSING source before touching dst, for the same reason: `ln -s`
+// to a path that doesn't exist yet succeeds and prints nothing wrong, leaving
+// a dangling symlink that the tool follows straight into an ENOENT far from
+// this script — den would report success for a mount that never linked
+// anywhere. This is reachable in practice, not theoretical: spec hypothesis
+// A11 (sbx mounts a workspace at the same absolute path inside the VM) is
+// still unverified, so if A11 turns out false every mount's src is missing
+// and den would otherwise report success for all of them. Fail-closed here,
+// at boot, is the only place the user sees the real cause.
 const linkFunc = `den_link() {
   src="$1"; dst="$2"; key="$3"
+  if [ ! -e "$src" ]; then
+    echo "den mounts: FATAL $src is not present in the VM (from $key)" >&2
+    exit 1
+  fi
   parent="$(dirname "$dst")"
   if ! mkdir -p "$parent"; then
     echo "den mounts: FATAL cannot create $parent (from $key)" >&2

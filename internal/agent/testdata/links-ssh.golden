@@ -2,6 +2,10 @@ set -uo pipefail
 
 den_link() {
   src="$1"; dst="$2"; key="$3"
+  if [ ! -e "$src" ]; then
+    echo "den mounts: FATAL $src is not present in the VM (from $key)" >&2
+    exit 1
+  fi
   parent="$(dirname "$dst")"
   if ! mkdir -p "$parent"; then
     echo "den mounts: FATAL cannot create $parent (from $key)" >&2

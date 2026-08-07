@@ -71,4 +71,14 @@ func TestLinkCommandRewritesTildeToHOME(t *testing.T) {
 	if strings.Contains(got, "~") {
 		t.Errorf("no literal tilde may reach the VM:\n%s", got)
 	}
+
+	// config.LoadGlobal already trims at load, but a `nest.Mount` built
+	// directly (as here) bypasses that — the filter loop and the emission must
+	// still agree on one, trimmed value.
+	got = strings.Join(LinkCommand([]nest.Mount{
+		{Host: "/host/a", Link: "  ~/.aws", Key: "mounts[0]"},
+	}), "\n")
+	if !strings.Contains(got, `"$HOME/.aws"`) {
+		t.Errorf("a padded `~/` link must still be rewritten to $HOME/:\n%s", got)
+	}
 }

@@ -143,6 +143,16 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 		// consumer read the same string, and no downstream copy can diverge.
 		g.Mounts[i].Host = strings.TrimSpace(g.Mounts[i].Host)
 		g.Mounts[i].Link = strings.TrimSpace(g.Mounts[i].Link)
+		// A trailing slash makes `ln` resolve THROUGH an existing correct symlink
+		// instead of replacing it, so the link phase refuses on every boot after
+		// the first. `$HOME/.ssh/` and `$HOME/.ssh` denote the same VM path, so
+		// stripping is lossless. Normalised at LOAD, beside the trim above, so one
+		// canonical value reaches validation, the mixin and the emitted shell
+		// alike — not re-derived at each consumer. Guarded on len > 1 so a lone
+		// "/" (unusual but not this bug's shape) is never reduced to "".
+		if l := g.Mounts[i].Link; len(l) > 1 && strings.HasSuffix(l, "/") {
+			g.Mounts[i].Link = strings.TrimRight(l, "/")
+		}
 		// Host only. Link is a VM path — see the Mount doc comment.
 		if g.Mounts[i].Host, err = ExpandPath(g.Mounts[i].Host); err != nil {
 			return nil, fmt.Errorf("mounts[%d].host: %w", i, err)

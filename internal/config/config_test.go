@@ -448,3 +448,31 @@ mounts:
 		t.Errorf("tilde link not trimmed: got %q, want %q", g.Mounts[1].Link, "~/.tilde-link")
 	}
 }
+
+// A trailing slash on `link` makes `ln` resolve THROUGH an already-correct
+// symlink instead of replacing it: `$HOME/.ssh/` and `$HOME/.ssh` denote the
+// same VM path, but only the second one round-trips through `ln -sfn`. Left
+// unnormalized, the link phase would refuse on every boot after the first.
+func TestLoadGlobalStripsTrailingSlashFromMountLink(t *testing.T) {
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: /tmp/host
+    link: $HOME/.ssh/
+`)
+	g, err := LoadGlobalUnvalidated(denHome)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(g.Mounts) != 1 {
+		t.Fatalf("got %d mounts, want 1", len(g.Mounts))
+	}
+	if g.Mounts[0].Link != "$HOME/.ssh" {
+		t.Errorf("trailing slash not stripped: got %q, want %q", g.Mounts[0].Link, "$HOME/.ssh")
+	}
+}
