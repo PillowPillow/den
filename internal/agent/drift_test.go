@@ -247,6 +247,60 @@ func TestRoundTripsHostileEgressAndFreshness(t *testing.T) {
 	}
 }
 
+// Without this, a changed `mounts:` produces NO drift warning: ReadMixin
+// would drop the link entry and Differences would compare two empty Links.
+// The silence is exactly what the mounts feature exists to remove.
+func TestReadMixinReadsBackTheLinkPhase(t *testing.T) {
+	home := t.TempDir()
+	m := Mixin{
+		SandboxName: "api",
+		Freshness:   []string{"bash", "-c", "FRESHNESS"},
+		Links:       []string{"bash", "-c", "LINKS"},
+	}
+	if _, err := WriteMixin(home, "api", m); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := ReadMixin(home, "api")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !slices.Equal(got.Links, m.Links) {
+		t.Fatalf("Links = %v, want %v", got.Links, m.Links)
+	}
+	// The n-1 rule must still pick freshness, now that it is not entry 0.
+	if !slices.Equal(got.Freshness, m.Freshness) {
+		t.Fatalf("Freshness = %v, want %v", got.Freshness, m.Freshness)
+	}
+}
+
+// A mixin written by an OLDER den carries one entry, which is freshness.
+// Reading it must not mistake that entry for a link phase — doing so would
+// report drift on every attach to a sandbox created before this change.
+func TestReadMixinLeavesLinksEmptyForASingleEntryMixin(t *testing.T) {
+	home := t.TempDir()
+	m := Mixin{SandboxName: "api", Freshness: []string{"bash", "-c", "FRESHNESS"}}
+	if _, err := WriteMixin(home, "api", m); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := ReadMixin(home, "api")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got.Links) != 0 {
+		t.Fatalf("Links = %v, want empty", got.Links)
+	}
+}
+
+func TestDifferencesReportsAChangedLinkPhase(t *testing.T) {
+	previous := Mixin{SandboxName: "api", Freshness: []string{"bash", "-c", "F"},
+		Links: []string{"bash", "-c", "OLD"}}
+	current := Mixin{SandboxName: "api", Freshness: []string{"bash", "-c", "F"},
+		Links: []string{"bash", "-c", "NEW"}}
+	if d := Differences(previous, current); len(d) == 0 {
+		t.Fatal("a changed link phase must be reported as drift")
+	}
+}
+
 func TestDifferencesIdenticalReturnsNothing(t *testing.T) {
 	m := exampleMixin(t)
 	if d := Differences(m, m); len(d) != 0 {

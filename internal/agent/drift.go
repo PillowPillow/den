@@ -74,12 +74,20 @@ func ReadMixin(denHome, sandboxName string) (Mixin, error) {
 		Env:         spec.Environment.Variables,
 		Egress:      spec.Caps.Network.Allow,
 	}
-	// RenderMixin only ever emits a single startup command, and freshness is
-	// the last one (spec §9.1): so it's the last one read back, not the first
-	// — a later den that adds one before it must not have it mistaken for
-	// freshness.
+	// The sequence carries at most two entries, in a FIXED order: the optional
+	// link phase, then freshness. Read back positionally, and defensively:
+	//
+	//   - Freshness is Startup[n-1] — the LAST entry, which it is by
+	//     construction (spec §9.1). Unchanged by the arrival of the link phase.
+	//   - Links is Startup[0] ONLY when there are two entries. A mixin written
+	//     by an older den has exactly one, and it is freshness; mistaking it for
+	//     a link phase would report drift on every attach to a sandbox created
+	//     before this change.
 	if n := len(spec.Commands.Startup); n > 0 {
 		m.Freshness = spec.Commands.Startup[n-1].Command
+		if n > 1 {
+			m.Links = spec.Commands.Startup[0].Command
+		}
 	}
 	return m, nil
 }
@@ -136,6 +144,15 @@ func Differences(previous, current Mixin) []string {
 	if !slices.Equal(previous.Freshness, current.Freshness) {
 		lines = append(lines,
 			"freshness command changed — the sandbox replays the old one on every boot")
+	}
+
+	if !slices.Equal(previous.Links, current.Links) {
+		// Same shape as the Freshness line above. Without it, editing `mounts:`
+		// and re-attaching reports nothing at all — and mounts are create-time,
+		// so the edit genuinely has no effect until a respawn. That silence is
+		// the failure mode this whole feature exists to remove.
+		lines = append(lines,
+			"link phase changed — the sandbox still links what it was created with")
 	}
 	return lines
 }

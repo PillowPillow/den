@@ -25,6 +25,10 @@ type Mixin struct {
 	Env         map[string]string // already merged and substituted by nest.Resolve
 	Egress      []string          // already unioned and sorted by nest.Resolve
 	Freshness   []string          // argv, see FreshnessCommand
+	// Links is the argv of the link phase, or nil when nothing needs linking.
+	// Emitted as the FIRST commands.startup entry — see LinkCommand for why it
+	// cannot go after Freshness.
+	Links []string
 }
 
 // MixinFrom assembles the mixin of a resolved nest.
@@ -42,6 +46,7 @@ func MixinFrom(r *nest.Resolved, sandboxName string) (Mixin, error) {
 		Env:         maps.Clone(r.Env),
 		Egress:      slices.Clone(r.Egress),
 		Freshness:   freshness,
+		Links:       LinkCommand(r.Mounts),
 	}, nil
 }
 
@@ -103,10 +108,25 @@ func RenderMixin(m Mixin) ([]byte, error) {
 		add("environment", env)
 	}
 
-	// Unconditional: guaranteed non-empty by the entry guard above.
+	// startup is a SEQUENCE, and sbx runs EVERY entry, in declared order, each
+	// as its own numbered script under /etc/durable-startup.d (measured
+	// 2026-08-07 with a two-entry probe kit; before that, no kit anywhere
+	// carried more than one entry and the behaviour was unverified).
+	//
+	// Links first, Freshness LAST. Freshness is unconditional and guaranteed
+	// non-empty by the guard at the top of this function; the link entry is
+	// omitted when there is nothing to link.
+	var entries []*yaml.Node
+	if len(m.Links) > 0 {
+		linkEntry := &yaml.Node{Kind: yaml.MappingNode}
+		linkEntry.Content = append(linkEntry.Content, scalarNode("command"), sequenceNode(m.Links))
+		entries = append(entries, linkEntry)
+	}
 	entry := &yaml.Node{Kind: yaml.MappingNode}
 	entry.Content = append(entry.Content, scalarNode("command"), sequenceNode(m.Freshness))
-	startup := &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{entry}}
+	entries = append(entries, entry)
+
+	startup := &yaml.Node{Kind: yaml.SequenceNode, Content: entries}
 	commands := &yaml.Node{Kind: yaml.MappingNode}
 	commands.Content = append(commands.Content, scalarNode("startup"), startup)
 	add("commands", commands)
