@@ -7,6 +7,29 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.4.0 — 2026-08-07
+
+### Added
+- `mounts:` in `~/.den/config.yaml` mounts a host directory into the sandbox and links it
+  where the tool looks for it (`- host: ~/.digitaleo`, `link: $HOME/.digitaleo`, `ro: true`).
+  `sbx create` takes no mount-target flag, so a mounted path lands at its host path — the link
+  is what makes it reachable. The list is **global**: every entry is mounted into every
+  sandbox you spawn afterward, so a directory holding secrets reaches all of them.
+- `den nest show` lists what a spawn will mount — the `mounts:` entries and the
+  `ssh.mode: mount` sugar alike. `mounts:` is a global key, so nothing in the nest file you
+  are inspecting names it.
+- `den doctor` reports a `mounts:` host, and an `ssh.dir`, that is missing on disk or is a
+  file rather than a directory. den mounts directories, and a missing path mounts an empty
+  one instead of your files.
+
+### Fixed
+- `ssh.mode: mount` now links the mounted directory to `$HOME/.ssh`. sbx mounts a workspace
+  at its host path while `$HOME` is `/home/agent`, so the key arrived intact somewhere ssh
+  never looks and the mode authenticated nothing.
+- den's agent-freshness gate names the link phase's own refusal instead of reporting only
+  that the agent was not updated, and it reads the whole VM startup log rather than stopping
+  at the first verdict it owns.
+
 ## v1.3.1 — 2026-08-05
 
 ### Fixed
