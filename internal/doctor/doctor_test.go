@@ -467,13 +467,19 @@ func TestRunPresentKitsReportNothing(t *testing.T) {
 // not"; "declared but missing on disk" needs a filesystem probe, and that's
 // the very path `sbx create` mounts into the sandbox.
 
-// mountDenHome builds a den home whose config.yaml declares a single
-// `mounts:` entry pointing at host. Modeled on keyRepoDenHome above: same
+// mountDenHome builds a den home whose config.yaml declares one `mounts:`
+// entry per host, in order — so a test can put more than one entry under
+// `mounts:` and check that doctor's index tracks POSITION, not the count of
+// entries it actually reports on. Modeled on keyRepoDenHome above: same
 // technique (rewrite config.yaml wholesale over validDenHome's base), applied
 // to `mounts:` instead of a key-typed repo.
-func mountDenHome(t *testing.T, host string) string {
+func mountDenHome(t *testing.T, hosts ...string) string {
 	t.Helper()
 	dir := validDenHome(t)
+	var entries strings.Builder
+	for _, h := range hosts {
+		fmt.Fprintf(&entries, "  - host: %s\n    link: $HOME/x\n", h)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(fmt.Sprintf(`
 agents:
   claude:
@@ -483,9 +489,7 @@ defaults:
   agent: claude
   stack: devx
 mounts:
-  - host: %s
-    link: $HOME/x
-`, host)), 0o644); err != nil {
+%s`, entries.String())), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -535,12 +539,51 @@ func TestDoctorReportsPresentMountHost(t *testing.T) {
 // the "config" check above). doctor must not produce a SECOND diagnostic for
 // the same fault under "mounts[0]", or the user sees one problem reported
 // twice under two different names.
+//
+// "   " and "" take the same path here: YAML strips trailing whitespace off
+// an unquoted plain scalar on its own, and LoadGlobalUnvalidated's own
+// TrimSpace runs before doctor ever sees the value — so g.Mounts[0].Host is
+// already "" by the time this test's assertion matters. The literal is kept
+// non-empty only so the YAML line reads as a real (if blank) entry, not as a
+// key with an outright missing value.
 func TestDoctorDoesNotDoubleReportABlankMountHost(t *testing.T) {
-	dir := mountDenHome(t, "   ") // blank after TrimSpace
+	dir := mountDenHome(t, "   ")
 	checks := Run(dir, okDeps())
 	if _, ok := findExactName(checks, "mounts[0]"); ok {
 		t.Errorf("a blank host must not get its own mounts[0] line: "+
 			"Validate() already reports it; checks: %+v", checks)
+	}
+}
+
+// The blank entry's `continue` must not shift the index of the entry that
+// follows it: the index is the entry's POSITION in `mounts:`, not a count of
+// how many entries doctor actually reports on. Without this test, an
+// implementation that appended to `checks` and derived the label from
+// `len(checks)` instead of the loop's `i` would pass every test above (all
+// single-entry) while mislabeling any config with more than one mount.
+func TestDoctorIndexesMountsByPositionNotByReportedCount(t *testing.T) {
+	dir := mountDenHome(t, "   ", "/nope/missing") // index 0 blank, index 1 missing
+	d := okDeps()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/nope/missing" {
+			return nil, errors.New("not found")
+		}
+		return nil, nil
+	}
+	checks := Run(dir, d)
+	if _, ok := findExactName(checks, "mounts[0]"); ok {
+		t.Errorf("the blank entry at index 0 must not get its own line; checks: %+v", checks)
+	}
+	line, ok := findExactName(checks, "mounts[1]")
+	if !ok {
+		t.Fatalf("no check named \"mounts[1]\": the second entry must keep its own "+
+			"index, not be renumbered to fill the gap; checks: %+v", checks)
+	}
+	if line.Level == LevelOK {
+		t.Error("a missing mount host must be reported as not-ok")
+	}
+	if !strings.Contains(line.Detail, "/nope/missing") {
+		t.Errorf("the detail must name the path, got %q", line.Detail)
 	}
 }
 
