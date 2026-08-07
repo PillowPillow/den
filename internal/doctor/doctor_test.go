@@ -461,6 +461,89 @@ func TestRunPresentKitsReportNothing(t *testing.T) {
 	}
 }
 
+// --- mounts[].host ----------------------------------------------------
+//
+// Same probe as ssh.dir, same reason: Validate() only judges "declared or
+// not"; "declared but missing on disk" needs a filesystem probe, and that's
+// the very path `sbx create` mounts into the sandbox.
+
+// mountDenHome builds a den home whose config.yaml declares a single
+// `mounts:` entry pointing at host. Modeled on keyRepoDenHome above: same
+// technique (rewrite config.yaml wholesale over validDenHome's base), applied
+// to `mounts:` instead of a key-typed repo.
+func mountDenHome(t *testing.T, host string) string {
+	t.Helper()
+	dir := validDenHome(t)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(fmt.Sprintf(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: %s
+    link: $HOME/x
+`, host)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestDoctorReportsMissingMountHost(t *testing.T) {
+	dir := mountDenHome(t, "/nope/missing")
+	d := okDeps()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/nope/missing" {
+			return nil, errors.New("not found")
+		}
+		return nil, nil
+	}
+	checks := Run(dir, d)
+	line, ok := findExactName(checks, "mounts[0]")
+	if !ok {
+		t.Fatalf("no check named \"mounts[0]\"; checks: %+v", checks)
+	}
+	if line.Level == LevelOK {
+		t.Fatal("a missing mount host must be reported as not-ok")
+	}
+	if !strings.Contains(line.Detail, "/nope/missing") {
+		t.Fatalf("the detail must name the path, got %q", line.Detail)
+	}
+}
+
+// The counterpart: a mount host that exists reports OK, by index. Without
+// this case, a check that failed every mount unconditionally would pass the
+// test above unnoticed.
+func TestDoctorReportsPresentMountHost(t *testing.T) {
+	dir := mountDenHome(t, "/dev/mounted")
+	checks := Run(dir, okDeps()) // okDeps: every path exists
+	line, ok := findExactName(checks, "mounts[0]")
+	if !ok {
+		t.Fatalf("no check named \"mounts[0]\"; checks: %+v", checks)
+	}
+	if line.Level != LevelOK {
+		t.Errorf("a present mount host must report OK; got %+v", line)
+	}
+	if !strings.Contains(line.Detail, "/dev/mounted") {
+		t.Errorf("detail = %q, want the host path", line.Detail)
+	}
+}
+
+// A blank host: Validate() already refuses it (config errors are surfaced by
+// the "config" check above). doctor must not produce a SECOND diagnostic for
+// the same fault under "mounts[0]", or the user sees one problem reported
+// twice under two different names.
+func TestDoctorDoesNotDoubleReportABlankMountHost(t *testing.T) {
+	dir := mountDenHome(t, "   ") // blank after TrimSpace
+	checks := Run(dir, okDeps())
+	if _, ok := findExactName(checks, "mounts[0]"); ok {
+		t.Errorf("a blank host must not get its own mounts[0] line: "+
+			"Validate() already reports it; checks: %+v", checks)
+	}
+}
+
 // --- git version floor -------------------------------------------------
 //
 // den calls `git rev-parse --path-format=absolute` (internal/worktree/

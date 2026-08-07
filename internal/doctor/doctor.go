@@ -268,6 +268,27 @@ func Run(denHome string, d Deps) []Check {
 		}
 	}
 
+	// 7bis. mounts[].host — same probe as ssh.dir, same reason: Validate()
+	// judges "declared or not", while "declared but missing on disk" needs a
+	// filesystem probe. Reported per index so the line names what to fix.
+	//
+	// Reads g.Mounts and NOT nest.Resolved: doctor is nest-independent. The
+	// ssh.mode sugar is therefore reported by the ssh.dir block above, which is
+	// the key the user actually wrote.
+	for i, m := range g.Mounts {
+		key := fmt.Sprintf("mounts[%d]", i)
+		if strings.TrimSpace(m.Host) == "" {
+			continue // Validate() already refuses this; doctor does not double-report
+		}
+		if _, err := d.Stat(m.Host); err != nil {
+			add(key, false,
+				"%s not found — this directory is mounted into the sandbox, and a missing "+
+					"path would mount an empty directory instead of your files", m.Host)
+			continue
+		}
+		add(key, true, "%s", m.Host)
+	}
+
 	// 8. ssh.mode agent-forward — the config's DEFAULT
 	// (config.LoadGlobalUnvalidated sets it when `ssh.mode` is absent).
 	//
