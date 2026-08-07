@@ -353,6 +353,66 @@ Atténuation : garder le shell trivial, et le vérifier **une fois à la main da
 sandbox**, le résultat consigné ici. C'est le traitement hors-bande que la spec §14.0/§14.1
 réserve déjà à toute affirmation sur ce qu'un vrai `sbx` a réellement répondu.
 
+#### Mesuré le 2026-08-07 — `sbx` v0.37.1, den `v1.3.1-14-gf895ffa`
+
+Sandbox jetable `smoke`, `DEN_HOME=/tmp/den-mount-smoke/home`, un seul mount
+(`host: /tmp/den-mount-smoke/linkme`, `link: $HOME/.linkme`), détruite en fin de mesure.
+Chaque ligne ci-dessous est une sortie observée, pas une reformulation.
+
+**A11 est vraie pour cette version de `sbx`.** C'était l'hypothèse ouverte dont dépend tout le
+design. `sbx` monte bien le workspace au **même chemin absolu** dans la VM :
+
+```
+lrwxrwxrwx+ 1 agent agent 27 /home/agent/.linkme -> /tmp/den-mount-smoke/linkme
+marker
+```
+
+**Les trois issues du tableau vacuité, dans l'ordre.**
+
+| cible avant boot | observé |
+|---|---|
+| répertoire **non vide** | `den mounts: FATAL /home/agent/.linkme is a non-empty directory (from mounts[0]) — den refuses to replace it`, puis `fail … exit=1`. Le fichier `occupied` a **survécu** : le refus n'a rien détruit. |
+| répertoire **vide** | `den mounts: /home/agent/.linkme -> /tmp/den-mount-smoke/linkme`, `ok`. Le placeholder est pris, le lien reposé, `canary.txt` relu. |
+| **déjà le bon lien** | `den mounts: … -> …`, `ok`. Idempotent — c'est la garde `-L` avant `-d` qui tient, un `-d` testé en premier aurait envoyé le lien correct dans la branche répertoire. |
+
+**L'ordre des `commands.startup` est bien celui déclaré, et le dispatcher s'arrête à la
+première défaillance.** Les deux entrées de den apparaissent comme deux scripts numérotés
+distincts, phase de liens d'abord, fraîcheur ensuite :
+
+```
+> /etc/durable-startup.d/002-startup-den-smoke/000-cmd.sh
+den mounts: /home/agent/.linkme -> /tmp/den-mount-smoke/linkme
+ok /etc/durable-startup.d/002-startup-den-smoke/000-cmd.sh
+> /etc/durable-startup.d/002-startup-den-smoke/001-cmd.sh
+agent claude: up to date
+ok /etc/durable-startup.d/002-startup-den-smoke/001-cmd.sh
+```
+
+Au boot refusé, `001-cmd.sh` **n'apparaît pas du tout** dans le journal : le dispatcher a coupé
+sur `exit=1`. C'est la vérification directe de la raison pour laquelle la fraîcheur doit rester
+**dernière** (spec §9.1) — et donc de la raison pour laquelle la phase de liens passe devant.
+
+**Il n'existe pas de `sbx start`.** Le plan supposait `sbx stop && sbx start` pour rejouer le
+dispatcher ; `sbx` v0.37.1 n'a pas cette commande. Mesuré à la place : **`sbx exec` sur une
+sandbox arrêtée la redémarre et rejoue le dispatcher** (compteur `dispatcher run` du journal :
+2 → 3). C'est ce chemin qui a servi aux trois issues ci-dessus, aucune n'a été rejouée à la
+main. Fait sur `sbx` non encore consigné ailleurs.
+
+**Un workspace en double est bénin.** Une entrée `mounts:` dont le `host` est déjà dans
+`repos:` a été passée deux fois à `sbx create` : la création réussit, `sbx ls` ne rapporte le
+chemin **qu'une fois**, et le répertoire reste accessible et inscriptible dans la VM. den n'a
+donc pas besoin de dédupliquer.
+
+**L'ordre des workspaces tient côté `sbx`**, dépôt d'abord et mount en dernier — c'est ce qui
+protège le `-w` de l'attache :
+
+```
+smoke  shell  /tmp/den-mount-smoke/src, /tmp/den-mount-smoke/home/agents/claude, /tmp/den-mount-smoke/linkme
+```
+
+Rien n'a divergé du design. Le seul écart est côté plan, pas côté den : la commande `sbx start`
+qu'il prescrivait n'existe pas.
+
 ## Ce que devient la spec §10
 
 CLAUDE.md est explicite : une divergence entre la spec et le comportement réel est désormais
