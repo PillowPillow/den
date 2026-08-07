@@ -130,6 +130,27 @@ func (g *Global) Validate() []error {
 		errs = append(errs, fmt.Errorf("ssh.dir: required when ssh.mode is mount"))
 	}
 
+	for i, m := range g.Mounts {
+		// Indexed key, like agents.*.bin_dirs above: a config may carry several
+		// mounts, and "mounts" alone would not say which one to fix.
+		if strings.TrimSpace(m.Host) == "" {
+			errs = append(errs, fmt.Errorf(
+				"mounts[%d].host: required — a mount with no host path mounts nothing", i))
+		}
+		// A relative link names no stable location: the VM's startup shell
+		// expands it from a cwd den does not control. Refused HERE rather than
+		// at boot, where the message would land in a microVM log nobody reads.
+		// `$HOME/...` and `~/...` are the two VM-side forms den emits verbatim.
+		if l := strings.TrimSpace(m.Link); l != "" &&
+			!strings.HasPrefix(l, "/") &&
+			!strings.HasPrefix(l, "$HOME/") &&
+			!strings.HasPrefix(l, "~/") {
+			errs = append(errs, fmt.Errorf(
+				"mounts[%d].link: must be absolute, or start with $HOME/ or ~/ — "+
+					"%q is relative to a working directory den does not control in the VM", i, m.Link))
+		}
+	}
+
 	errs = append(errs, g.ValidateWorktree()...)
 
 	for _, key := range slices.Sorted(maps.Keys(g.Repos)) {

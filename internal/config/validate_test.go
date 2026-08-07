@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -453,5 +454,42 @@ func TestValidateRepoKeyBlankPath(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a repos.api error, got: %v", errs)
+	}
+}
+
+func TestValidateMounts(t *testing.T) {
+	cases := []struct {
+		name   string
+		mounts []Mount
+		want   string // substring the error must contain; "" means valid
+	}{
+		{"host required", []Mount{{Link: "$HOME/x"}}, "mounts[0].host: required"},
+		{"host blank", []Mount{{Host: "   ", Link: "$HOME/x"}}, "mounts[0].host: required"},
+		// A link with no host would be a link to nothing; a host with no link is
+		// legitimate (env-var consumers), so only one direction is an error.
+		{"link optional", []Mount{{Host: "/tmp/x"}}, ""},
+		// Relative link: the VM expands it from an unspecified cwd, so it names
+		// no stable location. Caught here rather than at boot, where the message
+		// would arrive inside a microVM nobody is watching.
+		{"link must be absolute or $HOME/~", []Mount{{Host: "/tmp/x", Link: "some/where"}},
+			"mounts[0].link: must be absolute"},
+		{"link $HOME ok", []Mount{{Host: "/tmp/x", Link: "$HOME/.ssh"}}, ""},
+		{"link tilde ok", []Mount{{Host: "/tmp/x", Link: "~/.ssh"}}, ""},
+		{"link absolute ok", []Mount{{Host: "/tmp/x", Link: "/etc/thing"}}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := validGlobal()
+			g.Mounts = tc.mounts
+			err := errors.Join(g.Validate()...)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("want valid, got %v", err)
+			case tc.want != "" && err == nil:
+				t.Fatalf("want error containing %q, got nil", tc.want)
+			case tc.want != "" && !strings.Contains(err.Error(), tc.want):
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
