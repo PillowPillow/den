@@ -32,6 +32,30 @@ type SSH struct {
 	Dir  string `yaml:"dir"`  // used when mode=mount
 }
 
+// Mount is one entry of `mounts:` — a host directory made available inside the
+// microVM, and optionally linked to a path the VM's tools actually read.
+//
+// The two path fields belong to DIFFERENT MACHINES, and conflating them is the
+// bug this type exists to prevent:
+//
+//   - Host is a HOST path. den expands it (ExpandPath, like `repos:` and
+//     `ssh.dir`) and hands it to `sbx create`, which mounts it at that SAME
+//     absolute path inside the VM (spec A11 — sbx takes no mount-target flag,
+//     probed 2026-08-07, so den cannot choose where it lands).
+//   - Link is a VM path. den NEVER expands it: `$HOME` is /Users/<me> on the
+//     host and /home/agent in the VM. It is emitted verbatim into the startup
+//     shell and expanded there. Same reasoning as bin_dirs in
+//     internal/agent/freshness.go.
+//
+// Link empty is legitimate, not a degenerate case: it is right whenever the
+// consuming tool can be pointed at the host path by an environment variable,
+// which is how the agent's own config dir works (CLAUDE_CONFIG_DIR).
+type Mount struct {
+	Host string `yaml:"host"`
+	Link string `yaml:"link"`
+	RO   bool   `yaml:"ro"`
+}
+
 // Global is the content of ~/.den/config.yaml, with defaults applied and paths expanded.
 type Global struct {
 	Agents         map[string]Agent `yaml:"agents"`
@@ -44,6 +68,13 @@ type Global struct {
 	// §2.4) to a path on THIS machine. Personal by design: it is the one part
 	// of a shared nest that cannot travel.
 	Repos map[string]string `yaml:"repos"`
+	// Mounts is GLOBAL and deliberately not part of the stack/nest cascade.
+	// A `host:` is a path on THIS machine, and den already refuses `path:` on a
+	// nest that comes from a source for exactly that reason — a stack in a
+	// shared source declaring one would reintroduce what `den lint` exists to
+	// refuse. Per-stack mounts would need the same key indirection as `repos:`,
+	// which is a separate design.
+	Mounts []Mount `yaml:"mounts"`
 }
 
 // LoadGlobalUnvalidated reads <denHome>/config.yaml, applies defaults and
@@ -103,6 +134,12 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 	}
 	if g.SSH.Dir, err = ExpandPath(g.SSH.Dir); err != nil {
 		return nil, err
+	}
+	for i := range g.Mounts {
+		// Host only. Link is a VM path — see the Mount doc comment.
+		if g.Mounts[i].Host, err = ExpandPath(g.Mounts[i].Host); err != nil {
+			return nil, fmt.Errorf("mounts[%d].host: %w", i, err)
+		}
 	}
 	for name, a := range g.Agents {
 		// Same shape as worktree_root above: defaulted here, against the LIVE

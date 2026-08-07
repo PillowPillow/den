@@ -345,3 +345,65 @@ func TestLoadGlobalAccumulatesAllErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadGlobalExpandsMountHostButNeverLink(t *testing.T) {
+	// The ONE property this whole feature rests on: `host` is a host path and
+	// den expands it; `link` is a VM path and den must leave it ALONE. A `~`
+	// expanded here would become /Users/<me>/... and point nowhere in the VM,
+	// which is the exact bug the mounts design exists to fix.
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: ~/.digitaleo
+    link: $HOME/.digitaleo
+  - host: ~/.aws
+    link: ~/.aws
+    ro: true
+`)
+	g, err := LoadGlobalUnvalidated(denHome)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(g.Mounts) != 2 {
+		t.Fatalf("got %d mounts, want 2", len(g.Mounts))
+	}
+	if strings.HasPrefix(g.Mounts[0].Host, "~") {
+		t.Errorf("host not expanded: %q", g.Mounts[0].Host)
+	}
+	if g.Mounts[0].Link != "$HOME/.digitaleo" {
+		t.Errorf("link must stay verbatim, got %q", g.Mounts[0].Link)
+	}
+	// `~` in a link is a VM tilde. Expanding it host-side is the same bug as
+	// expanding $HOME, and less obvious, so it gets its own assertion.
+	if g.Mounts[1].Link != "~/.aws" {
+		t.Errorf("link tilde must stay verbatim, got %q", g.Mounts[1].Link)
+	}
+	if !g.Mounts[1].RO {
+		t.Errorf("ro not decoded")
+	}
+}
+
+func TestLoadGlobalRejectsUnknownKeyInsideMount(t *testing.T) {
+	// Strict decoding is not decorative here: a silent `lnik:` typo would
+	// produce a mount that is never linked, and the tool inside the VM would
+	// read the wrong path with no error at all (spec §12).
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: /tmp/x
+    lnik: /home/agent/x
+`)
+	if _, err := LoadGlobalUnvalidated(denHome); err == nil {
+		t.Fatal("want a load error naming the unknown key, got nil")
+	}
+}
