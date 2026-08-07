@@ -56,6 +56,19 @@ type Mount struct {
 	RO   bool   `yaml:"ro"`
 }
 
+// SSHLinkTarget is where `ssh.mode: mount` links ssh.dir.
+//
+// `$HOME` and not an absolute path: it is expanded by the VM's bash, whose
+// $HOME is /home/agent. Writing /home/agent here would hard-code the microVM's
+// user into den. See Mount above for the full rule.
+//
+// It lives HERE and not in internal/nest, where the sugar is applied, because
+// Validate must compare a user's `mounts[].link` against it: the sugar and a
+// hand-written `link: $HOME/.ssh` collide on the same VM path, and only the
+// package that owns config.yaml's validation can refuse that. nest imports
+// config, so the sugar reads the same constant — one spelling, one concept.
+const SSHLinkTarget = "$HOME/.ssh"
+
 // Global is the content of ~/.den/config.yaml, with defaults applied and paths expanded.
 type Global struct {
 	Agents         map[string]Agent `yaml:"agents"`
@@ -148,10 +161,21 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 		// the first. `$HOME/.ssh/` and `$HOME/.ssh` denote the same VM path, so
 		// stripping is lossless. Normalised at LOAD, beside the trim above, so one
 		// canonical value reaches validation, the mixin and the emitted shell
-		// alike — not re-derived at each consumer. Guarded on len > 1 so a lone
-		// "/" (unusual but not this bug's shape) is never reduced to "".
-		if l := g.Mounts[i].Link; len(l) > 1 && strings.HasSuffix(l, "/") {
-			g.Mounts[i].Link = strings.TrimRight(l, "/")
+		// alike — not re-derived at each consumer.
+		//
+		// The RESULT is what is guarded, never the input length: `len(l) > 1`
+		// let "//" through and TrimRight reduced it to "", which Validate then
+		// reads as "no link asked for" (an empty link is legitimate, see the
+		// Mount doc above). den would mount the directory, silently link
+		// nothing, and report success — the exact silent wrong-path failure the
+		// link phase exists to remove. An all-slashes link denotes the VM's
+		// root, so "/" is what it collapses to.
+		if l := g.Mounts[i].Link; strings.HasSuffix(l, "/") {
+			if trimmed := strings.TrimRight(l, "/"); trimmed != "" {
+				g.Mounts[i].Link = trimmed
+			} else {
+				g.Mounts[i].Link = "/"
+			}
 		}
 		// Host only. Link is a VM path — see the Mount doc comment.
 		if g.Mounts[i].Host, err = ExpandPath(g.Mounts[i].Host); err != nil {

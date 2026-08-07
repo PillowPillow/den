@@ -476,3 +476,33 @@ mounts:
 		t.Errorf("trailing slash not stripped: got %q, want %q", g.Mounts[0].Link, "$HOME/.ssh")
 	}
 }
+
+// An ALL-slashes link must never collapse to "". An empty link is legitimate
+// (the env-var consumers), so the emptied value passes validation, the link
+// phase filters the mount out, and den reports success for a mount it never
+// linked — the silent wrong-path failure the link phase exists to remove. The
+// stripping guards its RESULT, not the input's length.
+func TestLoadGlobalNeverEmptiesAnAllSlashesMountLink(t *testing.T) {
+	for _, link := range []string{"/", "//", "///"} {
+		t.Run(link, func(t *testing.T) {
+			denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: /tmp/host
+    link: "`+link+`"
+`)
+			g, err := LoadGlobalUnvalidated(denHome)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if g.Mounts[0].Link != "/" {
+				t.Errorf("link %q became %q, want %q", link, g.Mounts[0].Link, "/")
+			}
+		})
+	}
+}

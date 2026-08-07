@@ -41,6 +41,17 @@ func LinkCommand(mounts []nest.Mount) []string {
 	// below is handled explicitly, with a message naming the config key. `-e`
 	// would abort on the first non-zero test with no diagnostic at all.
 	b.WriteString("set -uo pipefail\n\n")
+	// ANNOUNCED BEFORE THE FIRST den_link, and this line is load-bearing, not a
+	// progress log. ParseKitLog tells a refused link phase from a failed
+	// freshness command by the presence of a LinkPhaseMarker line, and that
+	// discriminator is one-way as long as the only markers are printed BY
+	// den_link: a link phase that dies before reaching one — the dispatcher
+	// killing the script, `set -u` firing on a value den emits — is then read as
+	// a failed agent update, and den sends the user to the agent registry for a
+	// `mounts:` fault. Printing the marker first makes its absence mean
+	// something: the link phase did not start.
+	fmt.Fprintf(&b, "echo %s\n\n",
+		shellSingleQuote(fmt.Sprintf("%slinking %d mount(s)", LinkPhaseMarker, len(linked))))
 	b.WriteString(linkFunc)
 	for _, m := range linked {
 		// Trimmed again here, even though config.LoadGlobal already trims at load:
@@ -70,8 +81,9 @@ func LinkCommand(mounts []nest.Mount) []string {
 	return []string{"bash", "-c", b.String()}
 }
 
-// LinkPhaseMarker prefixes EVERY line den_link prints — the success line and
-// all four refusals below. It is den's own string, and it is exported because
+// LinkPhaseMarker prefixes EVERY line the link phase prints — the start line
+// LinkCommand emits, den_link's success line, and each of its refusals below.
+// It is den's own string, and it is exported because
 // ParseKitLog reads it back out of the dispatcher journal: it is the only thing
 // that tells a failed link phase apart from a failed freshness command when the
 // run aborted before any later entry was announced.
@@ -88,6 +100,16 @@ func LinkCommand(mounts []nest.Mount) []string {
 // on this function's own FATAL lines (2026-08-07) — so the marker reaches the
 // journal from every branch.
 const LinkPhaseMarker = "den mounts: "
+
+// linkFatal is what den_link prints on a REFUSAL, and only on a refusal — the
+// start line and the success line never carry it. ParseKitLog reads it to tell
+// "den decided to refuse this mount" from "the link phase died on its own",
+// which are two different remedies for the user.
+//
+// linkFunc below spells it literally: a const cannot be interpolated into a
+// const string. TestLinkFuncSpellsEveryRefusalWithLinkFatal locks the two
+// together, so a reworded refusal cannot silently stop matching.
+const linkFatal = "FATAL"
 
 // linkFunc is the fail-closed linker, shared by every mount.
 //

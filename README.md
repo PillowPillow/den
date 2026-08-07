@@ -293,6 +293,16 @@ sandbox you spawn afterward. Legitimate, as long as it is not done unknowingly. 
 is the same trade-off under a different name: the key sits at rest in every VM while the forwarded
 agent still holds it too, so the mode **adds** reach, it does not narrow it.
 
+`den nest show <nest>` lists what a spawn will mount — the `mounts:` entries and the
+`ssh.mode: mount` sugar alike — which is the one place that enumerates a global key per nest.
+
+`host:` must be absolute (or `~/...`, which den expands). `link:` is a **VM** path, emitted into the
+sandbox's startup shell verbatim so the VM expands `$HOME`: it must be absolute or start with
+`$HOME/` / `~/`, may expand nothing but `$HOME` (spelled `$HOME`, not `${HOME}`), and carries no
+quote, backslash, backtick or `$(...)`. Two mounts may not claim the same `link:` — the link phase would run `ln -sfn` twice on
+one path and only the last would survive, so den refuses instead of letting one entry disappear in
+silence.
+
 ## Agent freshness
 
 The agent is updated **at boot**, not baked into the image, through the `update:` command of the

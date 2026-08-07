@@ -214,6 +214,33 @@ func writeResolution(w io.Writer, ref string, r *nest.Resolved) {
 	fmt.Fprintf(w, "ssh:    %s\n", r.SSHMode)
 	fmt.Fprintf(w, "worktrees: %s (%s)\n", r.WorktreeRoot, r.WorktreeLayout)
 
+	// Mounts belong in the dry-run for the same reason repos do, and more
+	// sharply: they hand a host directory to the microVM, and `mounts:` is
+	// GLOBAL, so nothing in the nest the user is inspecting mentions them. Left
+	// out, this listing answers "what will this spawn receive" with the one part
+	// of the answer the user did not write per-nest.
+	//
+	// The ssh.mode sugar appears here as an ordinary mount (Key "ssh.dir") — it
+	// IS one after resolveMounts, and the `ssh:` line above names the mode
+	// without ever saying which directory it exposes.
+	if len(r.Mounts) > 0 {
+		fmt.Fprintln(w, "mounts:")
+		for _, m := range r.Mounts {
+			mode := "rw"
+			if m.RO {
+				mode = "ro"
+			}
+			// A link-less mount is legitimate (config.Mount): it lands at its
+			// host path inside the VM and the tool is pointed at it by an env
+			// var. Saying so beats printing an empty arrow.
+			target := "no link (reachable at the host path)"
+			if m.Link != "" {
+				target = "-> " + m.Link
+			}
+			fmt.Fprintf(w, "  - %s %s [%s, from %s]\n", m.Host, target, mode, m.Key)
+		}
+	}
+
 	fmt.Fprintln(w, "repos:")
 	for _, repo := range r.Repos {
 		// A repo given on the command line is neither required nor optional —

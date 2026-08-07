@@ -266,6 +266,23 @@ func allAnnouncedPassed(announced, passed map[string]bool) bool {
 // `mounts:` — and the journal already told den which it was.
 func failedEntry(line, linkLine string) GateVerdict {
 	if linkLine != "" {
+		if !strings.Contains(linkLine, linkFatal) {
+			// The link phase announced itself (LinkCommand prints its marker
+			// before the first den_link) and then died without den's own
+			// diagnostic: the shell itself failed, or the dispatcher killed the
+			// script. Still a mounts fault and NOT an agent one — but calling it
+			// a refusal would name a den decision that was never taken, and send
+			// the reader looking for a "FATAL" line the journal does not carry.
+			return GateVerdict{
+				State: GateFailed,
+				Line:  line,
+				Reason: "den's link phase failed without reporting a refusal, so the freshness " +
+					"command never ran and the agent was NOT updated (last link-phase line: " +
+					strings.TrimSpace(linkLine) + ")",
+				Remedy: "Check `mounts:` in den's global config.yaml, and the lines above for the " +
+					"VM shell's own message",
+			}
+		}
 		return GateVerdict{
 			State: GateFailed,
 			Line:  line,

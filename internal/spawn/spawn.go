@@ -444,9 +444,16 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 						"instead of your keys",
 					m.Host, config.GlobalPath(denHome))
 			}
+			// `den sh` is NAMED, not merely implied by the comment above: this
+			// gate runs on the attach branch too, so a host path that vanished
+			// (an unmounted volume, a directory not created yet) refuses entry
+			// to a sandbox that is alive and holding work. The user needs the
+			// one command that skips all of this, in the message, at the moment
+			// they are locked out.
 			return fmt.Errorf(
 				"%s.host: %s not found — fix `mounts:` in %s: this directory is mounted in the "+
-					"sandbox, and a missing path would mount an empty directory instead of your files",
+					"sandbox, and a missing path would mount an empty directory instead of your files "+
+					"(`den sh <sandbox>` still enters an already-live sandbox)",
 				m.Key, m.Host, config.GlobalPath(denHome))
 		case !fi.IsDir():
 			if m.Key == "ssh.dir" {

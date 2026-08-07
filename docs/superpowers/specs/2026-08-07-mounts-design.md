@@ -324,6 +324,31 @@ d'échec. Le coût est réel — un `link:` fautif casse le spawn — mais la ba
 d'abord le cas courant, si bien que ce qui survit jusqu'au boot est un vrai conflit dans la VM,
 que seul l'utilisateur peut trancher.
 
+### La barrière hôte, complétée après revue (2026-08-07)
+
+La revue de la branche a montré que `link:` était **fait confiance de bout en bout** : validé sur
+son seul préfixe, puis interpolé non échappé dans le shell de démarrage de la VM. Quatre refus
+s'ajoutent donc côté hôte, dans `config.Validate` — la seule couche que `den doctor` et `den spawn`
+traversent tous les deux :
+
+| Fait refusé | Ce qu'il évitait |
+|---|---|
+| `link:` portant `"`, `\`, `` ` `` ou `$(` | `$(curl … \| sh)` s'exécute dans la VM à **chaque** boot ; un `"` casse la syntaxe du script, qui meurt avant d'imprimer le moindre marqueur |
+| `link:` expansant autre chose que `$HOME` — `${HOME}` compris | le script tourne sous `set -u` : une variable non définie tue le boot sans nommer ni le mount ni la clé. `${HOME}` est refusé bien que bash l'expanse pareil : `LinkCommand` ne réécrit que `~/`, donc une seconde orthographe passerait le refus de collision ci-dessous |
+| deux mounts sur **un même** `link:` (sucre `ssh.mode: mount` compris, comparaison faite après réécriture `~/` → `$HOME/`) | `ln -sfn` s'exécute deux fois, les deux entrées impriment leur succès, la dernière gagne : l'entrée de l'utilisateur disparaît en silence (spec §2) |
+| `host:` relatif | il survivait jusqu'à `sbx.CreateArgv`, c'est-à-dire **après** la création des worktrees et des branches — l'utilisateur nettoie à la main ce que den vient de créer |
+
+Deux corrections de même origine accompagnent ces refus :
+
+- `link: "//"` était normalisé en `""`, et un `link` vide est **légitime** (consommateurs par
+  variable d'environnement) : den montait le répertoire, ne liait rien, et annonçait un succès.
+  C'est le résultat du `TrimRight` qui est gardé désormais, jamais la longueur de l'entrée ;
+- la phase de liens **s'annonce** (`den mounts: linking N mount(s)`) avant le premier `den_link`.
+  Le discriminant de `ParseKitLog` était à sens unique — un marqueur prouvait la phase de liens,
+  son absence ne prouvait rien — et l'absence était lue comme « la commande de fraîcheur a
+  échoué » : den envoyait l'utilisateur corriger le registre d'agents pour une faute de `mounts:`.
+  Un marqueur imprimé en premier donne un sens à son absence.
+
 ## Tests
 
 La phase de liens est **une chaîne que den génère**, donc l'essentiel est testable sans VM :

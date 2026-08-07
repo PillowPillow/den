@@ -126,6 +126,57 @@ func TestNestShowPrintsTheResolution(t *testing.T) {
 	}
 }
 
+// `den nest show` is the dry-run of a spawn, and `mounts:` is the one part of
+// what a sandbox receives that lives in NO nest file: it is global. Left out of
+// this listing, the reader has no command that says which host directories a
+// spawn will expose — and the `ssh:` line names a mode whose directory it never
+// prints.
+func TestNestShowPrintsTheMounts(t *testing.T) {
+	dir := t.TempDir()
+	writeUnder(t, dir, "config.yaml", `
+agents:
+  claude:
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: mount
+  dir: /host/ssh_sbx
+mounts:
+  - host: /host/digitaleo
+    link: $HOME/.digitaleo
+  - host: /host/datasets
+    ro: true
+`)
+	writeUnder(t, dir, "stacks/devx/stack.yaml", "image: devx:v1\n")
+	writeUnder(t, dir, "nests/api.yaml", "stack: devx\nrepos:\n  - { path: /dev/api }\n")
+	t.Setenv("DEN_HOME", dir)
+
+	out, err := run(t, "nest", "show", "api")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{
+		"mounts:",
+		"/host/digitaleo -> $HOME/.digitaleo",
+		"mounts[0]",
+		// A link-less mount is legitimate and must be listed too: it lands at
+		// its host path, which is exactly what the reader needs to know.
+		"/host/datasets",
+		"ro",
+		// The ssh.mode sugar is an ordinary mount after resolution, and it is
+		// the one that exposes the user's keys.
+		"/host/ssh_sbx -> $HOME/.ssh",
+		"ssh.dir",
+	}
+	for _, e := range expected {
+		if !strings.Contains(out, e) {
+			t.Errorf("output = %q, expected containing %q", out, e)
+		}
+	}
+}
+
 func TestNestShowUnknownNest(t *testing.T) {
 	testDenHome(t)
 	if _, err := run(t, "nest", "show", "ghost"); err == nil {

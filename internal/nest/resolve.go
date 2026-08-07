@@ -27,13 +27,6 @@ type Options struct {
 	Cwd string
 }
 
-// sshLinkTarget is where ssh.mode "mount" links ssh.dir.
-//
-// `$HOME` and not an absolute path: it is expanded by the VM's bash, whose
-// $HOME is /home/agent. Writing /home/agent here would hard-code the microVM's
-// user into den. See config.Mount for the full rule.
-const sshLinkTarget = "$HOME/.ssh"
-
 // Mount is a resolved `mounts:` entry, ready for the spawn argv and the mixin.
 //
 // It adds Key to config.Mount: the configuration key this entry CAME FROM,
@@ -70,7 +63,10 @@ func resolveMounts(g *config.Global) []Mount {
 	if g.SSH.Mode == "mount" && g.SSH.Dir != "" {
 		out = append(out, Mount{
 			Host: g.SSH.Dir,
-			Link: sshLinkTarget,
+			// config owns the constant: config.Validate compares a user's
+			// `mounts[].link` against the same string to refuse a collision
+			// with this sugar. Two spellings would let one through.
+			Link: config.SSHLinkTarget,
 			// Never RO: ssh writes known_hosts, and a read-only mount turns
 			// that into a failure far from its cause.
 			Key: "ssh.dir",
@@ -121,8 +117,11 @@ type Resolved struct {
 	Egress []string // sorted union of baseline ∪ stack ∪ nest
 	Repos  []Repo   // applied selection, declaration order
 
-	SSHMode        string
-	SSHDir         string
+	SSHMode string
+	// Mounts carries `ssh.dir` too, as the ssh.mode sugar (resolveMounts). No
+	// SSHDir field beside it on purpose: spawn reads Mounts alone, and a second
+	// field holding the same path would let a future "fix" edit the one nothing
+	// mounts — it would compile, pass every test, and change nothing in the VM.
 	Mounts         []Mount
 	WorktreeLayout string
 	WorktreeRoot   string
@@ -313,7 +312,6 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 		Egress:         unionEgress(g.Egress, s.Egress, n.Egress),
 		Repos:          repos,
 		SSHMode:        g.SSH.Mode,
-		SSHDir:         g.SSH.Dir,
 		Mounts:         resolveMounts(g),
 		WorktreeLayout: g.WorktreeLayout,
 		WorktreeRoot:   g.WorktreeRoot,

@@ -40,6 +40,56 @@ func TestLinkCommandQuotesHostAndLinkDIFFERENTLY(t *testing.T) {
 	}
 }
 
+// The start line is what makes the gate's discriminator two-way: ParseKitLog
+// reads "no LinkPhaseMarker line" as "the link phase never started", and that
+// is only true if the phase announces itself BEFORE anything that can fail.
+func TestLinkCommandAnnouncesItselfBeforeTheFirstLink(t *testing.T) {
+	script := strings.Join(LinkCommand([]nest.Mount{
+		{Host: "/host/a", Link: "$HOME/a", Key: "mounts[0]"},
+	}), "\n")
+	marker := strings.Index(script, LinkPhaseMarker)
+	firstLink := strings.Index(script, "den_link '/host/a'")
+	switch {
+	case marker < 0:
+		t.Fatalf("no %q line at all:\n%s", LinkPhaseMarker, script)
+	case firstLink < 0:
+		t.Fatalf("no den_link call:\n%s", script)
+	case marker > firstLink:
+		t.Errorf("the marker must be printed before the first den_link:\n%s", script)
+	}
+	// The announcement is not a refusal: the gate tells the two apart on
+	// linkFatal, and a start line carrying it would report a refusal den never
+	// decided.
+	start := script[marker : strings.Index(script[marker:], "\n")+marker]
+	if strings.Contains(start, linkFatal) {
+		t.Errorf("the start line must not carry %q; got %q", linkFatal, start)
+	}
+}
+
+// linkFunc spells linkFatal literally — a const cannot be interpolated into a
+// const string — so nothing but this test keeps the two in agreement. If a
+// reworded refusal drops the word, ParseKitLog silently downgrades every
+// refusal to "the link phase died on its own": same failure, weaker diagnosis.
+func TestLinkFuncSpellsEveryRefusalWithLinkFatal(t *testing.T) {
+	refusals := 0
+	for _, line := range strings.Split(linkFunc, "\n") {
+		if !strings.Contains(line, "echo \""+LinkPhaseMarker) || !strings.Contains(line, ">&2") {
+			continue
+		}
+		refusals++
+		if !strings.Contains(line, linkFatal) {
+			t.Errorf("refusal line does not carry %q: %s", linkFatal, line)
+		}
+	}
+	if refusals != 5 {
+		t.Errorf("got %d refusal lines, want the 5 branches den_link can exit through", refusals)
+	}
+	// The SUCCESS line must stay clear of it, symmetrically.
+	if strings.Contains(`echo "den mounts: $dst -> $src"`, linkFatal) {
+		t.Error("the success line must not carry the refusal marker")
+	}
+}
+
 func TestLinkCommandGolden(t *testing.T) {
 	got := LinkCommand([]nest.Mount{
 		{Host: "/home/me/.digitaleo", Link: "$HOME/.digitaleo", Key: "mounts[0]"},

@@ -20,6 +20,8 @@ commands:
         - |
           set -uo pipefail
 
+          echo 'den mounts: linking 1 mount(s)'
+
           den_link() {
             src="$1"; dst="$2"; key="$3"
             if [ ! -e "$src" ]; then

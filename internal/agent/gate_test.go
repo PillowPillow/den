@@ -90,6 +90,19 @@ den mounts: FATAL /home/agent/.linkme is a non-empty directory (from mounts[0]) 
 fail ` + twoEntryDir + `/000-cmd.sh exit=1
 `
 
+// linkDiedBeforeAnyMount: the link phase ANNOUNCED itself and then died without
+// a FATAL line of its own — the VM's shell failing, or the dispatcher killing
+// the script. The start line is the whole reason den can still tell this from a
+// failed agent update: before it, a link phase that failed before its first
+// den_link left no marker at all, and the gate sent the user to the agent
+// registry to fix a `mounts:` fault.
+const linkDiedBeforeAnyMount = `=== dispatcher run 2026-08-07T10:00:00Z ===
+> ` + twoEntryDir + `/000-cmd.sh
+den mounts: linking 2 mount(s)
+/etc/durable-startup.d/002-startup-den-smoke/000-cmd.sh: line 12: killed
+fail ` + twoEntryDir + `/000-cmd.sh exit=137
+`
+
 // linkOKFreshnessOK: both entries passed. The healthy two-entry sandbox.
 const linkOKFreshnessOK = `=== dispatcher run 2026-08-07T10:00:00Z ===
 > ` + twoEntryDir + `/000-cmd.sh
@@ -147,6 +160,34 @@ func TestParseKitLogNamesTheLinkPhaseWhenItRefuses(t *testing.T) {
 	}
 	if !strings.Contains(v.Line, "exit=1") {
 		t.Errorf("the verdict line must still be carried; got %q", v.Line)
+	}
+}
+
+// A link phase that dies BEFORE any den_link is still a mounts fault. The
+// discriminator used to be one-way — a marker proved the link phase, its
+// absence proved nothing — and the absence was read as proof of a failed
+// freshness command: den refused the spawn telling the user to fix the agent's
+// `update:` command in the registry, for a fault in `mounts:`, while the
+// updater had never run at all.
+func TestParseKitLogDoesNotBlameTheAgentWhenTheLinkPhaseDiesEarly(t *testing.T) {
+	v := ParseKitLog([]byte(linkDiedBeforeAnyMount), "den-smoke")
+	if v.State != GateFailed {
+		t.Fatalf("state = %v, want GateFailed", v.State)
+	}
+	if !strings.Contains(v.Reason, "link phase") {
+		t.Errorf("the reason must name the link phase; got %q", v.Reason)
+	}
+	if strings.Contains(v.Reason, "freshness command exited") || strings.Contains(v.Remedy, "registry") {
+		t.Errorf("the agent updater never ran — it must not be blamed; got reason %q remedy %q",
+			v.Reason, v.Remedy)
+	}
+	if !strings.Contains(v.Remedy, "mounts:") {
+		t.Errorf("the remedy must name the key to look at; got %q", v.Remedy)
+	}
+	// "refused" is a den DECISION, and none was taken here: saying so would send
+	// the reader looking for a FATAL line the journal does not carry.
+	if strings.Contains(v.Reason, "refused") {
+		t.Errorf("no refusal was printed, the reason must not claim one; got %q", v.Reason)
 	}
 }
 
