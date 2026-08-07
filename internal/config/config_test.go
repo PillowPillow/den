@@ -345,3 +345,164 @@ func TestLoadGlobalAccumulatesAllErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadGlobalExpandsMountHostButNeverLink(t *testing.T) {
+	// The ONE property this whole feature rests on: `host` is a host path and
+	// den expands it; `link` is a VM path and den must leave it ALONE. A `~`
+	// expanded here would become /Users/<me>/... and point nowhere in the VM,
+	// which is the exact bug the mounts design exists to fix.
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: ~/.digitaleo
+    link: $HOME/.digitaleo
+  - host: ~/.aws
+    link: ~/.aws
+    ro: true
+`)
+	g, err := LoadGlobalUnvalidated(denHome)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(g.Mounts) != 2 {
+		t.Fatalf("got %d mounts, want 2", len(g.Mounts))
+	}
+	if strings.HasPrefix(g.Mounts[0].Host, "~") {
+		t.Errorf("host not expanded: %q", g.Mounts[0].Host)
+	}
+	if g.Mounts[0].Link != "$HOME/.digitaleo" {
+		t.Errorf("link must stay verbatim, got %q", g.Mounts[0].Link)
+	}
+	// `~` in a link is a VM tilde. Expanding it host-side is the same bug as
+	// expanding $HOME, and less obvious, so it gets its own assertion.
+	if g.Mounts[1].Link != "~/.aws" {
+		t.Errorf("link tilde must stay verbatim, got %q", g.Mounts[1].Link)
+	}
+	if !g.Mounts[1].RO {
+		t.Errorf("ro not decoded")
+	}
+}
+
+func TestLoadGlobalRejectsUnknownKeyInsideMount(t *testing.T) {
+	// Strict decoding is not decorative here: a silent `lnik:` typo would
+	// produce a mount that is never linked, and the tool inside the VM would
+	// read the wrong path with no error at all (spec §12).
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: /tmp/x
+    lnik: /home/agent/x
+`)
+	if _, err := LoadGlobalUnvalidated(denHome); err == nil {
+		t.Fatal("want a load error naming the unknown key, got nil")
+	}
+}
+
+// Mounts with surrounding whitespace must be trimmed at load time, so that the
+// same value is used everywhere: validation and every downstream consumer read
+// the trimmed string, and no copy can diverge. A leading space in a link would
+// break the `$HOME/` / `~/` prefix that later tasks rely on.
+func TestLoadGlobalTrimsMountsHostAndLink(t *testing.T) {
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: "  /tmp/host-with-spaces  "
+    link: "  $HOME/.link-with-spaces  "
+  - host: "  ~/.tilde-with-spaces  "
+    link: "  ~/.tilde-link  "
+`)
+	g, err := LoadGlobalUnvalidated(denHome)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(g.Mounts) != 2 {
+		t.Fatalf("got %d mounts, want 2", len(g.Mounts))
+	}
+	// First mount: host trimmed and expanded, link trimmed but not expanded.
+	if strings.HasPrefix(g.Mounts[0].Host, " ") || strings.HasSuffix(g.Mounts[0].Host, " ") {
+		t.Errorf("host not trimmed: %q", g.Mounts[0].Host)
+	}
+	if g.Mounts[0].Link != "$HOME/.link-with-spaces" {
+		t.Errorf("link not trimmed: got %q, want %q", g.Mounts[0].Link, "$HOME/.link-with-spaces")
+	}
+	// Second mount: host trimmed and expanded, link trimmed.
+	if strings.HasPrefix(g.Mounts[1].Host, " ") || strings.HasSuffix(g.Mounts[1].Host, " ") {
+		t.Errorf("tilde host not trimmed: %q", g.Mounts[1].Host)
+	}
+	if g.Mounts[1].Link != "~/.tilde-link" {
+		t.Errorf("tilde link not trimmed: got %q, want %q", g.Mounts[1].Link, "~/.tilde-link")
+	}
+}
+
+// A trailing slash on `link` makes `ln` resolve THROUGH an already-correct
+// symlink instead of replacing it: `$HOME/.ssh/` and `$HOME/.ssh` denote the
+// same VM path, but only the second one round-trips through `ln -sfn`. Left
+// unnormalized, the link phase would refuse on every boot after the first.
+func TestLoadGlobalStripsTrailingSlashFromMountLink(t *testing.T) {
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: /tmp/host
+    link: $HOME/.ssh/
+`)
+	g, err := LoadGlobalUnvalidated(denHome)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(g.Mounts) != 1 {
+		t.Fatalf("got %d mounts, want 1", len(g.Mounts))
+	}
+	if g.Mounts[0].Link != "$HOME/.ssh" {
+		t.Errorf("trailing slash not stripped: got %q, want %q", g.Mounts[0].Link, "$HOME/.ssh")
+	}
+}
+
+// An ALL-slashes link must never collapse to "". An empty link is legitimate
+// (the env-var consumers), so the emptied value passes validation, the link
+// phase filters the mount out, and den reports success for a mount it never
+// linked — the silent wrong-path failure the link phase exists to remove. The
+// stripping guards its RESULT, not the input's length.
+func TestLoadGlobalNeverEmptiesAnAllSlashesMountLink(t *testing.T) {
+	for _, link := range []string{"/", "//", "///"} {
+		t.Run(link, func(t *testing.T) {
+			denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: /tmp/host
+    link: "`+link+`"
+`)
+			g, err := LoadGlobalUnvalidated(denHome)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if g.Mounts[0].Link != "/" {
+				t.Errorf("link %q became %q, want %q", link, g.Mounts[0].Link, "/")
+			}
+		})
+	}
+}

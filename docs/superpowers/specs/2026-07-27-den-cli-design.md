@@ -272,13 +272,16 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
    (`{config_dir}` → chemin in-VM) et les **env nest**, toutes deux sous **`environment.variables`** ;
    l'**egress nest** en **`caps.network.allow`** ; et en **dernière** `commands.startup` la
    **commande de fraîcheur de l'agent** (§9.1). Dernière et pas ailleurs : elle est fail-closed, et
-   le dispatcher sbx interrompt toute la suite au premier échec.
+   le dispatcher sbx interrompt toute la suite au premier échec. Si un `mounts:` porte un `link:`,
+   sa phase de liens devient la **première** entrée de `commands.startup`, avant la fraîcheur
+   (§10.1).
 6. **Assemblage `sbx create`** :
    `--name <nest>[.<wt>]`, `--template <stack.image>`,
    `--kit <stacks/<stack>/kits[i]>…  --kit stacks/<stack>/kit  --kit <mixin généré>`
    (**le mixin généré reste le dernier `--kit`** — même raison qu'au point 5),
    agent positionnel **`shell`** (obligatoire : `sbx create [flags] AGENT PATH [PATH...]`), puis
-   positionnels = chemins worktree/repo + `config_dir` (+ `~/.ssh_sbx` si `ssh.mode=mount`).
+   positionnels = chemins worktree/repo + `config_dir` + **les mounts de `mounts:`, en dernier**
+   (`~/.ssh_sbx` en fait partie via le sucre `ssh.mode=mount`, §10.1).
    **Spawn-or-attach** : si le nom existe déjà → attache au lieu de recréer.
 7. **Policy + settle-loop** (cf. §7).
 8. **SSH** selon `ssh.mode` : `agent-forward` (défaut) / `mount ~/.ssh_sbx` / `none`.
@@ -753,17 +756,22 @@ même classe de défaut, reconstituée.
 - **`agent-forward` (défaut)** : forwarde le *socket* de l'agent SSH → aucune clé n'entre dans la
   VM (pas d'exfil du matériel). Forwarde toutes les identités chargées (scoping via un agent
   dédié à la clé `~/.ssh_sbx` si besoin).
-- **`mount ~/.ssh_sbx`** (override courant à l'usage) : monte la **clé dédiée** dans la VM. Un
-  agent compromis peut la lire → mais clé **dédiée, scopée, révocable** → blast-radius borné et
-  connu. Simple, headless-ready. Expose **exactement** cette clé, rien d'autre.
+- **`mount ~/.ssh_sbx`** (override courant à l'usage) : équivaut à `mounts: [{host: <ssh.dir>,
+  link: $HOME/.ssh}]` (§10.1) — le mount seul ne suffit pas, puisque `sbx` monte au chemin
+  **hôte** alors que `ssh` lit `$HOME/.ssh` ; c'est la phase de lien qui comble l'écart. Un agent
+  compromis peut lire la clé → mais clé **dédiée, scopée, révocable** → blast-radius borné et
+  connu. Simple, headless-ready **de fait** désormais, et non plus seulement d'intention : le lien
+  est ce qui rend le mode utilisable sans personne au clavier. Expose **exactement** cette clé,
+  rien d'autre.
 - **`none`** : réservé au futur flux autonome.
 
-**Ce que den fait, exactement, pour chacun des trois modes** (vérifié en tâche 18) :
+**Ce que den fait, exactement, pour chacun des trois modes** (vérifié en tâche 18 ; colonnes
+`mixin` et `workspaces` revues le 2026-08-07 avec l'arrivée de `mounts:`, §10.1) :
 
 | mode | flags de `sbx create` | mixin | workspaces (positionnels de l'argv) |
 |---|---|---|---|
 | `agent-forward` (défaut) | inchangés | inchangée | inchangés |
-| `mount` | inchangés | inchangée | **+ `ssh.dir`**, en dernier |
+| `mount` | inchangés | **+ la phase de liens, en PREMIER `commands.startup`** | **+ les mounts, en dernier** |
 | `none` | inchangés | inchangée | inchangés |
 
 `agent-forward` n'ajoute donc **rien** : il repose entièrement sur le fait que le process
@@ -810,6 +818,80 @@ absent au moment du `create` n'apparaîtra jamais dans une VM déjà bootée —
 Reste **non vérifiable sans `sbx` installé** : que `sbx` propage effectivement ce socket **dans**
 la microVM. C'est l'hypothèse **A10** du §14.1, falsifiable au premier smoke réel par un
 `git push` qui échoue depuis la VM alors que la sonde hôte, elle, a vu des clés.
+
+### 10.1 `mounts:` — le mécanisme générique
+
+`ssh.mode: mount` n'est pas un mécanisme à part : c'est du sucre au-dessus d'un besoin plus
+large — faire entrer un dossier hôte dans la VM et le rendre atteignable là où l'outil le
+cherche — que den exprime maintenant directement. Conçu et mesuré le 2026-08-07, détail complet
+dans `docs/superpowers/specs/2026-08-07-mounts-design.md`.
+
+**Surface de configuration :**
+
+```yaml
+# ~/.den/config.yaml
+mounts:
+  - host: ~/.digitaleo       # chemin HÔTE, expansé par den
+    link: $HOME/.digitaleo   # chemin VM, expansé par la VM
+  - host: ~/.aws
+    link: $HOME/.aws
+    ro: true
+```
+
+Trois champs. `link` et `ro` sont optionnels : un mount sans `link` n'est atteignable qu'à son
+chemin hôte — ce qui suffit quand l'outil consommateur lit une variable d'environnement, comme la
+config de l'agent. `ro: true` se mappe sur le suffixe `:ro` natif de `sbx` ; défaut :
+lecture-écriture (ne jamais monter `.ssh` en `ro` — `ssh` écrit `known_hosts`).
+
+**La règle d'expansion**, énoncée comme une règle et non laissée implicite, parce que la
+confondre **est** le bug qui a déclenché ce design :
+
+- **`host:` est un chemin HÔTE**, expansé par den (`ExpandPath`, comme `repos:` et `ssh.dir`).
+- **`link:` est un chemin VM**, expansé par le bash de la VM.
+
+Deux machines, deux `$HOME` : `/Users/polochon` et `/home/agent`. Un `link:` préfixé de `~/` est
+réécrit en `$HOME/` avant émission — bash n'expanse pas `~` entre doubles guillemets, et le lien
+doit rester entre doubles guillemets pour que `$HOME` s'y expanse dans la VM. Les deux formes
+(`~/x` et `$HOME/x`) sont acceptées dans la config et désignent le même chemin VM. `host:` et
+`link:` sont par ailleurs coupés des espaces superflus, et `link:` perd un `/` final, tous deux au
+chargement.
+
+**Global uniquement, pas la cascade.** `mounts:` vit dans `~/.den/config.yaml` seul, ni stack, ni
+nest. Ce n'est pas de la paresse : den **refuse déjà** un `path:` sur un nest venu d'une source,
+parce qu'un chemin hôte ne voyage pas d'une machine à l'autre — c'est toute la raison de
+l'indirection `key:` de `repos:`, et `den lint` en est le juge. Un stack de la source `dg`
+déclarant `host: ~/.digitaleo` réintroduirait exactement ce que ce lint existe pour refuser. Si
+des mounts par stack deviennent nécessaires, il leur faudra la même indirection par clé que
+`repos:` — un design à part entière, pas une extension gratuite.
+
+**`ssh.mode: mount` devient du sucre** : `ssh.mode: mount` + `ssh.dir: X` se résout exactement en
+`{host: X, link: $HOME/.ssh}`, injecté dans la liste de mounts. Les deux clés restent — le
+basculement `agent-forward` / `mount` reste une décision de sécurité réelle, deux postures
+distinctes — mais le chemin de code privé du mode a disparu : retirer `mounts:` fait mourir
+`ssh.mode: mount` avec lui, parce que plus rien d'autre ne le porte.
+
+**Le lien, au boot de la VM.** La mixin de den porte `commands.startup` ; la phase de liens en
+devient la **première** entrée (la fraîcheur de l'agent reste la dernière, spec §9.1 — sinon le
+tout premier boot tournerait sur des chemins non liés). Par mount porteur d'un `link:`, elle
+refuse plutôt que de créer un lien dans le vide ou d'écraser des données :
+
+| cible avant boot | action |
+|---|---|
+| absente | `ln -sfn HOST LINK` |
+| déjà un lien symbolique | `ln -sfn HOST LINK` — idempotent, et réécrit un lien qui pointait ailleurs (voulu : la config fait autorité sur la VM) |
+| répertoire **vide** | `rmdir LINK` puis `ln -sfn HOST LINK` |
+| répertoire **non vide**, ou fichier | refuse, fail-closed, en nommant le chemin |
+| source absente dans la VM | refuse, fail-closed : `den mounts: FATAL <src> is not present in the VM (from <key>)` |
+
+Aucun `rm -rf` n'apparaît dans cette phase : `rmdir` échoue de lui-même sur un répertoire non
+vide, donc même une écriture concurrente ne peut mener qu'à un boot refusé, jamais à une donnée
+détruite.
+
+**Mesuré le 2026-08-07** (`sbx` v0.37.1, den `v1.3.1-14-gf895ffa`) : les trois issues du tableau
+ci-dessus se comportent comme prévu sur une vraie sandbox, l'ordre des `commands.startup` est bien
+celui déclaré et le dispatcher s'arrête à la première défaillance (le boot refusé n'exécute jamais
+la commande de fraîcheur qui le suit), et l'ordre des workspaces tient côté `sbx` — dépôt d'abord,
+mounts en dernier, ce qui protège le `-w` de l'attache.
 
 ---
 

@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"os"
+	"time"
 
 	"github.com/PillowPillow/den/internal/sshagent"
 )
@@ -30,8 +31,7 @@ const FakeGOOS = "linux"
 func FakeDeps() Deps {
 	return Deps{
 		LookPath: func(string) (string, error) { return "/usr/local/bin/sbx", nil },
-		// doctor only looks at the error, never the FileInfo.
-		Stat: func(string) (os.FileInfo, error) { return nil, nil },
+		Stat:     func(string) (os.FileInfo, error) { return FakeDirInfo(), nil },
 		// Injected like the other two: without it, `den doctor` would render
 		// the verdict of the MACHINE's own git here, and the command's exit
 		// contract would turn green or red depending on which machine runs
@@ -62,3 +62,41 @@ func FakeDeps() Deps {
 		GOOS: FakeGOOS,
 	}
 }
+
+// FakeDirInfo is the os.FileInfo every FakeDeps.Stat success returns: an
+// existing DIRECTORY.
+//
+// It exists because doctor stopped only looking at the error. `ssh.dir` and
+// `mounts[].host` become `sbx create` workspaces, and den mounts directories:
+// a `host:` pointing at a FILE is a plausible typo (`~/.digitaleo/config.yaml`
+// instead of its directory) that must be refused with its own sentence, since
+// "not found" is false for a file that exists. A double returning a nil
+// FileInfo therefore panics rather than passing, which is the honest outcome —
+// the alternative, tolerating nil, would make the suite blind to the very check
+// it was added for.
+//
+// Exported: internal/cli builds Deps from this package too, and a second
+// definition there would be a second thing to keep in step.
+func FakeDirInfo() os.FileInfo { return fakeStatInfo{dir: true} }
+
+// FakeFileInfo is its counterpart: a path that EXISTS and is a regular file.
+// The shape a `host:` typo produces (`~/.digitaleo/config.yaml` instead of its
+// directory), and the only way to exercise the refusal that tells it apart from
+// a missing path.
+func FakeFileInfo() os.FileInfo { return fakeStatInfo{} }
+
+// fakeStatInfo answers "directory" or "regular file" and nothing else. Only
+// IsDir is read; the rest satisfies the interface.
+type fakeStatInfo struct{ dir bool }
+
+func (i fakeStatInfo) Name() string { return "" }
+func (i fakeStatInfo) Size() int64  { return 0 }
+func (i fakeStatInfo) Mode() os.FileMode {
+	if i.dir {
+		return os.ModeDir | 0o755
+	}
+	return 0o644
+}
+func (i fakeStatInfo) ModTime() time.Time { return time.Time{} }
+func (i fakeStatInfo) IsDir() bool        { return i.dir }
+func (i fakeStatInfo) Sys() any           { return nil }

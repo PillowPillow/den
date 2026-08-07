@@ -159,11 +159,21 @@ func TestShRefusesASandboxThatIsNotRunning(t *testing.T) {
 // deliberately does NOT match on: writing the realistic form here is what keeps
 // this fixture a sample of the measured journal rather than a restatement of
 // the parser.
+//
+// A passing run ends with `=== dispatcher complete ===` and a failing one does
+// not — the dispatcher does `exit $rc` at the first non-zero command (§14.0), so
+// the marker is never written. The fixture used to omit it in both cases, which
+// was a divergence from the measured journal that only became visible when
+// agent.ParseKitLog started requiring it to declare a pass.
 func shGateLog(sandbox, verdict string) []byte {
 	path := "/etc/durable-startup.d/002-startup-den-" + strings.ReplaceAll(sandbox, ".", "-") + "/000-cmd.sh"
-	return []byte("=== dispatcher run 2026-08-03T10:00:00Z ===\n" +
+	log := "=== dispatcher run 2026-08-03T10:00:00Z ===\n" +
 		"> " + path + "\n" +
-		verdict + " " + path + "\n")
+		verdict + " " + path + "\n"
+	if verdict == "ok" {
+		log += "=== dispatcher complete ===\n"
+	}
+	return []byte(log)
 }
 
 // shGateRead is the key of the ONE `sbx exec` agent.ReadFreshness makes.

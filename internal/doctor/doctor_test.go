@@ -164,7 +164,7 @@ func TestRunNestRepoNotFound(t *testing.T) {
 		if p == "/dev/api" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 	checks := Run(validDenHome(t), d)
 	if allOK(checks) {
@@ -223,7 +223,7 @@ func TestRunKeyRepoMappedAndPresent(t *testing.T) {
 		if p == "" {
 			return nil, errors.New("empty path")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 	checks := Run(dir, d)
 	if !allOK(checks) {
@@ -241,7 +241,7 @@ func TestRunKeyRepoMappedButMissing(t *testing.T) {
 		if p == "/dev/myrepo" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 	checks := Run(dir, d)
 	if allOK(checks) {
@@ -329,7 +329,7 @@ func TestRunReportsABrokenNestWithoutHidingOthers(t *testing.T) {
 		if p == "/dev/healthy-missing" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 
 	checks := Run(dir, d)
@@ -422,7 +422,7 @@ func TestRunStackKitNotFound(t *testing.T) {
 		if p == singularKit || p == pluralKit {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 
 	checks := Run(dir, d)
@@ -458,6 +458,200 @@ func TestRunPresentKitsReportNothing(t *testing.T) {
 	checks := Run(dir, okDeps()) // okDeps: every path exists
 	if !allOK(checks) {
 		t.Errorf("expected every check OK when the kits exist, got %+v", checks)
+	}
+}
+
+// --- mounts[].host ----------------------------------------------------
+//
+// Same probe as ssh.dir, same reason: Validate() only judges "declared or
+// not"; "declared but missing on disk" needs a filesystem probe, and that's
+// the very path `sbx create` mounts into the sandbox.
+
+// mountDenHome builds a den home whose config.yaml declares one `mounts:`
+// entry per host, in order — so a test can put more than one entry under
+// `mounts:` and check that doctor's index tracks POSITION, not the count of
+// entries it actually reports on. Modeled on keyRepoDenHome above: same
+// technique (rewrite config.yaml wholesale over validDenHome's base), applied
+// to `mounts:` instead of a key-typed repo.
+func mountDenHome(t *testing.T, hosts ...string) string {
+	t.Helper()
+	dir := validDenHome(t)
+	var entries strings.Builder
+	for _, h := range hosts {
+		fmt.Fprintf(&entries, "  - host: %s\n    link: $HOME/x\n", h)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(fmt.Sprintf(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+%s`, entries.String())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestDoctorReportsMissingMountHost(t *testing.T) {
+	dir := mountDenHome(t, "/nope/missing")
+	d := okDeps()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/nope/missing" {
+			return nil, errors.New("not found")
+		}
+		return FakeDirInfo(), nil
+	}
+	checks := Run(dir, d)
+	line, ok := findExactName(checks, "mounts[0]")
+	if !ok {
+		t.Fatalf("no check named \"mounts[0]\"; checks: %+v", checks)
+	}
+	if line.Level == LevelOK {
+		t.Fatal("a missing mount host must be reported as not-ok")
+	}
+	if !strings.Contains(line.Detail, "/nope/missing") {
+		t.Fatalf("the detail must name the path, got %q", line.Detail)
+	}
+}
+
+// A mount host that EXISTS but is a regular FILE. den mounts directories, and
+// `host: ~/.digitaleo/config.yaml` — the file instead of the directory holding
+// it — is a plausible typo that a bare Stat accepts. The line must say what is
+// actually wrong: "not found" is a false statement about a file that exists.
+func TestDoctorReportsAMountHostThatIsAFile(t *testing.T) {
+	dir := mountDenHome(t, "/dev/mounted/config.yaml")
+	d := okDeps()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/dev/mounted/config.yaml" {
+			return FakeFileInfo(), nil
+		}
+		return FakeDirInfo(), nil
+	}
+	checks := Run(dir, d)
+	line, ok := findExactName(checks, "mounts[0]")
+	if !ok {
+		t.Fatalf("no check named \"mounts[0]\"; checks: %+v", checks)
+	}
+	if line.Level == LevelOK {
+		t.Fatal("den mounts directories: a file host must not report OK")
+	}
+	if !strings.Contains(line.Detail, "not a directory") {
+		t.Errorf("the detail must say what is wrong; got %q", line.Detail)
+	}
+	if strings.Contains(line.Detail, "not found") {
+		t.Errorf("\"not found\" is false of a file that exists; got %q", line.Detail)
+	}
+}
+
+// The same probe on ssh.dir, whose text says "this directory" too. Fixed
+// alongside its twin rather than after it: leaving the identical hole beside a
+// fixed one is how the two drift.
+func TestDoctorReportsAnSSHDirThatIsAFile(t *testing.T) {
+	dir := validDenHome(t)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
+agents:
+  claude:
+    config_dir: /tmp/den/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: mount
+  dir: /dev/keys/id_ed25519
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := okDeps()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/dev/keys/id_ed25519" {
+			return FakeFileInfo(), nil
+		}
+		return FakeDirInfo(), nil
+	}
+	checks := Run(dir, d)
+	line, ok := findExactName(checks, "ssh.dir")
+	if !ok {
+		t.Fatalf("no check named \"ssh.dir\"; checks: %+v", checks)
+	}
+	if line.Level == LevelOK {
+		t.Fatal("in \"mount\" mode den mounts a DIRECTORY: a file ssh.dir must not report OK")
+	}
+	if !strings.Contains(line.Detail, "not a directory") {
+		t.Errorf("the detail must say what is wrong; got %q", line.Detail)
+	}
+}
+
+// The counterpart: a mount host that exists reports OK, by index. Without
+// this case, a check that failed every mount unconditionally would pass the
+// test above unnoticed.
+func TestDoctorReportsPresentMountHost(t *testing.T) {
+	dir := mountDenHome(t, "/dev/mounted")
+	checks := Run(dir, okDeps()) // okDeps: every path exists
+	line, ok := findExactName(checks, "mounts[0]")
+	if !ok {
+		t.Fatalf("no check named \"mounts[0]\"; checks: %+v", checks)
+	}
+	if line.Level != LevelOK {
+		t.Errorf("a present mount host must report OK; got %+v", line)
+	}
+	if !strings.Contains(line.Detail, "/dev/mounted") {
+		t.Errorf("detail = %q, want the host path", line.Detail)
+	}
+}
+
+// A blank host: Validate() already refuses it (config errors are surfaced by
+// the "config" check above). doctor must not produce a SECOND diagnostic for
+// the same fault under "mounts[0]", or the user sees one problem reported
+// twice under two different names.
+//
+// "   " and "" take the same path here: YAML strips trailing whitespace off
+// an unquoted plain scalar on its own, and LoadGlobalUnvalidated's own
+// TrimSpace runs before doctor ever sees the value — so g.Mounts[0].Host is
+// already "" by the time this test's assertion matters. The literal is kept
+// non-empty only so the YAML line reads as a real (if blank) entry, not as a
+// key with an outright missing value.
+func TestDoctorDoesNotDoubleReportABlankMountHost(t *testing.T) {
+	dir := mountDenHome(t, "   ")
+	checks := Run(dir, okDeps())
+	if _, ok := findExactName(checks, "mounts[0]"); ok {
+		t.Errorf("a blank host must not get its own mounts[0] line: "+
+			"Validate() already reports it; checks: %+v", checks)
+	}
+}
+
+// The blank entry's `continue` must not shift the index of the entry that
+// follows it: the index is the entry's POSITION in `mounts:`, not a count of
+// how many entries doctor actually reports on. Without this test, an
+// implementation that appended to `checks` and derived the label from
+// `len(checks)` instead of the loop's `i` would pass every test above (all
+// single-entry) while mislabeling any config with more than one mount.
+func TestDoctorIndexesMountsByPositionNotByReportedCount(t *testing.T) {
+	dir := mountDenHome(t, "   ", "/nope/missing") // index 0 blank, index 1 missing
+	d := okDeps()
+	d.Stat = func(p string) (os.FileInfo, error) {
+		if p == "/nope/missing" {
+			return nil, errors.New("not found")
+		}
+		return FakeDirInfo(), nil
+	}
+	checks := Run(dir, d)
+	if _, ok := findExactName(checks, "mounts[0]"); ok {
+		t.Errorf("the blank entry at index 0 must not get its own line; checks: %+v", checks)
+	}
+	line, ok := findExactName(checks, "mounts[1]")
+	if !ok {
+		t.Fatalf("no check named \"mounts[1]\": the second entry must keep its own "+
+			"index, not be renumbered to fill the gap; checks: %+v", checks)
+	}
+	if line.Level == LevelOK {
+		t.Error("a missing mount host must be reported as not-ok")
+	}
+	if !strings.Contains(line.Detail, "/nope/missing") {
+		t.Errorf("the detail must name the path, got %q", line.Detail)
 	}
 }
 
@@ -599,7 +793,7 @@ ssh:
 		if p == "/dev/ssh-missing" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 
 	checks := Run(dir, d)
@@ -639,7 +833,7 @@ ssh:
 		if p == "/dev/ssh-missing" {
 			return nil, errors.New("not found")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 	if checks := Run(dir, d); !allOK(checks) {
 		t.Errorf("in agent-forward, a missing ssh.dir must report nothing; checks: %+v", checks)
@@ -1134,7 +1328,7 @@ func TestRunIgnoresAnEmptyEntryInKits(t *testing.T) {
 		if p == "" {
 			return nil, errors.New("empty path")
 		}
-		return nil, nil
+		return FakeDirInfo(), nil
 	}
 
 	checks := Run(dir, d)

@@ -1,6 +1,7 @@
 package nest
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -700,4 +701,100 @@ func paths(rs []Repo) []string {
 		out = append(out, r.Path)
 	}
 	return out
+}
+
+// resolveWithSSH resolves globalTest/stacksTest/nestTest with only ssh.mode
+// and ssh.dir overridden — the minimal fixture the sugar-desugaring tests need.
+func resolveWithSSH(t *testing.T, mode, dir string) *Resolved {
+	t.Helper()
+	g := globalTest()
+	g.SSH = config.SSH{Mode: mode, Dir: dir}
+	r, err := Resolve("/d", g, stacksTest(), nestTest(), Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return r
+}
+
+// resolveWithMounts resolves the same fixture with only `mounts:` overridden.
+func resolveWithMounts(t *testing.T, mounts []config.Mount) *Resolved {
+	t.Helper()
+	g := globalTest()
+	g.Mounts = mounts
+	r, err := Resolve("/d", g, stacksTest(), nestTest(), Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return r
+}
+
+// resolveWithMountsAndSSH combines both overrides, to assert their order.
+func resolveWithMountsAndSSH(t *testing.T, mounts []config.Mount, mode, dir string) *Resolved {
+	t.Helper()
+	g := globalTest()
+	g.Mounts = mounts
+	g.SSH = config.SSH{Mode: mode, Dir: dir}
+	r, err := Resolve("/d", g, stacksTest(), nestTest(), Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return r
+}
+
+func TestResolveDesugarsSSHMountIntoAMount(t *testing.T) {
+	// `ssh.mode: mount` must produce a mount INDISTINGUISHABLE from a
+	// hand-written one except for Key. That equivalence is the whole
+	// justification for deleting mount mode's private code path: if the two
+	// diverge, there are two mechanisms again and the drift has somewhere to
+	// hide.
+	r := resolveWithSSH(t, "mount", "/host/ssh_sbx")
+	want := []Mount{{
+		Host: "/host/ssh_sbx",
+		Link: "$HOME/.ssh",
+		RO:   false, // ssh writes known_hosts; a read-only mount breaks it obscurely
+		Key:  "ssh.dir",
+	}}
+	if !reflect.DeepEqual(r.Mounts, want) {
+		t.Fatalf("got %+v, want %+v", r.Mounts, want)
+	}
+}
+
+func TestResolveAddsNoMountOutsideSSHMountMode(t *testing.T) {
+	for _, mode := range []string{"agent-forward", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			// ssh.dir is DECLARED in both, so "this mode adds nothing" stays
+			// distinguishable from "there was nothing to add".
+			r := resolveWithSSH(t, mode, "/host/ssh_sbx")
+			if len(r.Mounts) != 0 {
+				t.Fatalf("mode %q: got %+v, want no mounts", mode, r.Mounts)
+			}
+		})
+	}
+}
+
+func TestResolveKeepsConfigMountsAndKeysThemByIndex(t *testing.T) {
+	// The index in Key is what lets a refusal name the line the user wrote.
+	r := resolveWithMounts(t, []config.Mount{
+		{Host: "/host/a", Link: "$HOME/a"},
+		{Host: "/host/b", RO: true},
+	})
+	want := []Mount{
+		{Host: "/host/a", Link: "$HOME/a", Key: "mounts[0]"},
+		{Host: "/host/b", RO: true, Key: "mounts[1]"},
+	}
+	if !reflect.DeepEqual(r.Mounts, want) {
+		t.Fatalf("got %+v, want %+v", r.Mounts, want)
+	}
+}
+
+func TestResolveOrdersConfigMountsBeforeTheSSHSugar(t *testing.T) {
+	// Deterministic order, asserted rather than assumed: it decides the
+	// workspace argv order in Task 6 and the link order in Task 4, and a map
+	// iteration creeping in later would make both flap.
+	r := resolveWithMountsAndSSH(t,
+		[]config.Mount{{Host: "/host/a", Link: "$HOME/a"}},
+		"mount", "/host/ssh_sbx")
+	if len(r.Mounts) != 2 || r.Mounts[0].Key != "mounts[0]" || r.Mounts[1].Key != "ssh.dir" {
+		t.Fatalf("got %+v, want mounts[0] then ssh.dir", r.Mounts)
+	}
 }

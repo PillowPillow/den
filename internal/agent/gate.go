@@ -23,10 +23,26 @@ import (
 //	=== dispatcher complete ===
 //
 // A `>` line per command, then `ok <path>` or `fail <path> exit=<n>`, with the
-// command's own output in between. The file ACCUMULATES: a restart appends a
-// new `=== dispatcher run … ===` block (measured — the dispatcher really does
-// re-run when a stopped sandbox is restarted, which smoke #2 left open), so
-// only the LAST block describes the sandbox as it is now.
+// command's own output in between — stdout AND stderr, measured on both den
+// commands' `FATAL` lines (2026-07-31 and 2026-08-07). The file ACCUMULATES: a
+// restart appends a new `=== dispatcher run … ===` block (measured — the
+// dispatcher really does re-run when a stopped sandbox is restarted, which
+// smoke #2 left open), so only the LAST block describes the sandbox as it is
+// now.
+//
+// ONE KIT DIRECTORY, SEVERAL SCRIPTS. Since `mounts:`, den's own directory
+// holds two — the link phase then the freshness command — and the dispatcher
+// numbers them within it (measured 2026-08-07, sbx v0.37.1):
+//
+//	> /etc/durable-startup.d/002-startup-den-smoke/000-cmd.sh
+//	den mounts: /home/agent/.linkme -> /tmp/den-mount-smoke/linkme
+//	ok /etc/durable-startup.d/002-startup-den-smoke/000-cmd.sh
+//	> /etc/durable-startup.d/002-startup-den-smoke/001-cmd.sh
+//	agent claude: up to date
+//	ok /etc/durable-startup.d/002-startup-den-smoke/001-cmd.sh
+//
+// This is what ParseKitLog reads, and getting it wrong once already cost the
+// return of defect #18 — see the rule stated there.
 const KitLogPath = "/var/log/sbx-kit-startup.log"
 
 // runMarker and completeMarker delimit one dispatcher run in KitLogPath.
@@ -75,16 +91,24 @@ const (
 )
 
 // GateVerdict is a reading of KitLogPath: the state, the log line that decided
-// it, and — for anything but a pass — why.
+// it, and — for anything but a pass — why, plus what to fix.
 //
 // Line is carried because the diagnosis §9.1 promises is IN the log ("it is
 // precisely the `fail … exit=127` of the journal that made the 2026-07-27 bug
 // diagnosable"), and a message that says "the gate failed" without it sends the
 // user back into the VM to find out what den already read.
+//
+// Remedy is separate from Reason because den's kit now runs TWO commands, and
+// they are fixed in different files: a failed agent update is fixed in the
+// agent registry, a refused link phase in `mounts:` / `ssh.dir`. The caller
+// renders it verbatim, so a hardcoded "fix the agent's `update:`" in the
+// refusal sentence would name the wrong file half the time — which is exactly
+// what it did.
 type GateVerdict struct {
 	State  GateState
 	Line   string
 	Reason string
+	Remedy string
 }
 
 // ParseKitLog reads the dispatcher journal and answers what its LAST run says
@@ -95,6 +119,39 @@ type GateVerdict struct {
 // A log with no run marker at all is read whole — the block baked into the
 // image carries no marker of its own in every sample observed, and refusing to
 // read it would turn a known shape into an error.
+//
+// # WHY THIS READS THE WHOLE RUN INSTEAD OF RETURNING ON THE FIRST VERDICT
+//
+// den's kit DIRECTORY may hold several scripts. Since `mounts:` it holds two —
+// the link phase `000-cmd.sh` and the freshness command `001-cmd.sh` — and
+// ownsPath matches on the directory segment, so BOTH are "owned". Returning on
+// the first owned verdict therefore let the link phase's `ok` decide the gate
+// before freshness was ever read: a sandbox whose agent update FAILED was
+// reported as passing and attached to, exit 0, in silence. That is defect #18,
+// which this repo had already fixed once.
+//
+// The verdict is decided from the JOURNAL ALONE — never from how many entries
+// den believes it emitted. Threading that count in was the other candidate and
+// it is worse: `checkFreshness` runs on the create branch AND the attach
+// branch, so the count would have to come from the current mixin on one and
+// from the on-disk mixin on the other, and getting that wrong makes every
+// attach to a sandbox created by an older den a hard 90-second timeout. The
+// journal is the same shape on both branches and needs no such arbitration.
+//
+// The rule, over OWNED lines of the last run:
+//
+//   - any owned `fail` → GateFailed, naming the phase that failed;
+//   - the run COMPLETED and every owned `> <path>` announcement has a matching
+//     owned `ok` → GatePassed;
+//   - no owned line at all in a completed run → GateAbsent;
+//   - anything else → GatePending.
+//
+// completeMarker is required for the pass, and that is the non-obvious half.
+// Without it, a journal caught in the instant between `ok …/000-cmd.sh` and the
+// `> …/001-cmd.sh` that follows it satisfies "every announcement matched" while
+// the freshness command has not started — the same silent pass, through a
+// narrower window. The cost of requiring it is a GatePending that resolves on
+// the next poll, which is what GatePending is for.
 func ParseKitLog(log []byte, mixinName string) GateVerdict {
 	lines := strings.Split(string(log), "\n")
 	if start := lastRunStart(lines); start >= 0 {
@@ -103,14 +160,38 @@ func ParseKitLog(log []byte, mixinName string) GateVerdict {
 
 	suffix := "startup-" + mixinName
 	completed := false
+	announced := map[string]bool{}
+	passed := map[string]bool{}
+	// lastOK is the line CARRIED by a pass: the last owned verdict read, which
+	// is the freshness command's — the one that actually decided.
+	lastOK := ""
+	// inOwned is the owned entry whose output is being read, and linkLine the
+	// last LinkPhaseMarker line printed inside it. Together they answer "was
+	// this the link phase?" without asking the mixin anything.
+	inOwned, linkLine := "", ""
+
 	for _, line := range lines {
 		line = strings.TrimRight(line, "\r")
 		if line == completeMarker {
 			completed = true
 			continue
 		}
+		if rest, found := strings.CutPrefix(line, "> "); found {
+			path := strings.TrimSpace(rest)
+			inOwned, linkLine = "", ""
+			if ownsPath(path, suffix) {
+				announced[path] = true
+				inOwned = path
+			}
+			continue
+		}
 		path, failed, ok := verdictLine(line)
 		if !ok {
+			// A command's own output. The only thing read out of it is den's
+			// own link-phase marker, and only inside an owned entry.
+			if inOwned != "" && strings.HasPrefix(line, LinkPhaseMarker) {
+				linkLine = line
+			}
 			continue
 		}
 		if !ownsPath(path, suffix) {
@@ -125,29 +206,98 @@ func ParseKitLog(log []byte, mixinName string) GateVerdict {
 					Reason: fmt.Sprintf(
 						"an earlier kit failed and the dispatcher aborted the run, so den's freshness "+
 							"command (%s) never ran — the agent was NOT updated", mixinName),
+					Remedy: "Fix the failing kit named in the line above",
 				}
 			}
+			inOwned, linkLine = "", ""
 			continue
 		}
 		if failed {
-			return GateVerdict{
-				State:  GateFailed,
-				Line:   line,
-				Reason: "den's freshness command exited non-zero: the agent was NOT updated",
-			}
+			return failedEntry(line, linkLine)
 		}
-		return GateVerdict{State: GatePassed, Line: line}
+		passed[path] = true
+		lastOK = line
+		inOwned, linkLine = "", ""
 	}
 
-	if completed {
-		return GateVerdict{
-			State: GateAbsent,
-			Reason: fmt.Sprintf(
-				"the dispatcher run completed without ever running %s — this sandbox carries no den "+
-					"mixin, which is what a VM created by an older den looks like", mixinName),
+	// GateAbsent is decided BEFORE the pass, and the guard is not decoration:
+	// "every owned announcement has a matching ok" is vacuously true when there
+	// are none, which would turn a sandbox carrying no den mixin at all into a
+	// pass.
+	if len(announced) == 0 && len(passed) == 0 {
+		if completed {
+			return GateVerdict{
+				State: GateAbsent,
+				Reason: fmt.Sprintf(
+					"the dispatcher run completed without ever running %s — this sandbox carries no den "+
+						"mixin, which is what a VM created by an older den looks like", mixinName),
+			}
 		}
+		return GateVerdict{State: GatePending}
+	}
+	if completed && allAnnouncedPassed(announced, passed) {
+		return GateVerdict{State: GatePassed, Line: lastOK}
 	}
 	return GateVerdict{State: GatePending}
+}
+
+// allAnnouncedPassed reports whether every owned `> <path>` announcement of the
+// run has a matching owned `ok <path>`.
+func allAnnouncedPassed(announced, passed map[string]bool) bool {
+	for path := range announced {
+		if !passed[path] {
+			return false
+		}
+	}
+	return true
+}
+
+// failedEntry builds the verdict for an owned entry that exited non-zero.
+//
+// linkLine is the last LinkPhaseMarker line the entry printed, or "" — and it
+// is the whole discriminator. A refused link phase aborts the run before the
+// freshness command is ever announced (measured 2026-08-07), so the failing
+// script is the LAST owned entry in the journal either way, and position says
+// nothing. What the link phase does say is its own name, on every branch it can
+// exit through.
+//
+// Getting this wrong is not cosmetic: reporting a link refusal as a failed
+// agent update sends the user to the agent registry when the fix is one line of
+// `mounts:` — and the journal already told den which it was.
+func failedEntry(line, linkLine string) GateVerdict {
+	if linkLine != "" {
+		if !strings.Contains(linkLine, linkFatal) {
+			// The link phase announced itself (LinkCommand prints its marker
+			// before the first den_link) and then died without den's own
+			// diagnostic: the shell itself failed, or the dispatcher killed the
+			// script. Still a mounts fault and NOT an agent one — but calling it
+			// a refusal would name a den decision that was never taken, and send
+			// the reader looking for a "FATAL" line the journal does not carry.
+			return GateVerdict{
+				State: GateFailed,
+				Line:  line,
+				Reason: "den's link phase failed without reporting a refusal, so the freshness " +
+					"command never ran and the agent was NOT updated (last link-phase line: " +
+					strings.TrimSpace(linkLine) + ")",
+				Remedy: "Check `mounts:` in den's global config.yaml, and the lines above for the " +
+					"VM shell's own message",
+			}
+		}
+		return GateVerdict{
+			State: GateFailed,
+			Line:  line,
+			Reason: "den's link phase refused, so the freshness command never ran and the agent was " +
+				"NOT updated: " + strings.TrimSpace(linkLine),
+			Remedy: "Fix the `mounts:` entry (or `ssh.dir`) named in that line, in den's global " +
+				"config.yaml",
+		}
+	}
+	return GateVerdict{
+		State:  GateFailed,
+		Line:   line,
+		Reason: "den's freshness command exited non-zero: the agent was NOT updated",
+		Remedy: "Fix the agent's `update:` command in the registry",
+	}
 }
 
 // lastRunStart returns the index of the last `=== dispatcher run … ===` line,
@@ -163,7 +313,9 @@ func lastRunStart(lines []string) int {
 
 // verdictLine reads one line as a dispatcher verdict: `ok <path>` or
 // `fail <path> exit=<n>`. Anything else — the `> <path>` announcements, and the
-// commands' own output, which is arbitrary user text — is not a verdict.
+// commands' own output, which is arbitrary user text — is not a verdict. The
+// announcements are read by ParseKitLog itself, before this is called: they are
+// what tells an entry that has not answered from one that was never started.
 //
 // The exit code is deliberately NOT parsed out: it is already in the line, the
 // line travels whole to the user, and a second rendering of it would be one

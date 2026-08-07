@@ -32,6 +32,43 @@ type SSH struct {
 	Dir  string `yaml:"dir"`  // used when mode=mount
 }
 
+// Mount is one entry of `mounts:` — a host directory made available inside the
+// microVM, and optionally linked to a path the VM's tools actually read.
+//
+// The two path fields belong to DIFFERENT MACHINES, and conflating them is the
+// bug this type exists to prevent:
+//
+//   - Host is a HOST path. den expands it (ExpandPath, like `repos:` and
+//     `ssh.dir`) and hands it to `sbx create`, which mounts it at that SAME
+//     absolute path inside the VM (spec A11 — sbx takes no mount-target flag,
+//     probed 2026-08-07, so den cannot choose where it lands).
+//   - Link is a VM path. den NEVER expands it: `$HOME` is /Users/<me> on the
+//     host and /home/agent in the VM. It is emitted verbatim into the startup
+//     shell and expanded there. Same reasoning as bin_dirs in
+//     internal/agent/freshness.go.
+//
+// Link empty is legitimate, not a degenerate case: it is right whenever the
+// consuming tool can be pointed at the host path by an environment variable,
+// which is how the agent's own config dir works (CLAUDE_CONFIG_DIR).
+type Mount struct {
+	Host string `yaml:"host"`
+	Link string `yaml:"link"`
+	RO   bool   `yaml:"ro"`
+}
+
+// SSHLinkTarget is where `ssh.mode: mount` links ssh.dir.
+//
+// `$HOME` and not an absolute path: it is expanded by the VM's bash, whose
+// $HOME is /home/agent. Writing /home/agent here would hard-code the microVM's
+// user into den. See Mount above for the full rule.
+//
+// It lives HERE and not in internal/nest, where the sugar is applied, because
+// Validate must compare a user's `mounts[].link` against it: the sugar and a
+// hand-written `link: $HOME/.ssh` collide on the same VM path, and only the
+// package that owns config.yaml's validation can refuse that. nest imports
+// config, so the sugar reads the same constant — one spelling, one concept.
+const SSHLinkTarget = "$HOME/.ssh"
+
 // Global is the content of ~/.den/config.yaml, with defaults applied and paths expanded.
 type Global struct {
 	Agents         map[string]Agent `yaml:"agents"`
@@ -44,6 +81,13 @@ type Global struct {
 	// §2.4) to a path on THIS machine. Personal by design: it is the one part
 	// of a shared nest that cannot travel.
 	Repos map[string]string `yaml:"repos"`
+	// Mounts is GLOBAL and deliberately not part of the stack/nest cascade.
+	// A `host:` is a path on THIS machine, and den already refuses `path:` on a
+	// nest that comes from a source for exactly that reason — a stack in a
+	// shared source declaring one would reintroduce what `den lint` exists to
+	// refuse. Per-stack mounts would need the same key indirection as `repos:`,
+	// which is a separate design.
+	Mounts []Mount `yaml:"mounts"`
 }
 
 // LoadGlobalUnvalidated reads <denHome>/config.yaml, applies defaults and
@@ -103,6 +147,40 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 	}
 	if g.SSH.Dir, err = ExpandPath(g.SSH.Dir); err != nil {
 		return nil, err
+	}
+	for i := range g.Mounts {
+		// Trim before expanding: a stray space in the YAML would otherwise survive
+		// into `sbx create`'s argv (Host) or into the VM's startup shell (Link),
+		// where a leading space breaks the `$HOME/` prefix the link phase relies on.
+		// Trimmed at LOAD so exactly one value exists — validation and every later
+		// consumer read the same string, and no downstream copy can diverge.
+		g.Mounts[i].Host = strings.TrimSpace(g.Mounts[i].Host)
+		g.Mounts[i].Link = strings.TrimSpace(g.Mounts[i].Link)
+		// A trailing slash makes `ln` resolve THROUGH an existing correct symlink
+		// instead of replacing it, so the link phase refuses on every boot after
+		// the first. `$HOME/.ssh/` and `$HOME/.ssh` denote the same VM path, so
+		// stripping is lossless. Normalised at LOAD, beside the trim above, so one
+		// canonical value reaches validation, the mixin and the emitted shell
+		// alike — not re-derived at each consumer.
+		//
+		// The RESULT is what is guarded, never the input length: `len(l) > 1`
+		// let "//" through and TrimRight reduced it to "", which Validate then
+		// reads as "no link asked for" (an empty link is legitimate, see the
+		// Mount doc above). den would mount the directory, silently link
+		// nothing, and report success — the exact silent wrong-path failure the
+		// link phase exists to remove. An all-slashes link denotes the VM's
+		// root, so "/" is what it collapses to.
+		if l := g.Mounts[i].Link; strings.HasSuffix(l, "/") {
+			if trimmed := strings.TrimRight(l, "/"); trimmed != "" {
+				g.Mounts[i].Link = trimmed
+			} else {
+				g.Mounts[i].Link = "/"
+			}
+		}
+		// Host only. Link is a VM path — see the Mount doc comment.
+		if g.Mounts[i].Host, err = ExpandPath(g.Mounts[i].Host); err != nil {
+			return nil, fmt.Errorf("mounts[%d].host: %w", i, err)
+		}
 	}
 	for name, a := range g.Agents {
 		// Same shape as worktree_root above: defaulted here, against the LIVE

@@ -258,13 +258,55 @@ func Run(denHome string, d Deps) []Check {
 	// as a workspace and ends up in `sbx create`'s argv. Validate() only
 	// judges "declared or not"; "declared but missing on disk" needs a
 	// filesystem probe, hence d.Stat.
+	//
+	// "exists but is not a directory" is its own line, for the reason
+	// internal/spawn gives at the same probe: den mounts DIRECTORIES, "not
+	// found" is false for a file that exists, and what sbx does with a file
+	// workspace has never been measured.
 	if g.SSH.Mode == "mount" && g.SSH.Dir != "" {
-		if _, err := d.Stat(g.SSH.Dir); err != nil {
+		fi, err := d.Stat(g.SSH.Dir)
+		switch {
+		case err != nil:
 			add("ssh.dir", false,
 				"%s not found — in \"mount\" mode this directory is mounted into the sandbox, "+
 					"and a missing path would mount an empty directory instead of the keys", g.SSH.Dir)
-		} else {
+		case !fi.IsDir():
+			add("ssh.dir", false,
+				"%s is not a directory — in \"mount\" mode den mounts that DIRECTORY into the "+
+					"sandbox, so it must name the directory holding the keys, not a file inside it",
+				g.SSH.Dir)
+		default:
 			add("ssh.dir", true, "%s", g.SSH.Dir)
+		}
+	}
+
+	// 7bis. mounts[].host — same probe as ssh.dir, same reason: Validate()
+	// judges "declared or not", while "declared but missing on disk" needs a
+	// filesystem probe. Reported per index so the line names what to fix.
+	//
+	// Reads g.Mounts and NOT nest.Resolved: doctor is nest-independent. The
+	// ssh.mode sugar is therefore reported by the ssh.dir block above, which is
+	// the key the user actually wrote.
+	for i, m := range g.Mounts {
+		key := fmt.Sprintf("mounts[%d]", i)
+		if strings.TrimSpace(m.Host) == "" {
+			continue // Validate() already refuses this; doctor does not double-report
+		}
+		fi, err := d.Stat(m.Host)
+		switch {
+		case err != nil:
+			add(key, false,
+				"%s not found — this directory is mounted into the sandbox, and a missing "+
+					"path would mount an empty directory instead of your files", m.Host)
+		case !fi.IsDir():
+			// Same distinction as ssh.dir above and as internal/spawn's gate:
+			// `host: ~/.digitaleo/config.yaml` names a file inside the directory
+			// the user meant, and "not found" would be a false statement about it.
+			add(key, false,
+				"%s is not a directory — den mounts DIRECTORIES, so `host:` must name the "+
+					"directory holding your files, not a file inside it", m.Host)
+		default:
+			add(key, true, "%s", m.Host)
 		}
 	}
 

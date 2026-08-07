@@ -183,6 +183,100 @@ func exampleResolved(t *testing.T) *nest.Resolved {
 	return r
 }
 
+// resolvedWithMounts wraps exampleResolved with a caller-chosen Mounts list.
+// A thin wrapper, not a second fixture stack: everything but Mounts stays
+// whatever exampleResolved already builds.
+func resolvedWithMounts(t *testing.T, mounts []nest.Mount) *nest.Resolved {
+	t.Helper()
+	r := exampleResolved(t)
+	r.Mounts = mounts
+	return r
+}
+
+// Order asserted on the RENDERED yaml, not on the struct: the sbx dispatcher
+// runs startup entries in declared order (measured 2026-08-07,
+// `twostepprobe`), so the sequence position is the contract. And
+// FreshnessCommand must stay LAST (spec §9.1) — the dispatcher exits on the
+// first failure, which would otherwise skip the update silently.
+func TestRenderMixinPutsLinksBeforeFreshness(t *testing.T) {
+	m := Mixin{
+		SandboxName: "api",
+		Freshness:   []string{"bash", "-c", "FRESHNESS_MARKER"},
+		Links:       []string{"bash", "-c", "LINK_MARKER"},
+	}
+	out, err := RenderMixin(m)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	s := string(out)
+	li, fi := strings.Index(s, "LINK_MARKER"), strings.Index(s, "FRESHNESS_MARKER")
+	if li < 0 || fi < 0 {
+		t.Fatalf("both markers must appear:\n%s", s)
+	}
+	if li > fi {
+		t.Fatalf("link phase must precede freshness:\n%s", s)
+	}
+}
+
+// Same rule as the other sections: an empty entry is not a neutral one. It
+// would appear in every golden and in every drift comparison, and would make
+// "this sandbox links nothing" indistinguishable from "den forgot".
+func TestRenderMixinOmitsTheLinkEntryWhenThereAreNoLinks(t *testing.T) {
+	m := Mixin{
+		SandboxName: "api",
+		Freshness:   []string{"bash", "-c", "FRESHNESS_MARKER"},
+	}
+	out, err := RenderMixin(m)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var doc struct {
+		Commands struct {
+			Startup []struct {
+				Command []string `yaml:"command"`
+			} `yaml:"startup"`
+		} `yaml:"commands"`
+	}
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(doc.Commands.Startup) != 1 {
+		t.Fatalf("got %d startup entries, want 1", len(doc.Commands.Startup))
+	}
+}
+
+func TestMixinFromCarriesTheLinkPhase(t *testing.T) {
+	r := resolvedWithMounts(t, []nest.Mount{
+		{Host: "/home/me/.ssh_sbx", Link: "$HOME/.ssh", Key: "ssh.dir"},
+	})
+	m, err := MixinFrom(r, "api")
+	if err != nil {
+		t.Fatalf("MixinFrom: %v", err)
+	}
+	if len(m.Links) == 0 {
+		t.Fatal("Links empty — the mount produced no link phase")
+	}
+}
+
+func TestRenderMixinWithMountsGolden(t *testing.T) {
+	m := exampleMixin(t) // the fixture behind mixin-complete.golden
+	m.Links = LinkCommand([]nest.Mount{
+		{Host: "/home/me/.ssh_sbx", Link: "$HOME/.ssh", Key: "ssh.dir"},
+	})
+	out, err := RenderMixin(m)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	path := filepath.Join("testdata", "mixin-with-mounts.golden")
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading golden: %v", err)
+	}
+	if string(out) != string(want) {
+		t.Errorf("rendered != %s\n--- got ---\n%s\n--- want ---\n%s", path, out, want)
+	}
+}
+
 func TestMixinFromAssemblesTheResolvedNest(t *testing.T) {
 	m, err := MixinFrom(exampleResolved(t), "api")
 	if err != nil {

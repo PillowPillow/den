@@ -406,28 +406,67 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 	}
 
-	// ssh.dir, in mount mode: it becomes a workspace, so it goes
-	// VERBATIM into `sbx create`'s argv. den never passes sbx a path it
-	// hasn't guaranteed exists — a missing directory would mount an empty
-	// one where the user expects their keys.
+	// Mount hosts go VERBATIM into `sbx create`'s argv. den never hands sbx a
+	// path it has not proven exists — a missing directory would mount an EMPTY
+	// one exactly where the user expects their files, and the tool inside the
+	// VM would then read an empty directory with no error anywhere.
 	//
-	// Checked here, alongside the repos, before worktrees or the agent
-	// profile are created — a later refusal would leave the user to clean
-	// up by hand.
+	// Checked here, alongside the repos, BEFORE any worktree or the agent
+	// profile is created: a later refusal would leave the user to clean up by
+	// hand.
 	//
-	// This also applies when RE-attaching to an already-live sandbox: if
-	// ssh.dir or a kit disappears from disk, `den spawn` can no longer
-	// attach even though none of this is re-read at attach time (the VM
-	// keeps its `create`-time mounts). `den sh <name>` is the one path
-	// that skips all of this: it only calls spawn.Attach and reads neither
-	// config nor kits.
-	if r.SSHMode == "mount" {
-		if _, err := os.Stat(r.SSHDir); err != nil {
+	// This applies when RE-ATTACHING to a live sandbox too: if a mount host
+	// disappears from disk, `den spawn` can no longer attach even though none
+	// of this is re-read at attach time (the VM keeps its create-time mounts).
+	// `den sh <name>` is the one path that skips all of this.
+	//
+	// The message cites m.Key — the key the USER wrote. For the ssh.mode sugar
+	// that is `ssh.dir`, not `mounts[0]`, which appears in no config file.
+	//
+	// A path that EXISTS but is not a directory is refused separately, and with
+	// its own sentence: "not found" is false for a file that exists, and
+	// `host: ~/.digitaleo/config.yaml` — naming the file instead of the
+	// directory holding it — is a plausible thing to write. What sbx does with a
+	// FILE workspace has never been measured, and this branch's own doctrine
+	// (spec §14.0/§14.1) says an unmeasured sbx behaviour is a hypothesis, not a
+	// premise: passing one through is precisely what this gate exists to stop.
+	// If sbx materialised an empty directory there, the tool inside the VM would
+	// read an empty directory with no error — the silent wrong-path failure the
+	// whole feature was written to remove.
+	for _, m := range r.Mounts {
+		fi, err := os.Stat(m.Host)
+		switch {
+		case err != nil:
+			if m.Key == "ssh.dir" {
+				return fmt.Errorf(
+					"ssh.dir: %s not found — fix `ssh.dir` in %s: in \"mount\" mode this directory "+
+						"is mounted in the sandbox, and a missing path would mount an empty directory "+
+						"instead of your keys",
+					m.Host, config.GlobalPath(denHome))
+			}
+			// `den sh` is NAMED, not merely implied by the comment above: this
+			// gate runs on the attach branch too, so a host path that vanished
+			// (an unmounted volume, a directory not created yet) refuses entry
+			// to a sandbox that is alive and holding work. The user needs the
+			// one command that skips all of this, in the message, at the moment
+			// they are locked out.
 			return fmt.Errorf(
-				"ssh.dir: %s not found — fix `ssh.dir` in %s: in \"mount\" mode this directory "+
-					"is mounted in the sandbox, and a missing path would mount an empty directory "+
-					"instead of your keys",
-				r.SSHDir, config.GlobalPath(denHome))
+				"%s.host: %s not found — fix `mounts:` in %s: this directory is mounted in the "+
+					"sandbox, and a missing path would mount an empty directory instead of your files "+
+					"(`den sh <sandbox>` still enters an already-live sandbox)",
+				m.Key, m.Host, config.GlobalPath(denHome))
+		case !fi.IsDir():
+			if m.Key == "ssh.dir" {
+				return fmt.Errorf(
+					"ssh.dir: %s is not a directory — fix `ssh.dir` in %s: in \"mount\" mode den "+
+						"mounts that DIRECTORY in the sandbox, so it must name the directory holding "+
+						"your keys, not a file inside it",
+					m.Host, config.GlobalPath(denHome))
+			}
+			return fmt.Errorf(
+				"%s.host: %s is not a directory — fix `mounts:` in %s: den mounts DIRECTORIES, so "+
+					"`host:` must name the directory holding your files, not a file inside it",
+				m.Key, m.Host, config.GlobalPath(denHome))
 		}
 	}
 	// Same invariant, same place: kits go into `sbx create`'s `--kit`
@@ -556,31 +595,26 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return fmt.Errorf("creating agent %s profile (%s): %w", r.AgentName, r.AgentConfigDir, err)
 	}
 	workspaces = append(workspaces, r.AgentConfigDir)
-	// All three SSH modes are handled here, including the two that add
-	// nothing to workspaces — an `if` with no `else` left "nothing to do,
-	// by design" indistinguishable from "case forgotten".
+	// Mounts go LAST, never at position 0: the first workspace becomes the
+	// attach's `-w`, and a mount there would drop the shell outside the code.
 	//
-	//   - "mount": ssh.dir becomes a workspace. Checked in step 2; only
-	//     its position in the list matters here (the first workspace
-	//     becomes the attach's -w).
-	//
-	//   - "agent-forward" (the DEFAULT): nothing to add, here or
-	//     elsewhere. It relies entirely on `sbx create` inheriting den's
-	//     environment, SSH_AUTH_SOCK included — cmd.Env is left nil in
-	//     internal/sbx/runner.go, and that inheritance is covered by
-	//     TestExecRunTransmitsDenEnvironment. The socket has no place in
-	//     the argv (no sbx flag takes it) nor in the mixin (a host socket
-	//     value written into a kit would be stale by the next session).
-	//     `den doctor` warns when the variable is absent — the one case
-	//     this mode gives nothing. Not verified: that sbx forwards the
-	//     socket into the microVM itself (spec A10).
-	//
-	//   - "none": nothing to add, by definition.
-	//
-	// That the last two produce the SAME list, and mount exactly one more
-	// workspace, is covered by TestSpawnAddsNoWorkspaceOutsideMountMode.
-	if r.SSHMode == "mount" {
-		workspaces = append(workspaces, r.SSHDir)
+	// All three SSH modes are now handled by nest.resolveMounts, which desugars
+	// `mount` into an ordinary entry of this list. There is deliberately no
+	// `if SSHMode == ...` left here: one mechanism means one place for a bug.
+	// `agent-forward` (the DEFAULT) and `none` contribute nothing to the argv —
+	// agent-forward relies entirely on `sbx create` inheriting den's
+	// environment, SSH_AUTH_SOCK included (cmd.Env is left nil in
+	// internal/sbx/runner.go, covered by TestExecRunTransmitsDenEnvironment).
+	// The socket belongs neither in the argv (no sbx flag takes it) nor in the
+	// mixin (a host socket value written into a kit is stale by the next
+	// session). `den doctor` warns when the variable is absent.
+	for _, m := range r.Mounts {
+		// `<path>:ro` is sbx's own read-only syntax (`sbx create --help`).
+		if m.RO {
+			workspaces = append(workspaces, m.Host+":ro")
+			continue
+		}
+		workspaces = append(workspaces, m.Host)
 	}
 
 	// 5. Generate the mixin. r.DenHome, not denHome: Resolve guarantees
@@ -1013,12 +1047,17 @@ func reportFreshness(out io.Writer, sandboxName string, verdict agent.GateVerdic
 		// journal is what made the 2026-07-27 bug diagnosable, and a message
 		// that says "the gate failed" without it sends the user back into the
 		// VM to read what den has already read.
+		//
+		// The remedy comes from the VERDICT and is not written here: den's kit
+		// runs two commands, and they are fixed in different files (the agent
+		// registry for a stale agent, `mounts:` / `ssh.dir` for a refused link
+		// phase). This sentence used to hardcode the registry, and pointed the
+		// user at it even when the journal said the agent update never ran.
 		return fmt.Errorf(
 			"sandbox %s: the agent-freshness gate FAILED — %s.\n  %s\n"+
-				"den does not open a sandbox whose agent it knows to be stale. Fix the agent's "+
-				"`update:` command in the registry, then `den rm %s` and relaunch; the whole journal "+
-				"is `sbx exec %s cat %s`",
-			sandboxName, verdict.Reason, strings.TrimSpace(verdict.Line),
+				"den does not open a sandbox whose startup it knows to have failed. %s, then "+
+				"`den rm %s` and relaunch; the whole journal is `sbx exec %s cat %s`",
+			sandboxName, verdict.Reason, strings.TrimSpace(verdict.Line), verdict.Remedy,
 			sandboxName, sandboxName, agent.KitLogPath)
 	case agent.GateAbsent:
 		// Out, not Err: both warnings describe THE SANDBOX den is reporting on,

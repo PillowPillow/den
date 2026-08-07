@@ -282,8 +282,26 @@ is not a vacuum. Your repos are mounted from the host at the same absolute path,
 including the `-w` worktrees that may carry uncommitted work — and `ssh.mode: agent-forward` (the
 default) means the forwarded agent inside the VM holds your push access. `egress:` does not narrow
 that either (see above). What the VM does buy is a blast radius bounded by *what den mounted*, which
-is recorded per sandbox and replayed by `den ls` / `den rm` / `den doctor` — enough to let the agent
-run unprompted, not enough to treat it as unattended.
+den's own manifest replays for `den ls` / `den rm` / `den doctor` — enough to let the agent run
+unprompted, not enough to treat it as unattended.
+
+`mounts:` widens that radius, and it does so **globally**: every entry is mounted into every
+sandbox, not just the one you have in mind when you add it, and — unlike your repos — it is not
+in the manifest den replays, because it is re-derivable config rather than sandbox state. Pointing
+a mount at a directory holding secrets (a VPN token, a `consul.secret`) exposes them to every
+sandbox you spawn afterward. Legitimate, as long as it is not done unknowingly. `ssh.mode: mount`
+is the same trade-off under a different name: the key sits at rest in every VM while the forwarded
+agent still holds it too, so the mode **adds** reach, it does not narrow it.
+
+`den nest show <nest>` lists what a spawn will mount — the `mounts:` entries and the
+`ssh.mode: mount` sugar alike — which is the one place that enumerates a global key per nest.
+
+`host:` must be absolute (or `~/...`, which den expands). `link:` is a **VM** path, emitted into the
+sandbox's startup shell verbatim so the VM expands `$HOME`: it must be absolute or start with
+`$HOME/` / `~/`, may expand nothing but `$HOME` (spelled `$HOME`, not `${HOME}`), and carries no
+quote, backslash, backtick or `$(...)`. Two mounts may not claim the same `link:` — the link phase would run `ln -sfn` twice on
+one path and only the last would survive, so den refuses instead of letting one entry disappear in
+silence.
 
 ## Agent freshness
 
