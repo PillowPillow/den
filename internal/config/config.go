@@ -136,6 +136,13 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 		return nil, err
 	}
 	for i := range g.Mounts {
+		// Trim before expanding: a stray space in the YAML would otherwise survive
+		// into `sbx create`'s argv (Host) or into the VM's startup shell (Link),
+		// where a leading space breaks the `$HOME/` prefix the link phase relies on.
+		// Trimmed at LOAD so exactly one value exists — validation and every later
+		// consumer read the same string, and no downstream copy can diverge.
+		g.Mounts[i].Host = strings.TrimSpace(g.Mounts[i].Host)
+		g.Mounts[i].Link = strings.TrimSpace(g.Mounts[i].Link)
 		// Host only. Link is a VM path — see the Mount doc comment.
 		if g.Mounts[i].Host, err = ExpandPath(g.Mounts[i].Host); err != nil {
 			return nil, fmt.Errorf("mounts[%d].host: %w", i, err)

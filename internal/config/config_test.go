@@ -407,3 +407,44 @@ mounts:
 		t.Fatal("want a load error naming the unknown key, got nil")
 	}
 }
+
+// Mounts with surrounding whitespace must be trimmed at load time, so that the
+// same value is used everywhere: validation and every downstream consumer read
+// the trimmed string, and no copy can diverge. A leading space in a link would
+// break the `$HOME/` / `~/` prefix that later tasks rely on.
+func TestLoadGlobalTrimsMountsHostAndLink(t *testing.T) {
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: "  /tmp/host-with-spaces  "
+    link: "  $HOME/.link-with-spaces  "
+  - host: "  ~/.tilde-with-spaces  "
+    link: "  ~/.tilde-link  "
+`)
+	g, err := LoadGlobalUnvalidated(denHome)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(g.Mounts) != 2 {
+		t.Fatalf("got %d mounts, want 2", len(g.Mounts))
+	}
+	// First mount: host trimmed and expanded, link trimmed but not expanded.
+	if strings.HasPrefix(g.Mounts[0].Host, " ") || strings.HasSuffix(g.Mounts[0].Host, " ") {
+		t.Errorf("host not trimmed: %q", g.Mounts[0].Host)
+	}
+	if g.Mounts[0].Link != "$HOME/.link-with-spaces" {
+		t.Errorf("link not trimmed: got %q, want %q", g.Mounts[0].Link, "$HOME/.link-with-spaces")
+	}
+	// Second mount: host trimmed and expanded, link trimmed.
+	if strings.HasPrefix(g.Mounts[1].Host, " ") || strings.HasSuffix(g.Mounts[1].Host, " ") {
+		t.Errorf("tilde host not trimmed: %q", g.Mounts[1].Host)
+	}
+	if g.Mounts[1].Link != "~/.tilde-link" {
+		t.Errorf("tilde link not trimmed: got %q, want %q", g.Mounts[1].Link, "~/.tilde-link")
+	}
+}

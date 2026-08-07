@@ -476,6 +476,10 @@ func TestValidateMounts(t *testing.T) {
 		{"link $HOME ok", []Mount{{Host: "/tmp/x", Link: "$HOME/.ssh"}}, ""},
 		{"link tilde ok", []Mount{{Host: "/tmp/x", Link: "~/.ssh"}}, ""},
 		{"link absolute ok", []Mount{{Host: "/tmp/x", Link: "/etc/thing"}}, ""},
+		// Indexed key: a config may carry several mounts, and "mounts" alone would
+		// not say which one to fix. Prove the index is computed correctly for the
+		// second mount (index 1).
+		{"second mount indexed", []Mount{{Host: "/tmp/a"}, {Link: "$HOME/x"}}, "mounts[1].host: required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
