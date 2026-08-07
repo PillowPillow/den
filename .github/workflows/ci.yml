@@ -1,9 +1,19 @@
-# The same three gates a local dev runs (`task check`), on every push and PR.
-# The `checks` job is hermetic by construction — no socket, no
-# process, no real sbx — so a bare ubuntu runner with a Go toolchain is enough;
-# anything more (services, sbx install) would contradict the repo's own test
-# conventions. `install-script` is the one deliberate exception: its object
-# under test is the network path itself, so it gets a socket on purpose.
+# The same three gates a local dev runs (`task check`), on every push and PR,
+# plus the two build asserts the suite structurally cannot make.
+# The `checks` job is hermetic by construction — no socket, no real sbx — so a
+# bare ubuntu runner with a Go toolchain is enough; anything more (services, sbx
+# install) would contradict the repo's own test conventions. It does now run the
+# binary it just built, which the earlier "no process" wording forbade. That
+# costs the job none of its hermeticity: `Execute` installs a signal handler and
+# builds the command tree, and `den version` is a `fmt.Fprintf` over
+# `displayVersion()` (`internal/cli/root.go:129`), which reads `runtime/debug`
+# build info and nothing else — no socket, no fork, no den-home. The adjacent
+# guard is `internal/ports/hermeticity_test.go`, which locks `internal/cli`
+# against importing `net`, `hash/fnv` or `os/exec` at all; it was written for
+# port decisions, but it is why this path has no raw system access to reach.
+# `install-script` remains the one
+# deliberate exception on the stronger claim: its object under test is the
+# network path itself, so it gets a socket on purpose.
 name: ci
 
 on:
@@ -35,6 +45,60 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: task check
+      # `task check` green does not prove that `-X …/internal/cli.Version=` ever
+      # reached the linker, and no Go test can: a test observes the binary it was
+      # compiled into, never the one the Taskfile builds. These two steps are the
+      # only place that proof can live, which is why they sit in CI rather than in
+      # `internal/cli`. `TestResolveVersionKeepsDevWhenLdflagsStampedNothing`
+      # covers the arbitration; it says nothing about what the build stamped.
+      #
+      # The assert is AGREEMENT with `git describe`, not "is it `dev`?". The live
+      # failure mode is a misspelled `{{.VERSION}}`: Task renders an unknown
+      # variable as the empty string, reports no error and exits 0, so
+      # `…cli.Version=` reaches the linker with nothing after it. The binary does
+      # NOT then answer `den ` — `resolveVersion` rescues an empty stamp back to
+      # `dev` (`internal/cli/version.go:29`, covered by
+      # `TestResolveVersionKeepsDevWhenLdflagsStampedNothing`), so a release built
+      # through a typo'd Taskfile says exactly what a build that skipped the
+      # runner says. Measured locally on a dirty tree, 2026-08-07, by stamping an
+      # empty Version: the binary answered `den dev` and this step red with
+      # `den version answered 'den dev', expected '<the describe output>'`.
+      # Agreement is what separates the two, and it also catches the case a
+      # `!= dev` test never could — a stamp that ran but named the wrong thing.
+      #
+      # The assert needs no assumption about what the runner's checkout fetched.
+      # `task build` and the line below call the same `git describe` in the same
+      # checkout, so whichever answer that checkout can produce — a tag, the
+      # short SHA from `--always` when no tag was fetched, `-dirty` or not — both
+      # sides read the same one. Symmetric under every outcome, and none of those
+      # outcomes is a value the broken build can produce.
+      - name: the stamped build agrees with git describe
+        run: |
+          task build
+          want="den $(git describe --tags --always --dirty)"
+          got="$(./den version)"
+          if [ "$got" != "$want" ]; then
+            echo "den version answered '$got', expected '$want'"
+            exit 1
+          fi
+      # The other half: a build that skipped the runner must name nothing. This
+      # guards the documented tell, and it is not hypothetical — it would have
+      # caught the Go 1.24 regression #43 fixed, roughly three toolchain releases
+      # before a human noticed it. Go started stamping `Main.Version` from VCS
+      # state, `resolveVersion` accepted the resulting pseudo-version as a real
+      # answer, and a plain `go build` quietly stopped saying `dev`. The unit
+      # suite never saw it: it asserts on `(devel)`, the placeholder Go emits only
+      # when there is no `.git` to read — which a checkout always has. Measured
+      # 2026-08-07 on the same shallow tagless clone: `den dev`, so the depth-1
+      # runner reaches the `fromLocalVCS` branch and not the build-info rescue.
+      - name: a plain go build still answers dev
+        run: |
+          go build -o "$RUNNER_TEMP/den-plain" ./cmd/den
+          got="$("$RUNNER_TEMP/den-plain" version)"
+          if [ "$got" != "den dev" ]; then
+            echo "a plain go build answered '$got', expected 'den dev'"
+            exit 1
+          fi
 
   # install.sh is an interface between .goreleaser.yaml's archive naming and
   # whatever machine runs `curl | sh`. shellcheck locks the POSIX-sh promise;
