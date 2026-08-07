@@ -212,17 +212,51 @@ ne sait ce qu'est `.ssh`.
 Par mount porteur d'un `link:` : `mkdir -p "$(dirname LINK)"`, puis résolution de l'état de la
 cible (table ci-dessous), puis `ln -sfn HOST LINK`.
 
-### Une propriété acquise sans code
+### Détection de dérive — À CODER, contrairement à ce que ce document affirmait
 
-**Détection de dérive.** `internal/agent/drift.go` compare la mixin du jour à celle enregistrée
-à la création. La phase de liens vivant **dans** la mixin, éditer `mounts:` puis relancer
-`den spawn` sur une sandbox vivante avertit déjà que la VM ne correspond plus à la config. Ça
-couvre le cas qui serait sinon silencieux : les mounts sont fixés à la création, donc un
-`mounts:` édité ne fait rien tant qu'on ne respawn pas.
+**Correction du 2026-08-07, après lecture de `internal/agent/drift.go`** (le seul fichier
+d'`internal/agent` que la rédaction initiale n'avait pas ouvert) : la dérive **n'est pas**
+gratuite.
 
-C'est la **seule** chose gratuite. `den doctor` doit apprendre à valider `mounts[].host` — la
-sonde a la même forme que celle des kits et de `ssh.dir`, mais c'est du code neuf, à chiffrer
-dans le plan.
+`ReadMixin` relit la mixin sur disque à travers un `parsedSpec` qui ne retient qu'un champ de
+`commands.startup` :
+
+```go
+// drift.go:77-82
+// RenderMixin only ever emits a single startup command, and freshness is …
+if n := len(spec.Commands.Startup); n > 0 {
+    m.Freshness = spec.Commands.Startup[n-1].Command
+}
+```
+
+Deux conséquences, de gravité inégale :
+
+1. **Le `n-1` reste juste.** Il prend la **dernière** entrée, et la fraîcheur reste la dernière
+   par construction (spec §9.1). Rien à corriger là. Seul le commentaire au-dessus devient faux.
+2. **`Links` n'est jamais relu, donc jamais comparé** (`drift.go:136` ne compare que
+   `Freshness`). Éditer `mounts:` et relancer `den spawn` sur une sandbox vivante ne
+   signalerait **rien** — exactement le silence que cette section prétendait éviter.
+
+Il faut donc : que `ReadMixin` peuple `Links` depuis `Startup[0]` quand la séquence porte deux
+entrées, et que la comparaison inclue `Links`. C'est du code, et c'est une tâche du plan.
+
+`den doctor` non plus n'est pas gratuit : la sonde `mounts[].host` a la même forme que celle des
+kits et de `ssh.dir`, mais elle reste à écrire.
+
+### En revanche, `internal/manifest` n'a rien à apprendre — et c'est délibéré
+
+Le manifeste `state/sandboxes/<sandbox>.yaml` n'enregistre **aucune** liste de workspaces
+(`grep Workspace internal/manifest/*.go` → vide) : il enregistre les repos, parce qu'un repo
+dépend du nest, que le nest peut changer, et que `den rm` doit pouvoir nettoyer un worktree sans
+re-dériver quoi que ce soit.
+
+Un mount n'a aucune de ces propriétés. Il vient de `config.yaml` global, il est re-dérivable à
+tout instant, et il ne crée pas de worktree à nettoyer. Et `den ls` compte `b.Workspaces` tel
+que **sbx** le rapporte (`internal/cli/ls.go:131`), pas le manifeste : les mounts y apparaissent
+donc correctement sans une ligne de code.
+
+Écrit ici plutôt que passé sous silence, la doctrine T13/T16 voulant qu'un lecteur ne retombe
+sur la dérivation que lorsque l'enregistrement est absent.
 
 ### Hors périmètre, délibérément
 
