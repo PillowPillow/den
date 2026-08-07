@@ -152,7 +152,45 @@ Avec `ro: true`, l'entrée d'argv devient `<host>:ro`.
 
 La mixin de den porte déjà `commands.startup`, et cette clé est une **séquence** —
 `mixin.go:109-111` la construit avec une seule entrée aujourd'hui, la commande de fraîcheur de
-l'agent. La phase de liens devient une seconde entrée, émise **en premier** :
+l'agent. La phase de liens devient une seconde entrée, émise **en premier**.
+
+#### Mesuré, pas supposé : sbx exécute bien plusieurs entrées, dans l'ordre déclaré
+
+`mixin.go:109` prouve la forme de sortie de **den**, pas que sbx exécute plus d'une entrée. Tous
+les kits existants (`ssh-known-hosts`, `dg:base`, la mixin de den) n'en portent qu'une seule.
+Si sbx ne lançait que `startup[0]`, ce design supprimerait silencieusement `claude update` —
+un fail-OPEN sur la fraîcheur de l'agent, exactement ce que le garde de `RenderMixin` refuse.
+
+Sonde `twostepprobe` (kit à deux entrées, chacune horodatant `/tmp/order.txt` ; sandbox
+supprimée depuis), le 2026-08-07 :
+
+```
+FIRST  1786099450263315292
+SECOND 1786099450268467792
+```
+
+Et le journal du dispatcher montre pourquoi : sbx développe **chaque entrée en son propre
+script numéroté**, puis les joue dans l'ordre.
+
+```
+=== dispatcher run 2026-08-07T10:44:10Z ===
+> /etc/durable-startup.d/001-startup-shell/000-cmd.sh
+ok /etc/durable-startup.d/001-startup-shell/000-cmd.sh
+> /etc/durable-startup.d/002-startup-twostep/000-cmd.sh
+ok /etc/durable-startup.d/002-startup-twostep/000-cmd.sh
+> /etc/durable-startup.d/002-startup-twostep/001-cmd.sh
+ok /etc/durable-startup.d/002-startup-twostep/001-cmd.sh
+=== dispatcher complete ===
+```
+
+Deux ordres en découlent, tous deux déterministes et **observables dans ce journal** : les kits
+entre eux par leur position de layering (`001-`, `002-`), et les entrées d'un kit par leur index
+de déclaration (`000-cmd.sh`, `001-cmd.sh`). La mixin de den étant layerée en dernier
+(`stacks/base/stack.yaml` : « `kit:` … layeré en DERNIER » ; description du kit `dg:base` :
+« layeré au `create` avant le mixin généré par den »), **la phase de liens passe après tous les
+kits de stack** — la bonne place, puisqu'elle doit pouvoir constater ce qu'ils ont créé.
+
+Forme retenue :
 
 ```yaml
 commands:
@@ -174,14 +212,17 @@ ne sait ce qu'est `.ssh`.
 Par mount porteur d'un `link:` : `mkdir -p "$(dirname LINK)"`, puis résolution de l'état de la
 cible (table ci-dessous), puis `ln -sfn HOST LINK`.
 
-### Deux propriétés acquises sans code
+### Une propriété acquise sans code
 
-- **Détection de dérive.** `internal/agent/drift.go` compare la mixin du jour à celle
-  enregistrée à la création. La phase de liens vivant **dans** la mixin, éditer `mounts:` puis
-  relancer `den spawn` sur une sandbox vivante avertit déjà que la VM ne correspond plus à la
-  config. Ça couvre le cas qui serait sinon silencieux : les mounts sont fixés à la création,
-  donc un `mounts:` édité ne fait rien tant qu'on ne respawn pas.
-- **`den doctor`.** Il valide déjà les kits et `ssh.dir` ; `mounts[].host` est la même sonde.
+**Détection de dérive.** `internal/agent/drift.go` compare la mixin du jour à celle enregistrée
+à la création. La phase de liens vivant **dans** la mixin, éditer `mounts:` puis relancer
+`den spawn` sur une sandbox vivante avertit déjà que la VM ne correspond plus à la config. Ça
+couvre le cas qui serait sinon silencieux : les mounts sont fixés à la création, donc un
+`mounts:` édité ne fait rien tant qu'on ne respawn pas.
+
+C'est la **seule** chose gratuite. `den doctor` doit apprendre à valider `mounts[].host` — la
+sonde a la même forme que celle des kits et de `ssh.dir`, mais c'est du code neuf, à chiffrer
+dans le plan.
 
 ### Hors périmètre, délibérément
 
@@ -195,10 +236,21 @@ Deux barrières, à deux moments choisis.
 
 ### Côté hôte, au spawn, avant le premier effet de bord
 
-Tout `mounts[].host` doit exister. Même sonde et même forme de message que le contrôle
-`ssh.dir` existant (`spawn.go:427`), nommant le chemin et le fichier à corriger. Ça se place
-avec les contrôles de repos et de kits, dans le bloc dont l'objet est précisément qu'un refus
-ne laisse jamais un worktree orphelin derrière lui.
+Tout `mounts[].host` doit exister. Même sonde que le contrôle `ssh.dir` existant
+(`spawn.go:427`), nommant le chemin et le fichier à corriger. Ça se place avec les contrôles de
+repos et de kits, dans le bloc dont l'objet est précisément qu'un refus ne laisse jamais un
+worktree orphelin derrière lui.
+
+**Le message d'`ssh.dir` ne doit pas mourir avec le désucrage.** Celui d'aujourd'hui est
+spécifique et bon : « *in "mount" mode this directory is mounted in the sandbox, and a missing
+path would mount an empty directory instead of your keys* ». Un contrôle générique sur
+`mounts[].host` le remplacerait par une phrase qui ne parle plus ni de clés ni de `ssh.dir`,
+et pointerait `mounts:` — une clé que l'utilisateur n'a pas écrite, puisqu'elle vient du sucre.
+
+Donc : une entrée de mount **sait d'où elle vient**, et le refus cite la clé d'origine. Issue du
+sucre → le message et le fichier restent ceux d'`ssh.dir`. Écrite à la main → ils désignent
+`mounts:`. Le test qui couvre le message actuel est à conserver tel quel, et il rejoint la liste
+des tests à mettre à jour.
 
 ### Côté VM, au boot — l'état de la cible, invisible depuis l'hôte
 
@@ -218,6 +270,14 @@ Le partage sur la vacuité est le seul jugement de ce design.
 Un répertoire vide est un emplacement réservé posé par l'image de base : le prendre est sans
 risque, et refuser rendrait certaines cibles définitivement inutilisables, puisque le chemin de
 l'outil est fixe et que l'utilisateur ne peut pas en choisir un autre.
+
+**Vérifié pour le cas motivant** — un fail-closed qui casserait `~/.digitaleo` rendrait la
+fonctionnalité inutilisable dès le premier essai. Le kit `dg:base` ne crée **pas** ce
+répertoire : sa seule commande de démarrage écrit `/etc/profile.d/99-digitaleo-path.sh`, qui
+*mentionne* `$HOME/.digitaleo/bin` dans le `PATH` sans jamais le `mkdir`. Rien d'autre dans la
+source `dg` ne le crée non plus (`grep mkdir.*digitaleo` → aucun résultat). Sur une VM neuve la
+cible est donc absente, et le lien se pose proprement. Le répertoire observé dans la sandbox
+vivante a été créé **par l'usage**, après le boot, par `dgdev` lui-même.
 
 Un répertoire non vide porte des données : `~/.claude` dans la VM est un vrai profil. Et
 `ln -sfn` sur un répertoire existant ne le remplace pas — il crée silencieusement `LINK/<nom>`
@@ -244,6 +304,8 @@ La phase de liens est **une chaîne que den génère**, donc l'essentiel est tes
 - ordre : un mount n'est jamais en position 0 ;
 - suffixe `:ro` présent dans l'argv ;
 - refus côté hôte déclenché avant tout effet de bord ;
+- le test du message d'`ssh.dir` existant reste **vert sans modification** — c'est lui qui prouve
+  que le désucrage n'a pas dilué le diagnostic ;
 - `den doctor` signale un `mounts[].host` absent.
 
 Aucun test ne lance de process ni n'ouvre de socket.
@@ -256,6 +318,26 @@ La branche vide / non-vide est exactement là où ça compte.
 Atténuation : garder le shell trivial, et le vérifier **une fois à la main dans une vraie
 sandbox**, le résultat consigné ici. C'est le traitement hors-bande que la spec §14.0/§14.1
 réserve déjà à toute affirmation sur ce qu'un vrai `sbx` a réellement répondu.
+
+## Ce que devient la spec §10
+
+CLAUDE.md est explicite : une divergence entre la spec et le comportement réel est désormais
+**un bug dans l'un des deux**, plus une phase assumée. Le plan doit donc porter l'édition de
+§10, pas seulement le code.
+
+Trois modifications :
+
+1. **La ligne `mount` cesse de décrire un mécanisme et devient du sucre.** Aujourd'hui : « monte
+   la **clé dédiée** dans la VM ». Demain : « équivaut à `mounts: [{host: <ssh.dir>, link:
+   $HOME/.ssh}]` », avec le renvoi à la section `mounts:`.
+2. **Le tableau « Ce que den fait, exactement, pour chacun des trois modes » devient faux** et
+   doit être réécrit. Sa colonne « mixin » dit `inchangée` pour les trois modes ; en `mount`
+   elle porte désormais la phase de liens. Sa colonne workspaces dit `+ ssh.dir, en dernier` ;
+   c'est maintenant `+ les mounts, en dernier`.
+3. **« Simple, headless-ready » devient vrai.** L'affirmation est aujourd'hui démentie par la
+   mesure de la section « Déclencheur » ci-dessus. Ne pas la retirer — c'est l'intention, et
+   c'est ce design qui la réalise. Y adjoindre la raison : le lien est ce qui rend le mode
+   utilisable sans personne au clavier.
 
 ## Conséquences pour le cas déclencheur
 
