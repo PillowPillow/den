@@ -1,0 +1,27 @@
+set -uo pipefail
+
+den_link() {
+  src="$1"; dst="$2"; key="$3"
+  parent="$(dirname "$dst")"
+  if ! mkdir -p "$parent"; then
+    echo "den mounts: FATAL cannot create $parent (from $key)" >&2
+    exit 1
+  fi
+  if [ ! -L "$dst" ] && [ -d "$dst" ]; then
+    if ! rmdir "$dst" 2>/dev/null; then
+      echo "den mounts: FATAL $dst is a non-empty directory (from $key) — den refuses to replace it" >&2
+      exit 1
+    fi
+  elif [ ! -L "$dst" ] && [ -e "$dst" ]; then
+    echo "den mounts: FATAL $dst exists and is not a directory (from $key) — den refuses to replace it" >&2
+    exit 1
+  fi
+  if ! ln -sfn "$src" "$dst"; then
+    echo "den mounts: FATAL cannot link $dst -> $src (from $key)" >&2
+    exit 1
+  fi
+  echo "den mounts: $dst -> $src"
+}
+
+den_link '/home/me/.digitaleo' "$HOME/.digitaleo" 'mounts[0]'
+den_link '/home/me/.ssh_sbx' "$HOME/.ssh" 'ssh.dir'
