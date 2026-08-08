@@ -135,25 +135,21 @@ jobs:
       # the release ldflags line to before the tag is public, instead of
       # after every `install.sh` and brew user already has the binary.
       #
-      # `GITHUB_TOKEN` here is not for the build — snapshot mode's release
-      # pipe is disabled and never calls the GitHub API (confirmed above by
-      # the "pipe skipped … disabled during snapshot mode" log line). It is
-      # for the action itself: `version: "~> v2"` is a semver range the
-      # action resolves by listing goreleaser's own GitHub releases, and
-      # `dist/index.js` reads `process.env.GITHUB_TOKEN` directly for that
-      # call (confirmed by fetching goreleaser-action@v7's bundled JS and
-      # finding `process.env.GITHUB_TOKEN` guarding the `Authorization`
-      # header on the release-list request). Unset, that call is
-      # unauthenticated and shares GitHub's public per-IP rate limit across
-      # every runner — the same reason `arduino/setup-task@v3` above takes
-      # `repo-token`.
+      # No `GITHUB_TOKEN` here on purpose: unlike `release.yml`'s block, this
+      # one runs `build`, not `release`, and needs no forge credential.
+      # `version: "~> v2"` is resolved by `getReleaseTag` → `resolveVersion` →
+      # `getAllTags`, which lists candidates from `https://goreleaser.com/
+      # releases.json` — not the GitHub API, and no `Authorization` header.
+      # `process.env.GITHUB_TOKEN` exists in the action's bundle, but only
+      # inside `resolveNightly`, reached solely by `version: "nightly"`; not
+      # this step. Traced in goreleaser-action@v7's `dist/index.js`
+      # (`https://raw.githubusercontent.com/goreleaser/goreleaser-action/v7/dist/index.js`),
+      # 2026-08-08.
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
           args: build --snapshot --single-target --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Located, not hard-coded: the directory under `dist/` carries
       # goreleaser's build id and a goos/goarch suffix (something like
       # `dist/den_linux_amd64_v1/den` on this ubuntu runner; measured locally
