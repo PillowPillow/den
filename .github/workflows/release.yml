@@ -1,7 +1,8 @@
-# Pushing a v* tag is the release trigger. The test job calls gates.yml — the
-# same gates ci.yml runs — on the tagged commit — a tag can land on a commit
-# that never went through a PR, and goreleaser must not ship what the suite
-# has not vouched for.
+# Pushing a `v*` tag is the release trigger. The `test` job below calls
+# `gates.yml` on the tagged commit, so the tag faces the same gates `ci.yml`
+# runs on every pull request. It has to: a tag can land on a commit that never
+# went through a PR, and goreleaser must not ship what those gates have not
+# vouched for.
 name: release
 
 on:

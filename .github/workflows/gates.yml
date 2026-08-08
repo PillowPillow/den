@@ -1,22 +1,47 @@
 # One definition of the gates: the same three checks a local dev runs
-# (`task check`) plus the two build asserts the suite structurally cannot
+# (`task check`) plus the three build asserts the suite structurally cannot
 # make. Called by `ci.yml` on every push to main and every pull request, and
 # by `release.yml` on a `v*` tag push, so the tagged commit and the reviewed
 # commit are subjected to the same asserts. Before this workflow existed,
 # `release.yml` ran a bare `task check` and a tag pushed onto a commit that
 # never went through a PR shipped unproven.
 #
-# The `checks` job is hermetic by construction — no socket, no real sbx — so a
-# bare ubuntu runner with a Go toolchain is enough; anything more (services, sbx
-# install) would contradict the repo's own test conventions. It does now run the
-# binary it just built, which the earlier "no process" wording forbade. That
-# costs the job none of its hermeticity: `Execute` installs a signal handler and
-# builds the command tree, and `den version` is a `fmt.Fprintf` over
-# `displayVersion()` (`internal/cli/root.go:129`), which reads `runtime/debug`
-# build info and nothing else — no socket, no fork, no den-home. The adjacent
-# guard is `internal/ports/hermeticity_test.go`, which locks `internal/cli`
-# against importing `net`, `hash/fnv` or `os/exec` at all; it was written for
-# port decisions, but it is why this path has no raw system access to reach.
+# What the ASSERTS need is a bare ubuntu runner: no service, no real sbx, no
+# den-home, no socket of their own. That is the claim this job defends, and it
+# is deliberately narrower than "this job touches no network". `checkout`,
+# `setup-go`, `setup-task`, the module download and the goreleaser action all
+# fetch; the goreleaser action additionally resolves `~> v2` over
+# `https://goreleaser.com/releases.json`, traced at that step below. Those are
+# toolchain installs, the same ones any CI job performs, and none of them is
+# the object under test. Installing a BUILD tool is therefore not the "anything
+# more" this paragraph refuses — bringing up a service, or a real sbx, would
+# be, because then an assert would be observing a live machine instead of a
+# binary.
+#
+# The asserts do run the binaries they just built, which the earlier "no
+# process" wording forbade. That costs them nothing. `den version` is a
+# `fmt.Fprintf` over `displayVersion()` (`internal/cli/root.go:129`), which
+# reads `runtime/debug` build info and nothing else, and everything upstream of
+# it is inert: `Execute` installs a signal handler and builds the command tree,
+# and `SystemDeps()` (`internal/cli/root.go:71-83`) only STORES its system
+# accesses. `sbx.NewExec` returns `&Exec{Bin: bin}`
+# (`internal/sbx/runner.go:66-71`), `sshagent.System()` returns a closure
+# (`internal/sshagent/sshagent.go:215-217`), `doctor.SystemDeps()` assigns
+# `exec.LookPath` without calling it (`internal/doctor/doctor.go:81-93`), and
+# the remaining fields are struct literals and func values. No fork happens
+# before cobra reaches the `version` command — read out of those constructors,
+# not observed under a syscall trace.
+#
+# NO TEST LOCKS THAT, and the nearest guard is not it.
+# `internal/ports/hermeticity_test.go`'s `TestCliImportsNoRawPortOrSystemAccess`
+# reads `internal/cli`'s DIRECT imports only — deliberately, unlike
+# `TestSpawnDoesNotTransitivelyDependOnPorts` beside it, which walks the graph —
+# and `internal/cli` already reaches `os/exec` transitively through
+# `internal/sbx`, `internal/sshagent`, `internal/doctor`, `internal/worktree`
+# and `internal/ports` (`go list -deps`, 2026-08-08). Make one of those
+# constructors eager later, say an `exec.LookPath("sbx")` up front for a better
+# error, and every `den version` forks while that test stays green. The
+# property above is held by reading the constructors, not by CI.
 name: gates
 
 on:
@@ -48,10 +73,12 @@ jobs:
       - run: task check
       # `task check` green does not prove that `-X …/internal/cli.Version=` ever
       # reached the linker, and no Go test can: a test observes the binary it was
-      # compiled into, never the one the Taskfile builds. These two steps are the
-      # only place that proof can live, which is why they sit in CI rather than in
-      # `internal/cli`. `TestResolveVersionKeepsDevWhenLdflagsStampedNothing`
-      # covers the arbitration; it says nothing about what the build stamped.
+      # compiled into, never the one the Taskfile builds. The next two steps are
+      # the only place THAT proof can live, which is why they sit in CI rather
+      # than in `internal/cli` — the third assert, further down, proves
+      # `.goreleaser.yaml`'s separate `-X` line and is not part of this pair.
+      # `TestResolveVersionKeepsDevWhenLdflagsStampedNothing` covers the
+      # arbitration; it says nothing about what the build stamped.
       #
       # The assert is AGREEMENT with `git describe`, not "is it `dev`?". The live
       # failure mode is a misspelled `{{.VERSION}}`: Task renders an unknown
@@ -68,15 +95,44 @@ jobs:
       # `!= dev` test never could — a stamp that ran but named the wrong thing.
       #
       # The assert needs no assumption about what the runner's checkout fetched.
-      # `task build` and the line below call the same `git describe` in the same
-      # checkout, so whichever answer that checkout can produce — a tag, the
+      # `task build` (`Taskfile.yml:30`) and the guard below call the same
+      # `git describe --tags --always --dirty` in the same checkout, so whichever
+      # answer that checkout can produce — a tag on a `release.yml` run, the
       # short SHA from `--always` when no tag was fetched, `-dirty` or not — both
-      # sides read the same one. Symmetric under every outcome, and none of those
-      # outcomes is a value the broken build can produce.
+      # sides read the same one. The symmetry holds under every outcome describe
+      # can ANSWER, and none of those answers is a value the broken build can
+      # produce.
+      #
+      # It does NOT hold when describe FAILS, so that outcome is refused here
+      # instead of rescued. The two expressions differ exactly there, and only
+      # there: `Taskfile.yml:30` ends in `2>/dev/null || echo dev`, so a failed
+      # describe makes `task build` stamp the literal string `dev`; the guard
+      # below carries no such rescue on purpose. Copy the Taskfile's and both
+      # sides read `dev` — the comparison then passes in precisely the state it
+      # exists to catch, because a typo'd `{{.VERSION}}` also answers `den dev`
+      # (see above). Refusing names the state instead of greening it. Describe
+      # only fails when the checkout has no usable git to read — an empty repo,
+      # a `safe.directory` refusal, a missing `.git` — never on a tagless one,
+      # which `--always` answers with the short SHA. Reproduced in an empty repo,
+      # 2026-08-08: the unguarded assignment this replaced died on git's
+      # `fatal: bad revision 'HEAD'` with exit 128 and printed no diagnostic of
+      # this step's own.
       - name: the stamped build agrees with git describe
         run: |
+          # Before `task build`, not after: when this refuses there is nothing
+          # to build the binary for, and the refusal costs a second instead of
+          # a compile.
+          if ! describe="$(git describe --tags --always --dirty)"; then
+            echo "git describe failed in this checkout, so this assert cannot run."
+            echo "task build would stamp the literal string 'dev' here, and that is"
+            echo "also what a binary whose -X never reached the linker answers, so"
+            echo "the comparison below could not tell the two apart."
+            echo "Fix the checkout (a usable .git and a reachable commit), or fix"
+            echo "this step in .github/workflows/gates.yml."
+            exit 1
+          fi
           task build
-          want="den $(git describe --tags --always --dirty)"
+          want="den $describe"
           got="$(./den version)"
           if [ "$got" != "$want" ]; then
             echo "den version answered '$got', expected '$want'"
@@ -88,14 +144,61 @@ jobs:
       # before a human noticed it. Go started stamping `Main.Version` from VCS
       # state, `resolveVersion` accepted the resulting pseudo-version as a real
       # answer, and a plain `go build` quietly stopped saying `dev`. The unit
-      # suite never saw it: it asserts on `(devel)`, the placeholder Go emits only
-      # when there is no `.git` to read — which a checkout always has. Measured
-      # 2026-08-07 on the same shallow tagless clone: `den dev`, so the depth-1
-      # runner reaches the `fromLocalVCS` branch and not the build-info rescue.
+      # suite never saw it: `TestResolveVersionKeepsDevWhenBuildInfoIsDevel`
+      # (`internal/cli/version_test.go:34-43`) feeds the arbitration the literal
+      # `(devel)`, the placeholder Go emits when it does not stamp VCS state —
+      # which is not what a checkout build produces once it does.
+      #
+      # `den dev` on its own does not say WHICH branch produced it, so the output
+      # string cannot carry this assert alone. `resolveVersion`
+      # (`internal/cli/version.go:28-36`) returns `dev` from two states: from
+      # `fromLocalVCS` true, the one this step is about, and from `fromLocalVCS`
+      # false with a `(devel)` or empty build info, which is a vacuous pass. The
+      # vcs.revision floor below separates them, and it separates them by code
+      # rather than by measurement: `displayVersion` sets `fromLocalVCS` from
+      # exactly that setting (`internal/cli/version.go:45-53`), so once the floor
+      # is green the build-info rescue at `version.go:32` is unreachable and
+      # `den dev` can only be the branch this step means. Resting the inference
+      # on the floor is also what makes it true under both callers: the same
+      # `checkout` at the top of this job resolves a branch or PR ref under
+      # `ci.yml` and a `v*` tag under `release.yml`, so no single sentence about
+      # "the" clone this job sees would be right for both.
+      #
+      # The vacuous state is reachable, not theoretical: measured 2026-08-08 on
+      # go1.26.1, `go build -buildvcs=false ./cmd/den` produces a binary with no
+      # vcs.revision and `mod … (devel)`, and it answers `den dev` — green on the
+      # comparison below while proving nothing. A `safe.directory` refusal or any
+      # checkout without a usable `.git` lands in the same place. The floor is
+      # the same device as the two in `internal/ports/hermeticity_test.go`
+      # (`:153` and `:178`), for the reason stated there: without it an "absence
+      # of X" assertion passes vacuously. Positive control, same date and
+      # toolchain, on a `git clone --depth 1 --no-tags` copy of this repo:
+      # vcs.revision present and `den dev` — the floor does not fire on a
+      # shallow checkout, which is what this job's `checkout` produces.
       - name: a plain go build still answers dev
         run: |
           go build -o "$RUNNER_TEMP/den-plain" ./cmd/den
-          got="$("$RUNNER_TEMP/den-plain" version)"
+          # `|| true` on the capture, for the reason the goreleaser step's
+          # `grep -c` gives below: keep the named diagnostic instead of letting
+          # `set -e` kill the step with no message. It is safe here because the
+          # `if` immediately below rejects the empty result.
+          buildinfo="$(go version -m "$RUNNER_TEMP/den-plain" || true)"
+          if ! printf '%s\n' "$buildinfo" | grep -q 'vcs\.revision='; then
+            echo "the plain build carries no vcs.revision setting, so the check below"
+            echo "would pass vacuously: resolveVersion also answers dev from the"
+            echo "build-info rescue, which is a different branch than this step means."
+            echo "Find what suppressed the VCS stamp (-buildvcs=false, a git"
+            echo "safe.directory refusal, a checkout with no usable .git) before"
+            echo "trusting this step, or fix it in .github/workflows/gates.yml."
+            echo "Build settings read were:"
+            printf '%s\n' "$buildinfo"
+            exit 1
+          fi
+          if ! got="$("$RUNNER_TEMP/den-plain" version)"; then
+            echo "the plain build at $RUNNER_TEMP/den-plain did not run, so this step"
+            echo "cannot judge what it answers"
+            exit 1
+          fi
           if [ "$got" != "den dev" ]; then
             echo "a plain go build answered '$got', expected 'den dev'"
             exit 1
@@ -118,12 +221,12 @@ jobs:
       # Outside snapshot mode goreleaser refuses a tagless git state; inside it
       # substitutes a fake `v0.0.0` and proceeds — verified locally on a
       # `git clone --depth 1 --no-tags` copy of this repo (goreleaser 2.17.1,
-      # the `~> v2` line below resolves to): the log read
+      # which is what the `~> v2` line below resolves to): the log read
       # `using tags previous=<unknown> current=v0.0.0` and the build still
       # succeeded. `release.yml`'s `fetch-depth: 0` exists for goreleaser's
       # changelog step, which does refuse without tag history; nothing here
-      # touches that pipe, so this checkout stays at its default depth-1 and
-      # the "shallow tagless clone" note on the step above stays accurate.
+      # touches that pipe, so the `checkout` at the top of this job keeps its
+      # default depth-1 and fetches no tags of its own.
       #
       # `--single-target` builds one binary for the runner's own os/arch
       # instead of the full darwin+linux × amd64+arm64 release matrix — the
@@ -181,7 +284,24 @@ jobs:
             echo "expected exactly one den binary under dist/, found $count: $bin"
             exit 1
           fi
-          got="$("$bin" version)"
+          # `if !` here, NOT the `|| true` used on the `count` capture above:
+          # the two guards are not interchangeable, and this is the shape that
+          # fails safe. `|| true` works on the `grep -c` because the `if` right
+          # after it rejects a count that is not 1; nothing rejects an empty
+          # `$got` — the two comparisons below only refuse two named strings,
+          # and the empty string is neither of them. An unrunnable
+          # binary would leave it empty, match neither refused value, fall
+          # through to the `echo` at the bottom and exit 0 — a green from a
+          # binary that never ran. Measured 2026-08-08 under `bash -e` against a
+          # stand-in that exits nonzero: the `|| true` shape exits 0 printing
+          # `goreleaser binary answered ''`, the shape below exits 1 and names
+          # the binary. Left unguarded (the shape this replaced) it exits 1 with
+          # no message of its own at all.
+          if ! got="$("$bin" version)"; then
+            echo "the den binary goreleaser produced at '$bin' did not run, so this"
+            echo "step cannot judge its version stamp"
+            exit 1
+          fi
           if [ "$got" = "den dev" ] || [ "$got" = "den " ]; then
             echo "goreleaser binary answered '$got' — the -X …cli.Version symbol did not reach the linker"
             exit 1

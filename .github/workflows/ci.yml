@@ -1,9 +1,9 @@
-# The same three gates a local dev runs (`task check`), plus the two build
+# The same three gates a local dev runs (`task check`), plus the three build
 # asserts the suite structurally cannot make, now live in `gates.yml` — see
 # that file's header for why. This workflow calls them on every push to main
-# and every pull request. `install-script` remains the one deliberate
-# exception on the hermeticity argument `gates.yml` makes: its object under
-# test is the network path itself, so it gets a socket on purpose.
+# and every pull request. `gates.yml`'s asserts open no socket of their own.
+# The `install-script` job below opens one on purpose: the network path is the
+# thing it tests.
 name: ci
 
 on:
@@ -18,9 +18,13 @@ jobs:
   # install.sh is an interface between .goreleaser.yaml's archive naming and
   # whatever machine runs `curl | sh`. shellcheck locks the POSIX-sh promise;
   # the smoke run against the real latest release is the only guard on the
-  # archive-name contract — nothing else tests it. This job is also the one
-  # deliberate exception to "no network in the suite": the thing under test
-  # IS the network path.
+  # archive-name contract — nothing else tests it. Its DOWNLOAD half is the
+  # part no Go test can take over: the repo's test conventions (CLAUDE.md)
+  # forbid a test that opens a socket, and only a real fetch proves the asset
+  # is actually there under that name. The NAMING half is not like that —
+  # `.goreleaser.yaml:49`'s `name_template` against the `archive=` line at
+  # `install.sh:81` is a static comparison a test could make offline, and
+  # nothing in the repo makes it today.
   #
   # Two known spurious-failure vectors, so a red run here is not automatically a
   # regression: (a) /releases/latest can redirect to a new tag while its assets
