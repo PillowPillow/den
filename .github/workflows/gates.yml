@@ -100,3 +100,74 @@ jobs:
             echo "a plain go build answered '$got', expected 'den dev'"
             exit 1
           fi
+      # The two steps above prove the Taskfile's `-X …cli.Version=` line. They
+      # prove nothing about `.goreleaser.yaml`'s own `-X` line, which names the
+      # same symbol by hand and can drift from the Taskfile's independently — a
+      # rename on one side and not the other. The Go linker drops an `-X` for a
+      # symbol that does not exist SILENTLY: no warning, no nonzero exit, just a
+      # binary whose `Version` keeps its compiled-in default. Verified locally:
+      # retargeting `.goreleaser.yaml`'s ldflags at `internal/cli.VersionXXX`
+      # and running `goreleaser build --snapshot --single-target --clean`
+      # reported "build succeeded after 0s", and the binary it produced
+      # answered `den dev`. Without this step that binary is what `install.sh`
+      # and brew ship on a tag push — nothing catches it before the
+      # `install-script` smoke on a LATER push, by which point every v1.5.0
+      # user already installed a binary that cannot name its own version.
+      #
+      # `--snapshot` needs no real tag, so this needs no `fetch-depth: 0`.
+      # Outside snapshot mode goreleaser refuses a tagless git state; inside it
+      # substitutes a fake `v0.0.0` and proceeds — verified locally on a
+      # `git clone --depth 1 --no-tags` copy of this repo (goreleaser 2.17.1,
+      # the `~> v2` line below resolves to): the log read
+      # `using tags previous=<unknown> current=v0.0.0` and the build still
+      # succeeded. `release.yml`'s `fetch-depth: 0` exists for goreleaser's
+      # changelog step, which does refuse without tag history; nothing here
+      # touches that pipe, so this checkout stays at its default depth-1 and
+      # the "shallow tagless clone" note on the step above stays accurate.
+      #
+      # `--single-target` builds one binary for the runner's own os/arch
+      # instead of the full darwin+linux × amd64+arm64 release matrix — the
+      # assert below only needs one binary to run.
+      #
+      # On a `v*` tag this means the tree is built twice on purpose: this
+      # snapshot here, then the real release build in `release.yml`'s
+      # `release` job. The duplication is the point — it moves the proof of
+      # the release ldflags line to before the tag is public, instead of
+      # after every `install.sh` and brew user already has the binary.
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --snapshot --single-target --clean
+      # Located, not hard-coded: the directory under `dist/` carries
+      # goreleaser's build id and a goos/goarch suffix (something like
+      # `dist/den_linux_amd64_v1/den` on this ubuntu runner; measured locally
+      # as `dist/den_darwin_arm64_v8.0/den` on a mac), either of which a
+      # `.goreleaser.yaml` change can move. `--single-target` above is what
+      # guarantees exactly one `den` binary exists to find; asserting that
+      # count is what catches a config change that turns this back into a
+      # multi-target build and starts matching an arbitrary one of several.
+      #
+      # The refused values mirror the Taskfile assert's two failure shapes —
+      # `dev` (the compiled-in default a dropped `-X` leaves standing, per the
+      # measurement above) and an empty stamp (the shape `resolveVersion`
+      # rescues back to `dev` everywhere else in this suite, kept here as the
+      # same belt-and-suspenders the Taskfile step applies, not because this
+      # step reproduced an empty stamp independently) — rather than an
+      # equality check against a computed value, because there is no
+      # `git describe` for this step to agree with: snapshot mode's fake tag
+      # is goreleaser's own implementation detail, not this repo's.
+      - name: the goreleaser-built binary is not the linker-dropped-it answer
+        run: |
+          bin="$(find dist -type f -name den)"
+          count="$(printf '%s\n' "$bin" | grep -c .)"
+          if [ "$count" != "1" ]; then
+            echo "expected exactly one den binary under dist/, found $count: $bin"
+            exit 1
+          fi
+          got="$("$bin" version)"
+          if [ "$got" = "den dev" ] || [ "$got" = "den " ]; then
+            echo "goreleaser binary answered '$got' — the -X …cli.Version symbol did not reach the linker"
+            exit 1
+          fi
+          echo "goreleaser binary answered '$got'"
