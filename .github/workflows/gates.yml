@@ -134,11 +134,26 @@ jobs:
       # `release` job. The duplication is the point — it moves the proof of
       # the release ldflags line to before the tag is public, instead of
       # after every `install.sh` and brew user already has the binary.
+      #
+      # `GITHUB_TOKEN` here is not for the build — snapshot mode's release
+      # pipe is disabled and never calls the GitHub API (confirmed above by
+      # the "pipe skipped … disabled during snapshot mode" log line). It is
+      # for the action itself: `version: "~> v2"` is a semver range the
+      # action resolves by listing goreleaser's own GitHub releases, and
+      # `dist/index.js` reads `process.env.GITHUB_TOKEN` directly for that
+      # call (confirmed by fetching goreleaser-action@v7's bundled JS and
+      # finding `process.env.GITHUB_TOKEN` guarding the `Authorization`
+      # header on the release-list request). Unset, that call is
+      # unauthenticated and shares GitHub's public per-IP rate limit across
+      # every runner — the same reason `arduino/setup-task@v3` above takes
+      # `repo-token`.
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
           args: build --snapshot --single-target --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Located, not hard-coded: the directory under `dist/` carries
       # goreleaser's build id and a goos/goarch suffix (something like
       # `dist/den_linux_amd64_v1/den` on this ubuntu runner; measured locally
@@ -160,7 +175,12 @@ jobs:
       - name: the goreleaser-built binary is not the linker-dropped-it answer
         run: |
           bin="$(find dist -type f -name den)"
-          count="$(printf '%s\n' "$bin" | grep -c .)"
+          # `grep -c` alone exits 1 on zero matches, and this step's shell runs
+          # `set -e` (the GitHub Actions default): that nonzero status would
+          # kill the step on the empty-`$bin` case before the `if` below ever
+          # gets to name what happened. `|| true` keeps the failure diagnostic
+          # instead of a bare non-zero exit with no message.
+          count="$(printf '%s\n' "$bin" | grep -c . || true)"
           if [ "$count" != "1" ]; then
             echo "expected exactly one den binary under dist/, found $count: $bin"
             exit 1
