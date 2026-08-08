@@ -1,6 +1,7 @@
-# Pushing a v* tag is the release trigger. The test job re-runs the same gates
-# as ci.yml on the tagged commit — a tag can land on a commit that never went
-# through a PR, and goreleaser must not ship what the suite has not vouched for.
+# Pushing a v* tag is the release trigger. The test job calls gates.yml — the
+# same gates ci.yml runs — on the tagged commit — a tag can land on a commit
+# that never went through a PR, and goreleaser must not ship what the suite
+# has not vouched for.
 name: release
 
 on:
@@ -12,17 +13,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - uses: arduino/setup-task@v3
-        with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: task check
+    uses: ./.github/workflows/gates.yml
 
   release:
     needs: test
