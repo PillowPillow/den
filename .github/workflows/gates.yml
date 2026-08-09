@@ -226,7 +226,13 @@ jobs:
       # succeeded. `release.yml`'s `fetch-depth: 0` exists for goreleaser's
       # changelog step, which does refuse without tag history; nothing here
       # touches that pipe, so the `checkout` at the top of this job keeps its
-      # default depth-1 and fetches no tags of its own.
+      # default depth-1. What that leaves behind differs by caller. Under
+      # `ci.yml` the checkout is tagless. Under `release.yml` it carries the one
+      # tag being built, because `actions/checkout` creates that ref locally
+      # when it resolves the triggering ref — `release.yml`'s own checkout note
+      # documents that at both majors this repo has run, v4 leaving a
+      # lightweight ref and v7 an annotated one. Neither caller leaves the tag
+      # HISTORY the changelog step wants, and snapshot mode wants none.
       #
       # `--single-target` builds one binary for the runner's own os/arch
       # instead of the full darwin+linux × amd64+arm64 release matrix — the
