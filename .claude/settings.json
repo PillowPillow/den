@@ -14,17 +14,7 @@
     }
   },
   "sandbox": {
-    "enabled": false,
-    "network": {
-      "allowedDomains": [
-        "docs.docker.com",
-        "hooks.slack.com",
-        "github.com",
-        "api.github.com",
-        "codeload.github.com",
-        "objects.githubusercontent.com"
-      ]
-    }
+    "enabled": false
   },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,
