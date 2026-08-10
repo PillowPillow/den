@@ -1,6 +1,8 @@
-# Pushing a v* tag is the release trigger. The test job re-runs the same gates
-# as ci.yml on the tagged commit — a tag can land on a commit that never went
-# through a PR, and goreleaser must not ship what the suite has not vouched for.
+# Pushing a `v*` tag is the release trigger. The `test` job below calls
+# `gates.yml` on the tagged commit, so the tag faces the same gates `ci.yml`
+# runs on every pull request. It has to: a tag can land on a commit that never
+# went through a PR, and goreleaser must not ship what those gates have not
+# vouched for.
 name: release
 
 on:
@@ -12,17 +14,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - uses: arduino/setup-task@v3
-        with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: task check
+    uses: ./.github/workflows/gates.yml
 
   release:
     needs: test
@@ -30,8 +22,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # goreleaser derives the changelog from git history and refuses a
-          # shallow clone; fetch-depth 0 is its documented requirement.
+          # NOT for the changelog, whatever this line said before. That pipe is
+          # off — `.goreleaser.yaml:64` sets `disable: true`, because the release
+          # body is the hand-written CHANGELOG.md section — so it never reads git
+          # history at all. And goreleaser does not refuse a shallow clone: it
+          # warns and carries on. Measured 2026-08-09, goreleaser 2.17.1, on a
+          # `git clone --depth 1 --branch v1.4.0` of this repo running
+          # `goreleaser release --skip=publish,announce --clean`: the log read
+          # `running against a shallow clone - check your CI documentation`,
+          # then built all four targets, wrote all four archives and ended
+          # `release succeeded after 1s`. Neither half of the old rationale
+          # survived checking.
+          #
+          # The depth stays, as defence rather than as a requirement. Nothing in
+          # this job was ever measured WITHOUT it — the v1.1.0 tag-object
+          # findings below were all observed with a full clone — and a release
+          # runs rarely enough that fetching everything costs nobody anything.
+          # Dropping it is a change that owes its own measurement, not a
+          # cleanup somebody can take on this comment's word.
           fetch-depth: 0
       # checkout v4 fetched the annotated tag object, then re-fetched the commit SHA
       # *into the same ref* (`+<sha>:refs/tags/vX.Y.Z`), which downgraded the tag to a
@@ -52,6 +60,13 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # Pinned identically in `gates.yml`'s goreleaser step, and the two MUST
+      # move together. That job's snapshot build is what proves this file's
+      # `-X …cli.Version` line reaches the linker BEFORE the tag is public, and
+      # it only proves it for the goreleaser version it ran. Bump this pin
+      # alone and the gate vouches for a builder that is not the one shipping
+      # the tag. See the longer note beside the pin in `gates.yml` for why the
+      # duplication cannot be hoisted anywhere.
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
