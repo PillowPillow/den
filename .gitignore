@@ -13,3 +13,7 @@
 !.claude/commands/
 !.claude/commands/*.md
 /dist/
+# Agent scratch notes: measurements and analyses written during a session, kept LOCAL on
+# purpose. They are dated primary sources for the machine they were measured on, not project
+# documentation — what a note proves and the project keeps belongs in `docs/superpowers/`.
+/claudedocs/

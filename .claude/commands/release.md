@@ -28,8 +28,10 @@ git rev-list --left-right --count origin/main...HEAD # must be 0	0
 git describe --tags --abbrev=0                       # the previous tag
 ```
 
-`--untracked-files=no` is deliberate: this repo carries untracked directories (`claudedocs/`)
-that have nothing to do with a release, and a plain `--porcelain` would refuse every run.
+`--untracked-files=no` is deliberate: a working tree carries untracked scratch that has
+nothing to do with a release, and a plain `--porcelain` would refuse the run over it.
+(`claudedocs/`, the case that first motivated this flag, is ignored by `.gitignore` since
+2026-08-10 and no longer reaches `git status` at all — the flag stays for the next one.)
 
 If `git status` shows tracked modifications, stop: a release commit must carry the changelog
 and nothing else.
