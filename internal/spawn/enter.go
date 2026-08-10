@@ -56,6 +56,13 @@ type Command struct {
 // false` exits 1 as the command did rather than as den failing. Anything else
 // — sbx missing, a cancellation, a sandbox that vanished — stays den's error,
 // with den's message. cmd/den/main.go tells the two apart (cli.ExitStatus).
+//
+// That covers the interactive branch too, deliberately: a shell the user
+// leaves with `exit 3` exits den with 3 and prints nothing, where the
+// previous spawn.Attach reported `den: sbx exec -it … : exit status 3` and
+// exited 1 — den claiming a failure of its own over an ordinary shell exit.
+// Gating this on the tty would make den's status depend on whether a
+// terminal happened to be attached.
 func Enter(ctx context.Context, r sbx.Runner, sandboxName string, c Command) error {
 	argv := []string{"exec"}
 	if c.TTY {
