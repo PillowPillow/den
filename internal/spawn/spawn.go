@@ -1532,7 +1532,24 @@ func reportUnmountedMounts(out io.Writer, sandboxName string, mounted []string, 
 	}
 	var lines []string
 	for _, m := range mounts {
-		if present[mountWorkspace(m)] {
+		want := mountWorkspace(m)
+		if present[want] {
+			continue
+		}
+		// The OTHER spelling of the same host, produced by flipping the `ro:`
+		// bit and going back through mountWorkspace — the single speller. A
+		// literal `m.Host + ":ro"` here would be the second copy that
+		// mountWorkspace's own comment (above) exists to prevent: two copies
+		// would drift one day, and this warning would then fire on every
+		// attach with nothing changed. Tested before "not mounted", because
+		// that message would otherwise be a false statement about a
+		// directory the VM really does mount.
+		flipped := m
+		flipped.RO = !m.RO
+		if present[mountWorkspace(flipped)] {
+			lines = append(lines, fmt.Sprintf(
+				"  - %s (%s) is mounted %s, but `mounts:` now says %s\n",
+				m.Host, m.Key, mountMode(!m.RO), mountMode(m.RO)))
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("  - %s (%s) is not mounted\n", m.Host, m.Key))
@@ -1547,6 +1564,16 @@ func reportUnmountedMounts(out io.Writer, sandboxName string, mounted []string, 
 		fmt.Fprint(out, l)
 	}
 	fmt.Fprintf(out, "  `den rm %s` then relaunch to apply it.\n", sandboxName)
+}
+
+// mountMode names a `ro:` bit the way the user reads it. Both sides are named
+// in the flip line — "read-only" alone leaves the reader guessing which end of
+// the sentence describes the VM.
+func mountMode(ro bool) string {
+	if ro {
+		return "read-only"
+	}
+	return "read-write"
 }
 
 // Attach opens an interactive shell in the sandbox.
