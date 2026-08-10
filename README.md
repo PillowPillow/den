@@ -78,7 +78,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | Command | Role |
 |---|---|
 | `den init` | creates a den home from the shipped example (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`); refuses if `config.yaml` already exists |
-| `den spawn <nest> [repo...]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise; extra repos are mounted on the fly |
+| `den spawn <nest> [repo...] [-- <cmd>]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise; extra repos are mounted on the fly; runs `<cmd>` instead of a shell when one is given |
 | `den ls` | lists live sandboxes, with their nest and worktree |
 | `den exec <name> [-- <cmd>]` | runs one command in an existing sandbox, or opens a shell when no command is given |
 | `den ports <name>` | publishes the nest's declared ports into that sandbox and prints where they land on the host |
@@ -99,11 +99,14 @@ Options of `den spawn`:
 | Option | Effect |
 |---|---|
 | `-w`, `--worktree <branch>` | propagates a worktree of that name across **all** the nest's repos, and suffixes the sandbox name (`api.feat12`) |
-| `--detach` | prepares the sandbox without attaching a shell |
+| `--detach` | prepares the sandbox without attaching a shell; refused together with a command after `--` — `--detach` spawns without entering the sandbox, a command has to run inside it |
 | `--only <repo,...>` | keep only these optional repos (required repos stay mounted) |
 | `--without <repo,...>` | exclude these optional repos |
 | `-i`, `--interactive` | pick the optional repos from a checklist; refused together with `--only`/`--without`, and outside a terminal (a pipe or CI must use those two) |
 | `--agent <name>` | overrides `defaults.agent` |
+| `-- <cmd> [args...]` | runs this command instead of opening a shell; its exit status becomes den's |
+| `-T` | never allocate a terminal — for pipes and CI; refused together with no command after `--` — a shell needs one |
+| `--workdir <path>` | working directory for the command (default: the first workspace the sandbox reports) |
 
 `-w` takes a **branch** name, and a branch name often contains a `/`.
 The branch keeps the name as typed — that is the name in `git log` and in the PR — while the
@@ -114,6 +117,14 @@ branch `feature/123` in a sandbox `api.feature-123`. That is the name it appears
 So den accepts any name it can **name**; git remains the sole judge of what is a legal **ref**.
 `-w 'a..b'` passes naming (sandbox `api.a--b`) and it is `git worktree add` that refuses,
 before any sandbox is created.
+
+Options of `den exec`:
+
+| Option | Effect |
+|---|---|
+| `-- <cmd> [args...]` | runs this command instead of opening a shell; its exit status becomes den's |
+| `-T` | never allocate a terminal — for pipes and CI; refused together with no command after `--` — a shell needs one |
+| `--workdir <path>` | working directory for the command (default: the first workspace the sandbox reports) |
 
 ### Mounting a repo on the fly
 

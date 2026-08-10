@@ -108,6 +108,12 @@ un TTY est alloué par défaut, `-T` le coupe.
 - **Workdir sur les deux modes.** La commande hérite du même premier workspace que le shell.
   L'alternative — pas de workdir sans `--workdir` — a été écartée : la commande atterrirait dans le
   home de la VM, et `den exec api -- go test ./...` échouerait pour une raison que rien n'affiche.
+- **Précision venue de l'implémentation (2026-08-10)** : le refus « `-T` sans commande » n'est pas propre à
+  `den exec`. `den spawn` le refuse aussi, dans les mêmes mots, octet pour octet
+  (`internal/spawn/spawn.go`, étape 0, à côté du refus `--detach` + commande). Les deux commandes
+  partagent le drapeau `-T` ; un utilisateur qui rencontrerait la contradiction refusée sur l'une et
+  silencieusement acceptée sur l'autre lirait deux règles là où il n'y en a qu'une — c'est la
+  normalisation silencieuse que le §2 de la spec interdit.
 
 ## Les quatre décisions
 
