@@ -78,6 +78,21 @@ func TestEnterOmitsTheWorkdirWhenThereIsNone(t *testing.T) {
 	}
 }
 
+// TTY: true with a given command is the fourth matrix cell — `den exec api --
+// vim` on a terminal — and Tasks 6/7 depend on this exact shape: it still goes
+// through Attach, and the command replaces `bash -l` exactly as it does on the
+// non-tty path.
+func TestEnterWithATtyAndACommandAttachesTheCommand(t *testing.T) {
+	f := &sbx.Fake{}
+	c := Command{Argv: []string{"vim"}, Workdir: "/w/api", TTY: true}
+	if err := Enter(context.Background(), f, "api", c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "vim") {
+		t.Errorf("attaches = %v", f.Attaches)
+	}
+}
+
 // The contract of #60: the command's status becomes den's status. Enter is
 // where the runner's error becomes the typed one main knows how to exit on,
 // because both doors (den exec, den spawn) must answer identically.
