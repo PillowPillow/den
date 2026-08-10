@@ -14,7 +14,7 @@
     }
   },
   "sandbox": {
-    "enabled": true,
+    "enabled": false,
     "network": {
       "allowedDomains": [
         "docs.docker.com",
