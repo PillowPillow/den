@@ -108,6 +108,25 @@ func TestEnterTurnsAChildFailureIntoChildExit(t *testing.T) {
 	}
 }
 
+// The Attach mirror of the test above: the mapping sits AFTER the TTY
+// dispatch, applied to whichever method's error comes back, not duplicated
+// inside each arm. Without this test, a future refactor that moved the
+// ExitCodeOf check into the Pipe arm only would still pass every other test
+// in this file — TTY: true never scripts AttachErr anywhere else — while
+// silently reverting `den sh`'s interactive exit-status contract that #60 and
+// the team-lead ruling above it require.
+func TestEnterTurnsAnAttachedChildFailureIntoChildExitToo(t *testing.T) {
+	f := &sbx.Fake{AttachErr: &sbx.ExecError{Bin: "sbx", Err: fakeExitError{code: 3}}}
+	err := Enter(context.Background(), f, "api", Command{Workdir: "/w/api", TTY: true})
+	var child *sbx.ChildExit
+	if !errors.As(err, &child) {
+		t.Fatalf("err = %v, want a *sbx.ChildExit", err)
+	}
+	if child.Code != 3 {
+		t.Errorf("Code = %d, want 3", child.Code)
+	}
+}
+
 // A stand-in for a real *exec.ExitError: building one with a usable status
 // means actually running and reaping a process, which this package's tests
 // never do. sbx.ExitCodeOf matches on the method set precisely so this works.
