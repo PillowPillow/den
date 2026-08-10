@@ -23,7 +23,24 @@ import (
 // on every attach. TestReadMixinDecodesTheGolden guards against this by
 // decoding the golden — hand-written and never regenerated — rather than a
 // fresh RenderMixin output that would drift along with it.
+//
+// TWO spellings of the same two sections are decoded, on purpose. sbx renamed
+// `caps:` → `permissions:` and `commands:` → `setup:` between v0.35 and v0.38
+// (measured 2026-08-10), and RenderMixin now writes only the new ones — but the
+// mixins ALREADY cached on a machine carry the old ones, and each is the drift
+// reference of a sandbox that is still running. Reading only the new spelling
+// would decode those files to empty sections and report, on every attach, an
+// egress emptied and a freshness command gone: a permanent false warning, which
+// teaches the user to stop reading the drift report. Expand–contract — the old
+// keys leave when the last mixin written before 2026-08-10 is gone, which
+// nothing here can date.
 type parsedSpec struct {
+	Permissions struct {
+		Network struct {
+			Allow []string `yaml:"allow"`
+		} `yaml:"network"`
+	} `yaml:"permissions"`
+	// Pre-v0.38 spelling of Permissions.
 	Caps struct {
 		Network struct {
 			Allow []string `yaml:"allow"`
@@ -32,11 +49,17 @@ type parsedSpec struct {
 	Environment struct {
 		Variables map[string]string `yaml:"variables"`
 	} `yaml:"environment"`
+	Setup struct {
+		Startup []startupEntry `yaml:"startup"`
+	} `yaml:"setup"`
+	// Pre-v0.38 spelling of Setup.
 	Commands struct {
-		Startup []struct {
-			Command []string `yaml:"command"`
-		} `yaml:"startup"`
+		Startup []startupEntry `yaml:"startup"`
 	} `yaml:"commands"`
+}
+
+type startupEntry struct {
+	Command []string `yaml:"command"`
 }
 
 // ReadMixin rereads the mixin left by a previous spawn — i.e. the one the
@@ -69,10 +92,23 @@ func ReadMixin(denHome, sandboxName string) (Mixin, error) {
 		return Mixin{}, fmt.Errorf("reading mixin %s: %w", path, err)
 	}
 
+	// New spelling first, old one as the fallback. A file carries one or the
+	// other, never both — den generated it — so the order only decides which
+	// wins on a hand-edited hybrid, and the section den writes today must be the
+	// one that counts.
+	egress := spec.Permissions.Network.Allow
+	if egress == nil {
+		egress = spec.Caps.Network.Allow
+	}
+	startup := spec.Setup.Startup
+	if startup == nil {
+		startup = spec.Commands.Startup
+	}
+
 	m := Mixin{
 		SandboxName: sandboxName,
 		Env:         spec.Environment.Variables,
-		Egress:      spec.Caps.Network.Allow,
+		Egress:      egress,
 	}
 	// The sequence carries at most two entries, in a FIXED order: the optional
 	// link phase, then freshness. Read back positionally, and defensively:
@@ -83,10 +119,10 @@ func ReadMixin(denHome, sandboxName string) (Mixin, error) {
 	//     by an older den has exactly one, and it is freshness; mistaking it for
 	//     a link phase would report drift on every attach to a sandbox created
 	//     before this change.
-	if n := len(spec.Commands.Startup); n > 0 {
-		m.Freshness = spec.Commands.Startup[n-1].Command
+	if n := len(startup); n > 0 {
+		m.Freshness = startup[n-1].Command
 		if n > 1 {
-			m.Links = spec.Commands.Startup[0].Command
+			m.Links = startup[0].Command
 		}
 	}
 	return m, nil

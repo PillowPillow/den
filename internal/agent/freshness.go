@@ -15,7 +15,7 @@ import (
 const freshnessAttempts = 3
 
 // FreshnessCommand renders the argv of the agent update command, to place as
-// the LAST commands.startup of the LAST kit (spec §9.1).
+// the LAST setup.startup of the LAST kit (spec §9.1).
 //
 // Two non-negotiable invariants:
 //

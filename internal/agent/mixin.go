@@ -26,7 +26,7 @@ type Mixin struct {
 	Egress      []string          // already unioned and sorted by nest.Resolve
 	Freshness   []string          // argv, see FreshnessCommand
 	// Links is the argv of the link phase, or nil when nothing needs linking.
-	// Emitted as the FIRST commands.startup entry — see LinkCommand for why it
+	// Emitted as the FIRST setup.startup entry — see LinkCommand for why it
 	// cannot go after Freshness.
 	Links []string
 }
@@ -86,12 +86,20 @@ func RenderMixin(m Mixin) ([]byte, error) {
 
 	// Sections are omitted when empty: an empty `allow: []` would mean
 	// "nothing allowed", not "no constraint".
+	//
+	// `permissions.network.allow`, not `caps.network.allow`: sbx renamed the
+	// section between v0.35 and v0.38 (measured 2026-08-10 — `sbx kit validate`
+	// answers `field caps not found in type spec.permissionsBlockV2`). The old
+	// spelling is now a HARD refusal at `sbx create`, before any VM exists, so
+	// den emits the new one only. ReadMixin still understands both — the mixins
+	// already cached on a machine were written with the old keys, and they are
+	// the drift reference of the sandboxes still running.
 	if len(m.Egress) > 0 {
 		network := &yaml.Node{Kind: yaml.MappingNode}
 		network.Content = append(network.Content, scalarNode("allow"), sequenceNode(m.Egress))
-		caps := &yaml.Node{Kind: yaml.MappingNode}
-		caps.Content = append(caps.Content, scalarNode("network"), network)
-		add("caps", caps)
+		permissions := &yaml.Node{Kind: yaml.MappingNode}
+		permissions.Content = append(permissions.Content, scalarNode("network"), network)
+		add("permissions", permissions)
 	}
 
 	if len(m.Env) > 0 {
@@ -111,7 +119,10 @@ func RenderMixin(m Mixin) ([]byte, error) {
 	// startup is a SEQUENCE, and sbx runs EVERY entry, in declared order, each
 	// as its own numbered script under /etc/durable-startup.d (measured
 	// 2026-08-07 with a two-entry probe kit; before that, no kit anywhere
-	// carried more than one entry and the behaviour was unverified).
+	// carried more than one entry and the behaviour was unverified). Re-measured
+	// 2026-08-10 on sbx v0.38 under the RENAMED `setup.startup` key: same
+	// two-entry probe, same declared order. A key rename is not a promise about
+	// the runtime, and freshness-runs-LAST is a §9.1 safety invariant.
 	//
 	// Links first, Freshness LAST. Freshness is unconditional and guaranteed
 	// non-empty by the guard at the top of this function; the link entry is
@@ -127,9 +138,12 @@ func RenderMixin(m Mixin) ([]byte, error) {
 	entries = append(entries, entry)
 
 	startup := &yaml.Node{Kind: yaml.SequenceNode, Content: entries}
-	commands := &yaml.Node{Kind: yaml.MappingNode}
-	commands.Content = append(commands.Content, scalarNode("startup"), startup)
-	add("commands", commands)
+	setup := &yaml.Node{Kind: yaml.MappingNode}
+	setup.Content = append(setup.Content, scalarNode("startup"), startup)
+	// `setup.startup`, not `commands.startup` — same sbx rename as `permissions`
+	// above (`field commands not found in type spec.specFileV2`). The entry shape
+	// (`- command: [argv...]`) did not move.
+	add("setup", setup)
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
