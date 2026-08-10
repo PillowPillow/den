@@ -3703,3 +3703,83 @@ func TestMountWorkspaceSpellsTheROSuffix(t *testing.T) {
 		t.Errorf("read-only mount = %q, want %q", ro, "/h/docs:ro")
 	}
 }
+
+// The blind spot #56 names: a mount with NO `link:` never reaches the mixin's
+// link argv (LinkCommand filters it out), so the drift comparison of
+// internal/agent stays silent on it. The VM's own workspace list is the
+// primary source that does see it.
+func TestSpawnWarnsWhenALiveSandboxDoesNotMountANewLinklessMount(t *testing.T) {
+	docs := t.TempDir()
+	denHome, repo := denTestMounts(t, "mounts:\n  - host: "+docs+"\n")
+
+	// The sandbox is live and was created WITHOUT the mount: the day-2 case.
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callStartingWith(f, "create") != nil {
+		t.Fatal("a live sandbox must be attached, never re-created")
+	}
+
+	log := out.String()
+	if !strings.Contains(log, "does not mount what `mounts:` now says") {
+		t.Errorf("log = %q, expected the mounts warning header", log)
+	}
+	if !strings.Contains(log, docs) {
+		t.Errorf("log = %q, expected it to name the host path", log)
+	}
+	if !strings.Contains(log, "mounts[0]") {
+		t.Errorf("log = %q, expected it to name the config key to fix — den's errors "+
+			"name the key, and a user with several mounts cannot find the line otherwise", log)
+	}
+	if !strings.Contains(log, "den rm api") {
+		t.Errorf("log = %q, expected the remedy", log)
+	}
+}
+
+// A permanent warning stops being read: silence is the contract when the VM
+// already carries exactly what `mounts:` says.
+func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEveryConfiguredMount(t *testing.T) {
+	docs := t.TempDir()
+	denHome, repo := denTestMounts(t, "mounts:\n  - host: "+docs+"\n")
+
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "does not mount what `mounts:` now says") {
+		t.Errorf("log = %q, expected no mounts warning", out.String())
+	}
+}
+
+// No `mounts:` at all must read the VM's workspace list for nothing and print
+// nothing — the config that every den home starts with.
+func TestSpawnDoesNotWarnAboutMountsWhenThereAreNone(t *testing.T) {
+	denHome, repo := denTest(t)
+
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "does not mount what `mounts:` now says") {
+		t.Errorf("log = %q, expected no mounts warning", out.String())
+	}
+}

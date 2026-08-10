@@ -688,6 +688,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// the paths the VM would actually have received, worktrees included.
 		reportUnmountedRepos(d.Out, sandboxName, workdir, live.Workspaces, workspaces[:len(r.Repos)])
 
+		// After the repos, because the repos are what the user came for: a
+		// mount is support material, and reading its warning first would bury
+		// the line saying the code itself is not there.
+		reportUnmountedMounts(d.Out, sandboxName, live.Workspaces, r.Mounts)
+
 		// A SINGLE status line, naming which of the two cases this is.
 		// "restarts on attach", not "resumed": under --detach den runs no
 		// exec, so nothing restarts now — the next `den sh` does. True on
@@ -1480,6 +1485,68 @@ func reportNestChangedSinceCreation(out io.Writer, sandboxName string, recorded,
 			"now resolves to %s — a live sandbox keeps its create-time mounts, so this takes "+
 			"effect after `den rm %s` and a respawn\n",
 		sandboxName, strings.Join(recorded, ", "), strings.Join(expected, ", "), sandboxName)
+}
+
+// reportUnmountedMounts warns that a LIVE sandbox does not carry what
+// `mounts:` says today.
+//
+// It exists because TWO edits to `mounts:` reach nothing else (#56):
+//
+//   - a mount with NO `link:` — legitimate, and the shape env-var consumers
+//     want — is filtered out of the mixin's link argv by LinkCommand, so
+//     agent.Differences cannot see it;
+//   - a `ro:` flip is a `sbx create` flag, never present in the boot shell at
+//     all.
+//
+// The primary source is the VM: `sbx ls --json` reports its workspaces WITH
+// the `:ro` suffix (measured 2026-08-10, sbx v0.37.1 — spec §14.0). Nothing
+// new has to be recorded on the host for this comparison to exist.
+//
+// UNLIKE reportMissingGitDirs and reportUnmountedRepos, the `:ro` suffix is
+// NOT stripped before comparing: for a repo it is a mount option and noise,
+// here it IS the bit under test.
+//
+// Warn, never refuse, never recreate — the doctrine of its three siblings.
+// Mounts are fixed at create time, so the edit takes effect at the next
+// create; refusing would break a `den spawn` that worked yesterday over a
+// harmless YAML edit, and recreating would destroy work in progress.
+//
+// A mount REMOVED from the configuration stays deliberately out of scope:
+// live.Workspaces is FLAT — repos, git dirs, agent profile and mounts are
+// indistinguishable in it — so "on the VM, absent from the config" also fires
+// on a moved worktree, a dropped repo and a flipped --agent. Telling them
+// apart needs a manifest record, which the mounts design refused
+// (2026-08-07-mounts-design.md:253-259).
+//
+// Deliberate overlap with the "link phase changed" line of agent.Differences:
+// adding a mount that HAS a link fires both. They answer different questions,
+// and Links remains the ONLY detector of a link-target-only edit (same host, new
+// `link:`), which no workspace comparison can see.
+func reportUnmountedMounts(out io.Writer, sandboxName string, mounted []string, mounts []nest.Mount) {
+	if len(mounts) == 0 {
+		return
+	}
+	present := make(map[string]bool, len(mounted))
+	for _, w := range mounted {
+		present[w] = true
+	}
+	var lines []string
+	for _, m := range mounts {
+		if present[mountWorkspace(m)] {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  - %s (%s) is not mounted\n", m.Host, m.Key))
+	}
+	if len(lines) == 0 {
+		return // a permanent warning stops being read
+	}
+	fmt.Fprintf(out,
+		"warning: sandbox %s does not mount what `mounts:` now says — mounts are fixed "+
+			"at create time:\n", sandboxName)
+	for _, l := range lines {
+		fmt.Fprint(out, l)
+	}
+	fmt.Fprintf(out, "  `den rm %s` then relaunch to apply it.\n", sandboxName)
 }
 
 // Attach opens an interactive shell in the sandbox.
