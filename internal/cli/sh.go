@@ -94,7 +94,8 @@ func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Resul
 				// The workdir comes from the first workspace REPORTED BY THE VM,
 				// never from a path recomputed from the config: without it the
 				// user lands in the VM's home, not in their code.
-				return spawn.Attach(cmd.Context(), runner, b.Name, b.Workdir())
+				return spawn.Enter(cmd.Context(), runner, b.Name,
+					spawn.Command{Workdir: b.Workdir(), TTY: true})
 			}
 
 			names := liveNames(boxes)

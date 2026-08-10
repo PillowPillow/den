@@ -836,7 +836,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			sandboxName, sandboxName)
 		return nil
 	}
-	return Attach(ctx, d.Sbx, sandboxName, workdir)
+	// TTY unconditional here, and it stays that way: `den spawn` with no
+	// command hands out a login shell, which is worth nothing without a
+	// terminal. The IsTTY rule Task 6 adds governs a GIVEN command, where a
+	// pipe is a legitimate caller.
+	return Enter(ctx, d.Sbx, sandboxName, Command{Workdir: workdir, TTY: true})
 }
 
 // ResolveStack turns a LOADED nest's `stack:` field into a root to load
@@ -1680,24 +1684,6 @@ func mountMode(ro bool) string {
 		return "read-only"
 	}
 	return "read-write"
-}
-
-// Attach opens an interactive shell in the sandbox.
-//
-// `sbx exec`, not `sbx run`: run attaches the image FLAVOR's command
-// (often `claude`), has no flag to replace it, and its `-- ARGS` only
-// appends arguments.
-//
-// -w stays BEFORE the sandbox name: in `sbx exec [flags] SANDBOX COMMAND
-// [ARG...]`, placed after it would be read as a COMMAND argument and
-// reach `bash -l` verbatim.
-func Attach(ctx context.Context, r sbx.Runner, sandboxName, workdir string) error {
-	argv := []string{"exec", "-it"}
-	if workdir != "" {
-		argv = append(argv, "-w", workdir)
-	}
-	argv = append(argv, sandboxName, "bash", "-l")
-	return r.Attach(ctx, argv...)
 }
 
 func first(s []string) string {
