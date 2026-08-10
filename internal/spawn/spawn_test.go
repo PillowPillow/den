@@ -3689,3 +3689,17 @@ func TestAttachSaysNothingWhenTheNestIsUnchanged(t *testing.T) {
 		t.Errorf("an unchanged nest must produce no warning;\n%s", log.String())
 	}
 }
+
+// mountWorkspace is the SINGLE spelling of a mount in the create argv. The
+// report of task 2 compares against it, so a second copy of `host + ":ro"`
+// would drift and make the warning fire on every attach with nothing changed.
+func TestMountWorkspaceSpellsTheROSuffix(t *testing.T) {
+	rw := mountWorkspace(nest.Mount{Host: "/h/docs", Key: "mounts[0]"})
+	if rw != "/h/docs" {
+		t.Errorf("read-write mount = %q, want %q", rw, "/h/docs")
+	}
+	ro := mountWorkspace(nest.Mount{Host: "/h/docs", RO: true, Key: "mounts[0]"})
+	if ro != "/h/docs:ro" {
+		t.Errorf("read-only mount = %q, want %q", ro, "/h/docs:ro")
+	}
+}

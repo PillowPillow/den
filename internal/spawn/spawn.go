@@ -609,12 +609,9 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// mixin (a host socket value written into a kit is stale by the next
 	// session). `den doctor` warns when the variable is absent.
 	for _, m := range r.Mounts {
-		// `<path>:ro` is sbx's own read-only syntax (`sbx create --help`).
-		if m.RO {
-			workspaces = append(workspaces, m.Host+":ro")
-			continue
-		}
-		workspaces = append(workspaces, m.Host)
+		// The `:ro` spelling lives in mountWorkspace, shared with
+		// reportUnmountedMounts — see its comment for why it is not inline here.
+		workspaces = append(workspaces, mountWorkspace(m))
 	}
 
 	// 5. Generate the mixin. r.DenHome, not denHome: Resolve guarantees
@@ -1298,6 +1295,23 @@ func checkStackImage(ctx context.Context, d Deps, s *config.Stack, stackRef stri
 		"stack %q: image %s is not built — run `den build %s`; "+
 			"`sbx template ls` lists the images sbx already has",
 		s.Name, s.Image, stackRef)
+}
+
+// mountWorkspace renders ONE `mounts:` entry as `sbx create` receives it.
+//
+// `<path>:ro` is sbx's own read-only syntax (`sbx create --help`).
+//
+// It exists as a function, rather than inline in the workspace loop, because
+// reportUnmountedMounts compares what the VM reports against this EXACT
+// spelling. Two copies of `host + ":ro"` would drift one day, and the warning
+// would then fire on every attach with nothing changed — a permanent warning
+// stops being read, including the day it tells the truth. Same lesson already
+// paid by stringNode (internal/agent/mixin.go).
+func mountWorkspace(m nest.Mount) string {
+	if m.RO {
+		return m.Host + ":ro"
+	}
+	return m.Host
 }
 
 // reportDrift prints what changed between the mixin a sandbox received at
