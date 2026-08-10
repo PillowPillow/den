@@ -2,7 +2,7 @@
 
 Date : 2026-08-10
 Issue : [#60](https://github.com/PillowPillow/den/issues/60)
-Statut : conception validée, implémentation à faire
+Statut : implémentée (2026-08-10)
 
 ## Le problème
 
