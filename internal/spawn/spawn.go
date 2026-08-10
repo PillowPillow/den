@@ -609,12 +609,9 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// mixin (a host socket value written into a kit is stale by the next
 	// session). `den doctor` warns when the variable is absent.
 	for _, m := range r.Mounts {
-		// `<path>:ro` is sbx's own read-only syntax (`sbx create --help`).
-		if m.RO {
-			workspaces = append(workspaces, m.Host+":ro")
-			continue
-		}
-		workspaces = append(workspaces, m.Host)
+		// The `:ro` spelling lives in mountWorkspace, shared with
+		// reportUnmountedMounts — see its comment for why it is not inline here.
+		workspaces = append(workspaces, mountWorkspace(m))
 	}
 
 	// 5. Generate the mixin. r.DenHome, not denHome: Resolve guarantees
@@ -690,6 +687,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// ssh.dir. Slicing there rather than recomputing keeps the comparison on
 		// the paths the VM would actually have received, worktrees included.
 		reportUnmountedRepos(d.Out, sandboxName, workdir, live.Workspaces, workspaces[:len(r.Repos)])
+
+		// After the repos, because the repos are what the user came for: a
+		// mount is support material, and reading its warning first would bury
+		// the line saying the code itself is not there.
+		reportUnmountedMounts(d.Out, sandboxName, live.Workspaces, r.Mounts)
 
 		// A SINGLE status line, naming which of the two cases this is.
 		// "restarts on attach", not "resumed": under --detach den runs no
@@ -1300,6 +1302,23 @@ func checkStackImage(ctx context.Context, d Deps, s *config.Stack, stackRef stri
 		s.Name, s.Image, stackRef)
 }
 
+// mountWorkspace renders ONE `mounts:` entry as `sbx create` receives it.
+//
+// `<path>:ro` is sbx's own read-only syntax (`sbx create --help`).
+//
+// It exists as a function, rather than inline in the workspace loop, because
+// reportUnmountedMounts compares what the VM reports against this EXACT
+// spelling. Two copies of `host + ":ro"` would drift one day, and the warning
+// would then fire on every attach with nothing changed — a permanent warning
+// stops being read, including the day it tells the truth. Same lesson already
+// paid by stringNode (internal/agent/mixin.go).
+func mountWorkspace(m nest.Mount) string {
+	if m.RO {
+		return m.Host + ":ro"
+	}
+	return m.Host
+}
+
 // reportDrift prints what changed between the mixin a sandbox received at
 // its `create` and the one the current configuration would produce.
 //
@@ -1466,6 +1485,95 @@ func reportNestChangedSinceCreation(out io.Writer, sandboxName string, recorded,
 			"now resolves to %s — a live sandbox keeps its create-time mounts, so this takes "+
 			"effect after `den rm %s` and a respawn\n",
 		sandboxName, strings.Join(recorded, ", "), strings.Join(expected, ", "), sandboxName)
+}
+
+// reportUnmountedMounts warns that a LIVE sandbox does not carry what
+// `mounts:` says today.
+//
+// It exists because TWO edits to `mounts:` reach nothing else (#56):
+//
+//   - a mount with NO `link:` — legitimate, and the shape env-var consumers
+//     want — is filtered out of the mixin's link argv by LinkCommand, so
+//     agent.Differences cannot see it;
+//   - a `ro:` flip is a `sbx create` flag, never present in the boot shell at
+//     all.
+//
+// The primary source is the VM: `sbx ls --json` reports its workspaces WITH
+// the `:ro` suffix (measured 2026-08-10, sbx v0.37.1 — spec §14.0). Nothing
+// new has to be recorded on the host for this comparison to exist.
+//
+// UNLIKE reportMissingGitDirs and reportUnmountedRepos, the `:ro` suffix is
+// NOT stripped before comparing: for a repo it is a mount option and noise,
+// here it IS the bit under test.
+//
+// Warn, never refuse, never recreate — the doctrine of its three siblings.
+// Mounts are fixed at create time, so the edit takes effect at the next
+// create; refusing would break a `den spawn` that worked yesterday over a
+// harmless YAML edit, and recreating would destroy work in progress.
+//
+// A mount REMOVED from the configuration stays deliberately out of scope:
+// live.Workspaces is FLAT — repos, git dirs, agent profile and mounts are
+// indistinguishable in it — so "on the VM, absent from the config" also fires
+// on a moved worktree, a dropped repo and a flipped --agent. Telling them
+// apart needs a manifest record, which the mounts design refused
+// (2026-08-07-mounts-design.md:253-259).
+//
+// Deliberate overlap with the "link phase changed" line of agent.Differences:
+// adding a mount that HAS a link fires both. They answer different questions,
+// and Links remains the ONLY detector of a link-target-only edit (same host, new
+// `link:`), which no workspace comparison can see.
+func reportUnmountedMounts(out io.Writer, sandboxName string, mounted []string, mounts []nest.Mount) {
+	if len(mounts) == 0 {
+		return
+	}
+	present := make(map[string]bool, len(mounted))
+	for _, w := range mounted {
+		present[w] = true
+	}
+	var lines []string
+	for _, m := range mounts {
+		want := mountWorkspace(m)
+		if present[want] {
+			continue
+		}
+		// The OTHER spelling of the same host, produced by flipping the `ro:`
+		// bit and going back through mountWorkspace — the single speller. A
+		// literal `m.Host + ":ro"` here would be the second copy that
+		// mountWorkspace's own comment (above) exists to prevent: two copies
+		// would drift one day, and this warning would then fire on every
+		// attach with nothing changed. Tested before "not mounted", because
+		// that message would otherwise be a false statement about a
+		// directory the VM really does mount.
+		flipped := m
+		flipped.RO = !m.RO
+		if present[mountWorkspace(flipped)] {
+			lines = append(lines, fmt.Sprintf(
+				"  - %s (%s) is mounted %s, but `mounts:` now says %s\n",
+				m.Host, m.Key, mountMode(!m.RO), mountMode(m.RO)))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  - %s (%s) is not mounted\n", m.Host, m.Key))
+	}
+	if len(lines) == 0 {
+		return // a permanent warning stops being read
+	}
+	fmt.Fprintf(out,
+		"warning: sandbox %s does not mount what `mounts:` now says — mounts are fixed "+
+			"at create time:\n", sandboxName)
+	for _, l := range lines {
+		fmt.Fprint(out, l)
+	}
+	fmt.Fprintf(out, "  `den rm %s` then relaunch to apply it.\n", sandboxName)
+}
+
+// mountMode names a `ro:` bit the way the user reads it. Both sides are named
+// in the flip line — "read-only" alone leaves the reader guessing which end of
+// the sentence describes the VM.
+func mountMode(ro bool) string {
+	if ro {
+		return "read-only"
+	}
+	return "read-write"
 }
 
 // Attach opens an interactive shell in the sandbox.

@@ -3689,3 +3689,221 @@ func TestAttachSaysNothingWhenTheNestIsUnchanged(t *testing.T) {
 		t.Errorf("an unchanged nest must produce no warning;\n%s", log.String())
 	}
 }
+
+// mountWorkspace is the SINGLE spelling of a mount in the create argv. The
+// report of task 2 compares against it, so a second copy of `host + ":ro"`
+// would drift and make the warning fire on every attach with nothing changed.
+func TestMountWorkspaceSpellsTheROSuffix(t *testing.T) {
+	rw := mountWorkspace(nest.Mount{Host: "/h/docs", Key: "mounts[0]"})
+	if rw != "/h/docs" {
+		t.Errorf("read-write mount = %q, want %q", rw, "/h/docs")
+	}
+	ro := mountWorkspace(nest.Mount{Host: "/h/docs", RO: true, Key: "mounts[0]"})
+	if ro != "/h/docs:ro" {
+		t.Errorf("read-only mount = %q, want %q", ro, "/h/docs:ro")
+	}
+}
+
+// The blind spot #56 names: a mount with NO `link:` never reaches the mixin's
+// link argv (LinkCommand filters it out), so the drift comparison of
+// internal/agent stays silent on it. The VM's own workspace list is the
+// primary source that does see it.
+func TestSpawnWarnsWhenALiveSandboxDoesNotMountANewLinklessMount(t *testing.T) {
+	docs := t.TempDir()
+	denHome, repo := denTestMounts(t, "mounts:\n  - host: "+docs+"\n")
+
+	// The sandbox is live and was created WITHOUT the mount: the day-2 case.
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callStartingWith(f, "create") != nil {
+		t.Fatal("a live sandbox must be attached, never re-created")
+	}
+
+	log := out.String()
+	if !strings.Contains(log, "does not mount what `mounts:` now says") {
+		t.Errorf("log = %q, expected the mounts warning header", log)
+	}
+	if !strings.Contains(log, docs) {
+		t.Errorf("log = %q, expected it to name the host path", log)
+	}
+	if !strings.Contains(log, "mounts[0]") {
+		t.Errorf("log = %q, expected it to name the config key to fix — den's errors "+
+			"name the key, and a user with several mounts cannot find the line otherwise", log)
+	}
+	if !strings.Contains(log, "den rm api") {
+		t.Errorf("log = %q, expected the remedy", log)
+	}
+}
+
+// A permanent warning stops being read: silence is the contract when the VM
+// already carries exactly what `mounts:` says.
+func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEveryConfiguredMount(t *testing.T) {
+	docs := t.TempDir()
+	denHome, repo := denTestMounts(t, "mounts:\n  - host: "+docs+"\n")
+
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "does not mount what `mounts:` now says") {
+		t.Errorf("log = %q, expected no mounts warning", out.String())
+	}
+}
+
+// A `ro:` flip is a `sbx create` flag: it never reaches the boot shell, so the
+// mixin comparison is blind to it. Both directions get their OWN line —
+// saying "is not mounted" about a directory that IS mounted, read-only, is a
+// false statement den would print on every attach.
+func TestSpawnWarnsWhenAMountIsMountedWithTheOtherROBit(t *testing.T) {
+	t.Run("config now says read-only", func(t *testing.T) {
+		docs := t.TempDir()
+		denHome, repo := denTestMounts(t, "mounts:\n  - host: "+docs+"\n    ro: true\n")
+
+		// The VM mounts the bare host: it was created read-write.
+		f, d := fakeDeps()
+		f.Responses["ls --json"] = sbx.Response{Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]}`)}
+		var out bytes.Buffer
+		d.Out = &out
+
+		if err := Spawn(context.Background(), denHome,
+			Options{Nest: "api", Detach: true}, d); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		log := out.String()
+		if !strings.Contains(log, "is mounted read-write, but `mounts:` now says read-only") {
+			t.Errorf("log = %q, expected the flip line naming BOTH sides", log)
+		}
+		if strings.Contains(log, "is not mounted") {
+			t.Errorf("log = %q: the directory IS mounted — den must not claim otherwise", log)
+		}
+	})
+
+	t.Run("config now says read-write", func(t *testing.T) {
+		docs := t.TempDir()
+		denHome, repo := denTestMounts(t, "mounts:\n  - host: "+docs+"\n")
+
+		// The VM mounts it `:ro`: it was created read-only.
+		f, d := fakeDeps()
+		f.Responses["ls --json"] = sbx.Response{Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `:ro"]}]}`)}
+		var out bytes.Buffer
+		d.Out = &out
+
+		if err := Spawn(context.Background(), denHome,
+			Options{Nest: "api", Detach: true}, d); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		log := out.String()
+		if !strings.Contains(log, "is mounted read-only, but `mounts:` now says read-write") {
+			t.Errorf("log = %q, expected the flip line naming BOTH sides", log)
+		}
+		if strings.Contains(log, "is not mounted") {
+			t.Errorf("log = %q: the directory IS mounted — den must not claim otherwise", log)
+		}
+	})
+}
+
+// Regression lock for the read-only silence path: if the `:ro` suffix were
+// ever stripped before building the `present` lookup set, both flip
+// subtests above and the plain read-write silence test would all keep
+// passing — none of them puts `ro:true` in the config AND `:ro` on the VM
+// side at once. THIS test is the one that would then fail: `want` (with the
+// suffix) would miss, the flipped-bit fallback would hit, and den would warn
+// forever about a mount that is correctly mounted read-only. Nothing else in
+// this file exercises "config says ro:true, VM reports :ro, stay silent".
+func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsAReadOnlyMountReadOnly(t *testing.T) {
+	docs := t.TempDir()
+	denHome, repo := denTestMounts(t, "mounts:\n  - host: "+docs+"\n    ro: true\n")
+
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `:ro"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "does not mount what `mounts:` now says") {
+		t.Errorf("log = %q, expected no mounts warning", out.String())
+	}
+}
+
+// No `mounts:` at all must read the VM's workspace list for nothing and print
+// nothing — the config that every den home starts with.
+func TestSpawnDoesNotWarnAboutMountsWhenThereAreNone(t *testing.T) {
+	denHome, repo := denTest(t)
+
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "does not mount what `mounts:` now says") {
+		t.Errorf("log = %q, expected no mounts warning", out.String())
+	}
+}
+
+// `ssh.mode: mount` is SUGAR: nest.resolveMounts desugars it into an ordinary
+// `mounts:` entry, so editing ssh.dir under a live sandbox is covered by the
+// same code with no branch of its own. Locked here because the day someone
+// reintroduces an `if SSHMode == …` in spawn, this is the test that fails.
+//
+// The key printed is `ssh.dir`, NOT `mounts[0]`: the entry appears in no
+// `mounts:` block of the user's config.yaml, and sending them to a key they
+// never wrote is the defect nest.Mount.Key exists to prevent.
+func TestSpawnWarnsAboutAnEditedSSHDirLikeAnyOtherMount(t *testing.T) {
+	// CREATED, like every other `ssh.mode: mount` test in this file
+	// (TestSpawnMountsTheRepoBeforeTheAgentProfileAndSSH): mount mode refuses a
+	// missing ssh.dir before any side effect, and that refusal would abort this
+	// spawn long before the warning under test.
+	sshDir := filepath.Join(t.TempDir(), "ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	denHome, repo := denTestSSH(t, "  mode: mount\n  dir: "+sshDir+"\n")
+
+	// The VM was created with a DIFFERENT ssh.dir — it does not mount this one.
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	log := out.String()
+	// One exact assertion on the rendered line, not two loose substrings:
+	// reportUnmountedMounts prints "  - <host> (<key>)", so composing them
+	// into "- <sshDir> (ssh.dir)" pins both the path AND that it is named by
+	// the `ssh.dir` key — not a `mounts[N]` the user never wrote — on the SAME
+	// line, which two separate Contains checks cannot tell apart from a
+	// coincidence of two unrelated lines.
+	want := "- " + sshDir + " (ssh.dir)"
+	if !strings.Contains(log, want) {
+		t.Errorf("log = %q, want it to contain %q", log, want)
+	}
+}

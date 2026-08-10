@@ -1054,6 +1054,16 @@ sbx ls [--json] [-q]
     — présent UNIQUEMENT si status vaut "running". Une sandbox arrêtée ne porte pas la clé du tout,
       alors que ses publications reviennent à la reprise. Une lecture sur sandbox arrêtée dit donc
       « ne publie rien » d'une VM qui publie : c'est un piège, pas une réponse (#16).
+  `workspaces` porte le suffixe `:ro` d'un mount read-only TEL QUEL (mesuré 2026-08-10, sbx
+    v0.37.1, sandbox jetable créée avec `<path>:ro` puis détruite) :
+      "workspaces": ["<…>/probe-rw", "<…>/probe-ro:ro"]
+    C'est ce qui permet à spawn.reportUnmountedMounts de voir un `ro:` retourné sans rien
+    enregistrer côté hôte (#56, spec 2026-08-10-mounts-drift-design.md).
+    Relevé sur une sandbox EN MARCHE ; le comportement de `workspaces` sur une sandbox arrêtée
+    n'est pas mesuré — s'il suivait `ports` (piège ci-dessus), chaque mount configuré lirait
+    « is not mounted » juste au-dessus de la ligne de statut « arrêtée ».
+  ⚠️ Cette machine porte sbx v0.37.1, alors que tout le reste du présent relevé date de v0.35.0.
+    Le reste est à re-mesurer.
 
 sbx exec [flags] SANDBOX COMMAND [ARG...]
   flags utiles : -i/--interactive -t/--tty -d/--detach -w/--workdir -u/--user
