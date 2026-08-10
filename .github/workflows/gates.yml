@@ -18,6 +18,13 @@
 # be, because then an assert would be observing a live machine instead of a
 # binary.
 #
+# One tool is USED without being installed: the last assert reads
+# `dist/metadata.json` with `jq`, which the runner image already carries (jq
+# 1.7, `actions/runner-images` Ubuntu2404-Readme.md, read 2026-08-10). It is
+# named here because "a bare ubuntu runner" is the claim above, and an
+# unlisted dependency is how that claim rots. Move this job off
+# `ubuntu-latest` and jq is the thing to check for.
+#
 # The asserts do run the binaries they just built, which the earlier "no
 # process" wording forbade. That costs them nothing. `den version` is a
 # `fmt.Fprintf` over `displayVersion()` (`internal/cli/root.go:129`), which
@@ -135,7 +142,16 @@ jobs:
           fi
           task build
           want="den $describe"
-          got="$(./den version)"
+          # `if !`, not a bare capture: the comparison below already refuses an
+          # empty `$got`, so this is not a correctness hole — but under the
+          # runner's default `set -e` a binary that fails to run kills the step
+          # at the assignment, and the comparison's own diagnostic below never
+          # prints. The goreleaser step gives the same reasoning at length.
+          if ! got="$(./den version)"; then
+            echo "the binary task build produced at ./den did not run, so this step"
+            echo "cannot judge its version stamp"
+            exit 1
+          fi
           if [ "$got" != "$want" ]; then
             echo "den version answered '$got', expected '$want'"
             exit 1
@@ -264,6 +280,16 @@ jobs:
       # this step. Traced in goreleaser-action@v7's `dist/index.js`
       # (`https://raw.githubusercontent.com/goreleaser/goreleaser-action/v7/dist/index.js`),
       # 2026-08-08.
+      #
+      # This pin is duplicated in `release.yml`'s goreleaser step (no line
+      # number on purpose: both blocks carry comments that move it), and the
+      # two MUST move together. The assert below proves `.goreleaser.yaml`'s `-X` line links
+      # under the goreleaser THIS job runs; bump the pin on the release side
+      # only and the gate vouches for one builder while a different one ships
+      # the tag. Nothing enforces it: a workflow-level constant cannot cross
+      # two files, and a repository variable would move the value out of the
+      # repo, where a fork or a fresh clone cannot read it. The cross-reference
+      # in both files is the guard — bump one, bump the other.
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -278,18 +304,42 @@ jobs:
       # count is what catches a config change that turns this back into a
       # multi-target build and starts matching an arbitrary one of several.
       #
-      # The refused values mirror the Taskfile assert's two failure shapes —
-      # `dev` (the compiled-in default a dropped `-X` leaves standing, per the
-      # measurement above) and an empty stamp (the shape `resolveVersion`
-      # rescues back to `dev` everywhere else in this suite, kept here as the
-      # same belt-and-suspenders the Taskfile step applies, not because this
-      # step reproduced an empty stamp independently) — rather than an
-      # equality check against a computed value, because there is no
-      # `git describe` for this step to agree with: snapshot mode's fake tag
-      # is goreleaser's own implementation detail, not this repo's.
-      - name: the goreleaser-built binary is not the linker-dropped-it answer
+      # The assert is AGREEMENT with the tag goreleaser itself resolved, the
+      # same shape as the Taskfile assert above and for the same reason. The
+      # `!= dev` shape this replaced was justified by "there is no `git
+      # describe` for this step to agree with" — true, and beside the point:
+      # goreleaser writes the tag it resolved into `dist/metadata.json`, and
+      # THAT is the thing to agree with. Measured 2026-08-10 on goreleaser
+      # 2.17.1, one clone per caller: on a `--depth 1 --branch v1.4.0` checkout
+      # (the `release.yml` shape) the log read `using tags current=v1.4.0`,
+      # metadata `tag` read `v1.4.0` and the binary answered `den v1.4.0`; on a
+      # `--depth 1 --no-tags` branch checkout (the `ci.yml` shape) snapshot
+      # mode's fake tag put `v0.0.0` in both. The comparison holds under both
+      # callers without either side knowing which one it is.
+      #
+      # Equality catches what the two refused strings could not: a stamp that
+      # ran and named the wrong thing. Change `.goreleaser.yaml:45` from
+      # `{{ .Tag }}` to `{{ .Version }}` — one word, and the two sit side by
+      # side in goreleaser's docs — and the `-X` links fine while the binary
+      # answers `den 0.0.0-SNAPSHOT-<sha>` here and `den 1.5.0` on the real
+      # release. Neither is `den dev` nor `den `, so the old shape greened it,
+      # and v1.5.0 would ship archives and a cask saying `den 1.5.0` while
+      # `task build`, `go install` and the `install-script` smoke all say
+      # `den v1.5.0` — the drift `.goreleaser.yaml:1-7` says the `{{ .Tag }}`
+      # choice exists to prevent. Measured the same day on the tagless clone:
+      # `got: den 0.0.0-SNAPSHOT-fa4a51d` against `want: den v0.0.0`, this step
+      # red. Equality subsumes the two old refused values — a dropped `-X`
+      # still answers `den dev`, which is not the tag — so they are gone as
+      # tests and kept only to pick the right diagnostic.
+      - name: the goreleaser-built binary agrees with the tag goreleaser resolved
         run: |
-          bin="$(find dist -type f -name den)"
+          # `|| true` for the same reason the `grep -c` below carries one:
+          # `find` exits 1 when `dist/` does not exist at all — what a
+          # `.goreleaser.yaml` that moves the output directory leaves behind —
+          # and `set -e` would kill the step at this assignment, before the
+          # count check names it. Safe because that check rejects the empty
+          # result.
+          bin="$(find dist -type f -name den || true)"
           # `grep -c` alone exits 1 on zero matches, and this step's shell runs
           # `set -e` (the GitHub Actions default): that nonzero status would
           # kill the step on the empty-`$bin` case before the `if` below ever
@@ -318,8 +368,34 @@ jobs:
             echo "step cannot judge its version stamp"
             exit 1
           fi
-          if [ "$got" = "den dev" ] || [ "$got" = "den " ]; then
-            echo "goreleaser binary answered '$got' — the -X …cli.Version symbol did not reach the linker"
+          # Guarded like every other capture in this file, and then some: `jq -r`
+          # on a file with no `tag` key prints the literal string `null` and
+          # exits 0, so the missing-field case has to be refused by hand or this
+          # step fails with `expected 'den null'` and names nothing.
+          if ! tag="$(jq -r .tag dist/metadata.json)"; then
+            echo "could not read dist/metadata.json, so this step has no tag to compare"
+            echo "'$got' against. The reason is printed above — jq's own, or the shell's"
+            echo "if jq is what is missing. The causes are a moved dist/ directory, a"
+            echo "goreleaser major that dropped the metadata pipe, or a runner without jq"
+            echo "(ubuntu-latest ships it — see the header comment). Fix the cause, or fix"
+            echo "this step in .github/workflows/gates.yml."
+            exit 1
+          fi
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "dist/metadata.json carries no 'tag' field, so this step cannot say what"
+            echo "'$got' should have been. Fix it in .github/workflows/gates.yml."
+            exit 1
+          fi
+          want="den $tag"
+          if [ "$got" != "$want" ]; then
+            if [ "$got" = "den dev" ] || [ "$got" = "den " ]; then
+              echo "goreleaser binary answered '$got' — the -X …cli.Version symbol did not reach the linker"
+            else
+              echo "goreleaser binary answered '$got', expected '$want' — the stamp ran but"
+              echo "named the wrong thing. Check the ldflags template in .goreleaser.yaml:"
+              echo "it must be {{ .Tag }}, not {{ .Version }} (which carries goreleaser's"
+              echo "snapshot suffix and drops the leading v)."
+            fi
             exit 1
           fi
           echo "goreleaser binary answered '$got'"

@@ -60,6 +60,13 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # Pinned identically in `gates.yml`'s goreleaser step, and the two MUST
+      # move together. That job's snapshot build is what proves this file's
+      # `-X …cli.Version` line reaches the linker BEFORE the tag is public, and
+      # it only proves it for the goreleaser version it ran. Bump this pin
+      # alone and the gate vouches for a builder that is not the one shipping
+      # the tag. See the longer note beside the pin in `gates.yml` for why the
+      # duplication cannot be hoisted anywhere.
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
