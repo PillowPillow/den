@@ -718,6 +718,45 @@ func TestExecRefusesACommandWithoutTheDoubleDash(t *testing.T) {
 	}
 }
 
+// execArgs' `dash != 1` branch, uncovered until now: `den exec` takes exactly
+// one sandbox name before `--`, and zero is as wrong as two. Exercised
+// separately from TestExecRefusesACommandWithoutTheDoubleDash, which never
+// reaches this branch (its args have no `--` at all, so ArgsLenAtDash is -1).
+func TestExecRefusesZeroPositionalsBeforeTheDoubleDash(t *testing.T) {
+	f := &sbx.Fake{}
+	_, err := executeCmdWithSbx(t, f, "exec", "--", "a", "b")
+	if err == nil {
+		t.Fatal("`--` with no sandbox name before it must be refused")
+	}
+	if !strings.Contains(err.Error(), "sandbox name") {
+		t.Errorf("the refusal must name what is missing; got %q", err.Error())
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
+	}
+}
+
+// The design spec requires this refusal to be identical, "dans les mêmes mots,
+// octet pour octet", to den spawn's (TestNoTTYReachesSpawnOptions,
+// spawn_test.go) — an identity that was pinned on one side only until now.
+func TestExecRefusesNoTTYWithNoCommand(t *testing.T) {
+	f := &sbx.Fake{}
+	for _, name := range []string{"-T", "--no-tty"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := executeCmdWithSbx(t, f, "exec", "api", name)
+			if err == nil {
+				t.Fatal("-T with no command must be refused")
+			}
+			if !strings.Contains(err.Error(), "-T") {
+				t.Errorf("the refusal must name the flag in play: %v", err)
+			}
+			if len(f.Calls) != 0 {
+				t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
+			}
+		})
+	}
+}
+
 // den's own lines belong on stderr when the caller is a pipe: `den exec api -T
 // -- go build | tee log` must carry the child's stdout and nothing else.
 //

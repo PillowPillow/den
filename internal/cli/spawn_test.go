@@ -342,6 +342,59 @@ func TestNoTTYReachesSpawnOptions(t *testing.T) {
 	}
 }
 
+// Mirrors TestExecPutsItsOwnChatterOnStderrWithoutATty (exec_test.go):
+// `den spawn api -T -- go build > out.txt` must not let den's own log join
+// the file the command owns. Before the I1 fix, spawn.Spawn wrote every line
+// it says to d.Out regardless of a terminal, so this reaches `sbx exec`
+// through Pipe with den's chatter already on stdout and FAILS against the
+// old code.
+//
+// Uses executeCmdSeparateStreams directly (not runSpawn, which merges
+// streams via executeCmd) because the whole point is telling the two apart.
+func TestSpawnPutsItsOwnChatterOnStderrWithoutATty(t *testing.T) {
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	d.IsTTY = func() bool { return false }
+
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newSpawnCmd(&home, d))
+	stdout, stderr, err := executeCmdSeparateStreams(t, root, "spawn", "api", "--", "true")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("stdout must belong to the command alone; got %q", stdout)
+	}
+	if !strings.Contains(stderr, "creating sandbox") {
+		t.Errorf("den's own chatter must land on stderr; got %q", stderr)
+	}
+}
+
+// The interactive path keeps saying it on stdout, as it always has (mirrors
+// TestExecKeepsItsChatterOnStdoutWithATty, exec_test.go): nothing is piped
+// there under a terminal, and moving it would change a surface #60 does not
+// touch. Guards the other direction of the split — inverting spawn.go's `!tty`
+// to `tty` would still pass TestSpawnPutsItsOwnChatterOnStderrWithoutATty's
+// sibling above only by accident; this test would catch it.
+func TestSpawnKeepsItsChatterOnStdoutWithATty(t *testing.T) {
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	d.IsTTY = func() bool { return true }
+
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newSpawnCmd(&home, d))
+	stdout, stderr, err := executeCmdSeparateStreams(t, root, "spawn", "api", "--", "true")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout, "creating sandbox") {
+		t.Errorf("den's own chatter must stay on stdout under a tty; got %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr must stay empty on the tty path; got %q", stderr)
+	}
+}
+
 // denHomeWithOptionalRepo: a spawnable den home whose nest declares one
 // required repo and one optional one — the shape `-i` exists for.
 func denHomeWithOptionalRepo(t *testing.T) string {

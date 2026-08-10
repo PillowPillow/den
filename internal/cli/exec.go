@@ -115,6 +115,12 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Everything after `--`. execArgs has already refused every other
 			// shape, so this slice is either empty or a real command.
+			//
+			// `--` with nothing after it (`den exec api --`) leaves command
+			// empty too, deliberately: that is the one silent normalization
+			// this file allows itself, on purpose — an empty tail is treated
+			// as "no command", so it opens a shell exactly as bare `den exec
+			// api` does, rather than refusing a separator the user did write.
 			var command []string
 			if dash := cmd.ArgsLenAtDash(); dash >= 0 {
 				command = args[dash:]

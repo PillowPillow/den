@@ -54,8 +54,18 @@ type Command struct {
 //
 // A child that exits nonzero comes back as *sbx.ChildExit, so `den exec api --
 // false` exits 1 as the command did rather than as den failing. Anything else
-// — sbx missing, a cancellation, a sandbox that vanished — stays den's error,
-// with den's message. cmd/den/main.go tells the two apart (cli.ExitStatus).
+// — sbx missing (exec.ErrNotFound, no ExitCode()), a cancellation (a signalled
+// child answers -1, which ExitCodeOf refuses: internal/sbx/exit.go) — stays
+// den's error, with den's message. cmd/den/main.go tells the two apart
+// (cli.ExitStatus).
+//
+// The real rule is wider than the command's own failure: ANY nonzero status
+// sbx itself returns becomes the child's too, because den cannot tell sbx's
+// own refusal (a sandbox that vanished between sbx.Ls and this call, say)
+// from the command's failure by the status alone — both doors already run
+// sbx.Ls + sbx.Find + CheckAttachable first, so this is a race window, not
+// the common case, and sbx's own message still reaches the user unmerged
+// (Pipe and Attach both pass stderr through).
 //
 // That covers the interactive branch too, deliberately: a shell the user
 // leaves with `exit 3` exits den with 3 and prints nothing, where the

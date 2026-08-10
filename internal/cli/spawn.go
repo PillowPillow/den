@@ -43,6 +43,12 @@ func newSpawnCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 			// repos. After it: the command, verbatim. Without it, everything is
 			// positional as it always was — a spawn with no command is the
 			// unchanged surface.
+			//
+			// `--` with nothing after it (`den spawn api --`) leaves command
+			// empty too, deliberately, the same silent normalization `den
+			// exec` allows itself (internal/cli/exec.go): an empty tail is
+			// "no command", so the spawn attaches a shell rather than
+			// refusing a separator the user did write.
 			positional, command := args, []string(nil)
 			if dash := cmd.ArgsLenAtDash(); dash >= 0 {
 				positional, command = args[:dash], args[dash:]
@@ -64,6 +70,10 @@ func newSpawnCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 			// never mixes into the stdout a caller might pipe; the `-i`
 			// checklist reads In for the same reason. The terminal probe stays
 			// in deps — it describes the machine, not the command.
+			//
+			// Out set here is not the last word on it: on a non-tty command,
+			// spawn.Spawn aliases it to Err itself, so den's own log never
+			// joins a file or pipe the command owns (spawn.Deps.Out).
 			d := deps
 			d.Out = cmd.OutOrStdout()
 			d.Err = cmd.ErrOrStderr()

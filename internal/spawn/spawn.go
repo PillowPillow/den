@@ -39,7 +39,13 @@ type Deps struct {
 	// agent.WaitFreshness rather than filled in, because a gate with no
 	// patience reads exactly like a gate that checks nothing.
 	Freshness agent.GateOptions
-	Out       io.Writer
+	// Out is where Spawn's own log goes — EXCEPT on a non-tty command: Spawn
+	// aliases Out to Err at its own top, unconditionally, so a caller piping
+	// `den spawn api -T -- go build` never gets den's lines mixed into the
+	// command's stdout. A Deps built by hand and left with Err nil keeps its
+	// log on Out regardless (the alias only fires when Err is set); see the
+	// ordering comment at the top of Spawn for why that fallback exists.
+	Out io.Writer
 	// Err carries diagnostics that are not part of the command's output.
 	//
 	// Spawn prints `warning:` lines on BOTH streams, so the rule that splits
@@ -151,11 +157,34 @@ type Options struct {
 // effect, so an invalid sandbox name never leaves an orphaned worktree
 // behind.
 func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
+	// The tty verdict, taken here so step 9 (the attach) does not recompute
+	// it: it is pure — o.Command, o.NoTTY and d.IsTTY alone — so nothing
+	// between here and there can change its answer.
+	//
+	// With NO command the terminal is unconditional: a login shell without
+	// one is worth nothing, and that is what every spawn has done since the
+	// beginning. With a command, the caller may well be a pipe, so the
+	// injected probe decides and -T overrides it — the same rule `den exec`
+	// applies.
+	tty := len(o.Command) == 0 || (!o.NoTTY && d.IsTTY != nil && d.IsTTY())
+
 	// A nil Out must not panic mid-sequence: by the first Fprintf the
 	// caller already has a sandbox created and started behind them. Losing
 	// the log is cheaper than that.
 	if d.Out == nil {
 		d.Out = io.Discard
+	}
+	// Non-interactive: den's own log joins the diagnostics on Err, because
+	// the child owns stdout — `den spawn api -T -- go build > out.txt` must
+	// not let den's lines land in the file the child owns, the same
+	// contract `den exec` already holds (internal/cli/exec.go, `chatter`).
+	//
+	// Applied BEFORE Err's own `io.Discard` default below, on purpose: doing
+	// it after would alias Out to a stream the caller never gets to read,
+	// silently discarding the whole log for the many hand-built Deps in this
+	// package that set Out and leave Err nil.
+	if !tty && d.Err != nil {
+		d.Out = d.Err
 	}
 	// Err defaults like Out: the empty-agent warning is best-effort and must
 	// never panic a spawn that left stderr unset.
@@ -742,7 +771,12 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// exec, so nothing restarts now — the next `den exec` does. True on
 		// either side of this branch.
 		if live.IsStopped() {
-			fmt.Fprintf(d.Out, "sandbox %s stopped: it restarts on attach (its state is preserved)\n", sandboxName)
+			// The exact sentence `den exec` uses (internal/cli/exec.go), not a
+			// paraphrase: one situation, one wording, the same house rule
+			// internal/cli/ports.go states for "sandbox not found" — a second
+			// dialect for the same state is a message users have to learn
+			// twice.
+			fmt.Fprintf(d.Out, "sandbox %s is stopped: it restarts on attach (its state is kept)\n", sandboxName)
 		} else {
 			fmt.Fprintf(d.Out, "sandbox %s already live: attaching\n", sandboxName)
 		}
@@ -880,13 +914,9 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			sandboxName, sandboxName)
 		return nil
 	}
-	// The tty rule differs between the two shapes, on purpose. With NO command
-	// the terminal is unconditional: a login shell without one is worth
-	// nothing, and that is what every spawn has done since the beginning. With
-	// a command, the caller may well be a pipe, so the injected probe decides
-	// and -T overrides it — the same rule `den exec` applies, and the reason
-	// Deps.IsTTY is threaded here rather than read from the machine.
-	tty := len(o.Command) == 0 || (!o.NoTTY && d.IsTTY != nil && d.IsTTY())
+	// tty was computed at the top of Spawn, not recomputed here: it is the
+	// same verdict the Out/Err split above already used, and a second
+	// computation would be a second place for the two to drift apart.
 	dir := o.Workdir
 	if dir == "" {
 		dir = workdir
