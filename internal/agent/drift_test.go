@@ -67,6 +67,48 @@ func TestReadMixinDecodesTheGolden(t *testing.T) {
 	}
 }
 
+// A mixin written before 2026-08-10 carries `caps:` / `commands:` — the
+// spelling sbx accepted up to v0.35. It is still the drift reference of every
+// sandbox created back then and still running, and cache/mixins/ is never
+// purged by den. Reading only the v0.38 spelling would decode those files to
+// empty sections and report an emptied egress plus a vanished freshness
+// command on EVERY attach: a permanent false warning, which is how a user
+// learns to stop reading the drift report.
+//
+// The golden is frozen (copied from the pre-rename mixin-with-mounts.golden)
+// and must never be regenerated: it describes what is already on disk on real
+// machines, which no later den version can change.
+func TestReadMixinStillDecodesThePreV038Spelling(t *testing.T) {
+	denHome := t.TempDir()
+	dir := filepath.Join(denHome, "cache", "mixins", "api.feat12")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	golden, err := os.ReadFile(filepath.Join("testdata", "mixin-legacy-pre-v038.golden"))
+	if err != nil {
+		t.Fatalf("reading golden: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "spec.yaml"), golden, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ReadMixin(denHome, "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := []string{"api.anthropic.com", "github.com"}; !slices.Equal(m.Egress, want) {
+		t.Errorf("Egress = %v, want %v — an old mixin must not read as an emptied egress", m.Egress, want)
+	}
+	// Two startup entries: the link phase, then freshness. Both must come back,
+	// in that order, or Differences reports a phantom change on both axes.
+	if len(m.Links) != 3 || !strings.Contains(m.Links[2], "den mounts") {
+		t.Errorf("Links = %v, want the link phase argv", m.Links)
+	}
+	if len(m.Freshness) != 3 || !strings.Contains(m.Freshness[2], "claude update") {
+		t.Errorf("Freshness = %v, want the freshness argv", m.Freshness)
+	}
+}
+
 // Spawn must distinguish "no reference" (cache purged, or sandbox created
 // outside this den) from a broken read: both get reported, but not with the
 // same message — the user doesn't respond the same way to a purged cache and

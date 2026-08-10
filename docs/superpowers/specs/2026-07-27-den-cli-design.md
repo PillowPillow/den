@@ -197,7 +197,7 @@ refus voisins ci-dessus : le vide voyage dans **trois** directions, et seule la 
 stack: dgdevx
 env:                                 # optionnel, per-nest → injecté via le mixin généré
   SOME_VAR: value                   # {config_dir} y est substitué comme dans l'env de l'agent (§4.1)
-egress:                              # optionnel, per-nest → caps.network.allow scopé sandbox
+egress:                              # optionnel, per-nest → permissions.network.allow scopé sandbox
   - 10.22.11.54:27017                # ex. IP:port DB projet
 repos:
   - { path: ~/dev/review-mgmt }               # requis
@@ -270,10 +270,10 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
    global**) ; garantit l'existence du dossier ; le monte **RW**.
 5. **Mixin généré.** `den` génère **un seul kit jetable** portant : les **env vars de l'agent**
    (`{config_dir}` → chemin in-VM) et les **env nest**, toutes deux sous **`environment.variables`** ;
-   l'**egress nest** en **`caps.network.allow`** ; et en **dernière** `commands.startup` la
+   l'**egress nest** en **`permissions.network.allow`** ; et en **dernière** `setup.startup` la
    **commande de fraîcheur de l'agent** (§9.1). Dernière et pas ailleurs : elle est fail-closed, et
    le dispatcher sbx interrompt toute la suite au premier échec. Si un `mounts:` porte un `link:`,
-   sa phase de liens devient la **première** entrée de `commands.startup`, avant la fraîcheur
+   sa phase de liens devient la **première** entrée de `setup.startup`, avant la fraîcheur
    (§10.1).
 6. **Assemblage `sbx create`** :
    `--name <nest>[.<wt>]`, `--template <stack.image>`,
@@ -538,7 +538,7 @@ séquence ne touche.
 
 ## 7. Policy réseau & settle-loop (douleur #1)
 
-- Egress effectif (§4) posé en **`caps.network.allow` du mixin généré** → **auto-scopé** à la sandbox
+- Egress effectif (§4) posé en **`permissions.network.allow` du mixin généré** → **auto-scopé** à la sandbox
   au `create` (aucune règle globale qui fuite d'un projet à l'autre) et **présent dès le
   create-time** (pas de pose paresseuse — la propagation sbx n'est pas instantanée).
 - **Settle-loop fail-closed** : après create, `den` boucle jusqu'à ce que **tous** les hôtes soient
@@ -566,9 +566,9 @@ séquence ne touche.
   fast path est une optimisation), là où un `policy check` illisible, lui, refuse.
 
 **Schéma de kit (relevé sur les kits réels, pas déduit) :** `schemaVersion: 2`, `kind: mixin`,
-`name`, `version`, `description` ; les capacités réseau vivent sous **`caps.network.allow`** (liste
+`name`, `version`, `description` ; les capacités réseau vivent sous **`permissions.network.allow`** (liste
 de `host`, `host:port`, `ip` ou `ip:port`), les variables sous **`environment.variables`**, les
-commandes de boot sous **`commands.startup[].command`** (tableau argv). `sbx policy check network`
+commandes de boot sous **`setup.startup[].command`** (tableau argv). `sbx policy check network`
 évalue un hôte nu **sur le port 443** : une entrée egress nue est donc cohérente de bout en bout,
 den ne normalise rien.
 
@@ -663,7 +663,7 @@ devinerait faux sur la ligne que l'utilisateur est le plus susceptible de coller
 
 **Exigence : une sandbox ne démarre jamais avec un agent périmé.** L'agent est mis à jour **au boot**
 (pas au build de l'image : une image pinne une version qui rancit), via la commande `update` du
-registre, injectée par `den` en `commands.startup` du mixin généré.
+registre, injectée par `den` en `setup.startup` du mixin généré.
 
 Deux contraintes du dispatcher sbx (`/etc/durable-startup.d/run.sh`, **vérifiées empiriquement le
 2026-07-27**, cf. `/var/log/sbx-kit-startup.log`) — non négociables, elles ont déjà produit un bug :
@@ -771,7 +771,7 @@ même classe de défaut, reconstituée.
 | mode | flags de `sbx create` | mixin | workspaces (positionnels de l'argv) |
 |---|---|---|---|
 | `agent-forward` (défaut) | inchangés | inchangée | inchangés |
-| `mount` | inchangés | **+ la phase de liens, en PREMIER `commands.startup`** | **+ les mounts, en dernier** |
+| `mount` | inchangés | **+ la phase de liens, en PREMIER `setup.startup`** | **+ les mounts, en dernier** |
 | `none` | inchangés | inchangée | inchangés |
 
 `agent-forward` n'ajoute donc **rien** : il repose entièrement sur le fait que le process
@@ -870,7 +870,7 @@ basculement `agent-forward` / `mount` reste une décision de sécurité réelle,
 distinctes — mais le chemin de code privé du mode a disparu : retirer `mounts:` fait mourir
 `ssh.mode: mount` avec lui, parce que plus rien d'autre ne le porte.
 
-**Le lien, au boot de la VM.** La mixin de den porte `commands.startup` ; la phase de liens en
+**Le lien, au boot de la VM.** La mixin de den porte `setup.startup` ; la phase de liens en
 devient la **première** entrée (la fraîcheur de l'agent reste la dernière, spec §9.1 — sinon le
 tout premier boot tournerait sur des chemins non liés). Par mount porteur d'un `link:`, elle
 refuse plutôt que de créer un lien dans le vide ou d'écraser des données :
@@ -888,7 +888,7 @@ vide, donc même une écriture concurrente ne peut mener qu'à un boot refusé, 
 détruite.
 
 **Mesuré le 2026-08-07** (`sbx` v0.37.1, den `v1.3.1-14-gf895ffa`) : les trois issues du tableau
-ci-dessus se comportent comme prévu sur une vraie sandbox, l'ordre des `commands.startup` est bien
+ci-dessus se comportent comme prévu sur une vraie sandbox, l'ordre des `setup.startup` est bien
 celui déclaré et le dispatcher s'arrête à la première défaillance (le boot refusé n'exécute jamais
 la commande de fraîcheur qui le suit), et l'ordre des workspaces tient côté `sbx` — dépôt d'abord,
 mounts en dernier, ce qui protège le `-w` de l'attache.
@@ -993,7 +993,7 @@ internal/
 7. SSH **défaut `agent-forward`**, `mount ~/.ssh_sbx` override courant.
 8. Ports : **fenêtre déterministe + publication à la demande** (`den ports`), loopback-only strict,
    CDP loopback-locked, tunnel SSH pour l'accès distant.
-9. Policy **déclarative** (baseline ∪ stack ∪ nest) matérialisée en `caps.network.allow` scopé +
+9. Policy **déclarative** (baseline ∪ stack ∪ nest) matérialisée en `permissions.network.allow` scopé +
    **settle-loop fail-closed**.
 10. État sans DB : identité portée par le **nom de sandbox** `<nest>[.<worktree>]` (`--label`
     n'existe pas dans sbx) ; cache reconstructible optionnel.
@@ -1015,6 +1015,40 @@ tenu pour acquis dans le code. Étendre cette liste demande un **relevé**, pas 
 **Deux dates.** Le relevé initial est du 2026-07-28 ; le **smoke réel n°2 du 2026-07-31** l'a
 complété et en a corrigé une affirmation. Chaque entrée ci-dessous porte sa date quand elle n'est
 pas de la première.
+
+### v0.38.0 renomme le schéma de kit (relevé du 2026-08-10)
+
+La machine est passée en **v0.38.0** (`sbx version: v0.38.0 c022b146…`) et le `den spawn` est mort
+**avant toute création de VM**, sur le premier `--kit` :
+
+```
+ERROR: resolve kits: kit "…/kits/ssh-known-hosts": artifact: invalid spec.yaml:
+  yaml: unmarshal errors:
+    line 15: field commands not found in type spec.specFileV2
+```
+
+Relevé par sondage de `sbx kit validate` (un kit minimal par clé candidate). Le type s'appelle
+toujours `specFileV2` et `schemaVersion: 2` n'a pas bougé : **c'est la forme de la v2 qui a
+changé**, pas sa version.
+
+| avant (≤ v0.35) | après (v0.38) |
+|---|---|
+| `caps.network.allow` | **`permissions.network.allow`** |
+| `commands.startup[].command` | **`setup.startup[].command`** |
+| `environment.variables` | inchangé |
+
+Autres clés de premier niveau acceptées par `specFileV2` : `agentInstructions`, `credentials`,
+`requires`, `volumes`, `ports`, et `sandbox` (refusée pour `kind: mixin`). Sous `setup` :
+`startup`, `install`, `files`. Sous `permissions` : `network`. `schemaVersion: 1` valide encore
+`caps:` + `commands:` — c'est une porte de sortie, pas la nôtre : den n'écrit que la forme v2
+courante.
+
+**Ordre des `setup.startup` re-mesuré le 2026-08-10**, sur v0.38.0, avec un kit sonde à deux
+entrées (`echo FIRST` puis `echo SECOND`, sandbox `den-order-probe`, template `digitaleo:v1`) :
+`/tmp/den-order.txt` contient `FIRST` puis `SECOND`, et les entrées apparaissent sous
+`/etc/durable-startup.d/002-startup-den-order-probe`. **Les deux entrées tournent, dans l'ordre
+déclaré.** Un renommage de clé n'est pas une promesse sur le runtime, et « la fraîcheur en
+DERNIER » est un invariant de sûreté (§9.1) : il fallait le re-mesurer, pas le supposer.
 
 ### La liste des commandes (2026-07-31, `sbx --help` sur v0.35.0)
 
@@ -1194,7 +1228,8 @@ sbx policy check network TARGET
   mesure le message exact du refus.
 ```
 
-**Schéma de kit réel** (relevé sur `sbx-devbox/lib/*/spec.yaml`, pas sur la documentation) :
+**Schéma de kit réel** (relevé sur `sbx-devbox/lib/*/spec.yaml`, pas sur la documentation ;
+**renommé par sbx entre v0.35.0 et v0.38.0**, relevé du 2026-08-10) :
 
 ```yaml
 schemaVersion: 2
@@ -1203,19 +1238,30 @@ name: <identifiant>
 version: 1.0.0
 description: >-
   ...
-caps:
+permissions:
   network:
     allow: ["api.anthropic.com:443", "github.com:22"]
 environment:
   variables:
     CLAUDE_CONFIG_DIR: /chemin/hote
-commands:
+setup:
   startup:
     - command: ["bash", "-c", "..."]
 ```
 
-Les clés sont `caps.network.allow` et `environment.variables` — **pas** `network.allow` ni `env`,
-que ce spec écrivait avant la tâche 1.
+Les clés sont `permissions.network.allow`, `environment.variables` et `setup.startup` — **pas**
+`network.allow` ni `env`, que ce spec écrivait avant la tâche 1, et **plus** `caps.network.allow`
+ni `commands.startup`, que sbx ≤ v0.35 lisait. Le renommage est un **refus dur** au `sbx create`
+(`field caps not found in type spec.permissionsBlockV2`), pas une dépréciation silencieuse : un
+`den spawn` meurt avant toute création de VM. `schemaVersion: 1` accepte encore l'ancienne
+orthographe — den n'y retombe pas, il n'écrit que la nouvelle. Détail du relevé en §14.0.
+
+**Conséquence côté relecture** : `agent.ReadMixin` décode les DEUX orthographes. Les mixins déjà
+posés sous `cache/mixins/` portent l'ancienne, `cache/` n'est jamais purgé par den, et chacun est
+la référence de drift d'une sandbox encore vivante. Ne lire que la nouvelle ferait rapporter un
+egress vidé et une fraîcheur disparue à **chaque** attach — un faux avertissement permanent, ce
+qui apprend à l'utilisateur à ne plus lire le rapport de drift. Expand–contract : l'ancienne clé
+part quand le dernier mixin écrit avant le 2026-08-10 a disparu, ce que rien ici ne sait dater.
 
 **Deux pièges du dispatcher de kits** (`/etc/durable-startup.d/run.sh`, vérifiés empiriquement ;
 journal dans `/var/log/sbx-kit-startup.log`) :

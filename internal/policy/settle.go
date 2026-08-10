@@ -127,7 +127,7 @@ func (o Options) maxRounds() int {
 // diagnose than a clean refusal.
 //
 // The --sandbox scope is essential: the allowlist is set as
-// caps.network.allow of a mixin scoped to this sandbox. Querying the GLOBAL
+// permissions.network.allow of a mixin scoped to this sandbox. Querying the GLOBAL
 // policy would validate something else than what was just set — hence the
 // name validation, without which an empty name would go straight into the
 // argv unchanged.
@@ -332,7 +332,7 @@ const (
 // and the authorizer is still asked whether that rule is LIVE.
 //
 // WHY ONE CHECK IS ENOUGH. den's whole allowlist lands as a SINGLE scoped rule
-// (`caps.network.allow` of the mixin, one rule id, verified against sbx v0.35.0),
+// (`permissions.network.allow` of the mixin — `caps.network.allow` when it was verified against sbx v0.35.0, renamed by v0.38.0 — one rule id),
 // so its propagation is atomic: a host that only that rule covers is allowed if
 // and only if the rule is live. Hence the witness below is chosen among hosts no
 // OTHER active rule mentions verbatim. When no such host exists, every host is

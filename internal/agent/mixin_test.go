@@ -37,12 +37,14 @@ func TestRenderMixinCarriesAllThreePayloads(t *testing.T) {
 	}
 	rendered := string(out)
 
-	// The REAL sbx schema: caps.network.allow and environment.variables. The
-	// original spec wrote network.allow and env — that was wrong.
+	// The REAL sbx schema, as of v0.38: permissions.network.allow,
+	// environment.variables, setup.startup. The original spec wrote
+	// network.allow and env — that was wrong; sbx ≤ v0.35 read caps.network.allow
+	// and commands.startup — those are now a hard refusal at `sbx create`.
 	for _, want := range []string{
 		"schemaVersion: 2",
 		"kind: mixin",
-		"caps:",
+		"permissions:",
 		"network:",
 		"allow:",
 		"- api.anthropic.com",
@@ -50,11 +52,20 @@ func TestRenderMixinCarriesAllThreePayloads(t *testing.T) {
 		"variables:",
 		"CLAUDE_CONFIG_DIR: /home/me/.den/agents/claude",
 		"SOME_VAR: value",
-		"commands:",
+		"setup:",
 		"startup:",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("mixin must contain %q; got:\n%s", want, rendered)
+		}
+	}
+
+	// The renamed sections must be GONE, not merely joined by the new ones: a
+	// mixin carrying both would validate today and silently double every
+	// startup command the day sbx re-accepts the old spelling.
+	for _, gone := range []string{"caps:", "commands:"} {
+		if strings.Contains(rendered, gone) {
+			t.Errorf("mixin must not contain the pre-v0.38 key %q; got:\n%s", gone, rendered)
 		}
 	}
 }
@@ -72,7 +83,7 @@ func TestRenderMixinPutsFreshnessLastInStartup(t *testing.T) {
 	iStartup := strings.Index(rendered, "startup:")
 	iUpdate := strings.Index(rendered, "claude update")
 	if iStartup < 0 || iUpdate < 0 || iUpdate < iStartup {
-		t.Fatalf("the freshness command must appear under commands.startup; got:\n%s", rendered)
+		t.Fatalf("the freshness command must appear under setup.startup; got:\n%s", rendered)
 	}
 	// And the bin_dirs' $HOME must survive intact into the YAML.
 	if !strings.Contains(rendered, "$HOME/.local/bin") {
@@ -122,16 +133,16 @@ func TestRenderMixinOmitsEmptySections(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	rendered := string(out)
-	if strings.Contains(rendered, "caps:") {
-		t.Errorf("no egress ⇒ no caps section; got:\n%s", rendered)
+	if strings.Contains(rendered, "permissions:") {
+		t.Errorf("no egress ⇒ no permissions section; got:\n%s", rendered)
 	}
 	if strings.Contains(rendered, "environment:") {
 		t.Errorf("no variables ⇒ no environment section; got:\n%s", rendered)
 	}
 	// Freshness, on the other hand, is NOT optional: omitting empty sections
-	// must never spill over onto commands.
-	if !strings.Contains(rendered, "commands:") {
-		t.Errorf("commands is never omitted, even without egress or env; got:\n%s", rendered)
+	// must never spill over onto setup.
+	if !strings.Contains(rendered, "setup:") {
+		t.Errorf("setup is never omitted, even without egress or env; got:\n%s", rendered)
 	}
 }
 
@@ -156,7 +167,7 @@ func TestRenderMixinAlwaysCarriesFreshness(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		for _, want := range []string{"commands:", "startup:", "claude update"} {
+		for _, want := range []string{"setup:", "startup:", "claude update"} {
 			if !strings.Contains(string(out), want) {
 				t.Errorf("a rendered mixin must always contain %q; got:\n%s", want, out)
 			}
@@ -231,17 +242,17 @@ func TestRenderMixinOmitsTheLinkEntryWhenThereAreNoLinks(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	var doc struct {
-		Commands struct {
+		Setup struct {
 			Startup []struct {
 				Command []string `yaml:"command"`
 			} `yaml:"startup"`
-		} `yaml:"commands"`
+		} `yaml:"setup"`
 	}
 	if err := yaml.Unmarshal(out, &doc); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(doc.Commands.Startup) != 1 {
-		t.Fatalf("got %d startup entries, want 1", len(doc.Commands.Startup))
+	if len(doc.Setup.Startup) != 1 {
+		t.Fatalf("got %d startup entries, want 1", len(doc.Setup.Startup))
 	}
 }
 
@@ -442,16 +453,16 @@ func TestRenderMixinIsRereadableYAML(t *testing.T) {
 	var read struct {
 		SchemaVersion int    `yaml:"schemaVersion"`
 		Kind          string `yaml:"kind"`
-		Caps          struct {
+		Permissions   struct {
 			Network struct {
 				Allow []string `yaml:"allow"`
 			} `yaml:"network"`
-		} `yaml:"caps"`
-		Commands struct {
+		} `yaml:"permissions"`
+		Setup struct {
 			Startup []struct {
 				Command []string `yaml:"command"`
 			} `yaml:"startup"`
-		} `yaml:"commands"`
+		} `yaml:"setup"`
 	}
 	if err := yaml.Unmarshal(out, &read); err != nil {
 		t.Fatalf("the rendered mixin must be rereadable YAML: %v\n%s", err, out)
@@ -459,19 +470,19 @@ func TestRenderMixinIsRereadableYAML(t *testing.T) {
 	if read.SchemaVersion != 2 || read.Kind != "mixin" {
 		t.Errorf("read header = %d/%q", read.SchemaVersion, read.Kind)
 	}
-	if len(read.Caps.Network.Allow) != 2 {
-		t.Errorf("read allow = %v", read.Caps.Network.Allow)
+	if len(read.Permissions.Network.Allow) != 2 {
+		t.Errorf("read allow = %v", read.Permissions.Network.Allow)
 	}
-	if len(read.Commands.Startup) != 1 || len(read.Commands.Startup[0].Command) != 3 {
-		t.Fatalf("read startup = %v", read.Commands.Startup)
+	if len(read.Setup.Startup) != 1 || len(read.Setup.Startup[0].Command) != 3 {
+		t.Fatalf("read startup = %v", read.Setup.Startup)
 	}
 	// The script must round-trip through YAML BYTE FOR BYTE: it's what runs in
 	// the VM. A substring check would say nothing about lost whitespace or a
 	// chomping that eats the last line ("exit 1").
 	for i, want := range m.Freshness {
-		if read.Commands.Startup[0].Command[i] != want {
+		if read.Setup.Startup[0].Command[i] != want {
 			t.Errorf("argv[%d] read ≠ rendered\n--- read ---\n%s\n--- want ---\n%s",
-				i, read.Commands.Startup[0].Command[i], want)
+				i, read.Setup.Startup[0].Command[i], want)
 		}
 	}
 }
