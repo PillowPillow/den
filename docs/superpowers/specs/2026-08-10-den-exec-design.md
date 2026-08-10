@@ -62,7 +62,21 @@ Le drapeau est accepté et sans effet observable : la commande est attendue, sa 
 code retourné. C'est ce qui ferme la décision 4 ci-dessous, et c'est un défaut à signaler en amont
 indépendamment de #60.
 
-**5. Une sandbox arrêtée est redémarrée.** « If the sandbox is stopped, it is started first »,
+**5. `-t` SANS terminal attaché JETTE la sortie de la commande, en silence.** Mesuré sur une
+seconde sandbox vivante (`dg-kafoutche`), stdin et stdout redirigés :
+
+```
+sbx exec -it <sb> echo hello  </dev/null >fichier   →  fichier VIDE,   rc=0
+sbx exec -t  <sb> echo hello  </dev/null >fichier   →  fichier VIDE,   rc=0
+sbx exec     <sb> echo hello  </dev/null >fichier   →  "hello",        rc=0
+sbx exec -it <sb> sh -c 'exit 42'                   →  rc=42
+```
+
+Le code de retour remonte quand même : c'est la SORTIE qui disparaît. Conséquence directe sur le
+contrat ci-dessous — conditionner `-it` à `Deps.IsTTY` n'est pas une préférence, c'est ce qui
+empêche `den exec` en CI de perdre chaque octet écrit par la commande.
+
+**6. Une sandbox arrêtée est redémarrée.** « If the sandbox is stopped, it is started first »,
 `sbx exec --help` sur v0.38.0. Source : le texte d'aide du binaire, **pas** une mesure du jour — le
 relevé du 2026-07-28 l'avait mesuré sur v0.35.0 (`sbx exec <name> true`, 1,4 s).
 
@@ -86,6 +100,14 @@ un TTY est alloué par défaut, `-T` le coupe.
   **`-w` est pris** par la worktree de `den spawn`, et lui donner un second sens sur une commande
   sœur est exactement la collision que den refuse ailleurs.
 - **Code de retour** ⇒ le code de la commande devient le code de den.
+- **Précision venue de l'implémentation (2026-08-10)** : la règle TTY ci-dessus gouverne une
+  commande DONNÉE. Sans commande, le terminal reste inconditionnel — un `bash -l` sans terminal ne
+  vaut rien, et c'est le comportement que `den sh` et `den spawn` ont toujours eu ; le changer
+  toucherait des dizaines d'assertions pour une voie où rien n'est écrit à perdre. `-T` sans
+  commande est donc une contradiction, refusée en nommant les deux moitiés.
+- **Workdir sur les deux modes.** La commande hérite du même premier workspace que le shell.
+  L'alternative — pas de workdir sans `--workdir` — a été écartée : la commande atterrirait dans le
+  home de la VM, et `den exec api -- go test ./...` échouerait pour une raison que rien n'affiche.
 
 ## Les quatre décisions
 
