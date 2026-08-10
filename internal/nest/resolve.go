@@ -40,6 +40,11 @@ type Mount struct {
 	Key  string // "mounts[N]" or "ssh.dir"
 }
 
+// SSHDirKey is the Key of the Mount that `ssh.mode: mount` desugars into: the
+// configuration key a message must name for that entry, since it appears in no
+// `mounts:` block of the user's config.yaml.
+const SSHDirKey = "ssh.dir"
+
 // resolveMounts flattens `mounts:` and the ssh.mode sugar into one list.
 //
 // `ssh.mode: mount` is SUGAR, not a parallel mechanism: it produces an ordinary
@@ -63,13 +68,17 @@ func resolveMounts(g *config.Global) []Mount {
 	if g.SSH.Mode == "mount" && g.SSH.Dir != "" {
 		out = append(out, Mount{
 			Host: g.SSH.Dir,
+			// SSHDirKey, not the literal: spawn's warning header reads the Key
+			// back to decide which configuration key to name, and a second
+			// spelling would send a `ssh.mode: mount` user to a `mounts:` block
+			// their config.yaml does not contain. Same rule as Link just below.
 			// config owns the constant: config.Validate compares a user's
 			// `mounts[].link` against the same string to refuse a collision
 			// with this sugar. Two spellings would let one through.
 			Link: config.SSHLinkTarget,
 			// Never RO: ssh writes known_hosts, and a read-only mount turns
 			// that into a failure far from its cause.
-			Key: "ssh.dir",
+			Key: SSHDirKey,
 		})
 	}
 	return out

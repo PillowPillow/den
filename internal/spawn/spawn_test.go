@@ -3906,4 +3906,353 @@ func TestSpawnWarnsAboutAnEditedSSHDirLikeAnyOtherMount(t *testing.T) {
 	if !strings.Contains(log, want) {
 		t.Errorf("log = %q, want it to contain %q", log, want)
 	}
+	// The HEADER too, not only the detail line. It used to hardcode
+	// "`mounts:` now says", which is the very defect Mount.Key exists to
+	// prevent, reintroduced one line above the line that fixes it: this user
+	// has no `mounts:` block at all, and den was sending them to a
+	// configuration key their config.yaml does not contain. Asserting only the
+	// detail line — which is what this test did — is exactly how that slipped
+	// through.
+	if !strings.Contains(log, "does not mount what `ssh.dir` now says") {
+		t.Errorf("log = %q, want the header to name `ssh.dir` — this config has no "+
+			"`mounts:` block for the user to go and fix", log)
+	}
+	if strings.Contains(log, "`mounts:` now says") {
+		t.Errorf("log = %q, must not send a `ssh.mode: mount` user to a `mounts:` "+
+			"block they never wrote", log)
+	}
+}
+
+// Both kinds of entry unmounted at once: the header names both keys, because
+// the user has two different places to go and look. The trichotomy is
+// mounts-only (every other test in this file), ssh.dir-only
+// (TestSpawnWarnsAboutAnEditedSSHDirLikeAnyOtherMount) and this one.
+func TestSpawnNamesBothKeysWhenAMountAndSSHDirAreBothUnmounted(t *testing.T) {
+	// CREATED, like every `ssh.mode: mount` test in this file: mount mode
+	// refuses a missing ssh.dir before any side effect.
+	sshDir := filepath.Join(t.TempDir(), "ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	docs := t.TempDir()
+	sshBlock := "  mode: mount\n  dir: " + sshDir + "\n"
+	denHome, repo := denTestSSH(t, sshBlock)
+	// Rewritten rather than served by a third denTest* helper: this is the
+	// only test that needs BOTH levers, and denTestSSH/denTestMounts each fix
+	// the other one.
+	writeConfig(t, denHome, sshBlock, oneHostEgress+"mounts:\n  - host: "+docs+"\n")
+
+	// The VM carries the repo and neither of the two.
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	log := out.String()
+	if !strings.Contains(log, "does not mount what `mounts:` and `ssh.dir` now say") {
+		t.Errorf("log = %q, want the header to name both keys", log)
+	}
+	if !strings.Contains(log, "- "+docs+" (mounts[0])") {
+		t.Errorf("log = %q, want the `mounts:` entry named", log)
+	}
+	if !strings.Contains(log, "- "+sshDir+" (ssh.dir)") {
+		t.Errorf("log = %q, want the ssh.dir entry named", log)
+	}
+}
+
+// The regression that decided WHERE this branch normalizes: at the comparison
+// in reportUnmountedMounts, never at config load.
+//
+// Cleaning `mounts[].host` at load looks like the tidier fix, and it is the
+// one this branch shipped first. It is wrong because the very same string
+// feeds agent.LinkCommand, and THAT string is recorded in the mixin at the
+// `sbx create`. Nothing ever rewrites the recorded mixin of a LIVE sandbox —
+// den reapplies nothing to a running VM — so every sandbox created before the
+// upgrade would compare its recorded, as-typed link phase against a freshly
+// cleaned one and report "link phase changed" on every single attach, forever,
+// with a remedy (`sbx rm --force`) that destroys a VM holding uncommitted
+// work. A permanent warning stops being read; a permanent warning whose remedy
+// is destructive is worse than the silence it replaced.
+//
+// The recorded mixin here is written by hand, with the host EXACTLY as typed,
+// because that is what a pre-upgrade den left on disk and no amount of
+// re-running this binary can reproduce it otherwise.
+func TestAttachReportsNoDriftWhenTheMountHostIsNotCanonical(t *testing.T) {
+	docs := t.TempDir()
+	// Trailing slash: absolute (validateMounts accepts it), stats as the same
+	// existing directory (spawn's preflight accepts it), and filepath.Clean
+	// changes it. One character, no symlink question attached.
+	unclean := docs + "/"
+	denHome, repo := denTestMounts(t, "mounts:\n  - host: "+unclean+"\n    link: $HOME/.docs\n")
+
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("first spawn: unexpected error: %v", err)
+	}
+
+	// The sandbox a PRE-UPGRADE den created: same configuration, link phase
+	// rendered from the host as the user typed it.
+	recorded, err := agent.ReadMixin(denHome, "api")
+	if err != nil {
+		t.Fatalf("create must have written a mixin: %v", err)
+	}
+	recorded.Links = agent.LinkCommand([]nest.Mount{
+		{Host: unclean, Link: "$HOME/.docs", Key: "mounts[0]"},
+	})
+	if _, err := agent.WriteMixin(denHome, "api", recorded); err != nil {
+		t.Fatalf("seeding the pre-upgrade mixin: %v", err)
+	}
+
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + unclean + `"]}]}`)}
+
+	log.Reset()
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("attach: unexpected error: %v", err)
+	}
+	got := log.String()
+	// Asserted FIRST: without it, a test whose mixin reference went missing
+	// would report "no configuration reference" instead — a different warning,
+	// which the "link phase changed" assertion below would happily not find.
+	// The test would then be green while proving nothing.
+	if strings.Contains(got, "no configuration reference") {
+		t.Fatalf("the reference mixin was not seeded — this test proves nothing;\n%s", got)
+	}
+	if strings.Contains(got, "link phase changed") {
+		t.Errorf("den rewrote the host it records in the mixin: every sandbox created "+
+			"before the upgrade now drifts forever, with `sbx rm --force` as its remedy;\n%s", got)
+	}
+	if strings.Contains(got, "running with the mixin from its `sbx create`") {
+		t.Errorf("no mixin drift is expected on an unchanged configuration;\n%s", got)
+	}
+}
+
+// The comparison normalizes BOTH sides, so the spelling a user typed and the
+// spelling the VM reports back may differ freely.
+//
+// Only the FIRST direction is reachable against today's sbx: it canonicalizes
+// what it echoes, lexically (measured 2026-08-10, v0.37.1 — spec §14.0), so
+// the VM side is always already clean and the config side is the only one that
+// can be unclean. The second is kept deliberately: it costs one subtest, and
+// it is what stops a future "the VM side is clean anyway, drop that Clean"
+// simplification from landing green on a sbx that changed its mind.
+//
+// The `ls --json` response is written by hand with a DIFFERENT spelling from
+// the config on purpose. sbx.Fake echoes back whatever workspace string it was
+// handed, so a test whose two sides carry the same spelling proves nothing
+// about normalization at all.
+func TestSpawnDoesNotWarnWhenOnlyTheSpellingOfTheMountPathDiffers(t *testing.T) {
+	t.Run("the config is unclean, the VM reports it clean", func(t *testing.T) {
+		docs := t.TempDir()
+		denHome, repo := denTestMounts(t, "mounts:\n  - host: "+docs+"/\n")
+
+		f, d := fakeDeps()
+		f.Responses["ls --json"] = sbx.Response{Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]}`)}
+		var out bytes.Buffer
+		d.Out = &out
+
+		if err := Spawn(context.Background(), denHome,
+			Options{Nest: "api", Detach: true}, d); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if strings.Contains(out.String(), "does not mount what") {
+			t.Errorf("log = %q: the directory IS mounted, only the spelling differs", out.String())
+		}
+	})
+
+	t.Run("the config is clean, the VM reports it unclean", func(t *testing.T) {
+		docs := t.TempDir()
+		denHome, repo := denTestMounts(t, "mounts:\n  - host: "+docs+"\n")
+
+		f, d := fakeDeps()
+		f.Responses["ls --json"] = sbx.Response{Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `/"]}]}`)}
+		var out bytes.Buffer
+		d.Out = &out
+
+		if err := Spawn(context.Background(), denHome,
+			Options{Nest: "api", Detach: true}, d); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if strings.Contains(out.String(), "does not mount what") {
+			t.Errorf("log = %q: the directory IS mounted, only the spelling differs", out.String())
+		}
+	})
+}
+
+// The `ro:` flip must survive the normalization: the path parts are made
+// comparable, the `:ro` suffix is NOT — it is the bit under test. A
+// normalization that dropped the suffix along with the trailing slash would
+// make this read "is not mounted", which is a false statement about a
+// directory the VM really does mount.
+func TestSpawnDetectsAROFlipEvenWhenTheSpellingsDiffer(t *testing.T) {
+	docs := t.TempDir()
+	denHome, repo := denTestMounts(t, "mounts:\n  - host: "+docs+"/\n    ro: true\n")
+
+	// Clean on the VM side, unclean in the config, and read-write where the
+	// config now says read-only.
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	log := out.String()
+	if !strings.Contains(log, "is mounted read-write, but `mounts:` now says read-only") {
+		t.Errorf("log = %q, expected the flip line naming BOTH sides", log)
+	}
+	if strings.Contains(log, "is not mounted") {
+		t.Errorf("log = %q: the directory IS mounted — den must not claim otherwise", log)
+	}
+}
+
+// The comparison is normalized; the PRINTED path never is. A user greps their
+// config.yaml for the string den showed them, and a den that answers with a
+// canonicalized spelling sends them looking for a line they never wrote.
+func TestSpawnNamesTheMountHostExactlyAsTyped(t *testing.T) {
+	docs := t.TempDir()
+	unclean := docs + "/"
+	denHome, repo := denTestMounts(t, "mounts:\n  - host: "+unclean+"\n")
+
+	// The VM mounts the repo and nothing else: the warning DOES fire here.
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	log := out.String()
+	want := "- " + unclean + " (mounts[0]) is not mounted"
+	if !strings.Contains(log, want) {
+		t.Errorf("log = %q, want the host as typed: %q", log, want)
+	}
+}
+
+// Same defect as the mounts one, on the repos path, and it PREDATES #56: a
+// declared `repos:` entry is only tilde-expanded, never cleaned
+// (config.LoadGlobalUnvalidated, nest.LoadNest — nest/repos.go:53-59 already
+// writes the asymmetry down: a COMMAND-LINE path IS cleaned, a declared one is
+// not), while sbx normalizes the workspaces it echoes (measured 2026-08-10,
+// v0.37.1 — spec §14.0).
+//
+// Both halves of the warning are asserted absent, not just the first. The
+// start-directory half fails INDEPENDENTLY: `movedStart` compares the VM's
+// workdir against `expected[0]`, so cleaning only the presence map would fix
+// "is not mounted" and leave den naming the directory the shell is already in.
+//
+// The nest spelling and the `ls --json` spelling DIFFER in every subtest —
+// sbx.Fake echoes back whatever it is handed, so two identical sides would
+// prove nothing.
+func TestSpawnDoesNotWarnWhenOnlyTheSpellingOfTheRepoPathDiffers(t *testing.T) {
+	t.Run("the nest is unclean, the VM reports it clean", func(t *testing.T) {
+		denHome, repo := denTest(t)
+		// The nest names the SAME repo with a trailing slash.
+		write(t, filepath.Join(denHome, "nests", "api.yaml"),
+			"stack: devx\nrepos:\n  - { path: "+repo+"/ }\n")
+
+		f, d := fakeDeps()
+		f.Responses["ls --json"] = sbx.Response{Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+		var out bytes.Buffer
+		d.Out = &out
+
+		if err := Spawn(context.Background(), denHome,
+			Options{Nest: "api", Detach: true}, d); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		log := out.String()
+		if strings.Contains(log, "is not mounted") {
+			t.Errorf("log = %q: the repo IS mounted, only the spelling differs", log)
+		}
+		if strings.Contains(log, "the shell starts in") {
+			t.Errorf("log = %q: the shell starts exactly where this invocation asked — "+
+				"den must not name it as if it had moved", log)
+		}
+	})
+
+	t.Run("the nest is clean, the VM reports it unclean", func(t *testing.T) {
+		// The shape of a sandbox created BEFORE any of this: whatever spelling
+		// it was created with is the one it reports, forever.
+		denHome, repo := denTest(t)
+
+		f, d := fakeDeps()
+		f.Responses["ls --json"] = sbx.Response{Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `/"]}]}`)}
+		var out bytes.Buffer
+		d.Out = &out
+
+		if err := Spawn(context.Background(), denHome,
+			Options{Nest: "api", Detach: true}, d); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		log := out.String()
+		if strings.Contains(log, "is not mounted") {
+			t.Errorf("log = %q: the repo IS mounted, only the spelling differs", log)
+		}
+		if strings.Contains(log, "the shell starts in") {
+			t.Errorf("log = %q: Workdir() is that same repo — den must not report a move", log)
+		}
+	})
+}
+
+// The start-directory half, isolated: every repo this invocation asked for IS
+// mounted, so `missing` is empty and the "is not mounted" assertions of the
+// test above would pass even with `movedStart` left comparing raw strings.
+// Only this one fails in that case.
+//
+// The VM mounts TWO repos, so Workdir() is unambiguously the first, and the
+// nest names that same first repo — spelled with a trailing slash.
+//
+// The unclean spelling comes from the NEST, never from `Options.Repos`: a
+// command-line path goes through parseRepoArg, which ALREADY applies
+// filepath.Clean (nest/repos.go), so an unclean positional would arrive here
+// canonical and this test would prove nothing. Declared entries are the only
+// ones that reach the comparison unclean, which is exactly why this defect
+// exists at all.
+func TestSpawnDoesNotClaimAMovedStartOverARepoSpellingDifference(t *testing.T) {
+	denHome, _ := denTest(t)
+	a := filepath.Join(t.TempDir(), "a")
+	b := filepath.Join(t.TempDir(), "b")
+	createRepo(t, a)
+	createRepo(t, b)
+	write(t, filepath.Join(denHome, "nests", "scratch.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+a+"/ }\n  - { path: "+b+" }\n")
+
+	// The VM was created with both, clean: Workdir() is a.
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"scratch","status":"running","workspaces":["` + a + `","` + b + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "scratch", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	log := out.String()
+	if strings.Contains(log, "the shell starts in") {
+		t.Errorf("log = %q: the shell starts in a, which is what this invocation asked for", log)
+	}
+	if strings.Contains(log, "is not mounted") {
+		t.Errorf("log = %q: a is mounted", log)
+	}
 }

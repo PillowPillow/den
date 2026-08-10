@@ -145,25 +145,19 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 	if g.WorktreeRoot, err = ExpandPath(g.WorktreeRoot); err != nil {
 		return nil, err
 	}
+	// Trimmed BEFORE expanding, exactly like mounts[].host below, and for the
+	// same two reasons: `ssh.mode: mount` desugars into an ordinary Mount whose
+	// Host IS this string (internal/nest/resolve.go's resolveMounts), so a
+	// stray space would survive into `sbx create`'s argv; and ExpandPath tests
+	// `strings.HasPrefix(p, "~/")`, which a leading space defeats silently.
+	// `dir: " ~/.ssh_sbx"` would then stay literal, and spawn's own preflight
+	// would refuse naming a path whose only defect is one invisible character —
+	// the worst kind of error message den can print. The empty string is
+	// unaffected by TrimSpace, so Validate still sees "ssh.dir not set" and can
+	// refuse it under `ssh.mode: mount`.
+	g.SSH.Dir = strings.TrimSpace(g.SSH.Dir)
 	if g.SSH.Dir, err = ExpandPath(g.SSH.Dir); err != nil {
 		return nil, err
-	}
-	// Cleaned AFTER expansion, at the SAME load site, for the same reason the
-	// mounts loop below cleans Host: `ssh.mode: mount` desugars into an ordinary
-	// Mount whose Host IS this string (internal/nest/resolve.go's
-	// resolveMounts), so an unclean `ssh.dir` reaches the exact-string
-	// comparison in spawn.reportUnmountedMounts exactly like a hand-written
-	// `mounts:` entry does. A user who writes `dir: ~/.ssh_sbx/` would otherwise
-	// hand `sbx create` a trailing slash that a normalizing sbx echoes back
-	// without it — den's report then reads "ssh.dir is not mounted" on every
-	// attach, forever, about a dir that IS mounted. filepath.Clean is idempotent
-	// on an already-clean path — but NOT on an empty one: Clean("") is ".", and
-	// applying it unconditionally would turn "ssh.dir not set" into "ssh.dir is
-	// the current directory", defeating Validate's `ssh.mode: mount` requiredness
-	// check below. Guarded so the empty string — the only value Validate must
-	// still be able to see — survives untouched.
-	if g.SSH.Dir != "" {
-		g.SSH.Dir = filepath.Clean(g.SSH.Dir)
 	}
 	for i := range g.Mounts {
 		// Trim before expanding: a stray space in the YAML would otherwise survive
@@ -198,27 +192,14 @@ func LoadGlobalUnvalidated(denHome string) (*Global, error) {
 		if g.Mounts[i].Host, err = ExpandPath(g.Mounts[i].Host); err != nil {
 			return nil, fmt.Errorf("mounts[%d].host: %w", i, err)
 		}
-		// Cleaned AFTER expansion, beside Link's trailing-slash strip above: this
-		// branch's reportUnmountedMounts (internal/spawn/spawn.go) compares this
-		// exact string against sbx's own echo, byte for byte, by design — the
-		// single-speller invariant that lets the create-time argv and the
-		// attach-time drift report agree. A user who writes `host:
-		// /Users/me/docs/` (trailing slash), `//p`, or `/p/./q` would otherwise
-		// hand `sbx create` an unclean spelling; if sbx normalizes what it echoes
-		// back in `sbx ls --json`, the comparison misses on EVERY attach,
-		// forever, printing "is not mounted" for a mount that IS mounted — the
-		// exact "a permanent warning stops being read" failure the feature
-		// exists to prevent. Cleaned once, HERE, at the layer that owns the
-		// config value, rather than at the comparison: the argv loop, the link
-		// phase, `den doctor`'s probes and reportUnmountedMounts must all see
-		// the same string, and normalizing only at the comparison would paper
-		// over the argv's own (still unclean) spelling instead of fixing it.
-		// Guarded against "": Clean("") is ".", and validateMounts below still
-		// needs to see an empty Host to refuse "mounts[N].host: required" — see
-		// the identical guard on ssh.dir above.
-		if g.Mounts[i].Host != "" {
-			g.Mounts[i].Host = filepath.Clean(g.Mounts[i].Host)
-		}
+		// NO filepath.Clean here, deliberately — see reportUnmountedMounts
+		// (internal/spawn/spawn.go), which normalizes at the COMPARISON
+		// instead. Cleaning at load was tried on this branch and reverted: this
+		// string also feeds agent.LinkCommand, whose output is recorded in the
+		// mixin at `sbx create` and never rewritten on a live VM, so cleaning
+		// here makes every pre-upgrade sandbox report "link phase changed" on
+		// every attach with `sbx rm --force` as its remedy. Host keeps the
+		// spelling the user typed.
 	}
 	for name, a := range g.Agents {
 		// Same shape as worktree_root above: defaulted here, against the LIVE

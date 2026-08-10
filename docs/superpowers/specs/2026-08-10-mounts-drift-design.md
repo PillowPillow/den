@@ -73,8 +73,41 @@ travail en cours dans la VM.
 deux le suffixe `:ro` avant de comparer, parce que pour un repo c'est une option de montage et non
 une partie du chemin.
 
-Cette fonction-ci ne doit **pas** le retirer : le suffixe **est** le bit `ro:` sous test. Elle
-compare l'orthographe exacte de l'argv.
+Cette fonction-ci ne doit **pas** le retirer : le suffixe **est** le bit `ro:` sous test. La
+normalisation décrite juste en dessous porte donc sur la partie chemin seulement, et rattache le
+suffixe tel qu'elle l'a trouvé.
+
+### Normaliser au point de comparaison, jamais au chargement
+
+`normalizeWorkspace` passe **les deux** côtés — ce que la VM rapporte et ce que `mountWorkspace`
+rend — par un `filepath.Clean` de la partie chemin. La comparaison est donc insensible à
+l'orthographe (`/p/`, `//p`, `/p/./q`), sans que rien d'autre ne bouge.
+
+Nettoyer `mounts[].host` et `ssh.dir` **au chargement** (`config.LoadGlobalUnvalidated`) est la
+correction qui paraît la plus propre, elle a été écrite sur cette branche, et elle a été retirée.
+Cette chaîne n'alimente pas que l'argv de `sbx create` : elle alimente aussi `agent.LinkCommand`,
+dont la sortie est enregistrée dans le mixin au `sbx create` et **n'est jamais réécrite** sur une
+sandbox vivante — den ne réapplique rien à une VM qui tourne. Toute sandbox créée avant la mise à
+jour comparerait donc sa phase de lien enregistrée, telle que tapée, à une phase fraîchement
+nettoyée, et signalerait `link phase changed` à **chaque** attache, indéfiniment, avec `sbx rm
+--force` pour remède — un avertissement permanent dont le remède détruit une VM qui porte du
+travail non commité. Second coût : `filepath.Clean` est purement **lexical**, donc nettoyer
+`/a/current/../shared` au chargement fait monter à den un autre répertoire que celui que l'OS
+résout dès que `current` est un lien symbolique. Et rien n'était cassé côté argv : `sbx create
+/Users/me/docs/` fonctionne.
+
+Les deux côtés sont normalisés, pas seulement celui de den. **Mesuré le 2026-08-10** (§14.0,
+sondes) : `sbx` normalise `workspaces` **lexicalement** — un slash final donné à `create` ne
+ressort pas de `ls --json`. Le côté VM est donc toujours déjà propre et le côté configuration est
+le seul à pouvoir être sale ; normaliser les deux reste néanmoins ce qui est écrit, parce que c'est
+correct sans dépendre de cette mesure et que ça le reste si `sbx` change d'avis.
+
+Aucune résolution de lien symbolique, et ce n'est plus une prudence mais une **mesure** (§14.0,
+même sonde) : `sbx` rend `/tmp/x` verbatim, jamais `/private/tmp/x`, alors que `/tmp` est un lien
+symbolique sur macOS. Sa normalisation a donc exactement la sémantique de `filepath.Clean`.
+`filepath.EvalSymlinks` côté den **divergerait** de sbx au lieu de l'affiner — et toucherait en
+plus le disque sur un chemin d'avertissement, ajoutant un mode de défaillance le jour où le
+répertoire hôte a disparu, exactement le jour où cet avertissement vaut le plus.
 
 ### Une seule définition de l'orthographe
 
@@ -89,7 +122,7 @@ le jour où il dit vrai. C'est la leçon déjà payée par `stringNode` (`mixin.
 
 | état sur la VM | ligne |
 |---|---|
-| orthographe exacte présente | silence |
+| chemin équivalent présent, même suffixe (comparaison normalisée) | silence |
 | même hôte, autre suffixe | ``- /p (mounts[2]) is mounted read-only, but `mounts:` now says read-write`` |
 | hôte absent | ``- /p (mounts[2]) is not mounted`` |
 
@@ -99,6 +132,21 @@ directions du retournement sont couvertes, chacune nommant celle qu'elle a lue.
 
 `Key` est nommé (`mounts[2]`, `ssh.dir`) : les erreurs de den nomment la clé à corriger, et les refus
 de `LinkCommand` le font déjà (`links.go:79`).
+
+**L'en-tête aussi est dérivé des `Key`**, jamais figé sur `mounts:`. Un utilisateur en `ssh: {mode:
+mount}` sans aucun bloc `mounts:` serait sinon envoyé vers une clé absente de son `config.yaml` —
+le défaut même que `Mount.Key` existe pour empêcher, réintroduit une ligne au-dessus de celle qui
+le corrige. Trois formes : `mounts:` seul (le cas courant, formulation inchangée), `ssh.dir` seul,
+et « `mounts:` and `ssh.dir` now say » quand les deux sont présents. La constante est
+`nest.SSHDirKey` : deux orthographes en laisseraient passer une (même règle que
+`config.SSHLinkTarget`).
+
+**La ligne de retournement garde `mounts:`, faute ouverte.** Pour une entrée `ssh.dir` elle envoie
+toujours vers un bloc que l'utilisateur peut ne pas avoir. La substituer par `ssh.dir` serait pire :
+`resolveMounts` fixe `RO: false` lui-même (« ssh écrit known_hosts »), donc la clé `ssh.dir` ne dit
+**rien** sur le bit `ro:` et « `ssh.dir` now says read-write » attribuerait à une clé de
+configuration une affirmation qu'elle ne porte pas. Nommer la source honnête ici demande une
+décision de formulation, pas une substitution.
 
 ### Couverture gratuite : `ssh.dir`
 
@@ -132,6 +180,35 @@ Le prix accepté : après avoir retiré une entrée de `mounts:`, la VM vivante 
 répertoire hôte, sans que den le dise. Le mount reste inerte (rien ne le lie), et l'édition prend
 effet au prochain create.
 
+**Le nettoyage des chemins de `repos:` — d'abord jugé hors périmètre, puis REPRIS.** Il avait été
+écarté comme « sans objet une fois le nettoyage au chargement retiré » : c'est vrai du chemin des
+mounts, faux de celui des repos, et la sonde A tranche. `reportUnmountedRepos` construit son
+ensemble `present` depuis l'écho de sbx — **normalisé lexicalement** (§14.0) — et le compare à
+`expected[i]`, qui vient de `repos:` et n'est jamais nettoyé : `config.LoadGlobalUnvalidated` et
+`nest.LoadNest` ne font qu'`ExpandPath`, et l'asymétrie est déjà écrite noir sur blanc à
+`nest/repos.go:53-59` — un chemin de **ligne de commande** EST nettoyé par `parseRepoArg`, un
+chemin **déclaré** ne l'est pas.
+
+Donc `repos: {api: ~/dev/api/}` imprimait **deux** lignes fausses à chaque attache : « is not
+mounted » d'un repo qui l'est, et — `movedStart` comparant le workdir normalisé de la VM à
+`expected[0]` non normalisé — « the shell starts in … » nommant le répertoire où le shell se
+trouve déjà. Corrigé au même endroit et de la même façon : normalisation des deux côtés **à la
+comparaison**. Deux différences avec le chemin des mounts, toutes deux tenues : ici le suffixe
+`:ro` reste **retiré** (c'est une option de montage, pas le bit sous test), donc le chemin est
+nettoyé APRÈS le `TrimSuffix` au lieu de passer par `normalizeWorkspace` qui le réattache ; et le
+garde « workdir vide » est testé sur la valeur **brute**, avant tout `Clean`, puisque
+`filepath.Clean("")` vaut `.`.
+
+**Ce défaut est ANTÉRIEUR à #56.** Rien sur cette branche ne l'a introduit ; elle le ferme parce
+qu'il est de la même classe et qu'il est désormais mesuré au lieu d'être hypothétique.
+
+**Un garde « sandbox arrêtée » — hors périmètre parce que MESURÉ sans objet, pas parce que reporté.**
+`ports` est absent de `sbx ls --json` dès que le statut n'est pas `running` (§14.0), et un rapport
+qui hériterait de ce piège dirait « is not mounted » de chaque mount configuré, juste au-dessus de
+la ligne « sandbox arrêtée ». Mesuré le 2026-08-10 (§14.0, sondes) : `workspaces` **survit** à
+`sbx stop`, clé présente et complète. Le piège ne se transpose donc pas, ni ici ni chez les trois
+sœurs. Rien à écrire.
+
 **Toute tentative d'appliquer un mount à une sandbox vivante**, comme la conception des mounts l'avait
 déjà écrit : les mounts sont fixés à la création côté sbx, den ne réapplique rien à l'attache, et
 prétendre le contraire donne un den qui ment sur l'état de la VM.
@@ -148,15 +225,45 @@ Dans `internal/spawn`, avec `sbx.Fake`, sans socket ni processus :
 6. `ssh.dir` édité en `ssh.mode: mount` → couvert par le même chemin de code ;
 7. aucun `mounts:` → silence, sans lecture de `live.Workspaces` ;
 8. `mountWorkspace` est la seule orthographe : le test compare l'argv produit au point 4 et
-   l'attendu du rapport sur la même entrée.
+   l'attendu du rapport sur la même entrée ;
+9. orthographes divergentes, **dans les deux sens** — configuration sale / VM propre, puis
+   configuration propre / VM sale (la sandbox d'avant la mise à jour) → silence. `sbx.Fake` renvoie
+   la chaîne qu'on lui a donnée : un test dont les deux côtés portent la **même** orthographe ne
+   prouve rien, donc la réponse `ls --json` est écrite à la main, différente de la configuration ;
+10. retournement `ro:` avec des orthographes divergentes → la ligne de retournement, pas « is not
+    mounted » ;
+11. le chemin **affiché** reste celui que l'utilisateur a tapé : il grep son `config.yaml` avec ;
+12. hôte non canonique **avec** un `link:`, mixin enregistré rendu depuis cette même orthographe →
+    `reportDrift` reste **muet**. C'est le test qui échoue si le nettoyage revient au chargement ;
+13. `ssh.dir` seul, puis `mounts:` + `ssh.dir` → l'en-tête nomme la ou les clés réellement en cause ;
+14. orthographes divergentes sur un chemin de `repos:`, **dans les deux sens** → silence, sur les
+    DEUX moitiés de l'avertissement (« is not mounted » et « the shell starts in ») ;
+15. `movedStart` isolé : deux repos montés, le nest nommant le premier avec un slash final, rien
+    de manquant → silence. L'orthographe sale vient du **nest**, jamais de `Options.Repos` : un
+    positionnel passe par `parseRepoArg`, qui nettoie déjà, et le test ne prouverait rien.
+
+Dans `internal/config` :
+
+16. `host:` et `ssh.dir` survivent au chargement **tels que tapés** (l'inverse de ce que cette
+    branche avait d'abord verrouillé) ;
+17. `ssh.dir: " ~/x"` → trimé **avant** `ExpandPath`, donc étendu ; l'assertion porte sur la valeur
+    étendue, un trim placé après passerait un test sur l'espace tout en laissant `~/` littéral.
 
 ## Livrables
 
-- `internal/spawn/spawn.go` : `mountWorkspace`, `reportUnmountedMounts`, appel sur la branche
-  d'attache, commentaire-pourquoi au site de décision (recouvrement avec `Links`, non-retrait du
-  `:ro`).
-- `internal/spawn/spawn_test.go` : les huit cas ci-dessus.
-- `docs/superpowers/specs/2026-07-27-den-cli-design.md` §14.0 : la mesure du 2026-08-10 et sa date —
-  `:ro` fait l'aller-retour dans `sbx ls --json` — plus la note que la machine porte v0.37.1 quand le
-  relevé date de v0.35.0.
+- `internal/spawn/spawn.go` : `mountWorkspace`, `normalizeWorkspace`, `reportUnmountedMounts`, appel
+  sur la branche d'attache, commentaire-pourquoi au site de décision (recouvrement avec `Links`,
+  non-retrait du `:ro`, normalisation à la comparaison et pas au chargement).
+- `internal/nest/resolve.go` : `SSHDirKey`, la seule orthographe de la clé que l'en-tête relit.
+- `internal/config/config.go` : `ssh.dir` trimé avant `ExpandPath`, comme son frère
+  `mounts[].host` ; **aucun** `filepath.Clean` au chargement, avec le pourquoi au site.
+- `internal/spawn/spawn.go` : `reportUnmountedRepos` normalise elle aussi les deux côtés — défaut
+  **antérieur** à #56, repris ici parce qu'il est de la même classe et désormais mesuré.
+- `internal/spawn/spawn_test.go` : les cas 1 à 15 ci-dessus.
+- `internal/config/config_test.go` : les cas 16 et 17.
+- `docs/superpowers/specs/2026-07-27-den-cli-design.md` §14.0 : les mesures du 2026-08-10 et leur
+  date — `:ro` fait l'aller-retour dans `sbx ls --json` ; `workspaces` est normalisé
+  **lexicalement** par sbx ; sbx ne résout **aucun** lien symbolique ; `workspaces` **survit** à
+  `sbx stop`, contrairement à `ports` — plus la note que la machine porte v0.37.1 quand le relevé
+  date de v0.35.0, et la liste des commandes que les sondes ont réellement exercées.
 - Pas de changement de README : ce changement n'ajoute aucune surface de commande ni aucune option.
