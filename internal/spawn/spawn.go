@@ -437,7 +437,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		fi, err := os.Stat(m.Host)
 		switch {
 		case err != nil:
-			if m.Key == "ssh.dir" {
+			if m.Key == nest.SSHDirKey {
 				return fmt.Errorf(
 					"ssh.dir: %s not found — fix `ssh.dir` in %s: in \"mount\" mode this directory "+
 						"is mounted in the sandbox, and a missing path would mount an empty directory "+
@@ -456,7 +456,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 					"(`den sh <sandbox>` still enters an already-live sandbox)",
 				m.Key, m.Host, config.GlobalPath(denHome))
 		case !fi.IsDir():
-			if m.Key == "ssh.dir" {
+			if m.Key == nest.SSHDirKey {
 				return fmt.Errorf(
 					"ssh.dir: %s is not a directory — fix `ssh.dir` in %s: in \"mount\" mode den "+
 						"mounts that DIRECTORY in the sandbox, so it must name the directory holding "+
@@ -1307,11 +1307,12 @@ func checkStackImage(ctx context.Context, d Deps, s *config.Stack, stackRef stri
 // `<path>:ro` is sbx's own read-only syntax (`sbx create --help`).
 //
 // It exists as a function, rather than inline in the workspace loop, because
-// reportUnmountedMounts compares what the VM reports against this EXACT
-// spelling. Two copies of `host + ":ro"` would drift one day, and the warning
-// would then fire on every attach with nothing changed — a permanent warning
-// stops being read, including the day it tells the truth. Same lesson already
-// paid by stringNode (internal/agent/mixin.go).
+// reportUnmountedMounts builds the same string to compare against what the VM
+// reports (through normalizeWorkspace, which touches the path but never the
+// `:ro` spelling). Two copies of `host + ":ro"` would drift one day, and the
+// warning would then fire on every attach with nothing changed — a permanent
+// warning stops being read, including the day it tells the truth. Same lesson
+// already paid by stringNode (internal/agent/mixin.go).
 func mountWorkspace(m nest.Mount) string {
 	if m.RO {
 		return m.Host + ":ro"
@@ -1432,15 +1433,39 @@ func reportMissingGitDirs(out io.Writer, sandboxName string, mounted, expected [
 // suppress the mount half, which has nothing to do with where the shell
 // starts.
 func reportUnmountedRepos(out io.Writer, sandboxName, workdir string, mounted, expected []string) {
+	// BOTH sides are canonicalized before comparing, for the reason spelled
+	// out on normalizeWorkspace — with ONE difference that matters here: that
+	// helper PRESERVES the `:ro` suffix because for a mount the suffix is the
+	// bit under test, while here it is a mount option and noise (the
+	// TrimSuffix below, same treatment as Sandbox.Workdir). So this path
+	// strips the suffix first and cleans the path, rather than routing through
+	// the suffix-preserving helper.
+	//
+	// This defect PREDATES #56 — nothing on this branch introduced it. sbx
+	// normalizes the workspaces it echoes, lexically (measured 2026-08-10,
+	// v0.37.1 — spec §14.0), while a declared `repos:` entry is only ever
+	// tilde-expanded and never cleaned (config.LoadGlobalUnvalidated,
+	// nest.LoadNest — the asymmetry is already written down at
+	// nest/repos.go:53-59, where a COMMAND-LINE path IS cleaned by
+	// parseRepoArg and a declared one is not). So `repos: {api: ~/dev/api/}`
+	// used to print TWO false lines on every attach: "is not mounted" about a
+	// repo that is mounted, and — because movedStart compares the VM's
+	// normalized workdir against the unnormalized expected[0] — "the shell
+	// starts in /Users/me/dev/api" naming the directory the shell is already
+	// in. Two permanent warnings, both lies, on a config whose only fault is a
+	// trailing slash.
 	present := make(map[string]bool, len(mounted))
 	for _, w := range mounted {
 		// The ":ro" suffix is a mount option, not part of the path — same
 		// treatment as Sandbox.Workdir.
-		present[strings.TrimSuffix(w, ":ro")] = true
+		present[filepath.Clean(strings.TrimSuffix(w, ":ro"))] = true
 	}
 	var missing []string
 	for _, p := range expected {
-		if !present[p] {
+		if !present[filepath.Clean(p)] {
+			// The path is reported AS THE USER WROTE IT, never cleaned: they
+			// grep their yaml for the string den showed them. Only the
+			// comparison key is canonical.
 			missing = append(missing, p)
 		}
 	}
@@ -1449,7 +1474,13 @@ func reportUnmountedRepos(out io.Writer, sandboxName, workdir string, mounted, e
 	// stay false on an empty workdir — that is den's "nothing mounted" case,
 	// not a moved start directory, and inventing one there would be worse
 	// than staying silent.
-	movedStart := workdir != "" && len(expected) > 0 && workdir != expected[0]
+	//
+	// The empty-workdir guard is tested on the RAW value, before any Clean:
+	// filepath.Clean("") is ".", so cleaning first would turn "the VM mounts
+	// nothing" into "the VM starts in the current directory" and print a
+	// moved-start line about a directory nobody named.
+	movedStart := workdir != "" && len(expected) > 0 &&
+		filepath.Clean(workdir) != filepath.Clean(expected[0])
 	if len(missing) == 0 && !movedStart {
 		return // a permanent warning stops being read
 	}
@@ -1526,15 +1557,30 @@ func reportUnmountedMounts(out io.Writer, sandboxName string, mounted []string, 
 	if len(mounts) == 0 {
 		return
 	}
+	// BOTH sides go through normalizeWorkspace — see its comment for why the
+	// normalization lives here and not at config load.
 	present := make(map[string]bool, len(mounted))
 	for _, w := range mounted {
-		present[w] = true
+		present[normalizeWorkspace(w)] = true
 	}
 	var lines []string
+	// Which configuration keys the emitted lines actually come from. The
+	// header used to hardcode `mounts:`, which is a lie for a user running
+	// `ssh: {mode: mount}` with no `mounts:` block at all: nest.resolveMounts
+	// desugars ssh.dir into an ordinary Mount, so this function reports on a
+	// key that exists in no config.yaml of theirs. The detail line already got
+	// this right through Mount.Key; the header is derived from the same Keys
+	// rather than from a second assumption about where mounts come from.
+	var sawSSHDir, sawMounts bool
 	for _, m := range mounts {
-		want := mountWorkspace(m)
+		want := normalizeWorkspace(mountWorkspace(m))
 		if present[want] {
 			continue
+		}
+		if m.Key == nest.SSHDirKey {
+			sawSSHDir = true
+		} else {
+			sawMounts = true
 		}
 		// The OTHER spelling of the same host, produced by flipping the `ro:`
 		// bit and going back through mountWorkspace — the single speller. A
@@ -1546,7 +1592,15 @@ func reportUnmountedMounts(out io.Writer, sandboxName string, mounted []string, 
 		// directory the VM really does mount.
 		flipped := m
 		flipped.RO = !m.RO
-		if present[mountWorkspace(flipped)] {
+		if present[normalizeWorkspace(mountWorkspace(flipped))] {
+			// KNOWN GAP, left as it is on purpose: for an `ssh.dir` entry this
+			// line still says "`mounts:` now says", a block that user may not
+			// have. The header above was fixable by deriving it from the Key;
+			// this line is not, because `ssh.dir` states no `ro:` bit at all —
+			// resolveMounts pins RO to false itself ("ssh writes known_hosts"),
+			// so "`ssh.dir` now says read-write" would attribute to a
+			// configuration key a claim the key cannot make. Naming the honest
+			// source here needs a wording decision, not a substitution.
 			lines = append(lines, fmt.Sprintf(
 				"  - %s (%s) is mounted %s, but `mounts:` now says %s\n",
 				m.Host, m.Key, mountMode(!m.RO), mountMode(m.RO)))
@@ -1557,13 +1611,65 @@ func reportUnmountedMounts(out io.Writer, sandboxName string, mounted []string, 
 	if len(lines) == 0 {
 		return // a permanent warning stops being read
 	}
+	// The `mounts:`-only wording is the DEFAULT and is left byte-identical to
+	// what it was before the ssh.dir case existed: it is the overwhelmingly
+	// common one, and several tests assert its absence to prove silence.
+	source, verb := "`mounts:`", "now says"
+	switch {
+	case sawSSHDir && sawMounts:
+		source, verb = "`mounts:` and `ssh.dir`", "now say"
+	case sawSSHDir:
+		source = "`ssh.dir`"
+	}
 	fmt.Fprintf(out,
-		"warning: sandbox %s does not mount what `mounts:` now says — mounts are fixed "+
-			"at create time:\n", sandboxName)
+		"warning: sandbox %s does not mount what %s %s — mounts are fixed "+
+			"at create time:\n", sandboxName, source, verb)
 	for _, l := range lines {
 		fmt.Fprint(out, l)
 	}
 	fmt.Fprintf(out, "  `den rm %s` then relaunch to apply it.\n", sandboxName)
+}
+
+// normalizeWorkspace renders ONE workspace string in the ONLY form
+// reportUnmountedMounts compares: the path canonicalized lexically, the `:ro`
+// suffix preserved exactly as it was found.
+//
+// WHY THE NORMALIZATION IS HERE AND NOT AT CONFIG LOAD. Cleaning
+// `mounts[].host` (and `ssh.dir`) in config.LoadGlobalUnvalidated is the
+// tidier-looking fix, it was tried on this branch, and it was reverted. That
+// string is not only the create argv: it also feeds agent.LinkCommand, whose
+// output is recorded in the mixin at `sbx create` and NEVER rewritten on a
+// live VM — den reapplies nothing to a running sandbox. So every sandbox
+// created before the upgrade would compare its recorded, as-typed link phase
+// against a freshly cleaned one and report "link phase changed" on every
+// attach, forever, with `sbx rm --force` as its remedy — a permanent warning
+// whose remedy destroys a VM holding uncommitted work. Second cost:
+// filepath.Clean is purely LEXICAL, so cleaning `/a/current/../shared` at load
+// makes den mount a different directory than the OS resolves whenever
+// `current` is a symlink. The argv's "unclean" spelling was never broken —
+// `sbx create /Users/me/docs/` works — so nothing is bought for either price.
+//
+// filepath.Clean is the RIGHT normalization, and that is measured, not
+// assumed: sbx canonicalizes what it echoes in `sbx ls --json` LEXICALLY — a
+// trailing slash handed to `sbx create` does not come back — and it resolves
+// NO symlink, returning `/tmp/x` and never `/private/tmp/x` on a macOS where
+// /tmp IS a symlink (2026-08-10, sbx v0.37.1, spec §14.0). So sbx's own
+// normalization is exactly filepath.Clean's semantics, and EvalSymlinks here
+// would DIVERGE from sbx rather than refine it — on top of stat'ing the
+// filesystem on a warning path, which would add a failure mode the day the
+// host directory is gone, exactly when this warning is most worth printing.
+//
+// BOTH sides are normalized anyway, not just den's. The measurement says the
+// VM side is always already clean, so cleaning it is a no-op today; doing it
+// costs nothing and keeps this correct if sbx changes its mind.
+func normalizeWorkspace(w string) string {
+	// CutSuffix, not TrimSuffix: the suffix must be re-attached after Clean,
+	// and only when it was there to begin with. `:ro` is the bit under test
+	// here, so it is carried through, not dropped.
+	if p, ok := strings.CutSuffix(w, ":ro"); ok {
+		return filepath.Clean(p) + ":ro"
+	}
+	return filepath.Clean(w)
 }
 
 // mountMode names a `ro:` bit the way the user reads it. Both sides are named

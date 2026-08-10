@@ -507,16 +507,18 @@ mounts:
 	}
 }
 
-// Unlike Link, Host got no normalization at all before this test: only
-// TrimSpace + ExpandPath, and ExpandPath returns its input UNCHANGED except
-// for a leading "~". `filepath.IsAbs("/p/")` is true, so an unclean Host
-// used to sail through Validate untouched. This branch's
-// reportUnmountedMounts (internal/spawn) then compares Host against sbx's
-// own echo BYTE FOR BYTE, by design — if sbx normalizes what it echoes in
-// `sbx ls --json`, a trailing slash the user typed would make den print
-// "is not mounted" on every attach, forever, about a mount that IS mounted.
-// filepath.Clean at load removes the whole class rather than one spelling.
-func TestLoadGlobalCleansMountHost(t *testing.T) {
+// Host survives load with the spelling the user typed — TrimSpace and the
+// tilde expansion aside, load normalizes NOTHING about it.
+//
+// This is the inversion of a test that briefly locked the opposite. A
+// filepath.Clean here would rewrite the string that agent.LinkCommand records
+// in the mixin at `sbx create`, and nothing rewrites the mixin of a live
+// sandbox: every sandbox created before that change would then report "link
+// phase changed" on every attach, forever, with the destructive `sbx rm
+// --force` as its remedy. Canonicalization belongs to the ONE comparison that
+// needs it — spawn.normalizeWorkspace, which normalizes both sides — not to
+// the value every consumer reads.
+func TestLoadGlobalKeepsTheMountHostAsTyped(t *testing.T) {
 	denHome := writeConfig(t, `
 agents:
   claude:
@@ -535,16 +537,17 @@ mounts:
 	if len(g.Mounts) != 1 {
 		t.Fatalf("got %d mounts, want 1", len(g.Mounts))
 	}
-	if g.Mounts[0].Host != "/tmp/host" {
-		t.Errorf("host not cleaned: got %q, want %q", g.Mounts[0].Host, "/tmp/host")
+	if g.Mounts[0].Host != "/tmp/host/" {
+		t.Errorf("host rewritten at load: got %q, want %q as typed", g.Mounts[0].Host, "/tmp/host/")
 	}
 }
 
-// Same exposure as TestLoadGlobalCleansMountHost, but on the ssh.mode: mount
-// desugaring path: nest.resolveMounts turns `ssh.dir` into a Mount whose Host
-// IS this string (internal/nest/resolve.go), so an uncleaned ssh.dir reaches
-// the same byte-for-byte comparison as a hand-written `mounts:` entry.
-func TestLoadGlobalCleansSSHDir(t *testing.T) {
+// Same contract on the `ssh.mode: mount` desugaring path: nest.resolveMounts
+// turns `ssh.dir` into a Mount whose Host IS this string
+// (internal/nest/resolve.go), so it reaches agent.LinkCommand and the recorded
+// mixin exactly like a hand-written `mounts:` entry — and carries the same
+// phantom-drift exposure if load rewrites it.
+func TestLoadGlobalKeepsSSHDirAsTyped(t *testing.T) {
 	denHome := writeConfig(t, `
 agents:
   claude:
@@ -560,16 +563,49 @@ ssh:
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if g.SSH.Dir != "/tmp/ssh-dir" {
-		t.Errorf("ssh.dir not cleaned: got %q, want %q", g.SSH.Dir, "/tmp/ssh-dir")
+	if g.SSH.Dir != "/tmp/ssh-dir/" {
+		t.Errorf("ssh.dir rewritten at load: got %q, want %q as typed", g.SSH.Dir, "/tmp/ssh-dir/")
 	}
 }
 
-// Validate must still be able to distinguish "ssh.dir not set" from "ssh.dir
-// set to the current directory": filepath.Clean("") is ".", so the Clean at
-// load above is guarded to leave an empty ssh.dir empty. Without the guard,
-// `ssh.mode: mount` with no `dir:` at all would silently pass validation
-// instead of refusing "ssh.dir: required when ssh.mode is mount".
+// `ssh.dir` is TRIMMED before ExpandPath, exactly like its sibling
+// mounts[].host, and the assertion is on the EXPANDED value on purpose: a trim
+// placed AFTER the expansion would satisfy "no leading space" while leaving
+// `~/` literal, which is the actual defect. ExpandPath tests
+// `strings.HasPrefix(p, "~/")`, so one invisible character used to carry a
+// literal `~` all the way to spawn's preflight, which then refused naming a
+// path the user cannot tell apart from the correct one.
+func TestLoadGlobalTrimsSSHDirBeforeExpandingIt(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: mount
+  dir: " ~/.ssh_sbx"
+`)
+	g, err := LoadGlobalUnvalidated(denHome)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if want := filepath.Join(home, ".ssh_sbx"); g.SSH.Dir != want {
+		t.Errorf("SSH.Dir = %q, want %q — trimmed, then expanded", g.SSH.Dir, want)
+	}
+}
+
+// `ssh.mode: mount` with no `dir:` at all must refuse, and TrimSpace must not
+// be able to hide that: the empty string is what Validate reads to say
+// "ssh.dir: required when ssh.mode is mount", and no load-time rewrite may
+// turn it into a path. (An earlier version of this branch cleaned ssh.dir at
+// load, where filepath.Clean("") is "." — this test is what made the guard
+// against that visible.)
 func TestLoadGlobalEmptySSHDirStillRefusesUnderMountMode(t *testing.T) {
 	denHome := writeConfig(t, `
 agents:
@@ -590,14 +626,12 @@ ssh:
 	}
 }
 
-// Same guard, same reason, on the mounts[] side: without it, `filepath.Clean`
-// would turn an empty `host:` into ".", and validateMounts's
-// `strings.TrimSpace(m.Host) == ""` check would never see the empty string it
-// exists to catch. The assertion is on the SPECIFIC "required" message, not
-// merely on "mounts[0].host" appearing at all: "." also fails the sibling
-// `!filepath.IsAbs` check with that same prefix, so a looser assertion would
-// stay green even if the empty-string guard were deleted — this pins the
-// exact refusal an empty host must produce.
+// Same contract on the mounts[] side: an empty `host:` must reach
+// validateMounts as the empty string it is. The assertion is on the SPECIFIC
+// "required" message, not merely on "mounts[0].host" appearing at all: a host
+// rewritten to "." also fails the sibling `!filepath.IsAbs` check with that
+// same prefix, so a looser assertion would stay green under exactly the
+// load-time rewrite this pins against.
 func TestLoadGlobalEmptyMountHostStillRefuses(t *testing.T) {
 	denHome := writeConfig(t, `
 agents:

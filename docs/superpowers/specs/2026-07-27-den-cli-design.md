@@ -1059,9 +1059,25 @@ sbx ls [--json] [-q]
       "workspaces": ["<…>/probe-rw", "<…>/probe-ro:ro"]
     C'est ce qui permet à spawn.reportUnmountedMounts de voir un `ro:` retourné sans rien
     enregistrer côté hôte (#56, spec 2026-08-10-mounts-drift-design.md).
-    Relevé sur une sandbox EN MARCHE ; le comportement de `workspaces` sur une sandbox arrêtée
-    n'est pas mesuré — s'il suivait `ports` (piège ci-dessus), chaque mount configuré lirait
-    « is not mounted » juste au-dessus de la ligne de statut « arrêtée ».
+  `workspaces` est NORMALISÉ LEXICALEMENT par sbx (mesuré 2026-08-10, trois sondes jetables,
+    détruites) :
+      création `sbx create --name den-probe-a shell /Users/…/den-probe-a/` (slash final)
+        → `ls --json` rend "/Users/…/den-probe-a" — le slash final est RETIRÉ.
+      création `sbx create --name den-probe-b shell /tmp/den-probe-b`
+        → `ls --json` rend "/tmp/den-probe-b" VERBATIM, et non "/private/tmp/den-probe-b",
+          alors que `/tmp` est un lien symbolique vers `/private/tmp` sur macOS.
+    Donc : la normalisation de sbx est PUREMENT LEXICALE — exactement la sémantique de
+    `filepath.Clean`, et sbx ne résout AUCUN lien symbolique. Le côté VM est toujours déjà
+    propre ; le côté configuration est le seul à pouvoir être sale. C'est ce qui ferme le
+    choix de spawn.normalizeWorkspace : `filepath.Clean` des deux côtés est la normalisation
+    correcte ET complète, et `filepath.EvalSymlinks` serait une divergence, pas un
+    raffinement (#56).
+  `workspaces` SURVIT à l'arrêt, contrairement à `ports` (mesuré 2026-08-10, même sonde) :
+      `sbx stop den-probe-a` puis `ls --json`
+        → {"status":"stopped","workspaces":["/Users/…/den-probe-a"]}
+    La clé est présente et complète sur une sandbox arrêtée. Le piège de `ports` ci-dessus ne
+    se transpose donc PAS : ni spawn.reportUnmountedMounts ni ses trois sœurs n'ont besoin
+    d'un garde « sandbox arrêtée ». Mesuré, et non déduit du fait que `ports` l'est.
   ⚠️ Cette machine porte sbx v0.37.1, alors que tout le reste du présent relevé date de v0.35.0.
     Le reste est à re-mesurer.
 
@@ -1298,6 +1314,28 @@ travail qu'elle prévoyait (un message nommant le cas « l'image a posé des fic
 de savoir si `ssh.mode: mount` pourrait traiter un répertoire de défauts d'image comme vide) n'a
 lieu d'être — il n'y a pas de répertoire du tout. Personne n'a à trancher l'affaiblissement du
 fail-closed.
+
+### Les sondes du 2026-08-10 (trois questions de `workspaces`, v0.37.1 — #56)
+
+Trois sondes jetables, séparées du smoke n°4 ci-dessus et lancées le même jour, sur la même
+v0.37.1. Elles répondent aux trois questions que la conception de la dérive des mounts
+(`2026-08-10-mounts-drift-design.md`) portait encore comme **non mesurées**. Le détail chiffré est
+écrit à sa place, dans l'entrée `sbx ls` du relevé ci-dessus ; en résumé :
+
+1. **sbx normalise les chemins de workspace**, lexicalement : un slash final donné à `create` ne
+   ressort pas de `ls --json`. Le côté VM est donc toujours déjà propre, et le côté configuration
+   est le seul à pouvoir être sale — ce qui confirme la direction du correctif : normaliser à la
+   comparaison, sur les deux côtés.
+2. **sbx ne résout PAS les liens symboliques** : `/tmp/x` ressort `/tmp/x` et non
+   `/private/tmp/x`. Sa normalisation a donc exactement la sémantique de `filepath.Clean`.
+   `filepath.EvalSymlinks` côté den divergerait de sbx au lieu de l'affiner : c'est désormais
+   **mesuré**, et non plus une simple prudence.
+3. **`workspaces` survit à `stop`** : la clé reste présente et complète sur une sandbox arrêtée.
+   Le piège de `ports` ne se transpose pas, donc aucun garde « sandbox arrêtée » n'est requis —
+   « mesuré, ne s'applique pas », et non « non mesuré, reporté ».
+
+Ces sondes ont exercé `create`, `ls --json`, `stop` et `rm --force` sur v0.37.1 ; elles ne disent
+rien des autres commandes. Les quatre artefacts ont été détruits.
 
 ### Questions ouvertes et risques restants
 
