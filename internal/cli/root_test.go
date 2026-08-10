@@ -279,7 +279,7 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 		{
 			"spawn, missing argument",
 			[]string{"spawn"},
-			"den spawn: one argument expected, none received — usage: den spawn <nest> [repo...] [flags]",
+			"den spawn: one argument expected, none received — usage: den spawn <nest> [repo...] [-- <cmd> [args...]] [flags]",
 		},
 		{
 			"build, too many arguments",

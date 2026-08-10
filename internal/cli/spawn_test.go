@@ -423,3 +423,33 @@ func TestSeveralPositionalsAllReachSpawnOptions(t *testing.T) {
 		t.Errorf("no sbx call must have happened; calls: %v", f.Calls)
 	}
 }
+
+// Everything after `--` is the command; everything before it past the nest is
+// still repos. Proven by an INVALID value, the idiom this file already uses
+// for wiring (TestPositionalsReachSpawnOptionsAsRepos): a path that does not
+// exist fails the spawn WHEN IT IS READ AS A REPO. Placed after `--`, it must
+// not be read as one, so the spawn must not fail naming it.
+func TestSpawnDoesNotMountTheCommandAsARepo(t *testing.T) {
+	_, d := fakeSpawnDeps()
+	missing := filepath.Join(t.TempDir(), "gone")
+
+	_, err := runSpawn(t, denHomeSpawnable(t), d, "api", "--", missing)
+	if err != nil && strings.Contains(err.Error(), missing) {
+		t.Errorf("what follows `--` is a command, not a repo to mount: %v", err)
+	}
+}
+
+// The other half, positive: the command REACHES spawn.Options. Proven by the
+// contradiction it is the only thing that can raise — unwired, o.Command stays
+// empty and `--detach` alone is a perfectly ordinary spawn.
+func TestCommandReachesSpawnOptions(t *testing.T) {
+	_, d := fakeSpawnDeps()
+
+	_, err := runSpawn(t, denHomeSpawnable(t), d, "api", "--detach", "--", "go", "test")
+	if err == nil {
+		t.Fatal("--detach with a command must be refused: the command did not reach spawn.Options")
+	}
+	if !strings.Contains(err.Error(), "--detach") {
+		t.Errorf("the refusal must name the flag in play: %v", err)
+	}
+}

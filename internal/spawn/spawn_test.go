@@ -4256,3 +4256,53 @@ func TestSpawnDoesNotClaimAMovedStartOverARepoSpellingDifference(t *testing.T) {
 		t.Errorf("log = %q: a is mounted", log)
 	}
 }
+
+// The reason spawn takes a command at all: an appelant holding a NEST does not
+// know, and must not have to compute, the sandbox name (`corp:api` + -w →
+// `corp-api.feat12`). den exec is for a caller holding a live sandbox from
+// `den ls`; this is for everyone else.
+func TestSpawnRunsTheGivenCommandInsteadOfAShell(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	// A LIVE sandbox, so the spawn takes its attach branch and ends in Enter
+	// without creating anything — the same fixture
+	// TestSpawnDetachedDoesNotCallAStoppedSandboxReady uses, with "running".
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`),
+	}
+
+	o := Options{Nest: "api", Command: []string{"go", "test", "./..."}}
+	if err := Spawn(context.Background(), denHome, o, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// fakeDeps leaves IsTTY nil, which is "no terminal, never assume one": the
+	// command therefore goes through Pipe, with no -it.
+	if !f.HasPiped("exec", "-w", "/w", "api", "go", "test", "./...") {
+		t.Errorf("pipes = %v", f.Pipes)
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("a given command must not open a shell; attaches = %v", f.Attaches)
+	}
+}
+
+// Refused, and refused BEFORE anything is read — like `-i` with
+// `--only`/`--without`, the contradiction den already refuses at step 0.
+//
+// It is a contradiction and not a shortcut because `sbx exec -d` does NOT
+// detach: measured 2026-08-10 on v0.38.0, it blocks for the command's whole
+// duration, streams its stdout and returns its status (spec §14.0). "Prepare,
+// then run detached" would mean den backgrounding the process itself — a fifth
+// Runner method, orphan and log handling, and no status to return.
+func TestSpawnRefusesDetachWithACommand(t *testing.T) {
+	o := Options{Nest: "api", Detach: true, Command: []string{"go", "test"}}
+	err := Spawn(context.Background(), t.TempDir(), o, Deps{})
+	if err == nil {
+		t.Fatal("--detach and a command must be refused")
+	}
+	for _, want := range []string{"--detach", "--"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %q; got %q", want, err.Error())
+		}
+	}
+}

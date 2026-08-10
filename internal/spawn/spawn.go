@@ -128,6 +128,17 @@ type Options struct {
 	// Additive to the nest's `repos:`, and placed AHEAD of them, so the first
 	// one becomes the directory the attached shell starts in.
 	Repos []string
+	// Command is what to run in the sandbox instead of a login shell,
+	// everything the CLI found after `--`. Empty ⇒ attach a shell, which is
+	// what a spawn has always done.
+	Command []string
+	// Workdir overrides the directory the command runs in. Empty ⇒ the first
+	// workspace the VM reports, the same rule the shell follows.
+	Workdir string
+	// NoTTY is `-T`: never allocate a terminal, even under one. It governs a
+	// GIVEN command only — a spawn with no command hands out a login shell,
+	// which is worth nothing without a terminal.
+	NoTTY bool
 }
 
 // Spawn runs the spec §6 sequence in order: resolve → select repos →
@@ -166,6 +177,23 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				"-i and %s both select repos, and they contradict each other — drop one: "+
 					"%s is the non-interactive form of the checklist", conflicting, conflicting)
 		}
+	}
+
+	// The second contradiction, refused in the same place and for the same
+	// reason as the first: --detach says "do not enter the VM", a command says
+	// "run this in it".
+	//
+	// It cannot be honoured by delegating to `sbx exec -d`. That flag documents
+	// "run command in the background" and DOES NOT detach: measured 2026-08-10
+	// on sbx v0.38.0 (spec §14.0), it blocks for the command's whole duration,
+	// relays its stdout and returns its status — indistinguishable from a
+	// foreground run. Honouring it would mean den backgrounding the process
+	// itself: a fifth Runner method, orphan and log handling, and no status to
+	// return, which is precisely what #60 exists to deliver.
+	if o.Detach && len(o.Command) > 0 {
+		return fmt.Errorf(
+			"--detach and a command after `--` contradict each other — drop one: " +
+				"--detach spawns without entering the sandbox, a command has to run inside it")
 	}
 
 	// 1. Resolve the cascade.
@@ -836,11 +864,18 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			sandboxName, sandboxName)
 		return nil
 	}
-	// TTY unconditional here, and it stays that way: `den spawn` with no
-	// command hands out a login shell, which is worth nothing without a
-	// terminal. The IsTTY rule Task 6 adds governs a GIVEN command, where a
-	// pipe is a legitimate caller.
-	return Enter(ctx, d.Sbx, sandboxName, Command{Workdir: workdir, TTY: true})
+	// The tty rule differs between the two shapes, on purpose. With NO command
+	// the terminal is unconditional: a login shell without one is worth
+	// nothing, and that is what every spawn has done since the beginning. With
+	// a command, the caller may well be a pipe, so the injected probe decides
+	// and -T overrides it — the same rule `den exec` applies, and the reason
+	// Deps.IsTTY is threaded here rather than read from the machine.
+	tty := len(o.Command) == 0 || (!o.NoTTY && d.IsTTY != nil && d.IsTTY())
+	dir := o.Workdir
+	if dir == "" {
+		dir = workdir
+	}
+	return Enter(ctx, d.Sbx, sandboxName, Command{Argv: o.Command, Workdir: dir, TTY: tty})
 }
 
 // ResolveStack turns a LOADED nest's `stack:` field into a root to load

@@ -46,6 +46,18 @@ func execArgs(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// spawnArgs is atLeastOneArg, aware of `--`: the nest must still be there when
+// every positional sits after the separator (`den spawn -- go test` names no
+// nest).
+func spawnArgs(cmd *cobra.Command, args []string) error {
+	dash := cmd.ArgsLenAtDash()
+	if dash == 0 {
+		return fmt.Errorf("%s: a nest must be named before `--` — usage: %s",
+			cmd.CommandPath(), cmd.UseLine())
+	}
+	return atLeastOneArg(cmd, args)
+}
+
 // newExecCmd opens a shell in an already live sandbox, or runs one command in
 // it.
 //
