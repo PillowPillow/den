@@ -210,7 +210,7 @@ func rowFor(stdout, name string) string {
 }
 
 // C1: the argument is a SANDBOX name, exactly one, and a wrong count is
-// refused BEFORE anything is asked of sbx — the same contract as `den sh` and
+// refused BEFORE anything is asked of sbx — the same contract as `den exec` and
 // `den rm`, through the same argsBetween validator.
 func TestPortsTakesExactlyOneSandboxName(t *testing.T) {
 	cases := []struct {
@@ -956,7 +956,7 @@ func TestPortsRefusesAMalformedAdd(t *testing.T) {
 	}
 }
 
-// C13: an unknown sandbox speaks the vocabulary of `den rm` and `den sh` —
+// C13: an unknown sandbox speaks the vocabulary of `den rm` and `den exec` —
 // same sentence, same live list. A third dialect for the same situation is how
 // users stop recognizing den's own messages.
 func TestPortsUnknownSandbox(t *testing.T) {

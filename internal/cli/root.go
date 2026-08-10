@@ -134,13 +134,13 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	root.AddCommand(newNestCmd(&denHome))
 	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor, deps.Sbx, deps.Git))
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
-	// `den sh` gets the SSH probe and the OS too: re-entering a sandbox whose
+	// `den exec` gets the SSH probe and the OS too: re-entering a sandbox whose
 	// forwarded agent has been emptied fails `git push` exactly as a fresh
 	// `den spawn` would, and this is the surface that re-enters most often.
 	// runtime.GOOS is named here, at the wiring site, like the spawn's below.
-	root.AddCommand(newShCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS, deps.Freshness))
+	root.AddCommand(newExecCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS, deps.Freshness))
 	root.AddCommand(newRmCmd(&denHome, deps.Sbx, deps.Git))
-	// `den ports` reads the SAME sbx as `den ls` and `den sh` (deps.Sbx is the
+	// `den ports` reads the SAME sbx as `den ls` and `den exec` (deps.Sbx is the
 	// single runner) and gets its port scanner AND its browser opener from Deps,
 	// where a test can replace the real ones — which bind host sockets and spawn
 	// a browser — with doubles.
@@ -198,10 +198,10 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 // own error otherwise hides it — so any command that shells out through
 // Runner.Run already "recognizes a Ctrl-C" instead of just dying with it. And
 // Runner.Attach (the interactive `exec -it` path used by `den spawn` and `den
-// sh`) deliberately sets cmd.Cancel = nil, so this context ending
+// exec`) deliberately sets cmd.Cancel = nil, so this context ending
 // does nothing to an attached shell — the tty driver delivers a Ctrl-C typed
 // inside it directly to the sandbox's foreground process, not through here.
-// Checked, not assumed: in both callers (internal/cli/sh.go, spawn.Spawn at
+// Checked, not assumed: in both callers (internal/cli/exec.go, spawn.Spawn at
 // internal/spawn/spawn.go) the Attach call is the LAST use of ctx — nothing
 // runs after it that could see this context canceled by an in-shell Ctrl-C
 // the tty already delivered straight to den's own process group.
@@ -210,12 +210,12 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 // stop() again once ctx.Done() fires, so a second signal escalates — is
 // rejected here. Attach's cmd.Cancel = nil exists precisely so that ctx
 // canceling does nothing to an attached shell; re-arming would undo that on
-// the very path it protects, making a second in-shell Ctrl-C during `den sh`
+// the very path it protects, making a second in-shell Ctrl-C during `den exec`
 // kill den outright while sbx still holds the tty. Bounding the teardown
 // instead (context.WithTimeout over the context.WithoutCancel(ctx) buildOne
 // already uses) was considered and rejected at buildOne's decision site, not
 // here. Without this paragraph the next reader "fixes" the swallowed second
-// Ctrl-C and breaks `den sh`.
+// Ctrl-C and breaks `den exec`.
 //
 // The wiring itself is an untestable one-liner, in the shape spawn.
 // StdinIsTerminal and ports.ListenScanner already are: sending a real signal
@@ -228,7 +228,7 @@ func Execute() error {
 }
 
 // liveNames names the live sandboxes, for the "not found" messages of `den rm`
-// and `den sh`.
+// and `den exec`.
 //
 // Already sorted: sbx.Ls returns its sandboxes by name (locked by
 // TestLsSortsByName), so re-sorting here would duplicate that knowledge without

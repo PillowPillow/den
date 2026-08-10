@@ -118,7 +118,7 @@ type ExecError struct {
 // user can fix themselves: the binary isn't installed.
 //
 // It's the FIRST-CONTACT failure — sbx not yet set up on the machine — and it
-// hits all four commands that touch sbx (`den ls`, `den spawn`, `den sh`,
+// hits all four commands that touch sbx (`den ls`, `den spawn`, `den exec`,
 // `den rm`), all of which go through Ls before anything else. Without this
 // handling, the first line a new user sees is os/exec's:
 // `exec: "sbx": executable file not found in $PATH` — with no remedy.

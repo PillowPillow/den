@@ -12,9 +12,25 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newShCmd opens a shell in an already live sandbox.
+// newExecCmd opens a shell in an already live sandbox, or runs one command in
+// it.
 //
-// What `den sh` DECIDES comes from the SANDBOX and nothing else: `sbx ls --json`
+// It was `den sh` until 2026-08-10, and the rename is the whole point of #60,
+// not a matter of taste: den had exactly one door into a live sandbox and it
+// was interactive, so every non-interactive caller — a CI step, a task target,
+// a script — had to drive a shell or bypass den entirely, losing the sandbox
+// name resolution, the §9.1 freshness gate and the ssh-agent warning that den
+// owns. `exec` is the name that carries both modes, after `docker compose
+// exec`, where a tty is allocated by default and -T turns it off.
+//
+// `sh` was NOT kept as an alias, though the issue recommended it: two spellings
+// of one door means two rows in the command table for one behaviour. The cost
+// is measured and accepted — `den sh api` now prints den's unknown-command
+// listing, which suggests `den ls` or `den rm` (SuggestionsFor("sh"), distance
+// 2) and never `den exec`, four edits away. The listing that follows names
+// every command, exec included; that is where the user finds it.
+//
+// What `den exec` DECIDES comes from the SANDBOX and nothing else: `sbx ls --json`
 // for its status, and the kit dispatcher's own journal for the §9.1 freshness
 // gate. The den home is read for exactly one advisory purpose — ssh.mode, for
 // the empty-agent warning below — and every failure to read it is swallowed, so
@@ -33,13 +49,13 @@ import (
 // freshness is the §9.1 gate's patience, the SAME value spawn.Deps carries, and
 // it is threaded for the reason cli.Deps.Freshness is injected at all: its clock
 // is real, so a command tree built by a test must be able to hand it a clock
-// that is not. `den sh` only consults it on the branch that starts a stopped
+// that is not. `den exec` only consults it on the branch that starts a stopped
 // sandbox — the branch that waits.
-func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Result, goos string,
+func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Result, goos string,
 	freshness agent.GateOptions) *cobra.Command {
 	return &cobra.Command{
-		Use:   "sh <name>",
-		Short: "Open a shell in an existing sandbox",
+		Use:   "exec <name>",
+		Short: "Run a command in an existing sandbox, or open a shell",
 		Args:  exactlyOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The SANDBOX name is the flattened reference: ":" is not in
@@ -47,7 +63,7 @@ func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Resul
 			// spawns under its prefixed name (spawn.go) — the live VM this
 			// command must find is already "corp-api", not "corp:api".
 			//
-			// This is the ONLY thing `den sh` needs from the reference pair:
+			// This is the ONLY thing `den exec` needs from the reference pair:
 			// it reads no nest file, so nestOfSandbox — the reverse decode
 			// `den ports` and `den rm` share — has nothing to do here.
 			name, err := sandboxNameOf(args[0])
@@ -110,13 +126,13 @@ func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Resul
 // warnEmptyAgentOnReentry warns, on the command's stderr, when the sandbox the
 // user is about to re-enter would inherit an SSH agent holding no key.
 //
-// Why `den sh` warns at all: `spawn.WarnEmptySSHAgentOnReentry` holds that
+// Why `den exec` warns at all: `spawn.WarnEmptySSHAgentOnReentry` holds that
 // argument, and the divergence from `den spawn`'s preflight (an absent socket
 // says nothing here) with it. This function is the part that belongs to the
 // CLI: finding ssh.mode without letting the search cost anything.
 //
 // Hence errors are swallowed, all of them, and nothing here can fail the
-// command. `den sh`'s contract is that a broken den home never stands between
+// command. `den exec`'s contract is that a broken den home never stands between
 // the user and a live sandbox, and a warning is advisory — so between the two,
 // the warning is what gives way. Silently: a "den could not read your config"
 // line on a command that reads it only to decide whether to say something else
@@ -130,7 +146,7 @@ func newShCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Resul
 //
 // The mode comes from the GLOBAL config, which is where the only ssh.mode den
 // has lives: nest.Resolve copies g.SSH.Mode verbatim (resolve.go), so no nest
-// can override it and `den sh`, which knows no nest, loses nothing by not
+// can override it and `den exec`, which knows no nest, loses nothing by not
 // asking one.
 func warnEmptyAgentOnReentry(cmd *cobra.Command, denHome *string, sshAgent func() sshagent.Result, goos string) {
 	// A nil probe is the one case that needs no config at all: the probe is the

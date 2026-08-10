@@ -510,7 +510,7 @@ func TestSpawnDetachedDoesNotCallAStoppedSandboxReady(t *testing.T) {
 		t.Errorf("nothing restarted the VM, so it is not ready: den may not claim it; output:\n%s",
 			out.String())
 	}
-	for _, want := range []string{"stays stopped", "state preserved", "den sh api", "den ports api"} {
+	for _, want := range []string{"stays stopped", "state preserved", "den exec api", "den ports api"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the detached line must state %q; output:\n%s", want, out.String())
 		}
@@ -2380,7 +2380,7 @@ func TestSpawnToleratesANilSSHAgentProbe(t *testing.T) {
 	}
 }
 
-// WarnEmptySSHAgentOnReentry is what `den sh` calls, and its first contract is
+// WarnEmptySSHAgentOnReentry is what `den exec` calls, and its first contract is
 // that the message is the SAME one `den spawn` prints: two surfaces describing
 // one machine state must not word it two ways, and the fix that acts without a
 // respawn is precisely what makes the warning worth printing on a re-entry.
@@ -2402,9 +2402,9 @@ func TestWarnEmptySSHAgentOnReentryWarnsOnAnEmptyAgent(t *testing.T) {
 // The one place where re-entry DIVERGES from the preflight, and the reason it
 // has its own function rather than reusing the call site of `den spawn`.
 //
-// An absent SSH_AUTH_SOCK in the shell running `den sh` says nothing about the
+// An absent SSH_AUTH_SOCK in the shell running `den exec` says nothing about the
 // sandbox: a live VM forwards the socket it inherited at its `sbx create`, from
-// an environment that may be long gone, and `den sh` creates nothing. So the
+// an environment that may be long gone, and `den exec` creates nothing. So the
 // preflight's message — "start an agent … and relaunch den, which forwards the
 // socket at creation time" — would be advice for a step this command does not
 // have, about a socket den cannot see. Silence, and no probe either: without a
@@ -2531,7 +2531,7 @@ func TestWarnEmptySSHAgentReportsAStateItDoesNotModel(t *testing.T) {
 	}
 }
 
-// A nil probe is tolerated on this path too: `den sh`'s own wiring tests build
+// A nil probe is tolerated on this path too: `den exec`'s own wiring tests build
 // their accesses by hand and leave it unset, and they must skip the warning
 // rather than dereference nil mid-command.
 func TestWarnEmptySSHAgentOnReentryToleratesANilProbe(t *testing.T) {
@@ -2840,7 +2840,7 @@ func TestSpawnFromSourceNestMountsCommandLineRepos(t *testing.T) {
 }
 
 // A local nest whose file name equals the flattened source reference would
-// make `den ls`/`den sh`/`den rm` ambiguous between the two: refused before
+// make `den ls`/`den exec`/`den rm` ambiguous between the two: refused before
 // any side effect, naming both files.
 func TestSpawnSourceNestRefusesLocalHomonym(t *testing.T) {
 	denHome, _ := denTest(t)

@@ -9,7 +9,7 @@ import (
 	"github.com/PillowPillow/den/internal/source"
 )
 
-// `den sh`, `den rm` and `den ports` all take ONE argument naming a live
+// `den exec`, `den rm` and `den ports` all take ONE argument naming a live
 // sandbox, and all three have to reconcile two spellings of it: the reference
 // the user types (`corp:api`, possibly worktree'd) and the name the VM
 // actually carries (`corp-api.feat12`), because ":" is not in sbx's `--name`

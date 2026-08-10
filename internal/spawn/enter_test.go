@@ -113,7 +113,7 @@ func TestEnterTurnsAChildFailureIntoChildExit(t *testing.T) {
 // inside each arm. Without this test, a future refactor that moved the
 // ExitCodeOf check into the Pipe arm only would still pass every other test
 // in this file — TTY: true never scripts AttachErr anywhere else — while
-// silently reverting `den sh`'s interactive exit-status contract that #60 and
+// silently reverting `den exec`'s interactive exit-status contract that #60 and
 // the team-lead ruling above it require.
 func TestEnterTurnsAnAttachedChildFailureIntoChildExitToo(t *testing.T) {
 	f := &sbx.Fake{AttachErr: &sbx.ExecError{Bin: "sbx", Err: fakeExitError{code: 3}}}

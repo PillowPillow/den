@@ -231,7 +231,7 @@ func TestLsDoesNotRepeatTheSubcommand(t *testing.T) {
 }
 
 // And the first-contact case, seen from Ls — the path taken by the FOUR
-// commands that touch sbx (`den ls`, `den spawn`, `den sh`, `den rm`): all of
+// commands that touch sbx (`den ls`, `den spawn`, `den exec`, `den rm`): all of
 // them call Ls before anything else.
 func TestLsMissingBinaryProducesAnActionableMessage(t *testing.T) {
 	f := &Fake{Default: Response{Err: &ExecError{
@@ -276,7 +276,7 @@ func TestFind(t *testing.T) {
 	}
 }
 
-// CheckAttachable is the guard shared by `den spawn` and `den sh`: both paths
+// CheckAttachable is the guard shared by `den spawn` and `den exec`: both paths
 // end in an `sbx exec`.
 //
 // "stopped" PASSES, and it's measured, not assumed (2026-07-29 smoke test,

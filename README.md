@@ -80,7 +80,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den init` | creates a den home from the shipped example (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`); refuses if `config.yaml` already exists |
 | `den spawn <nest> [repo...]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise; extra repos are mounted on the fly |
 | `den ls` | lists live sandboxes, with their nest and worktree |
-| `den sh <name>` | opens a shell in an existing sandbox |
+| `den exec <name> [-- <cmd>]` | runs one command in an existing sandbox, or opens a shell when no command is given |
 | `den ports <name>` | publishes the nest's declared ports into that sandbox and prints where they land on the host |
 | `den rm <name>` | destroys a sandbox and cleans up the worktrees den created (the agent profile persists) |
 | `den build [<stack>]` | builds stack images in `parent` order, playing each stack's `provision.steps` in a throwaway build VM |
@@ -109,7 +109,7 @@ Options of `den spawn`:
 The branch keeps the name as typed — that is the name in `git log` and in the PR — while the
 sandbox name and the worktree directory take a flattened form: `den spawn api -w feature/123` works on
 branch `feature/123` in a sandbox `api.feature-123`. That is the name it appears under in
-`den ls`, and the one `den sh` and `den rm` expect.
+`den ls`, and the one `den exec` and `den rm` expect.
 
 So den accepts any name it can **name**; git remains the sole judge of what is a legal **ref**.
 `-w 'a..b'` passes naming (sandbox `api.a--b`) and it is `git worktree add` that refuses,
@@ -174,12 +174,12 @@ spawn would do without spawning it. It has no `-w`: a worktree changes the sandb
 resolved nest.
 
 A stopped sandbox — which `sbx` does on its own after a few minutes of inactivity — is not a
-failure: `den spawn` and `den sh` pick it back up, with its state.
+failure: `den spawn` and `den exec` pick it back up, with its state.
 
 ## Ports
 
 Ports are **not** published at spawn. `den ports <name>` does it, on demand, and takes a **sandbox**
-name — like `den sh` and `den rm` — because a port is published into a live VM.
+name — like `den exec` and `den rm` — because a port is published into a live VM.
 
 Each nest gets a deterministic window of 10 host ports, `base = 9000 + hash(<nest>) % 900 * 10`,
 overridable with `ports.base`. The window is seeded by the **nest**, never by the sandbox, so
@@ -513,7 +513,7 @@ flattened sandbox name: `corp:backend` becomes sandbox `corp-backend` — the sa
 already applies to branch names. A flattening collision (a local nest already named `corp-backend`,
 say) is refused at spawn, never silently renamed.
 
-`den sh`, `den rm` and `den ports` take **either** spelling: the reference you typed
+`den exec`, `den rm` and `den ports` take **either** spelling: the reference you typed
 (`corp:backend`, `corp:backend.feat12`) or the literal name `den ls` prints (`corp-backend`,
 `corp-backend.feat12`). The literal one is decoded back to its source, which is unambiguous
 precisely because spawn refused both competing decompositions up front.

@@ -418,7 +418,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// This applies when RE-ATTACHING to a live sandbox too: if a mount host
 	// disappears from disk, `den spawn` can no longer attach even though none
 	// of this is re-read at attach time (the VM keeps its create-time mounts).
-	// `den sh <name>` is the one path that skips all of this.
+	// `den exec <name>` is the one path that skips all of this.
 	//
 	// The message cites m.Key — the key the USER wrote. For the ssh.mode sugar
 	// that is `ssh.dir`, not `mounts[0]`, which appears in no config file.
@@ -444,7 +444,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 						"instead of your keys",
 					m.Host, config.GlobalPath(denHome))
 			}
-			// `den sh` is NAMED, not merely implied by the comment above: this
+			// `den exec` is NAMED, not merely implied by the comment above: this
 			// gate runs on the attach branch too, so a host path that vanished
 			// (an unmounted volume, a directory not created yet) refuses entry
 			// to a sandbox that is alive and holding work. The user needs the
@@ -453,7 +453,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			return fmt.Errorf(
 				"%s.host: %s not found — fix `mounts:` in %s: this directory is mounted in the "+
 					"sandbox, and a missing path would mount an empty directory instead of your files "+
-					"(`den sh <sandbox>` still enters an already-live sandbox)",
+					"(`den exec <sandbox>` still enters an already-live sandbox)",
 				m.Key, m.Host, config.GlobalPath(denHome))
 		case !fi.IsDir():
 			if m.Key == nest.SSHDirKey {
@@ -639,7 +639,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 
 	if live != nil {
 		// A name held by a VM den knows nothing about is not
-		// spawn-or-attach. Same guard as `den sh`, and the same helper,
+		// spawn-or-attach. Same guard as `den exec`, and the same helper,
 		// so the property can't be true on one side and forgotten on the
 		// other.
 		if err := live.CheckAttachable(); err != nil {
@@ -695,7 +695,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 
 		// A SINGLE status line, naming which of the two cases this is.
 		// "restarts on attach", not "resumed": under --detach den runs no
-		// exec, so nothing restarts now — the next `den sh` does. True on
+		// exec, so nothing restarts now — the next `den exec` does. True on
 		// either side of this branch.
 		if live.IsStopped() {
 			fmt.Fprintf(d.Out, "sandbox %s stopped: it restarts on attach (its state is preserved)\n", sandboxName)
@@ -827,12 +827,12 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			fmt.Fprintf(d.Out,
 				"sandbox %s stays stopped (detached) — den started nothing: its configuration is "+
 					"checked and its state preserved, and it restarts on the next attach "+
-					"(`den sh %s`, or `den ports %s`, which starts it because publishing needs a "+
+					"(`den exec %s`, or `den ports %s`, which starts it because publishing needs a "+
 					"live endpoint)\n",
 				sandboxName, sandboxName, sandboxName)
 			return nil
 		}
-		fmt.Fprintf(d.Out, "sandbox %s ready (detached) — run `den sh %s` to enter\n",
+		fmt.Fprintf(d.Out, "sandbox %s ready (detached) — run `den exec %s` to enter\n",
 			sandboxName, sandboxName)
 		return nil
 	}
@@ -987,17 +987,17 @@ func checkFreshness(ctx context.Context, d Deps, sandboxName string, detach bool
 }
 
 // CheckFreshnessOnReentry holds the §9.1 gate for a caller that re-enters an
-// EXISTING sandbox and configures no spawn — `den sh` (internal/cli/sh.go).
+// EXISTING sandbox and configures no spawn — `den exec` (internal/cli/exec.go).
 //
 // It exists because §9.1's promise is about a sandbox starting, not about the
 // command that starts it, and den had been keeping that promise on one door out
 // of two. `den spawn` refused a sandbox whose freshness command failed; the
-// same sandbox handed out a shell in silence through `den sh`, which does not
+// same sandbox handed out a shell in silence through `den exec`, which does not
 // route through Spawn at all — measured on the bench after PR #26, issue #27.
 // A guarantee held by one door is worse than none: it teaches the user that den
 // checks, on a path where it did not.
 //
-// starting says whether this re-entry is STARTING the sandbox — `den sh` on a
+// starting says whether this re-entry is STARTING the sandbox — `den exec` on a
 // stopped one — and it decides between waiting and reading once. §9.2's
 // arbitration is already written and applies unchanged: "il attache un shell →
 // il attend, en l'annonçant".
@@ -1038,7 +1038,7 @@ func CheckFreshnessOnReentry(ctx context.Context, r sbx.Runner, out io.Writer, s
 }
 
 // reportFreshness turns a gate verdict into den's behaviour: what each verdict
-// costs the user, in one place, so the spawn door and the `den sh` door cannot
+// costs the user, in one place, so the spawn door and the `den exec` door cannot
 // answer the same journal differently.
 //
 // pendingClause names why den stopped waiting — the one thing the two callers
@@ -1203,13 +1203,13 @@ func warnEmptySSHAgent(w io.Writer, sshMode, socket string, probe func() sshagen
 }
 
 // WarnEmptySSHAgentOnReentry is warnEmptySSHAgent for a command that only
-// RE-ENTERS a sandbox someone else created — `den sh` (cli/sh.go), whose whole
+// RE-ENTERS a sandbox someone else created — `den exec` (cli/exec.go), whose whole
 // contract is that it reads no den home and creates nothing.
 //
 // It exists because the warning is just as true there: the forwarded socket is
 // a live proxy, so re-entering a sandbox whose agent has since been emptied
 // hits the same `git push` failure, just as silently. Without this the warning
-// covered only the FIRST `den spawn` of the day, while `den sh` — the cheap
+// covered only the FIRST `den spawn` of the day, while `den exec` — the cheap
 // re-entry, used far more often — said nothing on any OS.
 //
 // The one divergence is the ABSENT socket, and it is why this is a separate
@@ -1218,12 +1218,12 @@ func warnEmptySSHAgent(w io.Writer, sshMode, socket string, probe func() sshagen
 // that may no longer exist. A shell with no SSH_AUTH_SOCK therefore says
 // nothing about what the VM actually holds, and the preflight's remedy — start
 // an agent, relaunch den, which forwards the socket at creation time — names a
-// step `den sh` does not have. Silence, before the probe: `ssh-add -l` with no
+// step `den exec` does not have. Silence, before the probe: `ssh-add -l` with no
 // socket answers StateUnreachable, whose message would claim SSH_AUTH_SOCK
 // "points at" a dead socket the user never set.
 //
 // What it does NOT try to be: proof about the agent the VM really received.
-// The probe interrogates the agent of the shell running `den sh`, which is the
+// The probe interrogates the agent of the shell running `den exec`, which is the
 // same one on a stable per-user socket (macOS launchd) and can differ from a
 // per-shell `eval $(ssh-agent)` on Linux. That is the same approximation the
 // attach branch of `den spawn` already makes, and the trade is deliberate: the
