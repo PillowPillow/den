@@ -7,6 +7,32 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.5.0 — 2026-08-10
+
+### Added
+- On attach, `den spawn` warns when the live sandbox is missing a mount that your config now
+  declares — a `mounts:` entry, or the directory behind `ssh.mode: mount`. den never reapplies
+  anything to a running VM, so the warning is the whole remedy: recreate the sandbox when you
+  want the new mount. The check reads what the VM actually has, in one direction only — a mount
+  you *removed* from the config is not reported, because a live workspace list cannot tell a
+  removal from a moved worktree.
+- A mount that flipped between `ro: true` and `ro: false` now names both sides instead of
+  claiming the mount is absent, and the warning header names the block you wrote — `mounts:`
+  or `ssh.dir`.
+
+### Fixed
+- `den spawn` works again on sbx v0.38.0, which renamed `caps:` to `permissions:` and
+  `commands:` to `setup:` inside `schemaVersion: 2`. The old spelling is a hard refusal at
+  `sbx create`, before any VM exists, so every spawn died on den's own generated mixin with
+  `field commands not found in type spec.specFileV2`.
+- A `repos:` entry written with a trailing slash (`api: ~/dev/api/`) no longer prints two
+  permanent falsehoods on every attach — that the repo is not mounted when it is, and a
+  moved-start line naming the directory the shell already starts in. sbx normalizes the paths
+  it echoes back; den now normalizes both sides of that comparison.
+- A leading space in `ssh.dir` (`dir: " ~/.ssh_sbx"`) no longer defeats `~` expansion in
+  silence, which left the literal string as the host path and mounted a directory that does
+  not exist.
+
 ## v1.4.0 — 2026-08-07
 
 ### Added
