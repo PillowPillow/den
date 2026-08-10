@@ -314,12 +314,13 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 		{
 			"exec, missing argument",
 			[]string{"exec"},
-			"den exec: one argument expected, none received — usage: den exec <name> [flags]",
+			"den exec: one argument expected, none received — usage: den exec <name> [-- <cmd> [args...]] [flags]",
 		},
 		{
-			"exec, two arguments",
-			[]string{"exec", "a", "b"},
-			`den exec: exactly one argument expected, 2 received, starting with "b" — usage: den exec <name> [flags]`,
+			"exec, command without --",
+			[]string{"exec", "b", "c"},
+			`den exec: a command must be separated by ` + "`--`" + ` — write ` +
+				"`den exec b -- c`",
 		},
 		{
 			"rm, missing argument",

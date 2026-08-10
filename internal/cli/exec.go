@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/config"
@@ -11,6 +12,39 @@ import (
 	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/spf13/cobra"
 )
+
+// execArgs accepts one sandbox name, and a command only behind an explicit
+// `--`.
+//
+// The separator is REQUIRED rather than inferred, and that is a refusal den
+// makes on purpose (spec §2). `den exec api go test` has two readings — a
+// sandbox `api` running `go test`, or three sandbox names — and cobra hands
+// both to the command as the same slice. Guessing would make the surface
+// depend on whether a word happens to name a live sandbox.
+//
+// cmd.ArgsLenAtDash is the only thing that survives cobra's flag parsing to
+// say where `--` was: it returns the number of positionals seen BEFORE it, or
+// -1 when there was none.
+func execArgs(cmd *cobra.Command, args []string) error {
+	dash := cmd.ArgsLenAtDash()
+	if dash < 0 {
+		if len(args) == 1 {
+			return nil
+		}
+		if len(args) == 0 {
+			return fmt.Errorf("%s: one argument expected, none received — usage: %s",
+				cmd.CommandPath(), cmd.UseLine())
+		}
+		return fmt.Errorf(
+			"%s: a command must be separated by `--` — write `%s %s -- %s`",
+			cmd.CommandPath(), cmd.CommandPath(), args[0], strings.Join(args[1:], " "))
+	}
+	if dash != 1 {
+		return fmt.Errorf("%s: exactly one sandbox name expected before `--`, %d received — usage: %s",
+			cmd.CommandPath(), dash, cmd.UseLine())
+	}
+	return nil
+}
 
 // newExecCmd opens a shell in an already live sandbox, or runs one command in
 // it.
@@ -51,13 +85,50 @@ import (
 // is real, so a command tree built by a test must be able to hand it a clock
 // that is not. `den exec` only consults it on the branch that starts a stopped
 // sandbox — the branch that waits.
+//
+// isTTY is den's own terminal probe, threaded from cli.Deps.IsTTY the same way
+// the argument above it is: a nil probe means "no terminal", never "assume
+// one", so a wiring test that leaves it unset gets the non-interactive path
+// rather than a verdict borrowed from whatever terminal the suite runs under.
 func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Result, goos string,
-	freshness agent.GateOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:   "exec <name>",
+	freshness agent.GateOptions, isTTY func() bool) *cobra.Command {
+
+	var workdir string
+	var noTTY bool
+
+	cmd := &cobra.Command{
+		Use:   "exec <name> [-- <cmd> [args...]]",
 		Short: "Run a command in an existing sandbox, or open a shell",
-		Args:  exactlyOneArg,
+		Args:  execArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Everything after `--`. execArgs has already refused every other
+			// shape, so this slice is either empty or a real command.
+			var command []string
+			if dash := cmd.ArgsLenAtDash(); dash >= 0 {
+				command = args[dash:]
+			}
+			// A nil probe is "no terminal", never "assume one" — the same rule
+			// spawn.interactive applies to `-i`, and the reason the wiring
+			// tests that leave IsTTY nil get the non-interactive path instead
+			// of a verdict from whatever terminal the suite runs under.
+			//
+			// With NO command the tty is unconditional: a login shell without
+			// one is worth nothing, and that is the behaviour `den sh` had.
+			// -T with no command is therefore a contradiction, refused below.
+			//
+			// With a command the probe DECIDES, and that is not a preference:
+			// `sbx exec -t` with no terminal behind it silently DISCARDS the
+			// command's output while still returning its status (measured
+			// 2026-08-10 on v0.38.0 — `echo hello` into a redirected stdout
+			// lands empty, spec §14.0). Passing -it in CI would lose every byte
+			// the command wrote and report success.
+			tty := len(command) == 0 || (!noTTY && isTTY != nil && isTTY())
+			if noTTY && len(command) == 0 {
+				return fmt.Errorf(
+					"-T asks for no terminal and no command asks for a shell, which needs one — " +
+						"give a command after `--`, or drop -T")
+			}
+
 			// The SANDBOX name is the flattened reference: ":" is not in
 			// sbx's `--name` charset, so a nest loaded from a source never
 			// spawns under its prefixed name (spawn.go) — the live VM this
@@ -74,53 +145,71 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 			if err != nil {
 				return err
 			}
-			if b := sbx.Find(boxes, name); b != nil {
-				// Same guard as `den spawn`, through the same helper: both
-				// paths end in an `sbx exec`. A STOPPED VM passes, `sbx exec`
-				// restarts it.
-				if err := b.CheckAttachable(); err != nil {
-					return err
+			b := sbx.Find(boxes, name)
+			if b == nil {
+				names := liveNames(boxes)
+				if len(names) == 0 {
+					return fmt.Errorf("sandbox %q not found — no sandbox is running", name)
 				}
-				stopped := b.IsStopped()
-				if stopped {
-					fmt.Fprintf(cmd.OutOrStdout(),
-						"sandbox %s is stopped: it restarts on attach (its state is kept)\n", b.Name)
-				}
-				// The §9.1 gate, on the door spawn does not own. `den spawn`
-				// refuses a sandbox whose agent den knows to be stale; this
-				// command reached the same sandbox and said nothing (issue #27).
-				// It runs AFTER the stopped-sandbox line above, which is what
-				// tells the user the gate below will restart the VM, and BEFORE
-				// the attach, because a refusal behind a shell that owns the
-				// terminal is a refusal nobody reads.
-				//
-				// stopped is passed through, not re-derived: on a stopped
-				// sandbox this command STARTS one, and §9.2 makes that branch
-				// wait rather than read once. The verdict handling — refuse,
-				// warn, note — belongs to spawn: two doors answering the same
-				// journal differently is exactly the defect being closed.
-				if err := spawn.CheckFreshnessOnReentry(
-					cmd.Context(), runner, cmd.OutOrStdout(), b.Name, stopped, freshness); err != nil {
-					return err
-				}
-				// Before the attach, never after: once the shell has the terminal,
-				// a warning printed behind it is a line the user scrolls past on
-				// the way out.
-				warnEmptyAgentOnReentry(cmd, denHome, sshAgent, goos)
-				// The workdir comes from the first workspace REPORTED BY THE VM,
-				// never from a path recomputed from the config: without it the
-				// user lands in the VM's home, not in their code.
-				return spawn.Enter(cmd.Context(), runner, b.Name,
-					spawn.Command{Workdir: b.Workdir(), TTY: true})
+				return fmt.Errorf("sandbox %q not found (live: %v)", name, names)
 			}
-
-			names := liveNames(boxes)
-			if len(names) == 0 {
-				return fmt.Errorf("sandbox %q not found — no sandbox is running", name)
+			// Same guard as `den spawn`, through the same helper: both
+			// paths end in an `sbx exec`. A STOPPED VM passes, `sbx exec`
+			// restarts it.
+			if err := b.CheckAttachable(); err != nil {
+				return err
 			}
-			return fmt.Errorf("sandbox %q not found (live: %v)", name, names)
+			// den's OWN lines go to stderr as soon as a caller might be piping
+			// stdout: `den exec api -T -- go build | tee log` must carry the
+			// command's output and nothing else. On the interactive path they
+			// stay on stdout, where `den sh` always put them — no pipe is
+			// listening there, and moving them would change a surface #60 does
+			// not touch.
+			chatter := cmd.ErrOrStderr()
+			if tty {
+				chatter = cmd.OutOrStdout()
+			}
+			stopped := b.IsStopped()
+			if stopped {
+				fmt.Fprintf(chatter,
+					"sandbox %s is stopped: it restarts on attach (its state is kept)\n", b.Name)
+			}
+			// The §9.1 gate WAITS here even with no terminal, and that is the
+			// decision #60 asked for. Under `--detach` den reads once because
+			// nobody is at a prompt; `den exec -- <cmd>` fits neither case —
+			// nobody is at a prompt AND the command being run is very often the
+			// agent itself. The gate's reason ("you are about to run that
+			// agent") is more true here, not less.
+			if err := spawn.CheckFreshnessOnReentry(
+				cmd.Context(), runner, chatter, b.Name, stopped, freshness); err != nil {
+				return err
+			}
+			// Before the attach, never after: once the shell has the terminal,
+			// a warning printed behind it is a line the user scrolls past on
+			// the way out.
+			warnEmptyAgentOnReentry(cmd, denHome, sshAgent, goos)
+			// The workdir comes from the first workspace REPORTED BY THE VM,
+			// never from a path recomputed from the config: without it the user
+			// lands in the VM's home, not in their code. --workdir overrides it
+			// for a caller that knows better.
+			dir := workdir
+			if dir == "" {
+				dir = b.Workdir()
+			}
+			return spawn.Enter(cmd.Context(), runner, b.Name,
+				spawn.Command{Argv: command, Workdir: dir, TTY: tty})
 		},
 	}
+
+	cmd.Flags().StringVar(&workdir, "workdir", "",
+		"working directory for the command (default: the first workspace the sandbox reports)")
+	// Long name `--no-tty` because cobra requires one; -T is the spelling that
+	// matters, and it is docker compose's. `-w` is NOT taken here: it is `den
+	// spawn`'s worktree, and one letter meaning two things across sibling
+	// commands is the collision den refuses elsewhere.
+	cmd.Flags().BoolVarP(&noTTY, "no-tty", "T", false,
+		"do not allocate a terminal (for pipes and CI)")
+	return cmd
 }
 
 // warnEmptyAgentOnReentry warns, on the command's stderr, when the sandbox the

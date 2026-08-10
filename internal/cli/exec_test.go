@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -588,3 +589,212 @@ func TestExecAcceptsAWorktreedSourceReference(t *testing.T) {
 		t.Errorf("the attach must target corp-api.feat12; attaches: %v", f.Attaches)
 	}
 }
+
+// The contract of #60: `den exec api -- go test ./...` runs the command, and
+// the shell is what happens when no command is given — not the reverse.
+//
+// Deviation from the brief: executeCmdWithSbx leaves IsTTY as the REAL stdin
+// probe (spawn.StdinIsTerminal), which reports true for ANY char device —
+// including /dev/null, not just an actual terminal — so this test would flip
+// verdict depending on what fd 0 happens to be wherever it runs (measured:
+// this sandbox's `go test` stdin resolves as a char device). Every other
+// IsTTY-sensitive test in the repo (interactive_test.go, spawn_test.go:352)
+// injects a fixed probe instead of trusting the real one; this test now does
+// the same, through the same Deps+NewRootCmdWith form the sibling tests below
+// already use.
+func TestExecRunsTheCommandAfterTheDoubleDash(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"exec", "api", "--", "go", "test", "./..."); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasPiped("exec", "-w", "/w/api", "api", "go", "test", "./...") {
+		t.Errorf("pipes = %v", f.Pipes)
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("a command must not open a shell; attaches = %v", f.Attaches)
+	}
+}
+
+// Without a terminal there is no tty, and the argv says so. The verdict comes
+// from the INJECTED probe, never from the terminal the suite happens to run
+// under — that is why Deps.IsTTY exists.
+func TestExecAllocatesATtyOnlyWhenDenHasOne(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		isTTY   func() bool
+		wantTTY bool
+	}{
+		{"a terminal", func() bool { return true }, true},
+		{"a pipe", func() bool { return false }, false},
+		{"an unwired probe", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &sbx.Fake{Responses: map[string]sbx.Response{
+				"ls --json": {Output: []byte(
+					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			}}
+			deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: tc.isTTY}
+			if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+				"exec", "api", "--", "true"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			gotTTY := f.HasAttached("exec", "-it")
+			if gotTTY != tc.wantTTY {
+				t.Errorf("tty = %v, want %v; calls = %v", gotTTY, tc.wantTTY, f.Calls)
+			}
+		})
+	}
+}
+
+// -T is the docker compose spelling, and it wins over a real terminal: it
+// exists so a caller in a terminal can still pipe cleanly.
+func TestExecMinusTSuppressesTheTtyEvenOnATerminal(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: func() bool { return true }}
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"exec", "api", "-T", "--", "true"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("-T must forbid the tty; attaches = %v", f.Attaches)
+	}
+}
+
+// --workdir is spelled LONG on purpose: -w is den spawn's worktree, and giving
+// it a second meaning on a sibling command is the collision den refuses
+// elsewhere. The flag overrides the workspace the VM reported.
+//
+// Same deviation as TestExecRunsTheCommandAfterTheDoubleDash above: the probe
+// is injected rather than left as the real stdin check, for the same reason.
+func TestExecWorkdirOverridesTheReportedWorkspace(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"exec", "api", "--workdir", "/srv", "--", "true"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasPiped("exec", "-w", "/srv", "api", "true") {
+		t.Errorf("pipes = %v", f.Pipes)
+	}
+}
+
+// `-w` must NOT be accepted here: silently taking den spawn's worktree
+// shorthand as a workdir is exactly the kind of collision that makes two
+// sibling commands mean different things by one letter.
+func TestExecRefusesTheShortWorkdirFlag(t *testing.T) {
+	f := &sbx.Fake{}
+	if _, err := executeCmdWithSbx(t, f, "exec", "api", "-w", "/srv", "--", "true"); err == nil {
+		t.Error("-w must not be a workdir on den exec")
+	}
+}
+
+// A command not separated by `--` is refused rather than guessed: `den exec api
+// ls` could be a sandbox named api running ls, or two sandbox names. den
+// refuses and names the form (spec §2).
+func TestExecRefusesACommandWithoutTheDoubleDash(t *testing.T) {
+	f := &sbx.Fake{}
+	_, err := executeCmdWithSbx(t, f, "exec", "api", "go", "test")
+	if err == nil {
+		t.Fatal("a command without `--` must be refused")
+	}
+	if !strings.Contains(err.Error(), "--") {
+		t.Errorf("the refusal must name the form to use; got %q", err.Error())
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
+	}
+}
+
+// den's own lines belong on stderr when the caller is a pipe: `den exec api -T
+// -- go build | tee log` must carry the child's stdout and nothing else.
+//
+// Deviation from the brief: Freshness is added to Deps. The fixture is
+// "stopped", so this reaches spawn.CheckFreshnessOnReentry on the STARTING
+// branch, which spawn.go:1016-1018 documents as refusing a zero GateOptions
+// by design (Sleep/Now/Timeout/Interval must be real) rather than silently
+// completing — a Deps literal missing Freshness fails with "unusable
+// agent-freshness gate options", not the assertion below. fakeGateOptions()
+// is the same fixture sbxDeps() already uses for this reason.
+func TestExecPutsItsOwnChatterOnStderrWithoutATty(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"exec", "api", "--", "true")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("stdout must belong to the command alone; got %q", stdout)
+	}
+	if !strings.Contains(stderr, "stopped") {
+		t.Errorf("the stopped-sandbox line must still be said, on stderr; got %q", stderr)
+	}
+}
+
+// The interactive path keeps saying it on stdout, as it always has: nothing is
+// piped there, and moving it would change a surface #60 does not touch.
+//
+// Same deviation as TestExecPutsItsOwnChatterOnStderrWithoutATty above:
+// Freshness added, for the same "stopped" fixture / starting-branch reason.
+// This case also covers the no-command + tty path: len(command) == 0 forces
+// tty unconditionally in the RunE, so IsTTY: true here is confirming the
+// login-shell branch, not exercising the -T refusal (noTTY is false).
+func TestExecKeepsItsChatterOnStdoutWithATty(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return true }}
+	stdout, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout, "stopped") {
+		t.Errorf("stdout = %q, want the stopped-sandbox line", stdout)
+	}
+}
+
+// The status of the command becomes the status of den — the reason #60 calls
+// exit-code propagation part of the issue rather than a follow-up.
+//
+// Same deviation as TestExecRunsTheCommandAfterTheDoubleDash above: PipeErr is
+// only consulted on the non-tty branch, so a real IsTTY probe reporting true
+// (as this sandbox's does) would route this through Attach instead and never
+// see the error at all — the injected probe is what makes this test exercise
+// Pipe, deterministically.
+func TestExecPropagatesTheCommandStatus(t *testing.T) {
+	f := &sbx.Fake{
+		Responses: map[string]sbx.Response{
+			"ls --json": {Output: []byte(
+				`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+		},
+		PipeErr: &sbx.ExecError{Bin: "sbx", Err: fakeExitError{code: 42}},
+	}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+	_, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "--", "false")
+	var child *sbx.ChildExit
+	if !errors.As(err, &child) || child.Code != 42 {
+		t.Fatalf("err = %v, want a *sbx.ChildExit carrying 42", err)
+	}
+}
+
+type fakeExitError struct{ code int }
+
+func (fakeExitError) Error() string   { return "exit status 42" }
+func (e fakeExitError) ExitCode() int { return e.code }
