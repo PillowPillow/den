@@ -196,6 +196,22 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				"--detach spawns without entering the sandbox, a command has to run inside it")
 	}
 
+	// The third contradiction, refused for the same reason and in the same
+	// place: -T asks for no terminal, and with no command that is a login
+	// shell asked to give up the one thing that makes it worth opening.
+	//
+	// `den exec` (internal/cli/exec.go) refuses this exact pair already; the
+	// two commands share the flag and must share the refusal, in the same
+	// words, or a user meeting -T on one and not the other would read it as
+	// two different rules rather than the one contradiction it is. Leaving it
+	// unrefused here would be the silent normalization spec §2 forbids: -T
+	// would simply do nothing, on the sibling command that does refuse it.
+	if o.NoTTY && len(o.Command) == 0 {
+		return fmt.Errorf(
+			"-T asks for no terminal and no command asks for a shell, which needs one — " +
+				"give a command after `--`, or drop -T")
+	}
+
 	// 1. Resolve the cascade.
 	g, err := config.LoadGlobal(denHome)
 	if err != nil {

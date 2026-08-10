@@ -297,6 +297,51 @@ func TestDetachReachesSpawnOptions(t *testing.T) {
 	}
 }
 
+// --workdir must reach spawn.Options, proven the same way --detach is: by the
+// DIFFERENCE with and without the flag. Unwired, o.Workdir stays "" and the
+// attach directory would be whatever the spawn computed on its own — "/custom"
+// would never appear on either run.
+func TestWorkdirReachesSpawnOptions(t *testing.T) {
+	home := denHomeSpawnable(t)
+
+	fWith, dWith := fakeSpawnDeps()
+	if _, err := runSpawn(t, home, dWith, "api", "--workdir", "/custom"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !fWith.HasAttached("exec", "-it", "-w", "/custom", "api", "bash", "-l") {
+		t.Errorf("--workdir must reach the attach's -w; attaches: %v", fWith.Attaches)
+	}
+
+	fWithout, dWithout := fakeSpawnDeps()
+	if _, err := runSpawn(t, home, dWithout, "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fWithout.HasAttached("exec", "-it", "-w", "/custom", "api", "bash", "-l") {
+		t.Errorf("without --workdir, \"/custom\" must not appear; attaches: %v", fWithout.Attaches)
+	}
+}
+
+// -T/--no-tty must reach spawn.Options. Proven by the contradiction it is the
+// only thing that can raise, the same idiom as -i and --detach above: with no
+// command, -T asks for something a login shell cannot give up, and
+// spawn.Spawn refuses it (mirroring `den exec`, internal/cli/exec.go).
+// Unwired, o.NoTTY would stay false and this spawn would succeed instead.
+func TestNoTTYReachesSpawnOptions(t *testing.T) {
+	for _, name := range []string{"-T", "--no-tty"} {
+		t.Run(name, func(t *testing.T) {
+			_, d := fakeSpawnDeps()
+
+			_, err := runSpawn(t, denHomeSpawnable(t), d, "api", name)
+			if err == nil {
+				t.Fatal("-T with no command must be refused: the flag did not reach spawn.Options")
+			}
+			if !strings.Contains(err.Error(), "-T") {
+				t.Errorf("the refusal must name the flag in play: %v", err)
+			}
+		})
+	}
+}
+
 // denHomeWithOptionalRepo: a spawnable den home whose nest declares one
 // required repo and one optional one — the shape `-i` exists for.
 func denHomeWithOptionalRepo(t *testing.T) string {

@@ -4306,3 +4306,72 @@ func TestSpawnRefusesDetachWithACommand(t *testing.T) {
 		}
 	}
 }
+
+// NoTTY governs a GIVEN command only (spawn.go's own comment above the tty
+// line): a spawn with no command hands out a login shell, which is worth
+// nothing without a terminal, so `-T` alone is a contradiction — the same one
+// `den exec` refuses (internal/cli/exec.go). Refused at step 0, before
+// anything is read, like its two neighbours above.
+func TestSpawnRefusesNoTTYWithNoCommand(t *testing.T) {
+	o := Options{Nest: "api", NoTTY: true}
+	err := Spawn(context.Background(), t.TempDir(), o, Deps{})
+	if err == nil {
+		t.Fatal("-T with no command must be refused")
+	}
+	for _, want := range []string{"-T", "shell"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %q; got %q", want, err.Error())
+		}
+	}
+}
+
+// NoTTY must actually suppress the terminal it names, even when the injected
+// probe reports one: a probe answering true is exactly the case -T exists to
+// override, and TestSpawnRunsTheGivenCommandInsteadOfAShell only covers the
+// nil-probe path, where NoTTY is a no-op by construction (tty is already
+// false). Proven on the argv Enter actually builds, not on TTY alone: a
+// dropped `!o.NoTTY` and a dropped `o.NoTTY` read backwards both flip a
+// single bool, and only the resulting -it/no--it split tells them apart from
+// a passing test.
+func TestSpawnNoTTYSuppressesTheTerminalEvenWithAProbe(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	d.IsTTY = func() bool { return true }
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`),
+	}
+
+	o := Options{Nest: "api", Command: []string{"go", "test"}, NoTTY: true}
+	if err := Spawn(context.Background(), denHome, o, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !f.HasPiped("exec", "-w", "/w", "api", "go", "test") {
+		t.Errorf("-T must drop -it even under a probe reporting a terminal; pipes = %v", f.Pipes)
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("-T must never attach; attaches = %v", f.Attaches)
+	}
+}
+
+// Workdir overrides the VM-reported directory, not just accompanies it: the
+// live sandbox below reports "/w" (the same fixture as
+// TestSpawnRunsTheGivenCommandInsteadOfAShell), and the override must win.
+// Proven on the argv, the only place a dropped override (`dir := workdir`
+// instead of `dir := o.Workdir`) would still pass every other assertion.
+func TestSpawnWorkdirOverridesTheReportedOne(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`),
+	}
+
+	o := Options{Nest: "api", Command: []string{"go", "test"}, Workdir: "/custom"}
+	if err := Spawn(context.Background(), denHome, o, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !f.HasPiped("exec", "-w", "/custom", "api", "go", "test") {
+		t.Errorf("--workdir must override the VM-reported \"/w\"; pipes = %v", f.Pipes)
+	}
+}
