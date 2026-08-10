@@ -1124,6 +1124,11 @@ complet : `docs/superpowers/handoffs/2026-08-03-smoke-reel-3.md`.
 `sbx version` rend **v0.35.0**, la version même contre laquelle tout le §14.0 a été attesté : le
 re-relevé annoncé plus haut n'est **pas** dû, la v0.37.1 n'est toujours pas installée.
 
+> ⚠️ **PÉRIMÉ depuis le 2026-08-10.** `sbx version` rend maintenant
+> `sbx version: v0.37.1 2d4f32448c7a94d7fa525517dfca21aa36599829` : la v0.37.1 EST installée, et le
+> re-relevé annoncé plus haut EST dû. Voir « Le relevé du 2026-08-10 » plus bas — il dit ce que ce
+> smoke-là a réellement retouché, et **rien d'autre du §14.0 n'est ré-attesté**.
+
 ```
 sbx stop SANDBOX [SANDBOX...]
   positionnel, variadique. « Sandbox 'NAME' stopped », sortie 0.
@@ -1226,12 +1231,72 @@ ok /etc/durable-startup.d/002-startup-den-alpha/000-cmd.sh
   `sbx exec` — c'est la réserve n°6 laissée ouverte par le smoke réel n°2, mesurée ici. Seul le
   **dernier** bloc décrit la sandbox telle qu'elle est.
 
+### Le relevé du 2026-08-10 (smoke réel n°4, **v0.37.1** — issue #57)
+
+**La version a changé.** `sbx version` rend
+`sbx version: v0.37.1 2d4f32448c7a94d7fa525517dfca21aa36599829`. Tout le reste du §14.0 reste
+attesté contre **v0.35.0** et n'est **pas** ré-attesté ici : la règle du §14.0 vaut telle quelle —
+ce qui n'est pas dans un relevé n'est pas attesté. Ce smoke a exercé sans divergence visible
+`create` (avec `--name` et `--template`), `exec`, `rm --force`, `ls --json` et
+`template ls --json`. Il ne dit **rien** des autres commandes sur v0.37.1. Le re-relevé complet
+annoncé plus bas reste dû.
+
+**La question mesurée** (une seule) : que contient `/home/agent/.ssh` dans une sandbox fraîchement
+créée ? C'est la prémisse dont dépend `ssh.mode: mount` — la phase de lien est fail-closed et refuse
+un répertoire **non vide** à la cible (§10.1), donc une image de base qui sème un `known_hosts` ou
+un `config` par défaut ferait mourir au boot **chaque** spawn `ssh.mode: mount`.
+
+**Réponse : `/home/agent/.ssh` est ABSENT.** Mesuré par `ls -A /home/agent` dans une sandbox neuve,
+sur les quatre images disponibles sur la machine de mesure :
+
+```
+docker/sandbox-templates:shell-docker         (stock)   → .ssh absent
+docker/sandbox-templates:claude-code-docker   (stock)   → .ssh absent
+devx:v1                                       (dérivée) → .ssh absent
+godev:v1                                      (dérivée) → .ssh absent
+```
+
+Le `$HOME` du dispatcher et celui de `sbx exec` sont le même : `id` rend
+`uid=1000(agent) gid=1000(agent) groups=1000(agent),27(sudo),1001(docker)`, et `/home/agent` est
+`drwxr-xr-x agent agent` — donc le `rmdir` de la phase de lien a bien le droit d'écriture sur le
+parent, ce qui est le vrai verrou et pas seulement la vacuité du répertoire.
+
+**Vérifié de bout en bout, pas déduit.** Un `den spawn --detach` réel, sur un `DEN_HOME` jetable
+déclarant `ssh:{mode: mount, dir: <jetable>}` et l'image stock `shell-docker`, a démarré. Le journal
+du dispatcher :
+
+```
+> /etc/durable-startup.d/002-startup-den-probe/000-cmd.sh
+den mounts: linking 1 mount(s)
+den mounts: /home/agent/.ssh -> /private/tmp/.../denhome/ssh
+ok /etc/durable-startup.d/002-startup-den-probe/000-cmd.sh
+```
+
+et dans la VM, `/home/agent/.ssh` est un symlink `agent:agent` vers le chemin hôte. C'est la phase
+de lien **réelle**, sous le `su … agent` du dispatcher, pas un rejeu à la main.
+
+**A11 est re-mesurée par ce même smoke, dans les deux sens.** Le §14.1 la donne **fermée depuis le
+2026-07-29** ; c'est le commentaire de `internal/agent/links.go` qui la disait encore « still
+unverified », et c'est lui qui était périmé — corrigé le 2026-08-10. Ici : `den_link` a passé son test
+`[ ! -e "$src" ]` sur le chemin **hôte** du répertoire monté, et un fichier créé côté hôte dans ce
+répertoire est ressorti par `ls -A /home/agent/.ssh` côté VM. `sbx` monte donc bien un workspace au
+**même chemin absolu** dans la VM. Le refus « source absente » de `linkFunc` reste néanmoins en
+place : il garde le cas d'un chemin hôte qui disparaît, qu'A11 ne couvre pas.
+
+**Ce que ce relevé ferme.** L'inquiétude de l'issue #57 s'évapore : aucune des deux branches de
+travail qu'elle prévoyait (un message nommant le cas « l'image a posé des fichiers », et la question
+de savoir si `ssh.mode: mount` pourrait traiter un répertoire de défauts d'image comme vide) n'a
+lieu d'être — il n'y a pas de répertoire du tout. Personne n'a à trancher l'affaiblissement du
+fail-closed.
+
 ### Questions ouvertes et risques restants
 
 - **Surface `sbx` relevée le 2026-07-28 puis complétée le 2026-07-31** (v0.35.0), ci-dessus :
   `policy check network [--sandbox S] [--json] TARGET` confirmé **contre un `sbx` réel** ; `--label`
   **n'existe pas** → identité par le nom. v0.35.0 annonce v0.37.1 : **tout le §14.0 est à re-relever
-  au passage**, pas à extrapoler.
+  au passage**, pas à extrapoler. **Le 2026-08-10 la v0.37.1 est installée** (relevé ci-dessus) :
+  le re-relevé n'est plus « annoncé », il est **dû**, et il dépasse la portée du smoke n°4 qui n'a
+  exercé que `create`, `exec`, `rm --force`, `ls --json` et `template ls --json`.
 - **Portée de la policy egress d'un nest (F5) — la phrase juste.** L'`egress:` d'un nest est un
   **élargissement** de la policy de la machine, **jamais un rétrécissement**. den ne peut pas rendre
   une sandbox *moins* connectée que la `local-policy` de l'hôte ne l'autorise déjà (197 règles sur

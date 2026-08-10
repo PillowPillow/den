@@ -135,11 +135,14 @@ const linkFatal = "FATAL"
 // to a path that doesn't exist yet succeeds and prints nothing wrong, leaving
 // a dangling symlink that the tool follows straight into an ENOENT far from
 // this script — den would report success for a mount that never linked
-// anywhere. This is reachable in practice, not theoretical: spec hypothesis
-// A11 (sbx mounts a workspace at the same absolute path inside the VM) is
-// still unverified, so if A11 turns out false every mount's src is missing
-// and den would otherwise report success for all of them. Fail-closed here,
-// at boot, is the only place the user sees the real cause.
+// anywhere. This guard was written while spec hypothesis A11 (sbx mounts a
+// workspace at the same absolute path inside the VM) was still open: if A11
+// were false, every mount's src would be missing and den would otherwise
+// report success for all of them. A11 is now CLOSED — spec §14.1 (2026-07-29)
+// and re-measured through this very link phase on 2026-08-10 (§14.0, smoke
+// n°4) — but the guard stays: it still covers the host path that disappears
+// between the create and the boot, which A11 says nothing about. Fail-closed
+// here, at boot, is the only place the user sees the real cause.
 const linkFunc = `den_link() {
   src="$1"; dst="$2"; key="$3"
   if [ ! -e "$src" ]; then
