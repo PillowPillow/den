@@ -114,6 +114,24 @@ un TTY est alloué par défaut, `-T` le coupe.
   partagent le drapeau `-T` ; un utilisateur qui rencontrerait la contradiction refusée sur l'une et
   silencieusement acceptée sur l'autre lirait deux règles là où il n'y en a qu'une — c'est la
   normalisation silencieuse que le §2 de la spec interdit.
+- **Précision venue de l'implémentation (2026-08-10)** : la smoke test sur la branche a mesuré que la
+  sonde initiale (`os.Stdin.Stat().Mode()&os.ModeCharDevice`, alors nommée `StdinIsTerminal`) répond
+  vrai pour `/dev/null` — pas seulement pour un vrai terminal. `/dev/null` en entrée standard est
+  l'entrée standard canonique d'un job CI ou cron, et ce faux positif rejoignait exactement le chemin
+  que la règle TTY ci-dessus existe pour fermer : `./den exec <sb> -- echo hello < /dev/null` allouait
+  un tty, `sbx exec -it` avalait alors la sortie de la commande en silence tout en rendant `rc=0`
+  (mesure 5 ci-dessus). Le correctif retenu est un RÉTRÉCISSEMENT, pas une sonde exacte : la fonction
+  (renommée `LooksInteractive`) exige maintenant que stdin **et** stdout soient tous les deux des
+  périphériques caractère, ce qu'un vrai utilisateur interactif a et qu'une entrée `/dev/null` avec
+  une sortie redirigée n'a pas. Un test rigoureux par `ioctl` reste plus juste et est délibérément
+  reporté à un ticket séparé — ce module n'a pas de dépendance au-delà de la stdlib, cobra et
+  yaml.v3, et `ioctl` en demanderait une. Le rétrécissement laisse un cas résiduel nommé, pas caché :
+  `den exec <sb> -- cmd </dev/null` avec stdout encore attaché à un vrai terminal passe quand même le
+  test (les deux descripteurs sont des périphériques caractère) et alloue un tty. Conséquence
+  assumée sur `-i` : avec stdout redirigé, la checklist prend maintenant son refus propre même si
+  stdin est un vrai terminal — un choix cohérent (une checklist que l'utilisateur ne voit pas vaut
+  moins qu'un refus qui nomme l'équivalent non interactif), mais c'est un changement de comportement
+  par rapport à la sonde stdin-seule.
 
 ## Les quatre décisions
 

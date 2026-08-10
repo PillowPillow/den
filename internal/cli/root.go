@@ -78,7 +78,7 @@ func SystemDeps() Deps {
 		Scanner:   ports.ListenScanner{},
 		Open:      ports.OpenURL,
 		SSHAgent:  sshagent.System(),
-		IsTTY:     spawn.StdinIsTerminal,
+		IsTTY:     spawn.LooksInteractive,
 	}
 }
 
@@ -218,7 +218,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 // Ctrl-C and breaks `den exec`.
 //
 // The wiring itself is an untestable one-liner, in the shape spawn.
-// StdinIsTerminal and ports.ListenScanner already are: sending a real signal
+// LooksInteractive and ports.ListenScanner already are: sending a real signal
 // to the test binary is not something a hermetic suite does. No test exists
 // for this line; do not add one that sends signals.
 func Execute() error {

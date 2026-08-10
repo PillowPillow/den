@@ -593,15 +593,17 @@ func TestExecAcceptsAWorktreedSourceReference(t *testing.T) {
 // The contract of #60: `den exec api -- go test ./...` runs the command, and
 // the shell is what happens when no command is given — not the reverse.
 //
-// Deviation from the brief: executeCmdWithSbx leaves IsTTY as the REAL stdin
-// probe (spawn.StdinIsTerminal), which reports true for ANY char device —
-// including /dev/null, not just an actual terminal — so this test would flip
-// verdict depending on what fd 0 happens to be wherever it runs (measured:
-// this sandbox's `go test` stdin resolves as a char device). Every other
-// IsTTY-sensitive test in the repo (interactive_test.go, spawn_test.go:352)
-// injects a fixed probe instead of trusting the real one; this test now does
-// the same, through the same Deps+NewRootCmdWith form the sibling tests below
-// already use.
+// Deviation from the brief: executeCmdWithSbx leaves IsTTY as the REAL probe
+// (spawn.LooksInteractive), which reports true for ANY pair of char devices
+// on stdin AND stdout — including /dev/null, not just an actual terminal — so
+// this test would flip verdict depending on what fd 0 and fd 1 happen to be
+// wherever it runs (measured: this sandbox's `go test` resolves stdin as a
+// char device and stdout as NOT one, which happens to still answer false, but
+// that is this machine's shell, not a guarantee `go test` carries anywhere
+// else it runs). Every other IsTTY-sensitive test in the repo
+// (interactive_test.go, spawn_test.go:352) injects a fixed probe instead of
+// trusting the real one; this test now does the same, through the same
+// Deps+NewRootCmdWith form the sibling tests below already use.
 func TestExecRunsTheCommandAfterTheDoubleDash(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(

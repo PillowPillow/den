@@ -73,7 +73,7 @@ type Deps struct {
 	// is why the dozens of hand-built Deps in this package can keep ignoring it.
 	In io.Reader
 	// IsTTY reports whether In is a terminal, and is the ONE thing about `-i`
-	// no test covers — isolated into a one-liner (StdinIsTerminal) precisely so
+	// no test covers — isolated into a one-liner (LooksInteractive) precisely so
 	// that it, and not the selection logic, is what stays untested.
 	//
 	// Nil means NO terminal, deliberately: an unwired probe must take `-i`'s
