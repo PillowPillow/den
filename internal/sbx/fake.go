@@ -46,6 +46,12 @@ type Fake struct {
 	// Run feeds only Calls.
 	Attaches [][]string
 
+	// Pipes records ONLY the calls to Pipe, in order. Same reason as Attaches:
+	// Calls conflates every method, so a Run whose argv starts with "exec"
+	// would otherwise satisfy an assertion meant for a command actually run in
+	// the sandbox. Pipe feeds both Calls and Pipes.
+	Pipes [][]string
+
 	// Responses maps a call to a response, key = args joined by a space (e.g.
 	// "ls --json"). An argument that itself contains a space (a workspace path,
 	// say) can therefore produce a key ambiguous with another call: avoid that
@@ -58,6 +64,11 @@ type Fake struct {
 	// AttachErr is returned by Attach. The fact that the attach happened is
 	// still recorded in Calls even if it fails.
 	AttachErr error
+
+	// PipeErr is returned by Pipe. The call is still recorded when it fails —
+	// a test asserting "den ran the command AND propagated its failure" needs
+	// both halves.
+	PipeErr error
 }
 
 // Run returns a COPY of the scripted output (never the underlying slice): a
@@ -108,6 +119,14 @@ func (f *Fake) Attach(_ context.Context, args ...string) error {
 	return f.AttachErr
 }
 
+func (f *Fake) Pipe(_ context.Context, args ...string) error {
+	f.mu.Lock()
+	f.Calls = append(f.Calls, slices.Clone(args))
+	f.Pipes = append(f.Pipes, slices.Clone(args))
+	f.mu.Unlock()
+	return f.PipeErr
+}
+
 // HasCalled reports whether a call started with this argument prefix.
 // Assertion by prefix, not equality: a test checking "a create did happen"
 // must not break because one more path got mounted.
@@ -130,6 +149,20 @@ func (f *Fake) HasAttached(prefix ...string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, a := range f.Attaches {
+		if len(a) >= len(prefix) && slices.Equal(a[:len(prefix)], prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasPiped reports whether a PIPE (never a Run, never an Attach) started with
+// this prefix. Same pattern as HasAttached, over Pipes: use it to assert that a
+// non-interactive command was run, or that none was.
+func (f *Fake) HasPiped(prefix ...string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.Pipes {
 		if len(a) >= len(prefix) && slices.Equal(a[:len(prefix)], prefix) {
 			return true
 		}

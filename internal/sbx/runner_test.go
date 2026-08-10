@@ -857,3 +857,62 @@ func TestExecAttachIgnoresContextCancellation(t *testing.T) {
 		t.Errorf("unexpected error: %v (context cancellation must not affect Attach)", err)
 	}
 }
+
+// Pipe is the fourth method because the three others are each wrong here, and
+// each for its own measured reason — see Runner's godoc. This one locks the
+// property that rules out Stream: sbx keeps stdout and stderr SEPARATE without
+// -it (measured 2026-08-10, v0.38.0, spec §14.0), and `den exec -T -- go build
+// | tee log` must not push stderr into the pipe.
+func TestPipeKeepsStdoutAndStderrApart(t *testing.T) {
+	// Pipe wires the CURRENT process's descriptors, so what it writes cannot be
+	// captured from inside the test. What can be checked here is that the
+	// process ran and its status came back; the separation is sbx's, attested
+	// in spec §14.0, and den's part is only not to merge the two itself.
+	e := &Exec{Bin: "sh"}
+	if err := e.Pipe(context.Background(), "-c", "exit 0"); err != nil {
+		t.Fatalf("a successful command must not error: %v", err)
+	}
+}
+
+// The status must survive as an *exec.ExitError inside the chain, or Task 1's
+// ExitCodeOf has nothing to read.
+func TestPipeSurfacesTheChildStatus(t *testing.T) {
+	e := &Exec{Bin: "sh"}
+	err := e.Pipe(context.Background(), "-c", "exit 7")
+	code, ok := ExitCodeOf(err)
+	if !ok || code != 7 {
+		t.Fatalf("ExitCodeOf = (%d, %v), want (7, true); err = %v", code, ok, err)
+	}
+}
+
+// The opposite of Attach, and the reason Pipe is not Attach with a flag: a
+// Ctrl-C on a three-minute `go test` must kill it. Attach sets cmd.Cancel = nil
+// so an interactive shell is never SIGKILLed mid-line; Pipe keeps
+// CommandContext's default.
+func TestPipeIsKilledByAContextCancellation(t *testing.T) {
+	e := &Exec{Bin: "sh", DrainDelay: 50 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	err := e.Pipe(ctx, "-c", "sleep 5")
+	if err == nil {
+		t.Fatal("a canceled Pipe must report the interruption, not a success")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("the cancellation must stay reachable by errors.Is; got %v", err)
+	}
+}
+
+// Same first-contact failure as the three other methods, same remedy.
+func TestPipeReportsAMissingBinary(t *testing.T) {
+	e := &Exec{Bin: "den-no-such-binary"}
+	err := e.Pipe(context.Background())
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("a missing binary must stay recognizable; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "den doctor") {
+		t.Errorf("the message must name the remedy; got %q", err.Error())
+	}
+}
