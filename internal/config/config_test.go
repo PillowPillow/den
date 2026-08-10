@@ -506,3 +506,115 @@ mounts:
 		})
 	}
 }
+
+// Unlike Link, Host got no normalization at all before this test: only
+// TrimSpace + ExpandPath, and ExpandPath returns its input UNCHANGED except
+// for a leading "~". `filepath.IsAbs("/p/")` is true, so an unclean Host
+// used to sail through Validate untouched. This branch's
+// reportUnmountedMounts (internal/spawn) then compares Host against sbx's
+// own echo BYTE FOR BYTE, by design — if sbx normalizes what it echoes in
+// `sbx ls --json`, a trailing slash the user typed would make den print
+// "is not mounted" on every attach, forever, about a mount that IS mounted.
+// filepath.Clean at load removes the whole class rather than one spelling.
+func TestLoadGlobalCleansMountHost(t *testing.T) {
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: /tmp/host/
+    link: $HOME/.link
+`)
+	g, err := LoadGlobalUnvalidated(denHome)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(g.Mounts) != 1 {
+		t.Fatalf("got %d mounts, want 1", len(g.Mounts))
+	}
+	if g.Mounts[0].Host != "/tmp/host" {
+		t.Errorf("host not cleaned: got %q, want %q", g.Mounts[0].Host, "/tmp/host")
+	}
+}
+
+// Same exposure as TestLoadGlobalCleansMountHost, but on the ssh.mode: mount
+// desugaring path: nest.resolveMounts turns `ssh.dir` into a Mount whose Host
+// IS this string (internal/nest/resolve.go), so an uncleaned ssh.dir reaches
+// the same byte-for-byte comparison as a hand-written `mounts:` entry.
+func TestLoadGlobalCleansSSHDir(t *testing.T) {
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: mount
+  dir: /tmp/ssh-dir/
+`)
+	g, err := LoadGlobalUnvalidated(denHome)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if g.SSH.Dir != "/tmp/ssh-dir" {
+		t.Errorf("ssh.dir not cleaned: got %q, want %q", g.SSH.Dir, "/tmp/ssh-dir")
+	}
+}
+
+// Validate must still be able to distinguish "ssh.dir not set" from "ssh.dir
+// set to the current directory": filepath.Clean("") is ".", so the Clean at
+// load above is guarded to leave an empty ssh.dir empty. Without the guard,
+// `ssh.mode: mount` with no `dir:` at all would silently pass validation
+// instead of refusing "ssh.dir: required when ssh.mode is mount".
+func TestLoadGlobalEmptySSHDirStillRefusesUnderMountMode(t *testing.T) {
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: mount
+`)
+	_, err := LoadGlobal(denHome)
+	if err == nil {
+		t.Fatal("want a validation error naming ssh.dir, got nil")
+	}
+	if !strings.Contains(err.Error(), "ssh.dir") {
+		t.Errorf("error = %v, want it to name ssh.dir", err)
+	}
+}
+
+// Same guard, same reason, on the mounts[] side: without it, `filepath.Clean`
+// would turn an empty `host:` into ".", and validateMounts's
+// `strings.TrimSpace(m.Host) == ""` check would never see the empty string it
+// exists to catch. The assertion is on the SPECIFIC "required" message, not
+// merely on "mounts[0].host" appearing at all: "." also fails the sibling
+// `!filepath.IsAbs` check with that same prefix, so a looser assertion would
+// stay green even if the empty-string guard were deleted — this pins the
+// exact refusal an empty host must produce.
+func TestLoadGlobalEmptyMountHostStillRefuses(t *testing.T) {
+	denHome := writeConfig(t, `
+agents:
+  claude:
+    update: claude update
+defaults:
+  agent: claude
+  stack: devx
+mounts:
+  - host: ""
+    link: $HOME/.link
+`)
+	_, err := LoadGlobal(denHome)
+	if err == nil {
+		t.Fatal("want a validation error naming mounts[0].host, got nil")
+	}
+	if !strings.Contains(err.Error(), "mounts[0].host: required") {
+		t.Errorf("error = %v, want it to refuse with mounts[0].host: required", err)
+	}
+}
