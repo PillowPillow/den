@@ -223,6 +223,8 @@ func TestSpawnDoesNotWarnAboutMountsWhenThereAreNone(t *testing.T) {
 Run: `go test ./internal/spawn/ -run 'TestSpawnWarnsWhenALiveSandboxDoesNotMountANewLinklessMount|TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEveryConfiguredMount|TestSpawnDoesNotWarnAboutMountsWhenThereAreNone' -count=1`
 Expected: le premier FAIL sur `expected the mounts warning header` ; les deux autres PASSENT déjà (rien n'imprime encore). C'est normal : ce sont des tests de non-régression pour les tâches 2 et 3.
 
+**Lancer les trois, pas seulement le rouge.** Le test qui échoue est le SEUL qui prouve que l'appel de l'étape 4 existe : écrire la fonction sans la brancher laisse deux tests verts sur trois, et un implémenteur qui ne lance que les silencieux se croit arrivé.
+
 - [ ] **Step 3: écrire l'implémentation minimale**
 
 Ajouter dans `internal/spawn/spawn.go`, après `reportNestChangedSinceCreation` :
@@ -475,7 +477,14 @@ git commit -m "feat: name both sides of a ro:/rw: flip instead of claiming the m
 // `mounts:` block of the user's config.yaml, and sending them to a key they
 // never wrote is the defect nest.Mount.Key exists to prevent.
 func TestSpawnWarnsAboutAnEditedSSHDirLikeAnyOtherMount(t *testing.T) {
-	sshDir := t.TempDir()
+	// CREATED, like every other `ssh.mode: mount` test in this file
+	// (TestSpawnMountsTheRepoBeforeTheAgentProfileAndSSH): mount mode refuses a
+	// missing ssh.dir before any side effect, and that refusal would abort this
+	// spawn long before the warning under test.
+	sshDir := filepath.Join(t.TempDir(), "ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	denHome, repo := denTestSSH(t, "  mode: mount\n  dir: "+sshDir+"\n")
 
 	// The VM was created with a DIFFERENT ssh.dir — it does not mount this one.
