@@ -3864,3 +3864,42 @@ func TestSpawnDoesNotWarnAboutMountsWhenThereAreNone(t *testing.T) {
 		t.Errorf("log = %q, expected no mounts warning", out.String())
 	}
 }
+
+// `ssh.mode: mount` is SUGAR: nest.resolveMounts desugars it into an ordinary
+// `mounts:` entry, so editing ssh.dir under a live sandbox is covered by the
+// same code with no branch of its own. Locked here because the day someone
+// reintroduces an `if SSHMode == …` in spawn, this is the test that fails.
+//
+// The key printed is `ssh.dir`, NOT `mounts[0]`: the entry appears in no
+// `mounts:` block of the user's config.yaml, and sending them to a key they
+// never wrote is the defect nest.Mount.Key exists to prevent.
+func TestSpawnWarnsAboutAnEditedSSHDirLikeAnyOtherMount(t *testing.T) {
+	// CREATED, like every other `ssh.mode: mount` test in this file
+	// (TestSpawnMountsTheRepoBeforeTheAgentProfileAndSSH): mount mode refuses a
+	// missing ssh.dir before any side effect, and that refusal would abort this
+	// spawn long before the warning under test.
+	sshDir := filepath.Join(t.TempDir(), "ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	denHome, repo := denTestSSH(t, "  mode: mount\n  dir: "+sshDir+"\n")
+
+	// The VM was created with a DIFFERENT ssh.dir — it does not mount this one.
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{Output: []byte(
+		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Detach: true}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	log := out.String()
+	if !strings.Contains(log, sshDir) {
+		t.Errorf("log = %q, expected it to name the ssh dir the VM does not mount", log)
+	}
+	if !strings.Contains(log, "ssh.dir") {
+		t.Errorf("log = %q, expected the key `ssh.dir`, not a mounts[N] the user never wrote", log)
+	}
+}
