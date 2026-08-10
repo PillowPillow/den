@@ -3896,10 +3896,14 @@ func TestSpawnWarnsAboutAnEditedSSHDirLikeAnyOtherMount(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	log := out.String()
-	if !strings.Contains(log, sshDir) {
-		t.Errorf("log = %q, expected it to name the ssh dir the VM does not mount", log)
-	}
-	if !strings.Contains(log, "ssh.dir") {
-		t.Errorf("log = %q, expected the key `ssh.dir`, not a mounts[N] the user never wrote", log)
+	// One exact assertion on the rendered line, not two loose substrings:
+	// reportUnmountedMounts prints "  - <host> (<key>)", so composing them
+	// into "- <sshDir> (ssh.dir)" pins both the path AND that it is named by
+	// the `ssh.dir` key — not a `mounts[N]` the user never wrote — on the SAME
+	// line, which two separate Contains checks cannot tell apart from a
+	// coincidence of two unrelated lines.
+	want := "- " + sshDir + " (ssh.dir)"
+	if !strings.Contains(log, want) {
+		t.Errorf("log = %q, want it to contain %q", log, want)
 	}
 }

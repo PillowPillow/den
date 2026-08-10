@@ -1059,6 +1059,9 @@ sbx ls [--json] [-q]
       "workspaces": ["<…>/probe-rw", "<…>/probe-ro:ro"]
     C'est ce qui permet à spawn.reportUnmountedMounts de voir un `ro:` retourné sans rien
     enregistrer côté hôte (#56, spec 2026-08-10-mounts-drift-design.md).
+    Relevé sur une sandbox EN MARCHE ; le comportement de `workspaces` sur une sandbox arrêtée
+    n'est pas mesuré — s'il suivait `ports` (piège ci-dessus), chaque mount configuré lirait
+    « is not mounted » juste au-dessus de la ligne de statut « arrêtée ».
   ⚠️ Cette machine porte sbx v0.37.1, alors que tout le reste du présent relevé date de v0.35.0.
     Le reste est à re-mesurer.
 
