@@ -315,11 +315,17 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 	}
 
-	// `-i` feeds the SAME input as `--without`, and nothing more: the checklist
-	// is a source of input placed in front of a selection rule that already
-	// exists and is already tested (nest.Resolve). Nothing here reopens it.
+	// The checklist has TWO entry points and ONE implementation: `-i` on any
+	// nest, and a `select: prompt` nest that has no default selection to
+	// offer. Both write into the SAME `without` list that --without fills, so
+	// nest.Resolve keeps applying the one selection rule it already owns.
+	//
+	// A selection flag answers the question outright, so it silences both
+	// entry points — that is what makes a prompting nest usable from `den
+	// exec`, a script and CI, and `-i` + a flag is refused far upstream (step
+	// 0) as the contradiction it is.
 	without := o.Without
-	if o.Interactive {
+	if (o.Interactive || n.PromptsForRepos()) && len(o.Without) == 0 && len(o.Only) == 0 {
 		if without, err = interactiveWithout(d, n, g.Repos); err != nil {
 			return err
 		}

@@ -83,6 +83,15 @@ func interactiveWithout(d Deps, n *nest.Nest, mapping map[string]string) ([]stri
 	// take the clean refusal below, not hang the spawn on a read nobody
 	// answers.
 	if d.IsTTY == nil || !d.IsTTY() {
+		// The prefix follows the entry point: naming `-i` to someone who never
+		// typed it sends them looking for a flag they did not use. Both
+		// sentences name the same remedy, because there IS only one.
+		if n.PromptsForRepos() {
+			return nil, fmt.Errorf(
+				"nest %s selects its repos at spawn time and there is no terminal on den's input — "+
+					"the checklist has nobody to ask, and reading anyway would block a pipe or a CI "+
+					"job forever; %s", n.Name, nonInteractiveEquivalents)
+		}
 		return nil, fmt.Errorf(
 			"-i: no terminal on den's input — the checklist has nobody to ask, and reading anyway would "+
 				"block a pipe or a CI job forever; %s", nonInteractiveEquivalents)

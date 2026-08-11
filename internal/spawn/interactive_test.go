@@ -355,3 +355,107 @@ func TestSpawnPromptsOnTheInjectedStreams(t *testing.T) {
 		t.Errorf("the checklist must list the optional repos:\n%s", out.String())
 	}
 }
+
+// denTestPrompting is denTestOptional's nest, with `select: prompt` and every
+// repo optional — the generic nest of the spec, in miniature.
+func denTestPrompting(t *testing.T) string {
+	t.Helper()
+	denHome, repos := denTestOptional(t)
+	write(t, filepath.Join(denHome, "nests", "generic.yaml"),
+		"stack: devx\nselect: prompt\nrepos:\n"+
+			"  - { path: "+repos["api"]+", optional: true }\n"+
+			"  - { path: "+repos["worker"]+", optional: true }\n"+
+			"  - { path: "+repos["docs"]+", optional: true }\n")
+	return denHome
+}
+
+// THE acceptance criterion of the mode, and the same one -i already carries:
+// the checklist is a source of input placed in front of nest.Resolve, never a
+// second selection rule. Compared on the rendered argv — two selections that
+// merely LOOK equivalent are exactly what this test exists to catch.
+func TestPromptModeProducesTheSameArgvAsTheEquivalentOnly(t *testing.T) {
+	denHome := denTestPrompting(t)
+
+	promptFake, promptDeps := fakeDeps()
+	promptDeps.In = strings.NewReader("1 2\n\n") // tick api and worker
+	promptDeps.IsTTY = func() bool { return true }
+	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, promptDeps); err != nil {
+		t.Fatalf("prompting spawn: %v", err)
+	}
+
+	flagFake, flagDeps := fakeDeps()
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "generic", Only: []string{"api", "worker"}}, flagDeps); err != nil {
+		t.Fatalf("--only spawn: %v", err)
+	}
+
+	if !slices.EqualFunc(promptFake.Calls, flagFake.Calls, slices.Equal) {
+		t.Errorf("select: prompt and the equivalent --only must produce the SAME sbx calls\nprompt: %v\n--only: %v",
+			promptFake.Calls, flagFake.Calls)
+	}
+	if !promptFake.HasCalled("create") {
+		t.Fatalf("no create to compare; calls: %v", promptFake.Calls)
+	}
+}
+
+// A prompt cannot be literally mandatory: spawn already refuses -i without a
+// terminal, and den exec exists for pipes and CI. The refusal names the
+// non-interactive form, in the same breath.
+func TestPromptModeRefusesWithoutATerminal(t *testing.T) {
+	denHome := denTestPrompting(t)
+	f, d := fakeDeps()
+	d.IsTTY = func() bool { return false }
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, d)
+	if err == nil {
+		t.Fatal("a prompting nest with no terminal and no --only must be refused")
+	}
+	if !strings.Contains(err.Error(), "--only") {
+		t.Errorf("the refusal must name the non-interactive form, got: %v", err)
+	}
+	if f.HasCalled("create") {
+		t.Errorf("refused, yet something was created: %v", f.Calls)
+	}
+}
+
+// --only answers the question, so there is nothing left to ask: no terminal is
+// needed and none is probed. This is what makes the mode usable from `den
+// exec`, a script and CI.
+func TestPromptModeWithOnlyNeedsNoTerminal(t *testing.T) {
+	denHome := denTestPrompting(t)
+	f, d := fakeDeps()
+	d.IsTTY = func() bool { return false }
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "generic", Only: []string{"api"}}, d); err != nil {
+		t.Fatalf("--only on a prompting nest must not need a terminal: %v", err)
+	}
+	if !f.HasCalled("create") {
+		t.Errorf("nothing was created: %v", f.Calls)
+	}
+}
+
+// -i on a prompting nest is REDUNDANT, not contradictory: it asks for the
+// checklist the nest opens anyway. Accepted, and identical.
+func TestPromptModeAcceptsRedundantInteractiveFlag(t *testing.T) {
+	denHome := denTestPrompting(t)
+
+	bare, bareDeps := fakeDeps()
+	bareDeps.In = strings.NewReader("1\n\n")
+	bareDeps.IsTTY = func() bool { return true }
+	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, bareDeps); err != nil {
+		t.Fatalf("bare spawn: %v", err)
+	}
+
+	withI, withIDeps := fakeDeps()
+	withIDeps.In = strings.NewReader("1\n\n")
+	withIDeps.IsTTY = func() bool { return true }
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "generic", Interactive: true}, withIDeps); err != nil {
+		t.Fatalf("-i spawn: %v", err)
+	}
+
+	if !slices.EqualFunc(bare.Calls, withI.Calls, slices.Equal) {
+		t.Errorf("-i on a prompting nest must change nothing\nbare: %v\n-i:   %v", bare.Calls, withI.Calls)
+	}
+}
