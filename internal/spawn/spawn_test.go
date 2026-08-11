@@ -176,6 +176,28 @@ func fakeDeps() (*sbx.Fake, Deps) {
 	return fakeDepsWithVerdict(`{"allowed": true}`)
 }
 
+// createdNothing reports whether the only thing this spawn asked of sbx is the
+// liveness listing.
+//
+// It replaces `len(f.Calls) != 0` at every refusal site downstream of step
+// 1bis, where the listing now runs BEFORE nest.Resolve's config refusals so
+// that a live sandbox is never asked a repo question it cannot act on. The
+// property those assertions defend is unchanged and is the one spec §6 states:
+// a refusal creates NOTHING. `sbx ls` creates nothing.
+//
+// Written as "every call is the listing" rather than "create was not called":
+// a spawn that reached the policy loop or `template ls` before refusing has
+// still moved past the point these tests guard, and would go unnoticed under
+// the narrower form.
+func createdNothing(f *sbx.Fake) bool {
+	for _, call := range f.Calls {
+		if !slices.Equal(call, []string{"ls", "--json"}) {
+			return false
+		}
+	}
+	return len(f.Attaches) == 0
+}
+
 func fakeDepsWithVerdict(verdict string) (*sbx.Fake, Deps) {
 	f := &sbx.Fake{
 		Responses: map[string]sbx.Response{
@@ -1368,8 +1390,8 @@ func TestSpawnRefusesAMissingSSHDir(t *testing.T) {
 		t.Errorf("error = %q, expected the full path of the missing directory", err.Error())
 	}
 	// Refused BEFORE any side effect, like the missing repos.
-	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
-		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v, attaches: %v", f.Calls, f.Attaches)
 	}
 	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
 		t.Error("the agent profile must not have been created before the refusal")
@@ -1498,8 +1520,8 @@ func TestSpawnRefusalForAnSSHDirThatIsAFileStillNamesSSHDir(t *testing.T) {
 // precede every side effect: no sbx call, no attach, no agent profile on disk.
 func assertNoSideEffect(t *testing.T, f *sbx.Fake, denHome string) {
 	t.Helper()
-	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
-		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v, attaches: %v", f.Calls, f.Attaches)
 	}
 	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
 		t.Error("the agent profile must not have been created before the refusal")
@@ -1623,8 +1645,8 @@ func TestSpawnRefusesAMissingKit(t *testing.T) {
 				t.Errorf("error = %q, expected the offending stack named", err.Error())
 			}
 			// Refused BEFORE any side effect, like the repos and ssh.dir.
-			if len(f.Calls) != 0 || len(f.Attaches) != 0 {
-				t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v",
+			if !createdNothing(f) {
+				t.Errorf("the refusal must create nothing; calls: %v, attaches: %v",
 					f.Calls, f.Attaches)
 			}
 			if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
@@ -1784,10 +1806,13 @@ func TestSpawnStopsBeforeCreateWhenARepoIsMissing(t *testing.T) {
 	} else if !strings.Contains(err.Error(), repo) {
 		t.Errorf("the message must name the missing repo; got: %v", err)
 	}
-	// No call at all, not just no create: the check must precede even the
-	// spawn-or-attach's `sbx ls`.
-	if len(f.Calls) != 0 {
-		t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
+	// Nothing created. This assertion used to read "no call at all, not even
+	// the spawn-or-attach's `sbx ls`" — the listing now runs FIRST (step 1bis),
+	// so that a live sandbox is never asked a repo question nothing can act on.
+	// What §11 buys is unchanged: a listing creates nothing, and this still
+	// fails on the first call that does.
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 	}
 	// And no disk side effect either. Spec §11 says "stop before any
 	// create", but the intent is "before any side effect": without both
@@ -1952,8 +1977,8 @@ func TestSpawnPropagatesCascadeOptions(t *testing.T) {
 			if !strings.Contains(err.Error(), c.expected) {
 				t.Errorf("%s doesn't reach the cascade (expected %q); got: %v", c.name, c.expected, err)
 			}
-			if len(f.Calls) != 0 {
-				t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
+			if !createdNothing(f) {
+				t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 			}
 		})
 	}
@@ -2002,8 +2027,8 @@ func TestSpawnRefusesARelativeDenHome(t *testing.T) {
 	if !strings.Contains(err.Error(), "not an absolute path") {
 		t.Errorf("the message must name the cause; got: %v", err)
 	}
-	if len(f.Calls) != 0 {
-		t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 	}
 }
 

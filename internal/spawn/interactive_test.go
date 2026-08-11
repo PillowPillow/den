@@ -3,6 +3,7 @@ package spawn
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/PillowPillow/den/internal/nest"
+	"github.com/PillowPillow/den/internal/sbx"
 )
 
 // optionalRepos is the fixture of the checklist: one required repo the user
@@ -299,8 +301,11 @@ func TestSpawnRefusesInteractiveWithoutATerminal(t *testing.T) {
 	if !strings.Contains(err.Error(), "--only") || !strings.Contains(err.Error(), "--without") {
 		t.Errorf("the refusal must name the non-interactive equivalents: %v", err)
 	}
-	if len(f.Calls) != 0 {
-		t.Errorf("no sbx call may precede the refusal: %v", f.Calls)
+	// The liveness listing precedes this refusal now — the checklist only opens
+	// once den knows there is no sandbox to attach to. It creates nothing, which
+	// is what this assertion has always been about.
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing: %v", f.Calls)
 	}
 }
 
@@ -457,5 +462,84 @@ func TestPromptModeAcceptsRedundantInteractiveFlag(t *testing.T) {
 
 	if !slices.EqualFunc(bare.Calls, withI.Calls, slices.Equal) {
 		t.Errorf("-i on a prompting nest must change nothing\nbare: %v\n-i:   %v", bare.Calls, withI.Calls)
+	}
+}
+
+// Decision 6: on a live sandbox, no prompt at all. Asking someone to pick
+// repos that cannot be mounted is the silence §2 forbids — and the question
+// would be put to somebody with no way to guess it is pointless.
+//
+// The input is a reader that FAILS if read: an assertion on the rendered
+// output would pass on a prompt that was drawn and then ignored.
+type failingReader struct{ t *testing.T }
+
+func (r failingReader) Read([]byte) (int, error) {
+	r.t.Fatal("the checklist was opened on a live sandbox: nothing it collects can be mounted")
+	return 0, io.EOF
+}
+
+func TestPromptModeDoesNotPromptWhenAttaching(t *testing.T) {
+	denHome := denTestPrompting(t)
+
+	// Create it once, with a selection.
+	_, first := fakeDeps()
+	first.In = strings.NewReader("1\n\n")
+	first.IsTTY = func() bool { return true }
+	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, first); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+
+	// Attach it. Same name, no flags — the checklist must stay shut.
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	d.Out = &out
+	// The Fake reports `generic` as running — the same scripting every attach
+	// test in this package uses (spawn_test.go:309).
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"generic","status":"running","workspaces":["/w/api"]}]}`),
+	}
+	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, d); err != nil {
+		t.Fatalf("attaching spawn: %v", err)
+	}
+	if !strings.Contains(out.String(), "--as") {
+		t.Errorf("the attach message must name the way to run a different set:\n%s", out.String())
+	}
+}
+
+// The same guard, reached by the OTHER entry point. The condition that closes
+// the checklist is `live == nil`, ahead of both entry points, so `-i` on a live
+// sandbox is silent for exactly the reason a prompting nest is: nothing a
+// selection collects can be mounted on a VM whose mounts come from its creation.
+//
+// An order that depends on a configuration key would be two spawn sequences to
+// keep true, and §6 describes one — this test is what makes the second reading
+// fail out loud rather than drift.
+//
+// It asserts the SILENCE only: on an `api` nest (no `select: prompt`) the
+// explanatory `--as` lines do not print, deliberately — the remedy answers a
+// question this user never asked.
+func TestInteractiveDoesNotPromptWhenAttaching(t *testing.T) {
+	denHome, repos := denTestOptional(t)
+
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repos["api"] + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Interactive: true}, d); err != nil {
+		t.Fatalf("attaching spawn: %v", err)
+	}
+	if f.HasCalled("create") {
+		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
+	}
+	if !strings.Contains(out.String(), "already live") {
+		t.Errorf("the attach must be announced:\n%s", out.String())
 	}
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -116,6 +117,28 @@ func emptySbxFake() *sbx.Fake {
 	}
 }
 
+// spawnCreatedNothing reports whether the only thing a refused spawn asked of
+// sbx is the liveness listing.
+//
+// spawn.Spawn reads the sandbox list BEFORE nest.Resolve, so that a live
+// sandbox is never asked a repo question nothing can act on (internal/spawn,
+// step 1bis). Every refusal that comes out of the cascade therefore has one
+// `sbx ls` behind it. The property these assertions defend is unchanged and is
+// the one spec §6 states: a refusal creates NOTHING, and a listing creates
+// nothing.
+//
+// Duplicated from internal/spawn's own helper rather than exported: it is a
+// test-only predicate about a test double, and exporting it from a production
+// package to share three call sites is the wrong trade.
+func spawnCreatedNothing(f *sbx.Fake) bool {
+	for _, call := range f.Calls {
+		if !slices.Equal(call, []string{"ls", "--json"}) {
+			return false
+		}
+	}
+	return len(f.Attaches) == 0
+}
+
 func fakeSpawnDeps() (*sbx.Fake, spawn.Deps) {
 	f := emptySbxFake()
 	// Built FIELD BY FIELD, not from a `spawn.SystemDeps()` whose Sbx would
@@ -178,8 +201,8 @@ func TestFlagsReachSpawnOptions(t *testing.T) {
 			if !strings.Contains(err.Error(), c.expected) {
 				t.Errorf("%s does not reach spawn.Options (expected %q); got: %v", c.name, c.expected, err)
 			}
-			if len(f.Calls) != 0 {
-				t.Errorf("no sbx call must have happened; calls: %v", f.Calls)
+			if !spawnCreatedNothing(f) {
+				t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 			}
 		})
 	}
@@ -498,8 +521,8 @@ func TestPositionalsReachSpawnOptionsAsRepos(t *testing.T) {
 	if !strings.Contains(err.Error(), "command line") {
 		t.Errorf("error = %q, expected it to name the command line as the place to fix", err)
 	}
-	if len(f.Calls) != 0 {
-		t.Errorf("no sbx call must have happened; calls: %v", f.Calls)
+	if !spawnCreatedNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 	}
 }
 
@@ -517,8 +540,8 @@ func TestSeveralPositionalsAllReachSpawnOptions(t *testing.T) {
 	if !strings.Contains(err.Error(), missing) {
 		t.Errorf("only the first positional seems to reach spawn.Options; got: %v", err)
 	}
-	if len(f.Calls) != 0 {
-		t.Errorf("no sbx call must have happened; calls: %v", f.Calls)
+	if !spawnCreatedNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 	}
 }
 

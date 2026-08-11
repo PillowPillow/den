@@ -315,42 +315,27 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 	}
 
-	// The checklist has TWO entry points and ONE implementation: `-i` on any
-	// nest, and a `select: prompt` nest that has no default selection to
-	// offer. Both write into the SAME `without` list that --without fills, so
-	// nest.Resolve keeps applying the one selection rule it already owns.
+	// ORDER, load-bearing. The name is computed and the sandbox list is read
+	// BEFORE the checklist, so a live sandbox is attached to without a
+	// question nobody can act on.
 	//
-	// A selection flag answers the question outright, so it silences both
-	// entry points — that is what makes a prompting nest usable from `den
-	// exec`, a script and CI, and `-i` + a flag is refused far upstream (step
-	// 0) as the contradiction it is.
-	without := o.Without
-	if (o.Interactive || n.PromptsForRepos()) && len(o.Without) == 0 && len(o.Only) == 0 {
-		if without, err = interactiveWithout(d, n, g.Repos); err != nil {
-			return err
-		}
-	}
-	// The working directory is read HERE, once, and handed to internal/nest,
-	// which stays pure: `den spawn scratch .` is then assertable without a test having
-	// to chdir. os.Getwd is world access, like the os.Stat probes at step 2 —
-	// this side of the boundary is where it belongs.
+	// This puts a `sbx ls` READ ahead of the config refusals nest.Resolve
+	// carries (an unmapped key, a missing git dir). §6's promise survives
+	// verbatim — it is about SIDE EFFECTS ("a refusal never leaves an orphaned
+	// worktree") and listing creates nothing. What moves is the order of
+	// DIAGNOSTICS: a typo in `repos:` now surfaces after a call to sbx. The
+	// order of the sbx calls themselves is unchanged (`ls`, then the image
+	// check's `template ls`, then `create`) — only host-side work moved
+	// between them.
 	//
-	// Read only when there IS a positional: a spawn with none must not fail
-	// because the process sits in a deleted directory.
-	cwd := ""
-	if len(o.Repos) > 0 {
-		if cwd, err = os.Getwd(); err != nil {
-			return fmt.Errorf(
-				"reading the working directory, needed to resolve the repos given on "+
-					"the command line: %w", err)
-		}
-	}
-	r, err := nest.Resolve(denHome, g, stacks, n, nest.Options{
-		Agent: o.Agent, Without: without, Only: o.Only, Repos: o.Repos, Cwd: cwd,
-	})
-	if err != nil {
-		return err
-	}
+	// Nothing in what follows CREATES anything: two Flatten calls (pure), an
+	// os.Stat and crossSourceCollision (reads), sbx.SandboxName (pure), one
+	// announce line and a listing. Selection-independent, not pure — which is
+	// the only property §6 depends on.
+	//
+	// Unconditional, not reserved to `select: prompt` nests: an order that
+	// depends on a configuration key is two spawn sequences to keep true, and
+	// §6 describes one.
 
 	// The name is computed before any side effect: a worktree den cannot
 	// name is refused before anything is created.
@@ -450,6 +435,76 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		fmt.Fprintf(d.Out,
 			"worktree %q: branch name kept, sandbox becomes %s\n",
 			worktreeName.Branch, sandboxName)
+	}
+
+	// 1bis. Spawn-or-attach is decided HERE, on the name just computed. The
+	// verdict is what closes the checklist below, and the stack image check it
+	// also feeds stays at its own site further down — that one consumes
+	// `r.Stack`, which does not exist until nest.Resolve has run.
+	//
+	// What the move does widen is the window between this verdict and the `sbx
+	// create` at step 6, which nest.Resolve, the repo probes and the worktree
+	// operations now sit inside and which git can make slow. A concurrent `den` on the SAME sandbox name can create
+	// it meanwhile, and this one would then create where attaching was the
+	// correct answer; the duplicate then lands on sbx, which owns the name and
+	// is the only thing that can arbitrate it. Not verified: what `sbx create`
+	// answers on a name that already exists — den expects a refusal naming the
+	// collision, and even so this is the cheap side of the trade. The regression
+	// the old position produced was neither rare nor conditional on a race: one
+	// orphaned git worktree per repo, on EVERY refusal, left to clean up by hand.
+	//
+	// The found Sandbox is KEPT, not reduced to a bool: only it carries the
+	// real status and the workspaces the VM actually mounts.
+	boxes, err := sbx.Ls(ctx, d.Sbx)
+	if err != nil {
+		return err
+	}
+	live := sbx.Find(boxes, sandboxName)
+
+	// The checklist has TWO entry points and ONE implementation: `-i` on any
+	// nest, and a `select: prompt` nest that has no default selection to
+	// offer. Both write into the SAME `without` list that --without fills, so
+	// nest.Resolve keeps applying the one selection rule it already owns.
+	//
+	// A selection flag answers the question outright, so it silences both
+	// entry points — that is what makes a prompting nest usable from `den
+	// exec`, a script and CI, and `-i` + a flag is refused far upstream (step
+	// 0) as the contradiction it is.
+	//
+	// `live == nil` silences both as well, and that guard IS decision 6: a live
+	// sandbox is attached to, its mounts come from its creation and nothing is
+	// reapplied (§6), so a selection collected here could never be mounted.
+	// Asking for it anyway is the silence §2 forbids, put to somebody with no
+	// way to guess the question is pointless. It covers `-i` too, deliberately:
+	// an order that depends on a flag is two spawn sequences to keep true, and
+	// the explanation the user gets on the attach branch below is the same one
+	// either way.
+	without := o.Without
+	if live == nil && (o.Interactive || n.PromptsForRepos()) && len(o.Without) == 0 && len(o.Only) == 0 {
+		if without, err = interactiveWithout(d, n, g.Repos); err != nil {
+			return err
+		}
+	}
+	// The working directory is read HERE, once, and handed to internal/nest,
+	// which stays pure: `den spawn scratch .` is then assertable without a test having
+	// to chdir. os.Getwd is world access, like the os.Stat probes at step 2 —
+	// this side of the boundary is where it belongs.
+	//
+	// Read only when there IS a positional: a spawn with none must not fail
+	// because the process sits in a deleted directory.
+	cwd := ""
+	if len(o.Repos) > 0 {
+		if cwd, err = os.Getwd(); err != nil {
+			return fmt.Errorf(
+				"reading the working directory, needed to resolve the repos given on "+
+					"the command line: %w", err)
+		}
+	}
+	r, err := nest.Resolve(denHome, g, stacks, n, nest.Options{
+		Agent: o.Agent, Without: without, Only: o.Only, Repos: o.Repos, Cwd: cwd,
+	})
+	if err != nil {
+		return err
 	}
 
 	// 2. All repos must exist before any create (spec §11).
@@ -612,11 +667,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// itself assertable from a test that sets nothing but its arguments.
 	warnEmptySSHAgent(d.Err, r.SSHMode, os.Getenv("SSH_AUTH_SOCK"), d.SSHAgent, d.goos())
 
-	// 2quater. Spawn-or-attach is decided HERE, before the first side effect, and
-	// the stack image is checked on the create branch (spec §11).
+	// 2quater. The stack image is checked on the create branch (spec §11),
+	// against the verdict read at step 1bis.
 	//
-	// The reading used to sit at step 6, next to the create/attach fork it
-	// feeds. It moved up because the image check has to be BOTH:
+	// The check used to sit at step 6, next to the create/attach fork the
+	// verdict feeds. It moved up because it has to be BOTH:
 	//
 	//   - conditional on creating. A live sandbox is attached to, and attaching
 	//     needs no image — refusing there would refuse a `den spawn` that works,
@@ -626,27 +681,13 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	//     up, which is the exact regression the ordering of this function exists
 	//     to prevent.
 	//
-	// Nothing between here and step 6 touches sbx, so no call order changed —
-	// only git work now happens after the reading instead of before it.
+	// It stays HERE rather than travelling up with the listing: it consumes
+	// `r.Stack`, which does not exist until nest.Resolve has run. `live` is
+	// still in scope, so the condition means exactly what it did.
 	//
-	// What the move does widen is the window between this verdict and the `sbx
-	// create` at step 6, which the worktree operations now sit inside and which
-	// git can make slow. A concurrent `den` on the SAME sandbox name can create
-	// it meanwhile, and this one would then create where attaching was the
-	// correct answer; the duplicate then lands on sbx, which owns the name and
-	// is the only thing that can arbitrate it. Not verified: what `sbx create`
-	// answers on a name that already exists — den expects a refusal naming the
-	// collision, and even so this is the cheap side of the trade. The regression
-	// the old position produced was neither rare nor conditional on a race: one
-	// orphaned git worktree per repo, on EVERY refusal, left to clean up by hand.
-	//
-	// The found Sandbox is KEPT, not reduced to a bool: only it carries the
-	// real status and the workspaces the VM actually mounts.
-	boxes, err := sbx.Ls(ctx, d.Sbx)
-	if err != nil {
-		return err
-	}
-	live := sbx.Find(boxes, sandboxName)
+	// Nothing between here and step 6 touches sbx, so the sbx call order is
+	// still `ls`, then this `template ls`, then `create` — what moved between
+	// them is host-side work only.
 	if live == nil {
 		// stackSrcName, not srcName: the stack's own origin. A LOCAL nest may
 		// carry a prefixed `stack:`, and a source nest's stack always resolves
@@ -791,7 +832,12 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		//
 		// Read, not required: a sandbox created before records existed has
 		// none, and attaching to it must keep working exactly as before.
-		if recorded, err := manifest.Read(r.DenHome, sandboxName); err == nil {
+		//
+		// Read ONCE for this whole branch: the attach explanation below needs
+		// the same record, and two reads of one file are two answers that can
+		// differ under a concurrent `den rm`.
+		recorded, recordedErr := manifest.Read(r.DenHome, sandboxName)
+		if recordedErr == nil {
 			mounts := make([]string, 0, len(recorded.Repos))
 			for _, rr := range recorded.Repos {
 				mounts = append(mounts, rr.Mount)
@@ -822,6 +868,29 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			fmt.Fprintf(d.Out, "sandbox %s is stopped: it restarts on attach (its state is kept)\n", sandboxName)
 		} else {
 			fmt.Fprintf(d.Out, "sandbox %s already live: attaching\n", sandboxName)
+		}
+
+		// The other half of decision 6. The checklist stayed shut at step 1bis;
+		// a prompting nest is where that silence would otherwise read as den
+		// forgetting to ask, so it — and only it — gets the explanation.
+		//
+		// Placed AFTER the status line above, never before it: the two would
+		// otherwise contradict each other on a stopped sandbox, which is
+		// attached to and restarted, not "already live".
+		//
+		// The repos come from the RECORD, never from a re-derivation: that is
+		// exactly what internal/manifest exists for. No record (legacy sandbox,
+		// or one created outside den) simply drops that line — the message
+		// keeps its remedy, which is the part that matters.
+		if n.PromptsForRepos() {
+			if recordedErr == nil {
+				names := make([]string, 0, len(recorded.Repos))
+				for _, repo := range recorded.Repos {
+					names = append(names, repo.Name)
+				}
+				fmt.Fprintf(d.Out, "  its repos come from its creation: %s\n", strings.Join(names, ", "))
+			}
+			fmt.Fprintf(d.Out, "  to run a different set alongside it, spawn `--as <label>`\n")
 		}
 	} else {
 		// The creation record, written BEFORE `sbx create` (spec 2026-08-05
