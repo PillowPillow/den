@@ -721,6 +721,11 @@ func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 // den. den must never refuse and strand a live VM (doctrine T13/T16), so the
 // attach still works; what it must NOT do is report every optional repo as "not
 // mounted", since the list it would compare against is a selection nobody made.
+//
+// It says so, though, and says it PLAINLY: this case is ordinary, and a
+// `warning:` on it would teach the reader to skip the marker on the case that is
+// a fault (TestPromptModeAttachNamesARecordItCouldNotRead). The two halves of
+// `recordedErr != nil` are asserted apart for that reason alone.
 func TestPromptModeAttachWithoutARecordStillAttaches(t *testing.T) {
 	denHome := denTestPrompting(t)
 
@@ -741,6 +746,16 @@ func TestPromptModeAttachWithoutARecordStillAttaches(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "--as") {
 		t.Errorf("the attach message keeps its remedy with no record:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "no creation record") ||
+		!strings.Contains(out.String(), "--without") {
+		t.Errorf("den must say it could not tell which repos this sandbox holds, and how to say so:\n%s",
+			out.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.Contains(line, "no creation record") && strings.Contains(line, "warning:") {
+			t.Errorf("an absent record is ordinary, not a fault: %q", line)
+		}
 	}
 }
 
@@ -785,5 +800,47 @@ func TestInteractiveAttachRebuildsTheSelectionFromTheRecord(t *testing.T) {
 	}
 	if f.HasCalled("create") {
 		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
+	}
+}
+
+// The other half of `recordedErr != nil`, and the one no test reached: a record
+// den could READ the path of but not decode.
+//
+// A newer SCHEMA, not random bytes, because that is the case the doctrine is
+// about — the record may belong to a newer den, so den neither refuses over it
+// nor deletes it (T13/T16). The attach must still work, the file must still be
+// there afterwards, and the user must be told which file den gave up on: told
+// nothing, they meet the compound failure — an unmapped optional `key:` then
+// refuses the attach, with a remedy that works and no hint that den had an
+// answer it could not read.
+func TestPromptModeAttachNamesARecordItCouldNotRead(t *testing.T) {
+	denHome := denTestPrompting(t)
+	path, err := manifest.Path(denHome, "generic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, "schema: 9999\nsandbox: generic\n")
+
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"generic","status":"running","workspaces":["/w/api"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, d); err != nil {
+		t.Fatalf("an unreadable record must never refuse a spawn: %v", err)
+	}
+	rendered := out.String()
+	if !strings.Contains(rendered, "warning:") || !strings.Contains(rendered, path) {
+		t.Errorf("den must name the record it could not read:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "--without") {
+		t.Errorf("the message must name the way through:\n%s", rendered)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("den deleted a record it could not read — it may belong to a newer den: %v", err)
 	}
 }

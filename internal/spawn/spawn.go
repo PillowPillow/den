@@ -496,48 +496,60 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// an order that depends on a flag is two spawn sequences to keep true, and
 	// the explanation the user gets on the attach branch below is the same one
 	// either way.
-	// On the ATTACH branch of a prompting nest the selection is REBUILT from the
-	// record instead of being left empty. What den mounted is recorded, not
-	// re-derived — that is what internal/manifest exists for — and re-deriving
-	// it here is not merely noisy, it REFUSES: today's config has no idea which
-	// four of thirty repos this VM was created with, so every declined `key:`
-	// repo comes back selected and resolveRepoKeys (internal/nest/resolve.go)
-	// dies on the first one that is unmapped on this machine. A `select: prompt`
-	// nest was unusable past its first spawn.
 	//
-	// THE TWO CONDITIONS BELOW MUST STAY IDENTICAL, and that is the point of
-	// writing `o.Interactive || n.PromptsForRepos()` twice rather than once.
-	// They are one channel seen from two sides: the second SHUTS the selection
-	// off on a live sandbox, the first PUTS IT BACK from the record. Narrow
-	// either one alone and the spawns it stops covering keep the shut half with
-	// nothing restored — which is exactly how `-i` on a live nest with an
-	// unmapped optional `key:` became a refusal where it used to prompt.
-	// TestInteractiveAttachRebuildsTheSelectionFromTheRecord is what makes that
-	// hole reopen loudly.
+	// selectionOpen is that whole question, named ONCE and consumed by both
+	// branches. It was spelled out twice, and the two spellings drifted apart
+	// inside this very increment: the rebuild first shipped scoped to
+	// `n.PromptsForRepos()` alone, which turned `-i` on a live nest with an
+	// unmapped optional `key:` into a refusal where it used to prompt. A comment
+	// and two tests were holding an equality the compiler can hold for free, so
+	// the duplication is gone — a named invariant that has already broken once
+	// is not one to keep by hand.
 	//
-	// It does NOT widen to the bare attach of an ordinary nest, and that is what
-	// keeps reportNestChangedSinceCreation alive: rebuilt for every nest, that
-	// warning could never fire again on an optional-repo edit, for anybody — the
-	// one warning whose whole job is to say the nest moved under a VM that did
-	// not. Here it stays alive wherever the user asked for neither `-i` nor
-	// `select: prompt`, and even inside those two for a required repo or a moved
-	// path.
+	// The two branches are the two sides of ONE channel, which is why they must
+	// cover exactly the same spawns:
 	//
-	// selectionUnknown is the no-record case (a legacy sandbox, one created
-	// outside den, or a record den could not READ — treated alike, since den
-	// never refuses over a record it could not read). den must never refuse and
-	// strand a live VM (T13/T16), so the attach proceeds on the full list and
-	// the one report that would then lie is muted at step 6.
+	//   - on a LIVE sandbox the question is SHUT and answered from the RECORD.
+	//     Its mounts come from its creation and nothing is reapplied (§6), so a
+	//     selection collected here could never be mounted; what den mounted is
+	//     recorded, not re-derived, which is what internal/manifest exists for.
+	//     Re-deriving is not merely noisy, it REFUSES: today's config has no idea
+	//     which four of thirty repos this VM was created with, so every declined
+	//     `key:` repo comes back selected and resolveRepoKeys
+	//     (internal/nest/resolve.go) dies on the first one unmapped on this
+	//     machine.
+	//   - on the CREATE branch the same question goes to the checklist.
+	//
+	// Narrow one side alone and the spawns it stops covering keep the shut half
+	// with nothing put back — the regression above, exactly.
+	// TestInteractiveAttachRebuildsTheSelectionFromTheRecord and
+	// TestPromptModeAttachRebuildsTheSelectionFromTheRecord are the two entry
+	// points, held against one fixture.
+	//
+	// The bare attach of an ordinary nest is outside selectionOpen entirely, and
+	// that is what keeps reportNestChangedSinceCreation alive: rebuilt for every
+	// nest, the one warning whose job is to say the nest moved under a VM that
+	// did not could never fire again on an optional-repo edit, for anybody.
+	//
+	// selectionUnknown is the no-record case: a legacy sandbox, one created
+	// outside den, or a record den could not READ — alike here, since den never
+	// refuses over a record it could not read and must never strand a live VM
+	// (T13/T16). The attach proceeds on the full list, the one report that would
+	// then lie is muted at step 6, and the user is TOLD (the two cases are one
+	// silence otherwise — see reportUnrebuiltSelection).
+	selectionOpen := (o.Interactive || n.PromptsForRepos()) &&
+		len(o.Without) == 0 && len(o.Only) == 0
 	without := o.Without
 	selectionUnknown := false
 	switch {
-	case live != nil && (o.Interactive || n.PromptsForRepos()) && len(o.Without) == 0 && len(o.Only) == 0:
+	case live != nil && selectionOpen:
 		if recordedErr != nil {
 			selectionUnknown = true
+			reportUnrebuiltSelection(d.Out, sandboxName, recordedErr)
 			break
 		}
 		without = recordedWithout(n, recorded)
-	case live == nil && (o.Interactive || n.PromptsForRepos()) && len(o.Without) == 0 && len(o.Only) == 0:
+	case selectionOpen:
 		if without, err = interactiveWithout(d, n, g.Repos); err != nil {
 			return err
 		}
@@ -1801,6 +1813,44 @@ func recordedWithout(n *nest.Nest, recorded manifest.Manifest) []string {
 		}
 	}
 	return without
+}
+
+// reportUnrebuiltSelection says why den is about to resolve every repo the nest
+// declares on a live sandbox, instead of the selection that sandbox was created
+// with.
+//
+// den refuses rather than normalizing in silence (spec §2) — and on this path it
+// was doing neither: it proceeded, quietly, on a list nobody chose. What makes
+// the silence expensive is the compound case: no readable record PLUS an
+// optional `key:` this machine does not map, and nest.Resolve then refuses the
+// attach of a LIVE VM over a repo the user had declined. Its remedy
+// (`--without <key>`) does work, but nothing said den had failed to read the
+// record that would have answered the question by itself.
+//
+// TWO cases, deliberately not one message. An absent record is ORDINARY — a
+// sandbox older than records, or one created outside den — and a `warning:` on
+// it would teach the reader to skip the line that matters. An unreadable one is
+// a fault worth looking at, so it carries the marker and the error, which names
+// the file and says what went wrong (manifest.Read wraps through
+// config.FileError precisely so the two can be told apart).
+//
+// Never an error, on either side: den does not refuse over a record it could not
+// read, and never deletes one — it may belong to a newer den.
+func reportUnrebuiltSelection(out io.Writer, sandboxName string, readErr error) {
+	// The way THROUGH, not the way to a clean record: `den rm` would write one,
+	// but sending someone to destroy a running VM to silence a diagnostic is a
+	// remedy worse than the line it removes.
+	const remedy = "den resolves every repo the nest declares instead — " +
+		"`--only`/`--without` pick a set explicitly"
+	if errors.Is(readErr, os.ErrNotExist) {
+		fmt.Fprintf(out,
+			"sandbox %s has no creation record (an older den, or a sandbox created outside den), "+
+				"so den cannot tell which repos it was created with: %s\n", sandboxName, remedy)
+		return
+	}
+	fmt.Fprintf(out,
+		"warning: sandbox %s: %v — den cannot tell which repos it was created with, so %s\n",
+		sandboxName, readErr, remedy)
 }
 
 // reportNestChangedSinceCreation warns when the repos the configuration now
