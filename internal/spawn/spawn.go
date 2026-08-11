@@ -320,7 +320,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// exists and is already tested (nest.Resolve). Nothing here reopens it.
 	without := o.Without
 	if o.Interactive {
-		if without, err = interactiveWithout(d, n); err != nil {
+		if without, err = interactiveWithout(d, n, g.Repos); err != nil {
 			return err
 		}
 	}

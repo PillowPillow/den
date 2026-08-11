@@ -28,9 +28,82 @@ func optionalRepos() []nest.Repo {
 
 func prompt(t *testing.T, input string) ([]string, string, error) {
 	t.Helper()
+	return promptWith(t, input, true, nil)
+}
+
+func promptWith(t *testing.T, input string, startChecked bool,
+	mapping map[string]string) ([]string, string, error) {
+	t.Helper()
 	var out bytes.Buffer
-	without, err := promptOptionalRepos(&out, strings.NewReader(input), "api", optionalRepos())
+	without, err := promptOptionalRepos(&out, strings.NewReader(input), "api",
+		optionalRepos(), startChecked, mapping)
 	return without, out.String(), err
+}
+
+// Decision 9: a `select: prompt` checklist starts EMPTY, and confirming it
+// as-is excludes every optional repo. The -i checklist keeps starting full —
+// the two answer different questions, and both readings live in this one test.
+func TestPromptStartingStateFollowsTheMode(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		startChecked bool
+		want         []string
+	}{
+		{"-i starts full", true, nil},
+		{"select: prompt starts empty", false, []string{"worker", "docs"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			without, _, err := promptWith(t, "\n", c.startChecked, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !slices.Equal(without, c.want) {
+				t.Errorf("confirming as-is gave --without %v, want %v", without, c.want)
+			}
+		})
+	}
+}
+
+// The header keeps its "required repos are always mounted" clause in BOTH
+// modes: a select: prompt nest may declare required repos, and "none selected"
+// alone would then be a lie.
+func TestPromptHeaderAlwaysNamesRequiredRepos(t *testing.T) {
+	for _, startChecked := range []bool{true, false} {
+		_, out, err := promptWith(t, "\n", startChecked, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(out, "required repos are always mounted") {
+			t.Errorf("startChecked=%v: header lost its required-repos clause:\n%s", startChecked, out)
+		}
+	}
+}
+
+// Decision 10: an unmapped key is ANNOTATED, never hidden and never refused.
+// Refusing the tick here would make the checklist a second judge of the repo
+// mapping, whose single judge is resolveRepoKeys — and it would be a mute
+// refusal on the one surface where the user cannot yet see what they asked
+// for.
+func TestPromptAnnotatesUnmappedKeys(t *testing.T) {
+	repos := []nest.Repo{
+		{Path: "/dev/backend"},
+		{Key: "worker", Optional: true},
+		{Key: "docs", Optional: true},
+	}
+	var out bytes.Buffer
+	if _, err := promptOptionalRepos(&out, strings.NewReader("\n"), "api", repos, false,
+		map[string]string{"worker": "/dev/worker"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rendered := out.String()
+	if !strings.Contains(rendered, "docs") || !strings.Contains(rendered, "not mapped") {
+		t.Errorf("an unmapped key must be annotated:\n%s", rendered)
+	}
+	for _, line := range strings.Split(rendered, "\n") {
+		if strings.Contains(line, "worker") && strings.Contains(line, "not mapped") {
+			t.Errorf("a MAPPED key must carry no annotation: %q", line)
+		}
+	}
 }
 
 // Everything checked is the DEFAULT: confirming without touching anything

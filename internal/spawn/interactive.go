@@ -70,7 +70,7 @@ const nonInteractiveEquivalents = "`--only repo,...` and `--without repo,...` ma
 // another way to fill its input. That is what makes "-i produces the same
 // sandbox as the equivalent --without" true by construction rather than by
 // coincidence — see TestInteractiveProducesTheSameArgvAsTheEquivalentWithout.
-func interactiveWithout(d Deps, n *nest.Nest) ([]string, error) {
+func interactiveWithout(d Deps, n *nest.Nest, mapping map[string]string) ([]string, error) {
 	// Nothing to ask comes FIRST, before the terminal check: a nest with no
 	// optional repo needs no answer, so it needs no terminal either — `den spawn
 	// api -i --detach` from a script keeps working, and says why it asked nothing
@@ -94,7 +94,7 @@ func interactiveWithout(d Deps, n *nest.Nest) ([]string, error) {
 		// mid-sequence.
 		in = os.Stdin
 	}
-	return promptOptionalRepos(d.Out, in, n.Name, n.Repos)
+	return promptOptionalRepos(d.Out, in, n.Name, n.Repos, !n.PromptsForRepos(), mapping)
 }
 
 // selectionFlagsInPlay names the repo-selection flag `-i` collides with, or ""
@@ -124,6 +124,22 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // the toggles until the user confirms. It returns the short names of the repos
 // left unchecked — a `--without` list.
 //
+// startChecked is the initial state of every box, and it is NOT cosmetic. `-i`
+// starts full, because confirming an -i checklist without touching it must
+// produce exactly what `den spawn` alone produces
+// (TestInteractiveProducesTheSameArgvAsTheEquivalentWithout). A `select:
+// prompt` nest starts EMPTY, because it has no default selection to propose by
+// definition — and thirty ticked boxes would turn an empty line into a
+// thirty-repo mount.
+//
+// mapping is the personal `repos:` of config.yaml, used to ANNOTATE the keys
+// it does not carry. Annotation only: ticking an unmapped key stays possible,
+// and the refusal that follows is resolveRepoKeys', which names the key, the
+// file and the clone URL. Refusing the tick here would make this a second
+// judge of the mapping, whose single judge is that function. mapping may be
+// nil — every entry then renders unannotated, which is what a path-typed nest
+// wants.
+//
 // Required repos are neither listed nor numbered (spec §6.2): they are always
 // mounted, and numbering them would make "1" designate different repos
 // depending on how many required ones happen to precede it.
@@ -133,7 +149,8 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // what this checklist needs — print a list, read a line, toggle — is a dozen
 // lines of stdlib. A TUI library would buy cursor movement and colours for the
 // price of the one property the project advertises.
-func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []nest.Repo) ([]string, error) {
+func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []nest.Repo,
+	startChecked bool, mapping map[string]string) ([]string, error) {
 	optional := make([]nest.Repo, 0, len(repos))
 	for _, r := range repos {
 		if r.Optional {
@@ -141,15 +158,17 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 		}
 	}
 
-	// Everything checked is the starting point: `-i` confirmed as-is must
-	// produce exactly what `den spawn` alone produces.
 	keep := make([]bool, len(optional))
 	for i := range keep {
-		keep[i] = true
+		keep[i] = startChecked
 	}
 
-	fmt.Fprintf(out, "nest %s: %d optional repo(s) — required repos are always mounted\n",
-		nestName, len(optional))
+	selected := "none selected"
+	if startChecked {
+		selected = "all selected"
+	}
+	fmt.Fprintf(out, "nest %s: %d optional repo(s), %s — required repos are always mounted\n",
+		nestName, len(optional), selected)
 
 	s := bufio.NewScanner(in)
 	for {
@@ -158,7 +177,7 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 			if keep[i] {
 				box = "x"
 			}
-			fmt.Fprintf(out, "  %d [%s] %s\n", i+1, box, r.Name())
+			fmt.Fprintf(out, "  %d [%s] %s%s\n", i+1, box, r.Name(), unmappedNote(r, mapping))
 		}
 		fmt.Fprintf(out, "toggle by number (space-separated), empty line to confirm — %s\n> ",
 			nonInteractiveEquivalents)
@@ -198,6 +217,19 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 		}
 	}
 	return without, nil
+}
+
+// unmappedNote annotates a key-typed repo the personal mapping does not carry.
+// Empty for a path-typed repo, and empty for a mapped key: an annotation on
+// every line would annotate nothing.
+func unmappedNote(r nest.Repo, mapping map[string]string) string {
+	if r.Key == "" {
+		return ""
+	}
+	if _, ok := mapping[r.Key]; ok {
+		return ""
+	}
+	return "      (not mapped in config.yaml)"
 }
 
 // parseToggles turns a line of numbers into zero-based indexes, or returns the
