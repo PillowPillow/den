@@ -16,7 +16,7 @@ import (
 // deterministic order, the cycle refusal, the "is the image already there?"
 // arbitration and the create/exec/stop/save/rm sequence itself all live in
 // internal/build. The one system access — sbx — arrives as a parameter, same
-// as `den ls` and `den sh` share the very Runner this one gets.
+// as `den ls` and `den exec` share the very Runner this one gets.
 func newBuildCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 	var force bool
 

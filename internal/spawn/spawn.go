@@ -39,7 +39,13 @@ type Deps struct {
 	// agent.WaitFreshness rather than filled in, because a gate with no
 	// patience reads exactly like a gate that checks nothing.
 	Freshness agent.GateOptions
-	Out       io.Writer
+	// Out is where Spawn's own log goes — EXCEPT on a non-tty command: Spawn
+	// aliases Out to Err at its own top, unconditionally, so a caller piping
+	// `den spawn api -T -- go build` never gets den's lines mixed into the
+	// command's stdout. A Deps built by hand and left with Err nil keeps its
+	// log on Out regardless (the alias only fires when Err is set); see the
+	// ordering comment at the top of Spawn for why that fallback exists.
+	Out io.Writer
 	// Err carries diagnostics that are not part of the command's output.
 	//
 	// Spawn prints `warning:` lines on BOTH streams, so the rule that splits
@@ -67,7 +73,7 @@ type Deps struct {
 	// is why the dozens of hand-built Deps in this package can keep ignoring it.
 	In io.Reader
 	// IsTTY reports whether In is a terminal, and is the ONE thing about `-i`
-	// no test covers — isolated into a one-liner (StdinIsTerminal) precisely so
+	// no test covers — isolated into a one-liner (LooksInteractive) precisely so
 	// that it, and not the selection logic, is what stays untested.
 	//
 	// Nil means NO terminal, deliberately: an unwired probe must take `-i`'s
@@ -128,6 +134,17 @@ type Options struct {
 	// Additive to the nest's `repos:`, and placed AHEAD of them, so the first
 	// one becomes the directory the attached shell starts in.
 	Repos []string
+	// Command is what to run in the sandbox instead of a login shell,
+	// everything the CLI found after `--`. Empty ⇒ attach a shell, which is
+	// what a spawn has always done.
+	Command []string
+	// Workdir overrides the directory the command runs in. Empty ⇒ the first
+	// workspace the VM reports, the same rule the shell follows.
+	Workdir string
+	// NoTTY is `-T`: never allocate a terminal, even under one. It governs a
+	// GIVEN command only — a spawn with no command hands out a login shell,
+	// which is worth nothing without a terminal.
+	NoTTY bool
 }
 
 // Spawn runs the spec §6 sequence in order: resolve → select repos →
@@ -140,11 +157,34 @@ type Options struct {
 // effect, so an invalid sandbox name never leaves an orphaned worktree
 // behind.
 func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
+	// The tty verdict, taken here so step 9 (the attach) does not recompute
+	// it: it is pure — o.Command, o.NoTTY and d.IsTTY alone — so nothing
+	// between here and there can change its answer.
+	//
+	// With NO command the terminal is unconditional: a login shell without
+	// one is worth nothing, and that is what every spawn has done since the
+	// beginning. With a command, the caller may well be a pipe, so the
+	// injected probe decides and -T overrides it — the same rule `den exec`
+	// applies.
+	tty := len(o.Command) == 0 || (!o.NoTTY && d.IsTTY != nil && d.IsTTY())
+
 	// A nil Out must not panic mid-sequence: by the first Fprintf the
 	// caller already has a sandbox created and started behind them. Losing
 	// the log is cheaper than that.
 	if d.Out == nil {
 		d.Out = io.Discard
+	}
+	// Non-interactive: den's own log joins the diagnostics on Err, because
+	// the child owns stdout — `den spawn api -T -- go build > out.txt` must
+	// not let den's lines land in the file the child owns, the same
+	// contract `den exec` already holds (internal/cli/exec.go, `chatter`).
+	//
+	// Applied BEFORE Err's own `io.Discard` default below, on purpose: doing
+	// it after would alias Out to a stream the caller never gets to read,
+	// silently discarding the whole log for the many hand-built Deps in this
+	// package that set Out and leave Err nil.
+	if !tty && d.Err != nil {
+		d.Out = d.Err
 	}
 	// Err defaults like Out: the empty-agent warning is best-effort and must
 	// never panic a spawn that left stderr unset.
@@ -166,6 +206,39 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				"-i and %s both select repos, and they contradict each other — drop one: "+
 					"%s is the non-interactive form of the checklist", conflicting, conflicting)
 		}
+	}
+
+	// The second contradiction, refused in the same place and for the same
+	// reason as the first: --detach says "do not enter the VM", a command says
+	// "run this in it".
+	//
+	// It cannot be honoured by delegating to `sbx exec -d`. That flag documents
+	// "run command in the background" and DOES NOT detach: measured 2026-08-10
+	// on sbx v0.38.0 (spec §14.0), it blocks for the command's whole duration,
+	// relays its stdout and returns its status — indistinguishable from a
+	// foreground run. Honouring it would mean den backgrounding the process
+	// itself: a fifth Runner method, orphan and log handling, and no status to
+	// return, which is precisely what #60 exists to deliver.
+	if o.Detach && len(o.Command) > 0 {
+		return fmt.Errorf(
+			"--detach and a command after `--` contradict each other — drop one: " +
+				"--detach spawns without entering the sandbox, a command has to run inside it")
+	}
+
+	// The third contradiction, refused for the same reason and in the same
+	// place: -T asks for no terminal, and with no command that is a login
+	// shell asked to give up the one thing that makes it worth opening.
+	//
+	// `den exec` (internal/cli/exec.go) refuses this exact pair already; the
+	// two commands share the flag and must share the refusal, in the same
+	// words, or a user meeting -T on one and not the other would read it as
+	// two different rules rather than the one contradiction it is. Leaving it
+	// unrefused here would be the silent normalization spec §2 forbids: -T
+	// would simply do nothing, on the sibling command that does refuse it.
+	if o.NoTTY && len(o.Command) == 0 {
+		return fmt.Errorf(
+			"-T asks for no terminal and no command asks for a shell, which needs one — " +
+				"give a command after `--`, or drop -T")
 	}
 
 	// 1. Resolve the cascade.
@@ -418,7 +491,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// This applies when RE-ATTACHING to a live sandbox too: if a mount host
 	// disappears from disk, `den spawn` can no longer attach even though none
 	// of this is re-read at attach time (the VM keeps its create-time mounts).
-	// `den sh <name>` is the one path that skips all of this.
+	// `den exec <name>` is the one path that skips all of this.
 	//
 	// The message cites m.Key — the key the USER wrote. For the ssh.mode sugar
 	// that is `ssh.dir`, not `mounts[0]`, which appears in no config file.
@@ -444,7 +517,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 						"instead of your keys",
 					m.Host, config.GlobalPath(denHome))
 			}
-			// `den sh` is NAMED, not merely implied by the comment above: this
+			// `den exec` is NAMED, not merely implied by the comment above: this
 			// gate runs on the attach branch too, so a host path that vanished
 			// (an unmounted volume, a directory not created yet) refuses entry
 			// to a sandbox that is alive and holding work. The user needs the
@@ -453,7 +526,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			return fmt.Errorf(
 				"%s.host: %s not found — fix `mounts:` in %s: this directory is mounted in the "+
 					"sandbox, and a missing path would mount an empty directory instead of your files "+
-					"(`den sh <sandbox>` still enters an already-live sandbox)",
+					"(`den exec <sandbox>` still enters an already-live sandbox)",
 				m.Key, m.Host, config.GlobalPath(denHome))
 		case !fi.IsDir():
 			if m.Key == nest.SSHDirKey {
@@ -639,7 +712,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 
 	if live != nil {
 		// A name held by a VM den knows nothing about is not
-		// spawn-or-attach. Same guard as `den sh`, and the same helper,
+		// spawn-or-attach. Same guard as `den exec`, and the same helper,
 		// so the property can't be true on one side and forgotten on the
 		// other.
 		if err := live.CheckAttachable(); err != nil {
@@ -695,10 +768,15 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 
 		// A SINGLE status line, naming which of the two cases this is.
 		// "restarts on attach", not "resumed": under --detach den runs no
-		// exec, so nothing restarts now — the next `den sh` does. True on
+		// exec, so nothing restarts now — the next `den exec` does. True on
 		// either side of this branch.
 		if live.IsStopped() {
-			fmt.Fprintf(d.Out, "sandbox %s stopped: it restarts on attach (its state is preserved)\n", sandboxName)
+			// The exact sentence `den exec` uses (internal/cli/exec.go), not a
+			// paraphrase: one situation, one wording, the same house rule
+			// internal/cli/ports.go states for "sandbox not found" — a second
+			// dialect for the same state is a message users have to learn
+			// twice.
+			fmt.Fprintf(d.Out, "sandbox %s is stopped: it restarts on attach (its state is kept)\n", sandboxName)
 		} else {
 			fmt.Fprintf(d.Out, "sandbox %s already live: attaching\n", sandboxName)
 		}
@@ -827,16 +905,23 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			fmt.Fprintf(d.Out,
 				"sandbox %s stays stopped (detached) — den started nothing: its configuration is "+
 					"checked and its state preserved, and it restarts on the next attach "+
-					"(`den sh %s`, or `den ports %s`, which starts it because publishing needs a "+
+					"(`den exec %s`, or `den ports %s`, which starts it because publishing needs a "+
 					"live endpoint)\n",
 				sandboxName, sandboxName, sandboxName)
 			return nil
 		}
-		fmt.Fprintf(d.Out, "sandbox %s ready (detached) — run `den sh %s` to enter\n",
+		fmt.Fprintf(d.Out, "sandbox %s ready (detached) — run `den exec %s` to enter\n",
 			sandboxName, sandboxName)
 		return nil
 	}
-	return Attach(ctx, d.Sbx, sandboxName, workdir)
+	// tty was computed at the top of Spawn, not recomputed here: it is the
+	// same verdict the Out/Err split above already used, and a second
+	// computation would be a second place for the two to drift apart.
+	dir := o.Workdir
+	if dir == "" {
+		dir = workdir
+	}
+	return Enter(ctx, d.Sbx, sandboxName, Command{Argv: o.Command, Workdir: dir, TTY: tty})
 }
 
 // ResolveStack turns a LOADED nest's `stack:` field into a root to load
@@ -983,17 +1068,17 @@ func checkFreshness(ctx context.Context, d Deps, sandboxName string, detach bool
 }
 
 // CheckFreshnessOnReentry holds the §9.1 gate for a caller that re-enters an
-// EXISTING sandbox and configures no spawn — `den sh` (internal/cli/sh.go).
+// EXISTING sandbox and configures no spawn — `den exec` (internal/cli/exec.go).
 //
 // It exists because §9.1's promise is about a sandbox starting, not about the
 // command that starts it, and den had been keeping that promise on one door out
 // of two. `den spawn` refused a sandbox whose freshness command failed; the
-// same sandbox handed out a shell in silence through `den sh`, which does not
+// same sandbox handed out a shell in silence through `den exec`, which does not
 // route through Spawn at all — measured on the bench after PR #26, issue #27.
 // A guarantee held by one door is worse than none: it teaches the user that den
 // checks, on a path where it did not.
 //
-// starting says whether this re-entry is STARTING the sandbox — `den sh` on a
+// starting says whether this re-entry is STARTING the sandbox — `den exec` on a
 // stopped one — and it decides between waiting and reading once. §9.2's
 // arbitration is already written and applies unchanged: "il attache un shell →
 // il attend, en l'annonçant".
@@ -1034,7 +1119,7 @@ func CheckFreshnessOnReentry(ctx context.Context, r sbx.Runner, out io.Writer, s
 }
 
 // reportFreshness turns a gate verdict into den's behaviour: what each verdict
-// costs the user, in one place, so the spawn door and the `den sh` door cannot
+// costs the user, in one place, so the spawn door and the `den exec` door cannot
 // answer the same journal differently.
 //
 // pendingClause names why den stopped waiting — the one thing the two callers
@@ -1199,13 +1284,13 @@ func warnEmptySSHAgent(w io.Writer, sshMode, socket string, probe func() sshagen
 }
 
 // WarnEmptySSHAgentOnReentry is warnEmptySSHAgent for a command that only
-// RE-ENTERS a sandbox someone else created — `den sh` (cli/sh.go), whose whole
+// RE-ENTERS a sandbox someone else created — `den exec` (cli/exec.go), whose whole
 // contract is that it reads no den home and creates nothing.
 //
 // It exists because the warning is just as true there: the forwarded socket is
 // a live proxy, so re-entering a sandbox whose agent has since been emptied
 // hits the same `git push` failure, just as silently. Without this the warning
-// covered only the FIRST `den spawn` of the day, while `den sh` — the cheap
+// covered only the FIRST `den spawn` of the day, while `den exec` — the cheap
 // re-entry, used far more often — said nothing on any OS.
 //
 // The one divergence is the ABSENT socket, and it is why this is a separate
@@ -1214,12 +1299,12 @@ func warnEmptySSHAgent(w io.Writer, sshMode, socket string, probe func() sshagen
 // that may no longer exist. A shell with no SSH_AUTH_SOCK therefore says
 // nothing about what the VM actually holds, and the preflight's remedy — start
 // an agent, relaunch den, which forwards the socket at creation time — names a
-// step `den sh` does not have. Silence, before the probe: `ssh-add -l` with no
+// step `den exec` does not have. Silence, before the probe: `ssh-add -l` with no
 // socket answers StateUnreachable, whose message would claim SSH_AUTH_SOCK
 // "points at" a dead socket the user never set.
 //
 // What it does NOT try to be: proof about the agent the VM really received.
-// The probe interrogates the agent of the shell running `den sh`, which is the
+// The probe interrogates the agent of the shell running `den exec`, which is the
 // same one on a stable per-user socket (macOS launchd) and can differ from a
 // per-shell `eval $(ssh-agent)` on Linux. That is the same approximation the
 // attach branch of `den spawn` already makes, and the trade is deliberate: the
@@ -1680,24 +1765,6 @@ func mountMode(ro bool) string {
 		return "read-only"
 	}
 	return "read-write"
-}
-
-// Attach opens an interactive shell in the sandbox.
-//
-// `sbx exec`, not `sbx run`: run attaches the image FLAVOR's command
-// (often `claude`), has no flag to replace it, and its `-- ARGS` only
-// appends arguments.
-//
-// -w stays BEFORE the sandbox name: in `sbx exec [flags] SANDBOX COMMAND
-// [ARG...]`, placed after it would be read as a COMMAND argument and
-// reach `bash -l` verbatim.
-func Attach(ctx context.Context, r sbx.Runner, sandboxName, workdir string) error {
-	argv := []string{"exec", "-it"}
-	if workdir != "" {
-		argv = append(argv, "-w", workdir)
-	}
-	argv = append(argv, sandboxName, "bash", "-l")
-	return r.Attach(ctx, argv...)
 }
 
 func first(s []string) string {

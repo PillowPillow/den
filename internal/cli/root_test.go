@@ -72,10 +72,10 @@ func executeCmdWithSbx(t *testing.T, r sbx.Runner, args ...string) (string, erro
 // would otherwise make a test through these helpers depend on the machine
 // running it: the SSH-agent probe, left nil.
 //
-// Measured, not feared. `den sh` now reads ssh.mode to warn about an empty
-// forwarded agent (sh.go), so a command whose test cares only about `sbx exec`
+// Measured, not feared. `den exec` now reads ssh.mode to warn about an empty
+// forwarded agent (exec.go), so a command whose test cares only about `sbx exec`
 // reaches the den home and the agent behind it: under a readable DEN_HOME with
-// SSH_AUTH_SOCK set, `go test -run TestShAttachesInTheWorkdir` really did fork
+// SSH_AUTH_SOCK set, `go test -run TestExecAttachesInTheWorkdir` really did fork
 // `ssh-add -l` on the developer's own agent. A nil probe is what the warning
 // treats as "nothing to ask", so no test through here consults an agent — nor,
 // since that check comes first, any config.yaml.
@@ -85,10 +85,10 @@ func executeCmdWithSbx(t *testing.T, r sbx.Runner, args ...string) (string, erro
 // the fixture it was pointing at.
 //
 // Tests that mean to exercise the warning inject their own probe and their own
-// den home (runShWithAgent, sh_test.go).
+// den home (runExecWithAgent, exec_test.go).
 // The gate options are replaced too, and for the reason cli.Deps.Freshness
-// exists: SystemDeps() carries time.Sleep and time.Now, and `den sh` on a
-// STOPPED sandbox now waits on the §9.1 gate (sh.go). Left real, any such test
+// exists: SystemDeps() carries time.Sleep and time.Now, and `den exec` on a
+// STOPPED sandbox now waits on the §9.1 gate (exec.go). Left real, any such test
 // would stand still for the full 90 s budget against a fake that answers
 // nothing — the suite would look hung rather than red.
 func sbxDeps(t *testing.T, r sbx.Runner) Deps {
@@ -279,7 +279,7 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 		{
 			"spawn, missing argument",
 			[]string{"spawn"},
-			"den spawn: one argument expected, none received — usage: den spawn <nest> [repo...] [flags]",
+			"den spawn: one argument expected, none received — usage: den spawn <nest> [repo...] [-- <cmd> [args...]] [flags]",
 		},
 		{
 			"build, too many arguments",
@@ -312,14 +312,15 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 			"den nest show: one argument expected, none received — usage: den nest show <nest> [repo...] [flags]",
 		},
 		{
-			"sh, missing argument",
-			[]string{"sh"},
-			"den sh: one argument expected, none received — usage: den sh <name> [flags]",
+			"exec, missing argument",
+			[]string{"exec"},
+			"den exec: one argument expected, none received — usage: den exec <name> [-- <cmd> [args...]] [flags]",
 		},
 		{
-			"sh, two arguments",
-			[]string{"sh", "a", "b"},
-			`den sh: exactly one argument expected, 2 received, starting with "b" — usage: den sh <name> [flags]`,
+			"exec, command without --",
+			[]string{"exec", "b", "c"},
+			`den exec: a command must be separated by ` + "`--`" + ` — write ` +
+				"`den exec b -- c`",
 		},
 		{
 			"rm, missing argument",

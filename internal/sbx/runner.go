@@ -17,7 +17,7 @@ import (
 // through it, which makes the rest of den testable without a microVM — sbx
 // isn't even installed on the development machine.
 //
-// Three methods, because the three uses are irreconcilable:
+// Four methods, because the four uses are irreconcilable:
 //   - Run captures stdout to parse it (`ls --json`, `policy check --json`).
 //   - Stream relays stdout AND stderr to a writer as they are produced. It is
 //     neither of the other two, and adding it was cheaper than bending either:
@@ -31,10 +31,18 @@ import (
 //   - Attach wires the current process's ttys to give the user an
 //     interactive shell (`exec -it ... bash -l`); there's nothing to capture,
 //     and capturing would break interactivity.
+//   - Pipe wires the current process's three descriptors through UNMERGED and
+//     stays killable: it is `den exec -T -- <cmd>`, the non-interactive door.
+//     Against Attach, whose `cmd.Cancel = nil` is right for a shell, a Ctrl-C
+//     on a three-minute `go test` must actually kill it. Against Stream, which
+//     hands the child ONE descriptor on purpose, sbx keeps stdout and stderr
+//     apart without -it (measured 2026-08-10, spec §14.0) and a caller piping
+//     stdout must not receive stderr in it. Against Run, nothing is parsed.
 type Runner interface {
 	Run(ctx context.Context, args ...string) ([]byte, error)
 	Stream(ctx context.Context, out io.Writer, args ...string) error
 	Attach(ctx context.Context, args ...string) error
+	Pipe(ctx context.Context, args ...string) error
 }
 
 // Exec is the real implementation, backed by the sbx binary from the PATH.
@@ -110,7 +118,7 @@ type ExecError struct {
 // user can fix themselves: the binary isn't installed.
 //
 // It's the FIRST-CONTACT failure — sbx not yet set up on the machine — and it
-// hits all four commands that touch sbx (`den ls`, `den spawn`, `den sh`,
+// hits all four commands that touch sbx (`den ls`, `den spawn`, `den exec`,
 // `den rm`), all of which go through Ls before anything else. Without this
 // handling, the first line a new user sees is os/exec's:
 // `exec: "sbx": executable file not found in $PATH` — with no remedy.
@@ -400,6 +408,48 @@ func (e *Exec) Attach(ctx context.Context, args ...string) error {
 		// setting it here would show "interrupted" on a shell den deliberately
 		// let finish.
 		return &ExecError{Bin: e.Bin, Args: slices.Clone(args), Err: err}
+	}
+	return nil
+}
+
+// Pipe runs sbx with den's own three descriptors passed through, unmerged, and
+// with the context's cancellation left able to kill it.
+//
+// Every line below is the difference from a neighbour, so read them against
+// Attach and Stream rather than on their own:
+//
+//   - cmd.Cancel is NOT set to nil. Attach nils it because SIGKILLing an
+//     interactive shell leaves the terminal in raw mode; here there is no tty
+//     to protect and the child is a build or a test the user must be able to
+//     interrupt.
+//   - the three descriptors are assigned SEPARATELY, never through one shared
+//     sink. Stream's streamSink deliberately makes stdout and stderr one
+//     descriptor to interleave them; that would put stderr into the pipe of
+//     `den exec -T -- go build | tee log`.
+//   - Cancellation IS filled, unlike Attach, for the same reason as Run and
+//     Stream: a killed process's own error hides the context's, so ctx.Err()
+//     is read here, where the two are known to be concurrent.
+//
+// Stderr stays EMPTY in the ExecError, as in Stream and for its reason: every
+// byte sbx wrote has already reached the user's terminal, and folding it into
+// the message would print it twice.
+func (e *Exec) Pipe(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, e.Bin, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.WaitDelay = effectiveDelay(e.DrainDelay)
+	if err := cmd.Run(); err != nil {
+		// Same guard, same three conditions, same reason as Run and Stream.
+		if drainCutShortOnSuccess(err, ctx.Err(), cmd.ProcessState) {
+			return nil
+		}
+		return &ExecError{
+			Bin:          e.Bin,
+			Args:         slices.Clone(args),
+			Err:          err,
+			Cancellation: ctx.Err(),
+		}
 	}
 	return nil
 }

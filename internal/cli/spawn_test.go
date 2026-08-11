@@ -297,6 +297,104 @@ func TestDetachReachesSpawnOptions(t *testing.T) {
 	}
 }
 
+// --workdir must reach spawn.Options, proven the same way --detach is: by the
+// DIFFERENCE with and without the flag. Unwired, o.Workdir stays "" and the
+// attach directory would be whatever the spawn computed on its own — "/custom"
+// would never appear on either run.
+func TestWorkdirReachesSpawnOptions(t *testing.T) {
+	home := denHomeSpawnable(t)
+
+	fWith, dWith := fakeSpawnDeps()
+	if _, err := runSpawn(t, home, dWith, "api", "--workdir", "/custom"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !fWith.HasAttached("exec", "-it", "-w", "/custom", "api", "bash", "-l") {
+		t.Errorf("--workdir must reach the attach's -w; attaches: %v", fWith.Attaches)
+	}
+
+	fWithout, dWithout := fakeSpawnDeps()
+	if _, err := runSpawn(t, home, dWithout, "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fWithout.HasAttached("exec", "-it", "-w", "/custom", "api", "bash", "-l") {
+		t.Errorf("without --workdir, \"/custom\" must not appear; attaches: %v", fWithout.Attaches)
+	}
+}
+
+// -T/--no-tty must reach spawn.Options. Proven by the contradiction it is the
+// only thing that can raise, the same idiom as -i and --detach above: with no
+// command, -T asks for something a login shell cannot give up, and
+// spawn.Spawn refuses it (mirroring `den exec`, internal/cli/exec.go).
+// Unwired, o.NoTTY would stay false and this spawn would succeed instead.
+func TestNoTTYReachesSpawnOptions(t *testing.T) {
+	for _, name := range []string{"-T", "--no-tty"} {
+		t.Run(name, func(t *testing.T) {
+			_, d := fakeSpawnDeps()
+
+			_, err := runSpawn(t, denHomeSpawnable(t), d, "api", name)
+			if err == nil {
+				t.Fatal("-T with no command must be refused: the flag did not reach spawn.Options")
+			}
+			if !strings.Contains(err.Error(), "-T") {
+				t.Errorf("the refusal must name the flag in play: %v", err)
+			}
+		})
+	}
+}
+
+// Mirrors TestExecPutsItsOwnChatterOnStderrWithoutATty (exec_test.go):
+// `den spawn api -T -- go build > out.txt` must not let den's own log join
+// the file the command owns. Before the I1 fix, spawn.Spawn wrote every line
+// it says to d.Out regardless of a terminal, so this reaches `sbx exec`
+// through Pipe with den's chatter already on stdout and FAILS against the
+// old code.
+//
+// Uses executeCmdSeparateStreams directly (not runSpawn, which merges
+// streams via executeCmd) because the whole point is telling the two apart.
+func TestSpawnPutsItsOwnChatterOnStderrWithoutATty(t *testing.T) {
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	d.IsTTY = func() bool { return false }
+
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newSpawnCmd(&home, d))
+	stdout, stderr, err := executeCmdSeparateStreams(t, root, "spawn", "api", "--", "true")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("stdout must belong to the command alone; got %q", stdout)
+	}
+	if !strings.Contains(stderr, "creating sandbox") {
+		t.Errorf("den's own chatter must land on stderr; got %q", stderr)
+	}
+}
+
+// The interactive path keeps saying it on stdout, as it always has (mirrors
+// TestExecKeepsItsChatterOnStdoutWithATty, exec_test.go): nothing is piped
+// there under a terminal, and moving it would change a surface #60 does not
+// touch. Guards the other direction of the split — inverting spawn.go's `!tty`
+// to `tty` would still pass TestSpawnPutsItsOwnChatterOnStderrWithoutATty's
+// sibling above only by accident; this test would catch it.
+func TestSpawnKeepsItsChatterOnStdoutWithATty(t *testing.T) {
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	d.IsTTY = func() bool { return true }
+
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newSpawnCmd(&home, d))
+	stdout, stderr, err := executeCmdSeparateStreams(t, root, "spawn", "api", "--", "true")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout, "creating sandbox") {
+		t.Errorf("den's own chatter must stay on stdout under a tty; got %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr must stay empty on the tty path; got %q", stderr)
+	}
+}
+
 // denHomeWithOptionalRepo: a spawnable den home whose nest declares one
 // required repo and one optional one — the shape `-i` exists for.
 func denHomeWithOptionalRepo(t *testing.T) string {
@@ -421,5 +519,35 @@ func TestSeveralPositionalsAllReachSpawnOptions(t *testing.T) {
 	}
 	if len(f.Calls) != 0 {
 		t.Errorf("no sbx call must have happened; calls: %v", f.Calls)
+	}
+}
+
+// Everything after `--` is the command; everything before it past the nest is
+// still repos. Proven by an INVALID value, the idiom this file already uses
+// for wiring (TestPositionalsReachSpawnOptionsAsRepos): a path that does not
+// exist fails the spawn WHEN IT IS READ AS A REPO. Placed after `--`, it must
+// not be read as one, so the spawn must not fail naming it.
+func TestSpawnDoesNotMountTheCommandAsARepo(t *testing.T) {
+	_, d := fakeSpawnDeps()
+	missing := filepath.Join(t.TempDir(), "gone")
+
+	_, err := runSpawn(t, denHomeSpawnable(t), d, "api", "--", missing)
+	if err != nil && strings.Contains(err.Error(), missing) {
+		t.Errorf("what follows `--` is a command, not a repo to mount: %v", err)
+	}
+}
+
+// The other half, positive: the command REACHES spawn.Options. Proven by the
+// contradiction it is the only thing that can raise — unwired, o.Command stays
+// empty and `--detach` alone is a perfectly ordinary spawn.
+func TestCommandReachesSpawnOptions(t *testing.T) {
+	_, d := fakeSpawnDeps()
+
+	_, err := runSpawn(t, denHomeSpawnable(t), d, "api", "--detach", "--", "go", "test")
+	if err == nil {
+		t.Fatal("--detach with a command must be refused: the command did not reach spawn.Options")
+	}
+	if !strings.Contains(err.Error(), "--detach") {
+		t.Errorf("the refusal must name the flag in play: %v", err)
 	}
 }

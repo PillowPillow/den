@@ -264,11 +264,11 @@ func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out,
 		//   - `--` ends sbx's own flag parsing before den's text begins. The
 		//     three sibling `sbx exec` call sites omit it and are right to:
 		//     agent.ReadFreshness sends `exec <n> cat <path>`, cli/ports sends
-		//     `exec <n> true`, spawn.Attach sends `exec -it <n> bash -l` — every
+		//     `exec <n> true`, spawn.Enter sends `exec -it <n> bash -l` — every
 		//     token after the sandbox name a fixed, dash-free literal. This one
 		//     passes a whole USER-AUTHORED script as the last argv element.
 		//     `sbx exec [flags] SANDBOX COMMAND [ARG...]` already stops reading
-		//     flags at SANDBOX (spawn.Attach documents the consequence for `-w`),
+		//     flags at SANDBOX (spawn.Enter documents the consequence for `-w`),
 		//     so `--` is belt-and-braces rather than strictly required; kept
 		//     because it costs one token and the failure it forecloses — an sbx
 		//     that keeps scanning, over text den does not control — would be

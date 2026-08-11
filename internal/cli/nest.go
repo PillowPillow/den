@@ -40,7 +40,7 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 				return err
 			}
 			// Every installed source's own nests, prefixed "<source>:<name>"
-			// — the same reference spawn, `den sh`/`rm`/`ports` and `den
+			// — the same reference spawn, `den exec`/`rm`/`ports` and `den
 			// nest show` all accept for that nest. A broken or unreadable
 			// sources/ must not hide the local listing (srcNests doctrine
 			// below).
@@ -87,7 +87,7 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 
 // listSourceNests iterates every installed source (`os.ReadDir(source.Root)`)
 // and returns its nests and broken nests, both named "<source>:<name>" — the
-// same reference `den spawn`, `den sh`/`rm`/`ports` and `den nest show` all
+// same reference `den spawn`, `den exec`/`rm`/`ports` and `den nest show` all
 // accept for that nest. Renaming here, not at the call site: nest.ListNests
 // itself knows nothing of sources, and every caller wants the SAME prefixed
 // form, so there is one place to get it right.

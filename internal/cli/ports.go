@@ -15,7 +15,7 @@ import (
 // newPortsCmd resolves where a sandbox's declared ports land on the host and
 // prints the §8 table.
 //
-// The argument is a SANDBOX name, like `den sh` and `den rm` — the ports are
+// The argument is a SANDBOX name, like `den exec` and `den rm` — the ports are
 // published into a live VM, and only a sandbox name says which one. But the
 // WINDOW is seeded by the NEST the name belongs to (sbx.SplitName), never by
 // the sandbox: §8 promises a bookmarkable URL per nest, and a window hashed
@@ -80,7 +80,7 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 			}
 			b := sbx.Find(boxes, name)
 			if b == nil {
-				// The exact sentence of `den rm` and `den sh`: one situation,
+				// The exact sentence of `den rm` and `den exec`: one situation,
 				// one wording. A third dialect here would be a message users
 				// have to learn twice.
 				return fmt.Errorf("sandbox %q not found (live: %v)", name, liveNames(boxes))
@@ -198,7 +198,7 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 // remedy (#16). A refusal would name both, but the only thing the user could do
 // with it is run a command that starts the VM, which is the one thing den was
 // refusing to do for them. That is a chore, not a safeguard. And F2 already
-// settled the precedent in the other direction: `den sh` and `den spawn` take
+// settled the precedent in the other direction: `den exec` and `den spawn` take
 // a stopped sandbox back without asking, because `sbx exec` restarts it
 // transparently — the surface `sbx ports` conspicuously does not share.
 // Measured: a bare `sbx exec <name> true` restarts a stopped sandbox in ~1.4 s.

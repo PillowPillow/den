@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,13 +12,13 @@ import (
 	"github.com/PillowPillow/den/internal/sshagent"
 )
 
-func TestShAttachesInTheWorkdir(t *testing.T) {
+func TestExecAttachesInTheWorkdir(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -48,13 +49,13 @@ func TestShAttachesInTheWorkdir(t *testing.T) {
 // the two apart. This test also locks the `-it` flag and the FULL argv, in
 // order: `sbx exec [flags] SANDBOX COMMAND` — a postponed `-w` would land as-is
 // on `bash -l` instead of setting the working directory.
-func TestShAttachesWithATtyNotARun(t *testing.T) {
+func TestExecAttachesWithATtyNotARun(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
@@ -64,31 +65,31 @@ func TestShAttachesWithATtyNotARun(t *testing.T) {
 
 // `sbx run` would launch the image's flavor (often claude): never.
 //
-// The fixture's `"status":"running"` is not decorative: `den sh` now refuses
+// The fixture's `"status":"running"` is not decorative: `den exec` now refuses
 // any sandbox whose status is not explicitly "running" (see
-// TestShRefusesASandboxThatIsNotRunning), and a fixture without `status` would
+// TestExecRefusesASandboxThatIsNotRunning), and a fixture without `status` would
 // no longer even reach the attach.
-func TestShNeverUsesSbxRun(t *testing.T) {
+func TestExecNeverUsesSbxRun(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.HasCalled("run") {
-		t.Errorf("den sh must never go through `sbx run`; calls: %v", f.Calls)
+		t.Errorf("den exec must never go through `sbx run`; calls: %v", f.Calls)
 	}
 }
 
 // An unknown name must list what is running: "not found" alone would force
 // the user to run another command just to know what to type.
-func TestShUnknownName(t *testing.T) {
+func TestExecUnknownName(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api"},{"name":"web"}]}`)},
 	}}
 
-	_, err := executeCmdWithSbx(t, f, "sh", "missing")
+	_, err := executeCmdWithSbx(t, f, "exec", "missing")
 	if err == nil {
 		t.Fatal("an unknown sandbox name must produce an error")
 	}
@@ -102,17 +103,17 @@ func TestShUnknownName(t *testing.T) {
 	}
 }
 
-// F2, on the OTHER path: `den sh` must resume a stopped sandbox, like
+// F2, on the OTHER path: `den exec` must resume a stopped sandbox, like
 // `den spawn`. Proven HERE and not only in internal/spawn — nothing at the
-// level of sbx.CheckAttachable guarantees newShCmd calls it, and a policy
+// level of sbx.CheckAttachable guarantees newExecCmd calls it, and a policy
 // widened on only one side would reopen the defect on the other.
-func TestShResumesAStoppedSandbox(t *testing.T) {
+func TestExecResumesAStoppedSandbox(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
 		t.Fatalf("a stopped sandbox must be resumed: %v", err)
 	}
 	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
@@ -121,10 +122,10 @@ func TestShResumesAStoppedSandbox(t *testing.T) {
 }
 
 // The same guard as on `den spawn`, on the OTHER path: both end in an
-// `sbx exec`, and both are wrong on a VM den knows nothing about. A `den sh`
+// `sbx exec`, and both are wrong on a VM den knows nothing about. A `den exec`
 // that opens a shell in an `exited` sandbox is no less wrong than a
 // `den spawn` that does — and it is the very same defect, not a cousin.
-func TestShRefusesASandboxThatIsNotRunning(t *testing.T) {
+func TestExecRefusesASandboxThatIsNotRunning(t *testing.T) {
 	for _, status := range []string{"exited", "paused", "Running", ""} {
 		t.Run("status="+status, func(t *testing.T) {
 			f := &sbx.Fake{Responses: map[string]sbx.Response{
@@ -132,7 +133,7 @@ func TestShRefusesASandboxThatIsNotRunning(t *testing.T) {
 					`{"sandboxes":[{"name":"api","status":"` + status + `","workspaces":["/w/api"]}]}`)},
 			}}
 
-			_, err := executeCmdWithSbx(t, f, "sh", "api")
+			_, err := executeCmdWithSbx(t, f, "exec", "api")
 			if err == nil {
 				t.Fatalf("status %q must not lead to an attach", status)
 			}
@@ -150,7 +151,7 @@ func TestShRefusesASandboxThatIsNotRunning(t *testing.T) {
 	}
 }
 
-// shGateLog renders a dispatcher journal whose LAST run reports on den's own
+// execGateLog renders a dispatcher journal whose LAST run reports on den's own
 // mixin for this sandbox. `verdict` is the whole verdict line's leading token —
 // `ok` or `fail … exit=1` — because what agent.ParseKitLog reads is that token
 // and the path that follows it.
@@ -165,7 +166,7 @@ func TestShRefusesASandboxThatIsNotRunning(t *testing.T) {
 // the marker is never written. The fixture used to omit it in both cases, which
 // was a divergence from the measured journal that only became visible when
 // agent.ParseKitLog started requiring it to declare a pass.
-func shGateLog(sandbox, verdict string) []byte {
+func execGateLog(sandbox, verdict string) []byte {
 	path := "/etc/durable-startup.d/002-startup-den-" + strings.ReplaceAll(sandbox, ".", "-") + "/000-cmd.sh"
 	log := "=== dispatcher run 2026-08-03T10:00:00Z ===\n" +
 		"> " + path + "\n" +
@@ -176,27 +177,27 @@ func shGateLog(sandbox, verdict string) []byte {
 	return []byte(log)
 }
 
-// shGateRead is the key of the ONE `sbx exec` agent.ReadFreshness makes.
-func shGateRead(sandbox string) string {
+// execGateRead is the key of the ONE `sbx exec` agent.ReadFreshness makes.
+func execGateRead(sandbox string) string {
 	return "exec " + sandbox + " cat /var/log/sbx-kit-startup.log"
 }
 
 // #18's hole, entered through the other door. `den spawn` holds the §9.1 gate
 // since PR #26 — it refuses a sandbox whose agent den KNOWS was not updated —
-// but `den sh` does not go through spawn.Spawn at all, and on the bench the
+// but `den exec` does not go through spawn.Spawn at all, and on the bench the
 // very same sandbox that `den spawn` refused handed out a shell in silence.
 //
 // A guarantee held by one door out of two is more misleading than no guarantee:
-// §9.1 says "a sandbox never starts with a stale agent", and `den sh` on a
+// §9.1 says "a sandbox never starts with a stale agent", and `den exec` on a
 // STOPPED sandbox starts one.
-func TestShRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
+func TestExecRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
-		shGateRead("api"): {Output: shGateLog("api", "fail")},
+		execGateRead("api"): {Output: execGateLog("api", "fail")},
 	}}
 
-	_, err := executeCmdWithSbx(t, f, "sh", "api")
+	_, err := executeCmdWithSbx(t, f, "exec", "api")
 	if err == nil {
 		t.Fatal("a failed §9.1 gate must not lead to a shell")
 	}
@@ -210,7 +211,7 @@ func TestShRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
 	}
 }
 
-// The case issue #27 names as the real one: `den sh` on a STOPPED sandbox
+// The case issue #27 names as the real one: `den exec` on a STOPPED sandbox
 // STARTS it, and the gate must hold there too rather than be skipped for a VM
 // den is about to boot.
 //
@@ -218,18 +219,18 @@ func TestShRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
 // failing again, which is what a deterministically broken freshness command
 // does on every boot. It pins that the stopped branch REFUSES; it does not by
 // itself prove den waited, since a single read of the last block would refuse
-// this fixture too. TestShPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox
+// this fixture too. TestExecPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox
 // below is the one that discriminates, and it exists because the two are
 // otherwise indistinguishable — which is exactly how the hole got in.
-func TestShWaitsForTheGateWhenItStartsAStoppedSandbox(t *testing.T) {
-	log := append(shGateLog("api", "fail"), shGateLog("api", "fail")...)
+func TestExecWaitsForTheGateWhenItStartsAStoppedSandbox(t *testing.T) {
+	log := append(execGateLog("api", "fail"), execGateLog("api", "fail")...)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
-		shGateRead("api"): {Output: log},
+		execGateRead("api"): {Output: log},
 	}}
 
-	_, err := executeCmdWithSbx(t, f, "sh", "api")
+	_, err := executeCmdWithSbx(t, f, "exec", "api")
 	if err == nil {
 		t.Fatal("starting a stopped sandbox whose gate failed must not lead to a shell")
 	}
@@ -245,7 +246,7 @@ func TestShWaitsForTheGateWhenItStartsAStoppedSandbox(t *testing.T) {
 //
 // This is the property that closes the hole. A restart makes the dispatcher
 // RE-RUN (measured, agent.KitLogPath) and ParseKitLog reads only the LAST
-// block, so right after `den sh` wakes a stopped sandbox the fresh block has
+// block, so right after `den exec` wakes a stopped sandbox the fresh block has
 // begun and reported nothing: a lone read answers GatePending, prints a note,
 // and opens a shell while the agent is mid-update — #18's silence rebuilt
 // inside the fix for #27. Polling is what lets the verdict arrive.
@@ -257,21 +258,21 @@ func TestShWaitsForTheGateWhenItStartsAStoppedSandbox(t *testing.T) {
 // rather than a refusal.
 //
 // The clock is the injected one (sbxDeps), so the rounds happen instantly.
-func TestShPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox(t *testing.T) {
+func TestExecPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
 		// A run that has begun and reported nothing: GatePending, forever.
-		shGateRead("api"): {Output: []byte("=== dispatcher run 2026-08-03T10:00:00Z ===\n")},
+		execGateRead("api"): {Output: []byte("=== dispatcher run 2026-08-03T10:00:00Z ===\n")},
 	}}
 
-	stdout, err := executeCmdWithSbx(t, f, "sh", "api")
+	stdout, err := executeCmdWithSbx(t, f, "exec", "api")
 	if err != nil {
 		t.Fatalf("a budget that runs out is a note, never a refusal: %v", err)
 	}
 	reads := 0
 	for _, c := range f.Calls {
-		if strings.Join(c, " ") == shGateRead("api") {
+		if strings.Join(c, " ") == execGateRead("api") {
 			reads++
 		}
 	}
@@ -288,15 +289,15 @@ func TestShPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox(t *testing.T) {
 
 // The other half: a gate that PASSED costs the user nothing — no line, and the
 // shell they asked for. Asserted together with the refusal above, because a
-// `den sh` that refused everything would satisfy that test alone.
-func TestShAttachesAndStaysSilentWhenTheFreshnessGatePassed(t *testing.T) {
+// `den exec` that refused everything would satisfy that test alone.
+func TestExecAttachesAndStaysSilentWhenTheFreshnessGatePassed(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
-		shGateRead("api"): {Output: shGateLog("api", "ok")},
+		execGateRead("api"): {Output: execGateLog("api", "ok")},
 	}}
 
-	stdout, err := executeCmdWithSbx(t, f, "sh", "api")
+	stdout, err := executeCmdWithSbx(t, f, "exec", "api")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -311,19 +312,19 @@ func TestShAttachesAndStaysSilentWhenTheFreshnessGatePassed(t *testing.T) {
 // The gate is read BEFORE the attach, not alongside it. Read after, its refusal
 // would arrive behind a shell that already owns the terminal — which is the
 // exact defect the ordering of warnEmptyAgentOnReentry already avoids.
-func TestShReadsTheFreshnessGateBeforeAttaching(t *testing.T) {
+func TestExecReadsTheFreshnessGateBeforeAttaching(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
-		shGateRead("api"): {Output: shGateLog("api", "ok")},
+		execGateRead("api"): {Output: execGateLog("api", "ok")},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "sh", "api"); err != nil {
+	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	read, attach := -1, -1
 	for i, c := range f.Calls {
-		if strings.Join(c, " ") == shGateRead("api") {
+		if strings.Join(c, " ") == execGateRead("api") {
 			read = i
 		}
 		if slices.Contains(c, "-it") {
@@ -331,7 +332,7 @@ func TestShReadsTheFreshnessGateBeforeAttaching(t *testing.T) {
 		}
 	}
 	if read < 0 {
-		t.Fatalf("den sh must read the §9.1 journal; calls: %v", f.Calls)
+		t.Fatalf("den exec must read the §9.1 journal; calls: %v", f.Calls)
 	}
 	if attach < 0 || read > attach {
 		t.Errorf("the journal must be read before the attach; read=%d attach=%d, calls: %v",
@@ -339,18 +340,18 @@ func TestShReadsTheFreshnessGateBeforeAttaching(t *testing.T) {
 	}
 }
 
-// runShWithAgent runs `den sh` through the REAL command tree — NewRootCmdWith,
-// not a hand-built sh command — with an injected sbx.Runner and SSH probe, on a
+// runExecWithAgent runs `den exec` through the REAL command tree — NewRootCmdWith,
+// not a hand-built exec command — with an injected sbx.Runner and SSH probe, on a
 // given den home.
 //
 // The full tree on purpose: everything the empty-agent warning needs on this
-// path is wiring (the den home reaching sh.go, deps.SSHAgent reaching it too,
+// path is wiring (the den home reaching exec.go, deps.SSHAgent reaching it too,
 // the warning landing on the command's stderr), and a helper that called
-// newShCmd directly would prove none of it.
+// newExecCmd directly would prove none of it.
 //
 // Separate streams, for the property the warning is judged on: a diagnostic
 // must not land in the stdout a caller pipes.
-func runShWithAgent(t *testing.T, denHome string, r sbx.Runner,
+func runExecWithAgent(t *testing.T, denHome string, r sbx.Runner,
 	probe func() sshagent.Result, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: r, SSHAgent: probe}
@@ -358,44 +359,44 @@ func runShWithAgent(t *testing.T, denHome string, r sbx.Runner,
 		append([]string{"--den-home", denHome}, args...)...)
 }
 
-// shSocket puts a forwarded socket in den's environment, like spawn's
+// execSocket puts a forwarded socket in den's environment, like spawn's
 // forwardedSocket: without it every test below takes the absent-socket branch
 // and never reaches the probe. Set explicitly rather than inherited — left to
 // the machine, these tests would pass on a workstation running an agent and
 // change verdict on a bare CI runner.
-func shSocket(t *testing.T) {
+func execSocket(t *testing.T) {
 	t.Helper()
 	t.Setenv("SSH_AUTH_SOCK", "/tmp/den-test/agent.sock")
 }
 
-// shDenHome writes the smallest den home `den sh` can read a mode out of. The
+// execDenHome writes the smallest den home `den exec` can read a mode out of. The
 // ssh block is the caller's, because the mode is what these tests vary; empty
 // means the config's default, agent-forward.
-func shDenHome(t *testing.T, sshBlock string) string {
+func execDenHome(t *testing.T, sshBlock string) string {
 	t.Helper()
 	dir := t.TempDir()
 	writeConfig(t, dir, minimalConfig+sshBlock)
 	return dir
 }
 
-// A sandbox is created once and re-entered daily, most often with `den sh` —
-// and `den sh` said nothing about an empty forwarded agent, on any OS, while
+// A sandbox is created once and re-entered daily, most often with `den exec` —
+// and `den exec` said nothing about an empty forwarded agent, on any OS, while
 // `den spawn` warned on both its branches. The forwarded socket being a live
 // proxy, an agent emptied since the VM booted denies `git push` inside it just
 // as silently on re-entry: same machine state, same consequence, same warning.
 //
 // The attach is asserted too: the warning must not have replaced the shell the
 // user asked for.
-func TestShWarnsWhenTheForwardedAgentIsEmpty(t *testing.T) {
-	shSocket(t)
+func TestExecWarnsWhenTheForwardedAgentIsEmpty(t *testing.T) {
+	execSocket(t)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
 	}}
 
-	stdout, stderr, err := runShWithAgent(t, shDenHome(t, ""), f,
+	stdout, stderr, err := runExecWithAgent(t, execDenHome(t, ""), f,
 		func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} },
-		"sh", "api")
+		"exec", "api")
 	if err != nil {
 		t.Fatalf("an empty agent must warn, not block: %v", err)
 	}
@@ -414,16 +415,16 @@ func TestShWarnsWhenTheForwardedAgentIsEmpty(t *testing.T) {
 
 // The counterpart without which a warning wired unconditionally would pass the
 // test above: an agent holding keys is the healthy case and says nothing.
-func TestShDoesNotWarnWhenTheForwardedAgentHasKeys(t *testing.T) {
-	shSocket(t)
+func TestExecDoesNotWarnWhenTheForwardedAgentHasKeys(t *testing.T) {
+	execSocket(t)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
 	}}
 
-	_, stderr, err := runShWithAgent(t, shDenHome(t, ""), f,
+	_, stderr, err := runExecWithAgent(t, execDenHome(t, ""), f,
 		func() sshagent.Result { return sshagent.Result{State: sshagent.StateKeys, Identities: 2} },
-		"sh", "api")
+		"exec", "api")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -433,24 +434,24 @@ func TestShDoesNotWarnWhenTheForwardedAgentHasKeys(t *testing.T) {
 }
 
 // THE constraint that makes the warning acceptable on this command at all:
-// `den sh` reads the den home only to learn ssh.mode, and a den home it cannot
+// `den exec` reads the den home only to learn ssh.mode, and a den home it cannot
 // read costs the user NOTHING — no error, no missing shell. The whole point of
 // the command is that a broken ~/.den never stands between the user and a live
 // sandbox; the warning is advisory, so it is what gives way, silently.
 //
 // The empty temp dir is exactly that state: no config.yaml at all.
-func TestShOpensTheShellWhenTheDenHomeCannotBeRead(t *testing.T) {
-	shSocket(t)
+func TestExecOpensTheShellWhenTheDenHomeCannotBeRead(t *testing.T) {
+	execSocket(t)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
 	}}
 	probed := false
 
-	_, stderr, err := runShWithAgent(t, t.TempDir(), f, func() sshagent.Result {
+	_, stderr, err := runExecWithAgent(t, t.TempDir(), f, func() sshagent.Result {
 		probed = true
 		return sshagent.Result{State: sshagent.StateEmpty}
-	}, "sh", "api")
+	}, "exec", "api")
 	if err != nil {
 		t.Fatalf("an unreadable den home must not cost the user their shell: %v", err)
 	}
@@ -469,20 +470,20 @@ func TestShOpensTheShellWhenTheDenHomeCannotBeRead(t *testing.T) {
 // Modes `mount` and `none` forward no agent, so its state is irrelevant and no
 // probe must fire — the same rule as the spawn path, on the command that had to
 // read the mode to obey it.
-func TestShDoesNotProbeTheAgentOutsideAgentForward(t *testing.T) {
+func TestExecDoesNotProbeTheAgentOutsideAgentForward(t *testing.T) {
 	for _, sshBlock := range []string{"ssh:\n  mode: none\n", "ssh:\n  mode: mount\n  dir: /tmp/den-test/ssh\n"} {
 		t.Run(sshBlock, func(t *testing.T) {
-			shSocket(t)
+			execSocket(t)
 			f := &sbx.Fake{Responses: map[string]sbx.Response{
 				"ls --json": {Output: []byte(
 					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
 			}}
 			probed := false
 
-			_, stderr, err := runShWithAgent(t, shDenHome(t, sshBlock), f, func() sshagent.Result {
+			_, stderr, err := runExecWithAgent(t, execDenHome(t, sshBlock), f, func() sshagent.Result {
 				probed = true
 				return sshagent.Result{State: sshagent.StateEmpty}
-			}, "sh", "api")
+			}, "exec", "api")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -492,7 +493,7 @@ func TestShDoesNotProbeTheAgentOutsideAgentForward(t *testing.T) {
 			if strings.Contains(stderr, "warning") {
 				t.Errorf("stderr = %q, no SSH warning expected outside agent-forward", stderr)
 			}
-			// Without this, "no probe" would also be satisfied by a `den sh` that
+			// Without this, "no probe" would also be satisfied by a `den exec` that
 			// gave up before reaching it: the attach is what makes the silence a
 			// decision about the mode.
 			if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
@@ -505,11 +506,11 @@ func TestShDoesNotProbeTheAgentOutsideAgentForward(t *testing.T) {
 // An absent SSH_AUTH_SOCK is where re-entry deliberately parts from the
 // preflight: the socket a LIVE sandbox forwards was inherited at its
 // `sbx create`, from an environment that may be long gone, so this shell's lack
-// of one says nothing about the VM — and `den sh`, which creates nothing, has no
+// of one says nothing about the VM — and `den exec`, which creates nothing, has no
 // "relaunch den to forward it" to offer. Silence, and no probe: `ssh-add -l`
 // without a socket answers StateUnreachable, which would blame a variable the
 // user never set.
-func TestShDoesNotWarnWhenTheSSHSocketIsAbsent(t *testing.T) {
+func TestExecDoesNotWarnWhenTheSSHSocketIsAbsent(t *testing.T) {
 	// Set EMPTY rather than left alone: os.Getenv answers "" for both, and a test
 	// relying on the machine having no agent would quietly stop exercising this.
 	t.Setenv("SSH_AUTH_SOCK", "")
@@ -519,10 +520,10 @@ func TestShDoesNotWarnWhenTheSSHSocketIsAbsent(t *testing.T) {
 	}}
 	probed := false
 
-	_, stderr, err := runShWithAgent(t, shDenHome(t, ""), f, func() sshagent.Result {
+	_, stderr, err := runExecWithAgent(t, execDenHome(t, ""), f, func() sshagent.Result {
 		probed = true
 		return sshagent.Result{State: sshagent.StateUnreachable}
-	}, "sh", "api")
+	}, "exec", "api")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -530,18 +531,18 @@ func TestShDoesNotWarnWhenTheSSHSocketIsAbsent(t *testing.T) {
 		t.Error("the agent was probed with no socket to point it at")
 	}
 	if strings.Contains(stderr, "warning") {
-		t.Errorf("stderr = %q, den sh must stay silent about a socket it cannot judge", stderr)
+		t.Errorf("stderr = %q, den exec must stay silent about a socket it cannot judge", stderr)
 	}
 }
 
 // No live sandbox at all: the message cannot offer a list, it must SAY so.
 // "(live: [])" would send the user looking for a typo in an empty list.
-func TestShWithNoSandboxAtAll(t *testing.T) {
+func TestExecWithNoSandboxAtAll(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
 	}}
 
-	_, err := executeCmdWithSbx(t, f, "sh", "missing")
+	_, err := executeCmdWithSbx(t, f, "exec", "missing")
 	if err == nil {
 		t.Fatal("an unknown sandbox name must produce an error")
 	}
@@ -552,39 +553,289 @@ func TestShWithNoSandboxAtAll(t *testing.T) {
 
 // A source reference names a sandbox that was never spawned under its
 // prefixed name: ":" is not in sbx's charset, so spawn (spawn.go) names the
-// live VM with the FLATTENED reference, "corp-api". `den sh corp:api` must
-// reach that same sandbox — `den sh` never reads a nest file at all, so
+// live VM with the FLATTENED reference, "corp-api". `den exec corp:api` must
+// reach that same sandbox — `den exec` never reads a nest file at all, so
 // nothing here needs source.Locate; it only needs to look for the name spawn
 // actually used.
-func TestShAcceptsASourceReference(t *testing.T) {
+func TestExecAcceptsASourceReference(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"corp-api","status":"running","workspaces":["/w"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "sh", "corp:api"); err != nil {
-		t.Fatalf("den sh corp:api: %v", err)
+	if _, err := executeCmdWithSbx(t, f, "exec", "corp:api"); err != nil {
+		t.Fatalf("den exec corp:api: %v", err)
 	}
 	if !f.HasAttached("exec", "-it", "-w", "/w", "corp-api", "bash", "-l") {
 		t.Errorf("the attach must target the flattened sandbox corp-api; attaches: %v", f.Attaches)
 	}
 }
 
-// The worktree'd form of TestShAcceptsASourceReference. Flattening the WHOLE
-// argument rewrote the "." too, so `den sh corp:api.feat12` looked for
+// The worktree'd form of TestExecAcceptsASourceReference. Flattening the WHOLE
+// argument rewrote the "." too, so `den exec corp:api.feat12` looked for
 // "corp-api-feat12" and matched nothing. The "." separates the worktree from
 // the nest and only the NEST component carries a source prefix, so the split
 // comes first and the flattening second.
-func TestShAcceptsAWorktreedSourceReference(t *testing.T) {
+func TestExecAcceptsAWorktreedSourceReference(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"corp-api.feat12","status":"running","workspaces":["/w"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "sh", "corp:api.feat12"); err != nil {
-		t.Fatalf("den sh corp:api.feat12: %v", err)
+	if _, err := executeCmdWithSbx(t, f, "exec", "corp:api.feat12"); err != nil {
+		t.Fatalf("den exec corp:api.feat12: %v", err)
 	}
 	if !f.HasAttached("exec", "-it", "-w", "/w", "corp-api.feat12", "bash", "-l") {
 		t.Errorf("the attach must target corp-api.feat12; attaches: %v", f.Attaches)
 	}
 }
+
+// The contract of #60: `den exec api -- go test ./...` runs the command, and
+// the shell is what happens when no command is given — not the reverse.
+//
+// Deviation from the brief: executeCmdWithSbx leaves IsTTY as the REAL probe
+// (spawn.LooksInteractive), which reports true for ANY pair of char devices
+// on stdin AND stdout — including /dev/null, not just an actual terminal — so
+// this test would flip verdict depending on what fd 0 and fd 1 happen to be
+// wherever it runs (measured: this sandbox's `go test` resolves stdin as a
+// char device and stdout as NOT one, which happens to still answer false, but
+// that is this machine's shell, not a guarantee `go test` carries anywhere
+// else it runs). Every other IsTTY-sensitive test in the repo
+// (interactive_test.go, spawn_test.go:352) injects a fixed probe instead of
+// trusting the real one; this test now does the same, through the same
+// Deps+NewRootCmdWith form the sibling tests below already use.
+func TestExecRunsTheCommandAfterTheDoubleDash(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"exec", "api", "--", "go", "test", "./..."); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasPiped("exec", "-w", "/w/api", "api", "go", "test", "./...") {
+		t.Errorf("pipes = %v", f.Pipes)
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("a command must not open a shell; attaches = %v", f.Attaches)
+	}
+}
+
+// Without a terminal there is no tty, and the argv says so. The verdict comes
+// from the INJECTED probe, never from the terminal the suite happens to run
+// under — that is why Deps.IsTTY exists.
+func TestExecAllocatesATtyOnlyWhenDenHasOne(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		isTTY   func() bool
+		wantTTY bool
+	}{
+		{"a terminal", func() bool { return true }, true},
+		{"a pipe", func() bool { return false }, false},
+		{"an unwired probe", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &sbx.Fake{Responses: map[string]sbx.Response{
+				"ls --json": {Output: []byte(
+					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			}}
+			deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: tc.isTTY}
+			if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+				"exec", "api", "--", "true"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			gotTTY := f.HasAttached("exec", "-it")
+			if gotTTY != tc.wantTTY {
+				t.Errorf("tty = %v, want %v; calls = %v", gotTTY, tc.wantTTY, f.Calls)
+			}
+		})
+	}
+}
+
+// -T is the docker compose spelling, and it wins over a real terminal: it
+// exists so a caller in a terminal can still pipe cleanly.
+func TestExecMinusTSuppressesTheTtyEvenOnATerminal(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: func() bool { return true }}
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"exec", "api", "-T", "--", "true"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("-T must forbid the tty; attaches = %v", f.Attaches)
+	}
+}
+
+// --workdir is spelled LONG on purpose: -w is den spawn's worktree, and giving
+// it a second meaning on a sibling command is the collision den refuses
+// elsewhere. The flag overrides the workspace the VM reported.
+//
+// Same deviation as TestExecRunsTheCommandAfterTheDoubleDash above: the probe
+// is injected rather than left as the real stdin check, for the same reason.
+func TestExecWorkdirOverridesTheReportedWorkspace(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"exec", "api", "--workdir", "/srv", "--", "true"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasPiped("exec", "-w", "/srv", "api", "true") {
+		t.Errorf("pipes = %v", f.Pipes)
+	}
+}
+
+// `-w` must NOT be accepted here: silently taking den spawn's worktree
+// shorthand as a workdir is exactly the kind of collision that makes two
+// sibling commands mean different things by one letter.
+func TestExecRefusesTheShortWorkdirFlag(t *testing.T) {
+	f := &sbx.Fake{}
+	if _, err := executeCmdWithSbx(t, f, "exec", "api", "-w", "/srv", "--", "true"); err == nil {
+		t.Error("-w must not be a workdir on den exec")
+	}
+}
+
+// A command not separated by `--` is refused rather than guessed: `den exec api
+// ls` could be a sandbox named api running ls, or two sandbox names. den
+// refuses and names the form (spec §2).
+func TestExecRefusesACommandWithoutTheDoubleDash(t *testing.T) {
+	f := &sbx.Fake{}
+	_, err := executeCmdWithSbx(t, f, "exec", "api", "go", "test")
+	if err == nil {
+		t.Fatal("a command without `--` must be refused")
+	}
+	if !strings.Contains(err.Error(), "--") {
+		t.Errorf("the refusal must name the form to use; got %q", err.Error())
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
+	}
+}
+
+// execArgs' `dash != 1` branch, uncovered until now: `den exec` takes exactly
+// one sandbox name before `--`, and zero is as wrong as two. Exercised
+// separately from TestExecRefusesACommandWithoutTheDoubleDash, which never
+// reaches this branch (its args have no `--` at all, so ArgsLenAtDash is -1).
+func TestExecRefusesZeroPositionalsBeforeTheDoubleDash(t *testing.T) {
+	f := &sbx.Fake{}
+	_, err := executeCmdWithSbx(t, f, "exec", "--", "a", "b")
+	if err == nil {
+		t.Fatal("`--` with no sandbox name before it must be refused")
+	}
+	if !strings.Contains(err.Error(), "sandbox name") {
+		t.Errorf("the refusal must name what is missing; got %q", err.Error())
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
+	}
+}
+
+// The design spec requires this refusal to be identical, "dans les mêmes mots,
+// octet pour octet", to den spawn's (TestNoTTYReachesSpawnOptions,
+// spawn_test.go) — an identity that was pinned on one side only until now.
+func TestExecRefusesNoTTYWithNoCommand(t *testing.T) {
+	f := &sbx.Fake{}
+	for _, name := range []string{"-T", "--no-tty"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := executeCmdWithSbx(t, f, "exec", "api", name)
+			if err == nil {
+				t.Fatal("-T with no command must be refused")
+			}
+			if !strings.Contains(err.Error(), "-T") {
+				t.Errorf("the refusal must name the flag in play: %v", err)
+			}
+			if len(f.Calls) != 0 {
+				t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
+			}
+		})
+	}
+}
+
+// den's own lines belong on stderr when the caller is a pipe: `den exec api -T
+// -- go build | tee log` must carry the child's stdout and nothing else.
+//
+// Deviation from the brief: Freshness is added to Deps. The fixture is
+// "stopped", so this reaches spawn.CheckFreshnessOnReentry on the STARTING
+// branch, which spawn.go:1016-1018 documents as refusing a zero GateOptions
+// by design (Sleep/Now/Timeout/Interval must be real) rather than silently
+// completing — a Deps literal missing Freshness fails with "unusable
+// agent-freshness gate options", not the assertion below. fakeGateOptions()
+// is the same fixture sbxDeps() already uses for this reason.
+func TestExecPutsItsOwnChatterOnStderrWithoutATty(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"exec", "api", "--", "true")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("stdout must belong to the command alone; got %q", stdout)
+	}
+	if !strings.Contains(stderr, "stopped") {
+		t.Errorf("the stopped-sandbox line must still be said, on stderr; got %q", stderr)
+	}
+}
+
+// The interactive path keeps saying it on stdout, as it always has: nothing is
+// piped there, and moving it would change a surface #60 does not touch.
+//
+// Same deviation as TestExecPutsItsOwnChatterOnStderrWithoutATty above:
+// Freshness added, for the same "stopped" fixture / starting-branch reason.
+// This case also covers the no-command + tty path: len(command) == 0 forces
+// tty unconditionally in the RunE, so IsTTY: true here is confirming the
+// login-shell branch, not exercising the -T refusal (noTTY is false).
+func TestExecKeepsItsChatterOnStdoutWithATty(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return true }}
+	stdout, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout, "stopped") {
+		t.Errorf("stdout = %q, want the stopped-sandbox line", stdout)
+	}
+}
+
+// The status of the command becomes the status of den — the reason #60 calls
+// exit-code propagation part of the issue rather than a follow-up.
+//
+// Same deviation as TestExecRunsTheCommandAfterTheDoubleDash above: PipeErr is
+// only consulted on the non-tty branch, so a real IsTTY probe reporting true
+// (as this sandbox's does) would route this through Attach instead and never
+// see the error at all — the injected probe is what makes this test exercise
+// Pipe, deterministically.
+func TestExecPropagatesTheCommandStatus(t *testing.T) {
+	f := &sbx.Fake{
+		Responses: map[string]sbx.Response{
+			"ls --json": {Output: []byte(
+				`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+		},
+		PipeErr: &sbx.ExecError{Bin: "sbx", Err: fakeExitError{code: 42}},
+	}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+	_, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "--", "false")
+	var child *sbx.ChildExit
+	if !errors.As(err, &child) || child.Code != 42 {
+		t.Fatalf("err = %v, want a *sbx.ChildExit carrying 42", err)
+	}
+}
+
+type fakeExitError struct{ code int }
+
+func (fakeExitError) Error() string   { return "exit status 42" }
+func (e fakeExitError) ExitCode() int { return e.code }

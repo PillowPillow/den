@@ -1050,6 +1050,29 @@ entrées (`echo FIRST` puis `echo SECOND`, sandbox `den-order-probe`, template `
 déclaré.** Un renommage de clé n'est pas une promesse sur le runtime, et « la fraîcheur en
 DERNIER » est un invariant de sûreté (§9.1) : il fallait le re-mesurer, pas le supposer.
 
+### `sbx exec` non interactif (relevé du 2026-08-10, v0.38.0)
+
+Mesuré contre une sandbox vivante (`swimspot`), sur la machine de l'utilisateur.
+
+- **Le code de retour de la commande interne remonte** : `sbx exec <sb> sh -c 'exit 42'` → `rc=42`.
+  C'est ce qui rend `den exec` utilisable en CI, et c'était le fait bloquant de l'issue #60.
+- **stdout et stderr restent séparés sans `-it`** : `sh -c 'echo OUT; echo ERR >&2' 2>fichier`
+  laisse `OUT` sur la stdout et écrit `ERR` dans le fichier. C'est ce qui interdit de réutiliser
+  `Runner.Stream`, qui les fusionne délibérément.
+- **Une stdin redirigée atteint la commande SANS `-i`** : `printf '…' | sbx exec <sb> cat` rend le
+  texte. Divergence mesurée avec `docker exec`, qui exige `-i`.
+- **`sbx exec -d` NE DÉTACHE PAS** — la documentation du drapeau est falsifiée. `--help` annonce
+  « Detached mode: run command in the background » ; mesuré, `-d` bloque 5 s sur `sleep 5` (6 s
+  sans lui), relaie la stdout et rend le code de l'enfant (`exit 42` → `rc=42`). À signaler en
+  amont.
+- **`-t` sans terminal attaché JETTE la sortie**, en silence, tout en rendant le code de retour :
+  `sbx exec -it <sb> echo hello </dev/null >fichier` laisse le fichier VIDE, là où la même commande
+  sans `-t` écrit `hello` ; `sbx exec -it <sb> sh -c 'exit 42'` rend bien `rc=42`. C'est ce qui rend
+  la règle « `-it` seulement si `Deps.IsTTY` » obligatoire et non préférentielle.
+- **Une sandbox arrêtée est redémarrée** : « If the sandbox is stopped, it is started first »,
+  `sbx exec --help`. Source : le texte d'aide du binaire, **pas** une mesure du jour — le relevé du
+  2026-07-28 l'avait mesuré sur v0.35.0.
+
 ### La liste des commandes (2026-07-31, `sbx --help` sur v0.35.0)
 
 ```

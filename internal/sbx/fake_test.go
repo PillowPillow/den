@@ -116,3 +116,33 @@ func TestFakeDistinguishesRunFromAttach(t *testing.T) {
 		t.Errorf("Attach must keep feeding Calls too")
 	}
 }
+
+// Pipes exists for the confusion Calls cannot resolve, exactly as Attaches
+// does: a Run whose argv starts with "exec" must never be mistaken for a
+// command actually run in the sandbox.
+func TestFakeRecordsPipesApartFromCalls(t *testing.T) {
+	f := &Fake{}
+	if err := f.Pipe(context.Background(), "exec", "api", "go", "test"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := f.Run(context.Background(), "exec", "api", "true"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasPiped("exec", "api", "go", "test") {
+		t.Errorf("the Pipe must be recorded; pipes: %v", f.Pipes)
+	}
+	if f.HasPiped("exec", "api", "true") {
+		t.Errorf("a Run must never count as a Pipe; pipes: %v", f.Pipes)
+	}
+	if len(f.Calls) != 2 {
+		t.Errorf("both calls must reach Calls; calls: %v", f.Calls)
+	}
+}
+
+func TestFakePipeReturnsTheScriptedError(t *testing.T) {
+	want := errors.New("boom")
+	f := &Fake{PipeErr: want}
+	if err := f.Pipe(context.Background(), "exec", "api", "false"); !errors.Is(err, want) {
+		t.Errorf("Pipe = %v, want %v", err, want)
+	}
+}

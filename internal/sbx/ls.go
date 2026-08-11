@@ -121,7 +121,7 @@ func Find(boxes []Sandbox, name string) *Sandbox {
 func (s Sandbox) IsStopped() bool { return s.Status == StatusStopped }
 
 // CheckAttachable refuses a sandbox den must not open a shell into. It's the
-// guard shared by `den spawn` and `den sh`: both end in an `sbx exec`.
+// guard shared by `den spawn` and `den exec`: both end in an `sbx exec`.
 //
 // TWO statuses pass, and the second is the 2026-07-29 smoke-test fix:
 //
@@ -176,7 +176,7 @@ func Ls(ctx context.Context, r Runner) ([]Sandbox, error) {
 	// Two-step decoding, on purpose: a valid JSON object WITHOUT the
 	// "sandboxes" key (sbx renaming it) must be an ERROR, not a silent zero. Ls
 	// has no output channel other than the error to signal it, and silence
-	// costs more elsewhere than on den ls itself: den sh/den rm would read an
+	// costs more elsewhere than on den ls itself: den exec/den rm would read an
 	// empty list and tell the user a live sandbox doesn't exist, instead of
 	// saying the read failed. Same policy as the `allowed` field of `sbx
 	// policy check` (task 11), for the same reason.

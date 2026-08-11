@@ -510,7 +510,7 @@ func TestSpawnDetachedDoesNotCallAStoppedSandboxReady(t *testing.T) {
 		t.Errorf("nothing restarted the VM, so it is not ready: den may not claim it; output:\n%s",
 			out.String())
 	}
-	for _, want := range []string{"stays stopped", "state preserved", "den sh api", "den ports api"} {
+	for _, want := range []string{"stays stopped", "state preserved", "den exec api", "den ports api"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the detached line must state %q; output:\n%s", want, out.String())
 		}
@@ -2380,7 +2380,7 @@ func TestSpawnToleratesANilSSHAgentProbe(t *testing.T) {
 	}
 }
 
-// WarnEmptySSHAgentOnReentry is what `den sh` calls, and its first contract is
+// WarnEmptySSHAgentOnReentry is what `den exec` calls, and its first contract is
 // that the message is the SAME one `den spawn` prints: two surfaces describing
 // one machine state must not word it two ways, and the fix that acts without a
 // respawn is precisely what makes the warning worth printing on a re-entry.
@@ -2402,9 +2402,9 @@ func TestWarnEmptySSHAgentOnReentryWarnsOnAnEmptyAgent(t *testing.T) {
 // The one place where re-entry DIVERGES from the preflight, and the reason it
 // has its own function rather than reusing the call site of `den spawn`.
 //
-// An absent SSH_AUTH_SOCK in the shell running `den sh` says nothing about the
+// An absent SSH_AUTH_SOCK in the shell running `den exec` says nothing about the
 // sandbox: a live VM forwards the socket it inherited at its `sbx create`, from
-// an environment that may be long gone, and `den sh` creates nothing. So the
+// an environment that may be long gone, and `den exec` creates nothing. So the
 // preflight's message — "start an agent … and relaunch den, which forwards the
 // socket at creation time" — would be advice for a step this command does not
 // have, about a socket den cannot see. Silence, and no probe either: without a
@@ -2531,7 +2531,7 @@ func TestWarnEmptySSHAgentReportsAStateItDoesNotModel(t *testing.T) {
 	}
 }
 
-// A nil probe is tolerated on this path too: `den sh`'s own wiring tests build
+// A nil probe is tolerated on this path too: `den exec`'s own wiring tests build
 // their accesses by hand and leave it unset, and they must skip the warning
 // rather than dereference nil mid-command.
 func TestWarnEmptySSHAgentOnReentryToleratesANilProbe(t *testing.T) {
@@ -2840,7 +2840,7 @@ func TestSpawnFromSourceNestMountsCommandLineRepos(t *testing.T) {
 }
 
 // A local nest whose file name equals the flattened source reference would
-// make `den ls`/`den sh`/`den rm` ambiguous between the two: refused before
+// make `den ls`/`den exec`/`den rm` ambiguous between the two: refused before
 // any side effect, naming both files.
 func TestSpawnSourceNestRefusesLocalHomonym(t *testing.T) {
 	denHome, _ := denTest(t)
@@ -4254,5 +4254,124 @@ func TestSpawnDoesNotClaimAMovedStartOverARepoSpellingDifference(t *testing.T) {
 	}
 	if strings.Contains(log, "is not mounted") {
 		t.Errorf("log = %q: a is mounted", log)
+	}
+}
+
+// The reason spawn takes a command at all: an appelant holding a NEST does not
+// know, and must not have to compute, the sandbox name (`corp:api` + -w →
+// `corp-api.feat12`). den exec is for a caller holding a live sandbox from
+// `den ls`; this is for everyone else.
+func TestSpawnRunsTheGivenCommandInsteadOfAShell(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	// A LIVE sandbox, so the spawn takes its attach branch and ends in Enter
+	// without creating anything — the same fixture
+	// TestSpawnDetachedDoesNotCallAStoppedSandboxReady uses, with "running".
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`),
+	}
+
+	o := Options{Nest: "api", Command: []string{"go", "test", "./..."}}
+	if err := Spawn(context.Background(), denHome, o, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// fakeDeps leaves IsTTY nil, which is "no terminal, never assume one": the
+	// command therefore goes through Pipe, with no -it.
+	if !f.HasPiped("exec", "-w", "/w", "api", "go", "test", "./...") {
+		t.Errorf("pipes = %v", f.Pipes)
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("a given command must not open a shell; attaches = %v", f.Attaches)
+	}
+}
+
+// Refused, and refused BEFORE anything is read — like `-i` with
+// `--only`/`--without`, the contradiction den already refuses at step 0.
+//
+// It is a contradiction and not a shortcut because `sbx exec -d` does NOT
+// detach: measured 2026-08-10 on v0.38.0, it blocks for the command's whole
+// duration, streams its stdout and returns its status (spec §14.0). "Prepare,
+// then run detached" would mean den backgrounding the process itself — a fifth
+// Runner method, orphan and log handling, and no status to return.
+func TestSpawnRefusesDetachWithACommand(t *testing.T) {
+	o := Options{Nest: "api", Detach: true, Command: []string{"go", "test"}}
+	err := Spawn(context.Background(), t.TempDir(), o, Deps{})
+	if err == nil {
+		t.Fatal("--detach and a command must be refused")
+	}
+	for _, want := range []string{"--detach", "--"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %q; got %q", want, err.Error())
+		}
+	}
+}
+
+// NoTTY governs a GIVEN command only (spawn.go's own comment above the tty
+// line): a spawn with no command hands out a login shell, which is worth
+// nothing without a terminal, so `-T` alone is a contradiction — the same one
+// `den exec` refuses (internal/cli/exec.go). Refused at step 0, before
+// anything is read, like its two neighbours above.
+func TestSpawnRefusesNoTTYWithNoCommand(t *testing.T) {
+	o := Options{Nest: "api", NoTTY: true}
+	err := Spawn(context.Background(), t.TempDir(), o, Deps{})
+	if err == nil {
+		t.Fatal("-T with no command must be refused")
+	}
+	for _, want := range []string{"-T", "shell"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %q; got %q", want, err.Error())
+		}
+	}
+}
+
+// NoTTY must actually suppress the terminal it names, even when the injected
+// probe reports one: a probe answering true is exactly the case -T exists to
+// override, and TestSpawnRunsTheGivenCommandInsteadOfAShell only covers the
+// nil-probe path, where NoTTY is a no-op by construction (tty is already
+// false). Proven on the argv Enter actually builds, not on TTY alone: a
+// dropped `!o.NoTTY` and a dropped `o.NoTTY` read backwards both flip a
+// single bool, and only the resulting -it/no--it split tells them apart from
+// a passing test.
+func TestSpawnNoTTYSuppressesTheTerminalEvenWithAProbe(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	d.IsTTY = func() bool { return true }
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`),
+	}
+
+	o := Options{Nest: "api", Command: []string{"go", "test"}, NoTTY: true}
+	if err := Spawn(context.Background(), denHome, o, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !f.HasPiped("exec", "-w", "/w", "api", "go", "test") {
+		t.Errorf("-T must drop -it even under a probe reporting a terminal; pipes = %v", f.Pipes)
+	}
+	if len(f.Attaches) != 0 {
+		t.Errorf("-T must never attach; attaches = %v", f.Attaches)
+	}
+}
+
+// Workdir overrides the VM-reported directory, not just accompanies it: the
+// live sandbox below reports "/w" (the same fixture as
+// TestSpawnRunsTheGivenCommandInsteadOfAShell), and the override must win.
+// Proven on the argv, the only place a dropped override (`dir := workdir`
+// instead of `dir := o.Workdir`) would still pass every other assertion.
+func TestSpawnWorkdirOverridesTheReportedOne(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`),
+	}
+
+	o := Options{Nest: "api", Command: []string{"go", "test"}, Workdir: "/custom"}
+	if err := Spawn(context.Background(), denHome, o, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !f.HasPiped("exec", "-w", "/custom", "api", "go", "test") {
+		t.Errorf("--workdir must override the VM-reported \"/w\"; pipes = %v", f.Pipes)
 	}
 }

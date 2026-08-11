@@ -304,7 +304,7 @@ func TestNestShowResolvesALocalNestsPrefixedStackReference(t *testing.T) {
 }
 
 // `den nest ls` lists source nests too, prefixed `<source>:<name>` — the
-// same reference spawn, `den sh`/`rm`/`ports` and `den nest show` all accept
+// same reference spawn, `den exec`/`rm`/`ports` and `den nest show` all accept
 // for that same nest.
 func TestNestLsListsSourceNests(t *testing.T) {
 	dir := testDenHomeWithNest(t, "api")

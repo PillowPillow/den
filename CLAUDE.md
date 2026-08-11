@@ -73,7 +73,7 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
 
 - No test calls `t.Parallel()`, opens a socket, or spawns a process. Keep it that way — hermeticity
   is the reason the untestable one-liners (`ports.ListenScanner`, `ports.OpenURL`,
-  `spawn.StdinIsTerminal`) are isolated behind interfaces.
+  `spawn.LooksInteractive`) are isolated behind interfaces.
 - Packages running real git (`cli`, `spawn`, `worktree`) call `worktree.NeutralizeGitEnvironment()`
   in `TestMain`. Without it the suite has actually committed into unrelated repos via an inherited
   `GIT_DIR`/`GIT_WORK_TREE`.
