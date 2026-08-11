@@ -230,6 +230,12 @@ Puis, ~ligne 399, remplacer l'appel et l'annonce :
 	// there. Under --as the gap is wider still (the sandbox carries neither
 	// the branch nor anything derived from it), so the same line covers both
 	// and the condition stays one condition.
+	// Three cases, all checked: `-w feature/123` alone fires (Branch
+	// "feature/123" vs instance "feature-123", as before); `-w feature/123
+	// --as reco` fires and names api.reco, which is precisely the case where
+	// the user would otherwise hunt for their branch in `den ls`; `-w feat`
+	// alone stays silent, nothing having been rewritten. Do not "simplify"
+	// back to Dir != Branch — that form cannot see the label at all.
 	if worktreeName.Branch != "" && worktreeName.Branch != instance {
 		fmt.Fprintf(d.Out,
 			"worktree %q: branch name kept, sandbox becomes %s\n",
@@ -629,9 +635,12 @@ Dans `LoadNest`, juste après `n.Name = name` et AVANT la boucle sur `n.Repos` :
 	switch n.Select {
 	case "", SelectAll, SelectPrompt:
 	default:
+		// %q on the offending value, not %s: a `select: "prompt "` with a
+		// trailing space would otherwise render as a message naming the right
+		// word and refusing it anyway.
 		return nil, fmt.Errorf(
-			"nest %q: `select: %s` is not a known mode — use %q (mount every optional repo, "+
-				"the default) or %q (choose the repos at spawn time); fix `select:` in %s",
+			"nest %q: `select:` is %q, which is not a known mode — use %q (mount every optional "+
+				"repo, the default) or %q (choose the repos at spawn time); fix `select:` in %s",
 			name, n.Select, SelectAll, SelectPrompt, path)
 	}
 ```
@@ -1149,9 +1158,17 @@ la sandbox est vivante.
 - [ ] **Step 3: Hoist the name computation**
 
 Déplacer le bloc de nommage (celui de la tâche 1, `worktreeName` → `instance` → `nestComponent` →
-`sandboxName`) AU-DESSUS de l'appel à `interactiveWithout`, juste après `n.Stack = ref`. Il est
-**pur** : il ne lit que `o.Nest`, `o.Worktree`, `o.Instance`, `srcName` et le disque pour la
-détection de collision — jamais la sélection. Aucune ligne de son corps ne change.
+`sandboxName`) AU-DESSUS de l'appel à `interactiveWithout`, juste après `n.Stack = ref`. Aucune
+ligne de son corps ne change.
+
+Le point d'ancrage est légal, et c'est vérifiable plutôt qu'à croire : le bloc consomme `o.Nest`,
+`o.Worktree`, `o.Instance`, `srcName`, `nestRoot`, `bareNest` et `denHome` — tous disponibles dès
+`LoadNest`. Rien de ce qui vit entre `n.Stack = ref` et sa position actuelle (l'indice de
+fraîcheur des sources, la lecture du `cwd`, `nest.Resolve`) ne l'alimente.
+
+Il est **indépendant de la sélection**, pas pur au sens strict : sa moitié `nestComponent` fait un
+`os.Stat` et appelle `crossSourceCollision`, donc elle LIT le disque. Elle ne CRÉE rien, ce qui est
+la seule propriété dont §6 dépend.
 
 - [ ] **Step 4: Hoist the liveness read**
 
@@ -1290,9 +1307,18 @@ you have not mapped.
 
 - [ ] **Step 3: Update the handoff**
 
-`docs/superpowers/handoffs/HANDOFF.md` est courant et réécrit (contrairement aux handoffs datés).
-Y refléter : `--as`, `select:`, la colonne INSTANCE de `den ls`, et le fait que `sbx ls` est
-désormais lu avant `nest.Resolve`.
+`docs/superpowers/handoffs/HANDOFF.md` est courant et réécrit (contrairement aux handoffs datés,
+jamais retouchés). **Éditer les sections existantes, ne pas ajouter un paragraphe en fin de
+fichier** — un handoff qui raconte l'histoire par ajouts cesse d'être un état courant :
+
+- la section qui décrit la séquence de spawn : `sbx ls` est désormais lu avant `nest.Resolve`, et
+  pourquoi §6 y survit ;
+- la section qui décrit l'identité / le nom de sandbox : le composant 2 est l'instance, `-w` le
+  remplit, `--as` l'écrase, et le répertoire de worktree ne bouge pas ;
+- la section qui décrit les nests : la clé `select:`.
+
+Si l'une de ces sections n'existe pas sous ce nom, la placer là où le fichier traite déjà du sujet
+— jamais en annexe.
 
 - [ ] **Step 4: Verify**
 
