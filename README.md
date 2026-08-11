@@ -79,7 +79,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 |---|---|
 | `den init` | creates a den home from the shipped example (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`); refuses if `config.yaml` already exists |
 | `den spawn <nest> [repo...] [-- <cmd>]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise; extra repos are mounted on the fly; runs `<cmd>` instead of a shell when one is given |
-| `den ls` | lists live sandboxes, with their nest and worktree |
+| `den ls` | lists live sandboxes, with their nest, instance, worktree, status and workspace count |
 | `den exec <name> [-- <cmd>]` | runs one command in an existing sandbox, or opens a shell when no command is given |
 | `den ports <name>` | publishes the nest's declared ports into that sandbox and prints where they land on the host |
 | `den rm <name>` | destroys a sandbox and cleans up the worktrees den created (the agent profile persists) |
@@ -99,6 +99,7 @@ Options of `den spawn`:
 | Option | Effect |
 |---|---|
 | `-w`, `--worktree <branch>` | propagates a worktree of that name across **all** the nest's repos, and suffixes the sandbox name (`api.feat12`) |
+| `--as <label>` | name this instance, to run several sandboxes of one nest side by side |
 | `--detach` | prepares the sandbox without attaching a shell; refused together with a command after `--` — `--detach` spawns without entering the sandbox, a command has to run inside it |
 | `--only <repo,...>` | keep only these optional repos (required repos stay mounted) |
 | `--without <repo,...>` | exclude these optional repos |
@@ -117,6 +118,27 @@ branch `feature/123` in a sandbox `api.feature-123`. That is the name it appears
 So den accepts any name it can **name**; git remains the sole judge of what is a legal **ref**.
 `-w 'a..b'` passes naming (sandbox `api.a--b`) and it is `git worktree add` that refuses,
 before any sandbox is created.
+
+### Instances
+
+A sandbox is named `<nest>[.<instance>]`, and the instance is the only thing that distinguishes two
+sandboxes of one nest. `-w` fills it with the flattened branch; `--as` fills it directly:
+
+```bash
+den spawn api --as analyse-a
+den spawn api --as analyse-b   # same repos, two microVMs
+```
+
+`--as` renames the sandbox only. Under `-w`, the worktree directory keeps being named after the
+branch, so `den spawn api -w feature/123 --as reco` puts the worktree exactly where `-w` alone
+would have put it — a label never renames a worktree directory, since two nests spawned `--as x`
+would otherwise collide on it. den never generates an instance name on its own: running a second
+instance of one nest is always a deliberate `-w` or `--as`, never something den infers for you.
+
+Two instances mounting one working tree is allowed, and den has no read-only mount to offer: two
+VMs writing one git index can corrupt it. `--as` is for read-mostly concurrency — two analyses, two
+agents exploring the same checkout. Two writers means two branches, hence `-w` alone: `git worktree
+add` refuses a branch already checked out elsewhere, so two instances cannot share one.
 
 Options of `den exec`:
 
@@ -510,6 +532,28 @@ escapable: a teammate who simply does not have the front-end checkout runs `den 
 --without front-app` and spawns without it. The refusal says so itself when the repo is optional.
 A key on a repo that is still selected always refuses — den never drops a repo on its own — and
 a *required* one is never offered the escape, since `--without` refuses required repos outright.
+
+`select:` on a nest decides how it picks among its optional repos:
+
+- `all` (default — the empty value means `all`, so no existing nest changes meaning) mounts every
+  optional repo unless `--without`/`--only`/`-i` says otherwise.
+- `prompt` declares a nest with **no default selection**: the repos are chosen at spawn time. With a
+  terminal, the checklist opens without needing `-i`, and starts empty; without one, den refuses and
+  names `--only`/`--without`, which make the same selection from a script or CI. An unknown
+  `select:` value is refused, naming both modes.
+
+Local nests can use `select: prompt` too — it is one mechanism, not a sources-only one — and it is
+what makes a thirty-repo generic nest usable without cloning thirty repositories: a key that is not
+mapped in your `~/.den/config.yaml` costs nothing as long as you do not select its repo. The
+checklist annotates the keys you have not mapped.
+
+Re-attaching to a live `select: prompt` sandbox does not reopen the checklist: den rebuilds the
+selection from the sandbox's creation record, prints the repos it was created with, and names
+`--as <label>` as the way to run a different set alongside it. `-i` on an ordinary live nest
+rebuilds from the record the same way, silently — no explanation line, since the selection was
+never a nest-wide default to begin with. Without a readable record — an older den, or a sandbox
+created outside den — den resolves every repo the nest declares instead, and says so, naming
+`--only`/`--without` to pick a set explicitly.
 
 ### Addressing
 
