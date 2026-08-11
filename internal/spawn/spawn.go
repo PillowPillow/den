@@ -122,6 +122,19 @@ func (d Deps) goos() string {
 type Options struct {
 	Nest     string
 	Worktree string
+	// Instance is `--as`: the label that goes into the SECOND component of the
+	// sandbox name, the one -w fills with the flattened branch. It exists
+	// because that component is den's only discriminator — sbx has no
+	// --label — so without it two different repo selections of one nest are
+	// one sandbox, and the second spawn silently attaches the first
+	// (2026-08-04-adhoc-repos-design.md, decision 7, which deferred exactly
+	// this).
+	//
+	// It renames the SANDBOX and nothing else. The worktree directory keeps
+	// being named after the flattened branch (worktree.Name.Dir): a label is
+	// arbitrary, and two nests spawned `--as x` would otherwise fight over
+	// <worktree_root>/x/<repo>.
+	Instance string
 	Agent    string
 	Without  []string
 	Only     []string
@@ -352,6 +365,22 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 		worktreeName = worktree.Name{Dir: flattened, Branch: o.Worktree}
 	}
+	// The second component: `--as` when given, else the flattened branch.
+	//
+	// NOT worktreeName.Dir under --as, deliberately. Dir names the worktree
+	// DIRECTORY (worktree.Path) and lands in the manifest as Worktree.Name;
+	// letting the label reach it would put feature/123's worktree under
+	// <root>/reco/api, and would make two different nests spawned `--as x`
+	// collide on <root>/x/<repo>. A branch is a meaningful discriminator, a
+	// label is not.
+	instance := worktreeName.Dir
+	if o.Instance != "" {
+		flattened, err := config.FlattenSandboxComponent("instance", o.Instance)
+		if err != nil {
+			return err
+		}
+		instance = flattened
+	}
 	// Sandbox naming: ":" is not in sbx's `--name` charset, so a nest loaded
 	// FROM a source cannot spawn under its prefixed reference verbatim — its
 	// sandbox component is the FLATTENED reference ("corp:backend" →
@@ -396,14 +425,22 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				o.Nest, nestComponent, otherPath, nest.FilePath(nestRoot, bareNest), otherPath)
 		}
 	}
-	sandboxName, err := sbx.SandboxName(nestComponent, worktreeName.Dir)
+	sandboxName, err := sbx.SandboxName(nestComponent, instance)
 	if err != nil {
 		return err
 	}
 	// Announced early: otherwise the user looks for "feature/123" in
 	// `den ls` and never finds it — the sandbox carries the flattened name
-	// there.
-	if worktreeName.Dir != worktreeName.Branch {
+	// there. Under --as the gap is wider still (the sandbox carries neither
+	// the branch nor anything derived from it), so the same line covers both
+	// and the condition stays one condition.
+	// Three cases, all checked: `-w feature/123` alone fires (Branch
+	// "feature/123" vs instance "feature-123", as before); `-w feature/123
+	// --as reco` fires and names api.reco, which is precisely the case where
+	// the user would otherwise hunt for their branch in `den ls`; `-w feat`
+	// alone stays silent, nothing having been rewritten. Do not "simplify"
+	// back to Dir != Branch — that form cannot see the label at all.
+	if worktreeName.Branch != "" && worktreeName.Branch != instance {
 		fmt.Fprintf(d.Out,
 			"worktree %q: branch name kept, sandbox becomes %s\n",
 			worktreeName.Branch, sandboxName)
