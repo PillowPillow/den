@@ -7,6 +7,37 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.6.0 — 2026-08-11
+
+### Added
+- `den exec <name> -- <cmd> [args...]` runs one command in a live sandbox and exits with that
+  command's own status. den had exactly one door into a sandbox and it was interactive, so a CI
+  step, a task target or a script had to drive a shell — or bypass den, losing the sandbox name
+  resolution, the agent freshness gate and the ssh-agent warning den owns.
+- `-T` on `den exec` never allocates a terminal, for pipes and CI; it is refused with no command
+  after `--`, because a shell needs one. `--workdir <path>` sets the directory the command runs
+  in, defaulting to the first workspace the sandbox reports.
+- `den spawn <nest> -- <cmd> [args...]` does the same on the way in: create or re-attach, run the
+  command, exit with its status. It takes the same `-T` and `--workdir`, and is refused together
+  with `--detach` — `--detach` spawns without entering the sandbox, and a command has to run
+  inside it.
+
+### Changed
+- den allocates a terminal only when stdin **and** stdout are both terminals. The old check read
+  stdin alone, and `< /dev/null` — the canonical CI and cron stdin — passed it; the sandbox then
+  discarded the command's output while still returning a success status. Consequence on an
+  existing flag: `den spawn -i`'s checklist now takes its clean refusal whenever stdout is
+  redirected, even with a real terminal on stdin.
+
+### Fixed
+- `den spawn <nest> -T -- <cmd> > out.txt` no longer writes den's own progress lines into the file
+  the command owns. That chatter goes to stderr, as it already did on `den exec`.
+
+### Removed
+- `den sh` is gone. Use `den exec <name>`, which opens the same shell when no command is given. No
+  alias was kept, so `den sh api` prints den's unknown-command listing — the listing that follows
+  it names every command, `exec` included.
+
 ## v1.5.0 — 2026-08-10
 
 ### Added
