@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/sbx"
 )
@@ -541,5 +542,248 @@ func TestInteractiveDoesNotPromptWhenAttaching(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "already live") {
 		t.Errorf("the attach must be announced:\n%s", out.String())
+	}
+}
+
+// denTestKeyNest: a nest whose ONE optional repo is a `key:` entry this machine
+// does not map — the shape the spec's §2.4 example has, and the shape that makes
+// the attach branch's re-derivation fatal rather than merely noisy.
+//
+// The required repo keeps the spawn viable: a nest that resolves to nothing has
+// no workspaces and would fail for a reason that has nothing to do with keys.
+//
+// selectBlock is the lever: the SAME nest with and without `select: prompt` is
+// what lets the two entry points of the checklist be tested against one fixture,
+// which is the whole point — they must behave identically here.
+func denTestKeyNest(t *testing.T, selectBlock string) string {
+	t.Helper()
+	denHome, api := denTest(t)
+	write(t, filepath.Join(denHome, "nests", "crm.yaml"),
+		"stack: devx\n"+selectBlock+"repos:\n"+
+			"  - { path: "+api+" }\n"+
+			"  - { key: crm, optional: true }\n")
+	return denHome
+}
+
+func denTestPromptingKeys(t *testing.T) string {
+	t.Helper()
+	return denTestKeyNest(t, "select: prompt\n")
+}
+
+// THE acceptance criterion of the rebuild: a prompting nest survives its own
+// second spawn.
+//
+// Without it, den refuses the attach with `repo key "crm" is not mapped on this
+// machine` — a refusal aimed at a repo the user deliberately left out, on a VM
+// that is running, over a key the checklist would have let them decline again.
+// The generic nest of the spec is unusable past its first spawn.
+//
+// The refusal is upstream of every report, so suppressing the drift warnings
+// cannot reach it: the selection itself has to come back.
+func TestPromptModeAttachRebuildsTheSelectionFromTheRecord(t *testing.T) {
+	denHome := denTestPromptingKeys(t)
+
+	// Create it, declining the unmapped key — the checklist starts empty, so
+	// confirming as-is is exactly that.
+	_, first := fakeDeps()
+	first.In = strings.NewReader("\n")
+	first.IsTTY = func() bool { return true }
+	if err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, first); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, d); err != nil {
+		t.Fatalf("attaching a prompting nest must not refuse over a repo it was never created with: %v", err)
+	}
+	if f.HasCalled("create") {
+		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
+	}
+}
+
+// denTestPromptingRepos: denTestPrompting with three REAL git repositories, so
+// `-w` can be exercised on every one of them.
+//
+// denTestPrompting's worker and docs are bare directories: worktree.Ensure
+// refuses those, so a regression there would surface as a git error rather than
+// as the extra worktrees this fixture exists to catch.
+func denTestPromptingRepos(t *testing.T) (denHome string, repos map[string]string) {
+	t.Helper()
+	denHome, api := denTest(t)
+	repos = map[string]string{"api": api}
+	root := t.TempDir()
+	for _, name := range []string{"worker", "docs"} {
+		path := filepath.Join(root, name)
+		createRepo(t, path)
+		repos[name] = path
+	}
+	write(t, filepath.Join(denHome, "nests", "generic.yaml"),
+		"stack: devx\nselect: prompt\nrepos:\n"+
+			"  - { path: "+repos["api"]+", optional: true }\n"+
+			"  - { path: "+repos["worker"]+", optional: true }\n"+
+			"  - { path: "+repos["docs"]+", optional: true }\n")
+	return denHome, repos
+}
+
+// What the rebuild is worth, read off the OUTPUT rather than off internal
+// state: step 3 prints one `worktree <repo>: <path>` line per RESOLVED repo, so
+// the set of those lines is a direct readout of r.Repos.
+//
+// Asserting the drift warnings are silent would not do: two empty comparisons
+// pass whatever the selection did — the trap the "Guard on the guard" of
+// TestInteractiveProducesTheSameArgvAsTheEquivalentWithout already names. The
+// second half of this test scripts a MISMATCHED workspace and requires the
+// warning to fire, so the silence of the first half means something.
+//
+// `-w` is also the case where re-derivation costs disk, not just noise: two
+// worktrees created for repos this sandbox was never spawned with, which the
+// user then has to find and remove.
+func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
+	denHome, _ := denTestPromptingRepos(t)
+
+	_, first := fakeDeps()
+	first.In = strings.NewReader("1\n\n") // tick api, decline worker and docs
+	first.IsTTY = func() bool { return true }
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "generic", Worktree: "feat"}, first); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+	// The mount comes from the RECORD, so the fixture and den agree on the
+	// worktree path without this test recomputing the layout.
+	recorded, err := manifest.Read(denHome, "generic.feat")
+	if err != nil {
+		t.Fatalf("reading the record the first spawn wrote: %v", err)
+	}
+	if len(recorded.Repos) != 1 || recorded.Repos[0].Name != "api" {
+		t.Fatalf("the fixture must record exactly api; got %+v", recorded.Repos)
+	}
+
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"generic.feat","status":"running","workspaces":["` +
+			recorded.Repos[0].Mount + `"]}]}`),
+	}
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "generic", Worktree: "feat"}, d); err != nil {
+		t.Fatalf("attaching spawn: %v", err)
+	}
+
+	var worktreeLines []string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			worktreeLines = append(worktreeLines, line)
+		}
+	}
+	if len(worktreeLines) != 1 || !strings.HasPrefix(worktreeLines[0], "worktree api: ") {
+		t.Errorf("the attach must resolve exactly the recorded repo; worktree lines: %v\n%s",
+			worktreeLines, out.String())
+	}
+	// On disk too: the line could be missing while the directory exists.
+	for _, name := range []string{"worker", "docs"} {
+		if _, err := os.Stat(filepath.Join(denHome, "worktrees", "feat", name)); err == nil {
+			t.Errorf("a worktree was created for %s, which this sandbox was never spawned with", name)
+		}
+	}
+
+	// Guard on the guard: with a workspace the VM does NOT mount, the warning
+	// must fire. Without this, every assertion above passes on a spawn that
+	// resolved nothing at all.
+	mismatched, md := fakeDeps()
+	md.In = failingReader{t}
+	md.IsTTY = func() bool { return true }
+	var mismatchedOut bytes.Buffer
+	md.Out = &mismatchedOut
+	mismatched.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"generic.feat","status":"running","workspaces":["/w/elsewhere"]}]}`),
+	}
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "generic", Worktree: "feat"}, md); err != nil {
+		t.Fatalf("attaching spawn (mismatched): %v", err)
+	}
+	if !strings.Contains(mismatchedOut.String(), "is not mounted") {
+		t.Errorf("a repo the VM does not mount must still be reported:\n%s", mismatchedOut.String())
+	}
+}
+
+// No record — a sandbox created before records existed, or one created outside
+// den. den must never refuse and strand a live VM (doctrine T13/T16), so the
+// attach still works; what it must NOT do is report every optional repo as "not
+// mounted", since the list it would compare against is a selection nobody made.
+func TestPromptModeAttachWithoutARecordStillAttaches(t *testing.T) {
+	denHome := denTestPrompting(t)
+
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"generic","status":"running","workspaces":["/w/api"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, d); err != nil {
+		t.Fatalf("a sandbox with no record must still be attachable: %v", err)
+	}
+	if strings.Contains(out.String(), "is not mounted") {
+		t.Errorf("with no record there is no selection to compare against:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "--as") {
+		t.Errorf("the attach message keeps its remedy with no record:\n%s", out.String())
+	}
+}
+
+// The rebuild's condition must be the checklist's condition — this test is what
+// makes them stay one condition.
+//
+// `-i` is the checklist's OTHER entry point. Shutting the checklist on a live
+// sandbox therefore took the selection away from `-i` too, and a rebuild scoped
+// to `select: prompt` alone would leave that half shut with nothing put back: on
+// a nest with an optional `key:` this machine does not map, `den spawn crm -i`
+// against a running sandbox refused where it used to prompt. One guard turned
+// the selection off, the other has to turn it back on, over the same set of
+// spawns.
+//
+// The nest here is denTestPromptingKeys' own, MINUS `select: prompt` — same
+// repos, same unmapped key — so nothing but the entry point differs between the
+// two tests.
+func TestInteractiveAttachRebuildsTheSelectionFromTheRecord(t *testing.T) {
+	denHome := denTestKeyNest(t, "")
+
+	// Created with the key declined. --without, not the checklist: on a
+	// non-prompting nest a bare create mounts every optional repo, and this
+	// sandbox has to be one the user narrowed.
+	_, first := fakeDeps()
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "crm", Without: []string{"crm"}}, first); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "crm", Interactive: true}, d); err != nil {
+		t.Fatalf("-i on a live sandbox must not refuse over a repo it was never created with: %v", err)
+	}
+	if f.HasCalled("create") {
+		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
 	}
 }
