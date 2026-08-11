@@ -545,3 +545,50 @@ func TestRepoNameFromKey(t *testing.T) {
 		t.Errorf("Name() = %q, want api", r.Name())
 	}
 }
+
+func TestSelectDefaultsToAll(t *testing.T) {
+	denHome := t.TempDir()
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: /dev/api }\n")
+
+	n, err := LoadNest(denHome, "api")
+	if err != nil {
+		t.Fatalf("loading: %v", err)
+	}
+	if n.Select != "" {
+		t.Errorf("Select = %q, want the zero value: an existing nest must not change meaning", n.Select)
+	}
+	if n.PromptsForRepos() {
+		t.Error("a nest with no `select:` must not prompt")
+	}
+}
+
+func TestSelectPromptIsRead(t *testing.T) {
+	denHome := t.TempDir()
+	writeNest(t, denHome, "api", "stack: devx\nselect: prompt\nrepos:\n  - { path: /dev/api }\n")
+
+	n, err := LoadNest(denHome, "api")
+	if err != nil {
+		t.Fatalf("loading: %v", err)
+	}
+	if !n.PromptsForRepos() {
+		t.Error("`select: prompt` must prompt")
+	}
+}
+
+// den refuses rather than normalizing in silence (spec §2). An unknown value
+// is the `egres:` trap of §12 in another guise: taken as "all", a mistyped
+// `promt` would mount thirty repos without a word.
+func TestSelectRefusesAnUnknownValue(t *testing.T) {
+	denHome := t.TempDir()
+	writeNest(t, denHome, "api", "stack: devx\nselect: promt\nrepos:\n  - { path: /dev/api }\n")
+
+	_, err := LoadNest(denHome, "api")
+	if err == nil {
+		t.Fatal("an unknown `select:` value must be refused")
+	}
+	for _, want := range []string{"promt", "all", "prompt"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %q — got: %v", want, err)
+		}
+	}
+}
