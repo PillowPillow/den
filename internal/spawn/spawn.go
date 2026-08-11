@@ -1804,6 +1804,18 @@ func reportUnmountedRepos(out io.Writer, sandboxName, workdir string, mounted, e
 func recordedWithout(n *nest.Nest, recorded manifest.Manifest) []string {
 	mounted := make(map[string]bool, len(recorded.Repos))
 	for _, r := range recorded.Repos {
+		// DECLARED repos only. A positional and a declared key can carry the
+		// same short name — manifest.Repo.Name is Repo.Name(), which for a
+		// command-line entry is filepath.Base of the path typed — and an ad-hoc
+		// mount answers no question the checklist asked. Counting it as "this
+		// repo was selected" makes den omit the declared one from the rebuilt
+		// --without, so nest.Resolve selects it again and resolveRepoKeys
+		// refuses the attach of a LIVE VM over a key the user had declined:
+		// `den spawn digitaleo ~/dev/crm`, decline `key: crm`, re-attach, and
+		// den refuses on crm. Origin is the only thing that tells the two apart.
+		if r.Origin == manifest.OriginCommandLine {
+			continue
+		}
 		mounted[r.Name] = true
 	}
 	var without []string

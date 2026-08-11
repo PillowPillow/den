@@ -844,3 +844,150 @@ func TestPromptModeAttachNamesARecordItCouldNotRead(t *testing.T) {
 		t.Errorf("den deleted a record it could not read — it may belong to a newer den: %v", err)
 	}
 }
+
+// A positional and a declared key can carry the SAME short name, and only the
+// declared one is a selection: `manifest.Repo.Name` is `Repo.Name()`, which for
+// a command-line entry is the basename of the path typed.
+//
+// Counted as "selected", an ad-hoc mount named `crm` makes the rebuild omit the
+// DECLARED `key: crm` from --without, nest.Resolve selects it again, and
+// resolveRepoKeys refuses the attach of a live VM over the very key the user
+// declined. The scenario is ordinary: mount a checkout on the fly, decline the
+// declared repo of the same name because this machine does not map it, come
+// back tomorrow.
+func TestPromptModeAttachIgnoresAdHocMountsWhenRebuilding(t *testing.T) {
+	denHome := denTestPromptingKeys(t)
+	// The basename is what collides, so it is what the fixture must control.
+	adHoc := filepath.Join(t.TempDir(), "crm")
+	if err := os.MkdirAll(adHoc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, first := fakeDeps()
+	first.In = strings.NewReader("\n") // starts empty: `key: crm` is declined
+	first.IsTTY = func() bool { return true }
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "crm", Repos: []string{adHoc}}, first); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+	// Guard on the fixture: without a command-line entry named `crm` in the
+	// record, this test proves nothing.
+	recorded, err := manifest.Read(denHome, "crm")
+	if err != nil {
+		t.Fatalf("reading the record the first spawn wrote: %v", err)
+	}
+	var adHocRecorded bool
+	for _, r := range recorded.Repos {
+		if r.Name == "crm" && r.Origin == manifest.OriginCommandLine {
+			adHocRecorded = true
+		}
+	}
+	if !adHocRecorded {
+		t.Fatalf("the fixture must record an ad-hoc `crm`; got %+v", recorded.Repos)
+	}
+
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, d); err != nil {
+		t.Fatalf("an ad-hoc mount must not pass for the declared repo of the same name: %v", err)
+	}
+	if f.HasCalled("create") {
+		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
+	}
+}
+
+// The spec's own headline command, `den spawn dg:digitaleo --as leo-fix`, and a
+// seam no per-task review could see: task 1 covers `--as` on an ordinary nest,
+// tasks 5-6 cover a prompting nest without `--as`, and nothing covered the
+// composition.
+//
+// What the composition has to hold is decision 11 plus decision 12 at once: the
+// label enters the sandbox NAME, the repos still do not — so `--as` is what lets
+// two different selections of one generic nest coexist, and each one's record is
+// read back under its own name. Asserted on the two things that carry it: the
+// name `sbx create` receives, and the second spawn attaching that name instead
+// of creating it.
+func TestPromptModeComposesWithAnInstanceLabel(t *testing.T) {
+	denHome := denTestPrompting(t)
+
+	f, d := fakeDeps()
+	d.In = strings.NewReader("1\n\n") // tick api only
+	d.IsTTY = func() bool { return true }
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "generic", Instance: "leo-fix"}, d); err != nil {
+		t.Fatalf("prompting nest with --as: %v", err)
+	}
+	if !f.HasCalled("create", "--name", "generic.leo-fix") {
+		t.Fatalf("the label must reach the sandbox name; calls: %v", f.Calls)
+	}
+	// The record is written under the LABELLED name, which is what makes the
+	// rebuild below read this selection rather than the unlabelled sandbox's.
+	recorded, err := manifest.Read(denHome, "generic.leo-fix")
+	if err != nil {
+		t.Fatalf("reading the record: %v", err)
+	}
+	if len(recorded.Repos) != 1 || recorded.Repos[0].Name != "api" {
+		t.Fatalf("the label must not change what the checklist selected; got %+v", recorded.Repos)
+	}
+
+	// Re-attach it: same nest, same label, no checklist, selection rebuilt.
+	attachFake, attachDeps := fakeDeps()
+	attachDeps.In = failingReader{t}
+	attachDeps.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	attachDeps.Out = &out
+	attachFake.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"generic.leo-fix","status":"running","workspaces":["` +
+			recorded.Repos[0].Mount + `"]}]}`),
+	}
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "generic", Instance: "leo-fix"}, attachDeps); err != nil {
+		t.Fatalf("attaching a labelled prompting sandbox: %v", err)
+	}
+	if attachFake.HasCalled("create") {
+		t.Errorf("the labelled sandbox is live: it must be attached, not recreated; calls: %v",
+			attachFake.Calls)
+	}
+	if strings.Contains(out.String(), "is not mounted") {
+		t.Errorf("the rebuild must read the LABELLED record, so nothing is missing:\n%s", out.String())
+	}
+}
+
+// The refusal half of decision 10, which the spec's test surface asks for "mot
+// pour mot" and which no test in the tree asserted: the annotation half was
+// covered, the refusal half was not.
+//
+// A CHECKED unmapped key must refuse, and the refusal must carry all three
+// things resolveRepoKeys puts in it — the key, the file to edit, and the
+// `--without` escape it offers because the repo is optional. den never drops a
+// repo on its own (spec §2), so this is the one place the checklist's permissive
+// annotation gets settled.
+func TestPromptModeRefusesACheckedUnmappedKey(t *testing.T) {
+	denHome := denTestPromptingKeys(t)
+
+	f, d := fakeDeps()
+	d.In = strings.NewReader("1\n\n") // tick `crm`, which nothing maps here
+	d.IsTTY = func() bool { return true }
+
+	err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, d)
+	if err == nil {
+		t.Fatal("a checked unmapped key must refuse: den never drops a repo on its own")
+	}
+	for _, want := range []string{
+		`repo key "crm" is not mapped on this machine`,
+		filepath.Join(denHome, "config.yaml"),
+		"--without crm",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must carry %q; got: %v", want, err)
+		}
+	}
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
+	}
+}
