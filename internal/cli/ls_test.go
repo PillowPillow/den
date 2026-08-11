@@ -34,7 +34,7 @@ func TestLsPrintsTheColumns(t *testing.T) {
 	}
 
 	header := strings.Fields(lines[0])
-	expectedHeader := []string{"NAME", "NEST", "WORKTREE", "STATUS", "WORKSPACES"}
+	expectedHeader := []string{"NAME", "NEST", "INSTANCE", "WORKTREE", "STATUS", "WORKSPACES"}
 	if len(header) != len(expectedHeader) {
 		t.Fatalf("header = %v, expected %v", header, expectedHeader)
 	}
@@ -45,9 +45,11 @@ func TestLsPrintsTheColumns(t *testing.T) {
 	}
 
 	fields := strings.Fields(lines[1])
-	// NAME stays the full name; NEST and WORKTREE are the pieces SPLIT by
-	// sbx.Sandbox.Nest()/Worktree(), not found by accident inside NAME.
-	expectedLine := []string{"api.feat12", "api", "feat12", "running"}
+	// NAME stays the full name; NEST and INSTANCE are the pieces SPLIT by
+	// sbx.Sandbox.Nest()/Instance(), not found by accident inside NAME. This
+	// sandbox carries no creation record, so WORKTREE falls back to the same
+	// flattened component as INSTANCE — the only string den has left.
+	expectedLine := []string{"api.feat12", "api", "feat12", "feat12", "running"}
 	if len(fields) < len(expectedLine) {
 		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
 	}
@@ -410,6 +412,103 @@ func TestLsMarksASourceSandboxWhoseSourceNestIsGone(t *testing.T) {
 	}
 	if !strings.Contains(line, "corp:api ?") {
 		t.Errorf("a source sandbox whose source nest no longer exists must still be marked; line: %q", line)
+	}
+}
+
+// A sandbox named by --as carries a label in component 2, and a label is not a
+// branch. With a record present, the WORKTREE column must read from the record
+// alone: the pre-existing fallback on component 2 was written when that
+// component could only ever be a flattened branch.
+func TestLsDoesNotPrintTheInstanceAsAWorktree(t *testing.T) {
+	denHome := testDenHome(t) // nest "api" is declared there
+	// lsManifest is not used here: it hard-codes a Worktree block, and the
+	// scenario this test proves is `--as` WITHOUT `-w` — the record spawn
+	// itself writes for that case carries no Worktree block at all (see
+	// TestInstanceWithoutWorktreeRecordsNoWorktreeBlock in internal/spawn).
+	// A record claiming a worktree while Repos carries none is a shape only
+	// a hand-edit could produce, so Repos here stays plain (Worktree: false).
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox: "api.reco",
+		Nest:    manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: "/dev/api", Mount: "/w/api",
+		}},
+	})
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	header := strings.Fields(lines[0])
+	expectedHeader := []string{"NAME", "NEST", "INSTANCE", "WORKTREE", "STATUS", "WORKSPACES"}
+	if len(header) != len(expectedHeader) {
+		t.Fatalf("header = %v, expected %v", header, expectedHeader)
+	}
+	for i, col := range expectedHeader {
+		if header[i] != col {
+			t.Errorf("header column %d = %q, expected %q", i, header[i], col)
+		}
+	}
+
+	fields := strings.Fields(lines[1])
+	expectedLine := []string{"api.reco", "api", "reco", "-", "running"}
+	if len(fields) < len(expectedLine) {
+		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
+	}
+	for i, val := range expectedLine {
+		if fields[i] != val {
+			t.Errorf("column %d = %q, expected %q; full line: %v", i, fields[i], val, fields)
+		}
+	}
+}
+
+// The flagship scenario of --as: a label AND a worktree together, on the same
+// sandbox. INSTANCE and WORKTREE must show two DIFFERENT strings — the switch
+// in newLsCmd has a third branch (hasRecord && m.Worktree != nil) that the two
+// tests above never exercise, since one has no record and the other's record
+// has no worktree block.
+func TestLsShowsBothTheInstanceAndItsWorktree(t *testing.T) {
+	denHome := testDenHome(t) // nest "api" is declared there
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox: "api.reco",
+		Nest:    manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{
+			Name: "feature-123", Branch: "feature/123", Layout: "central",
+			Root: filepath.Join(denHome, "worktrees"),
+		},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: "/dev/api",
+			Mount: filepath.Join(denHome, "worktrees", "feature-123", "api"), Worktree: true,
+		}},
+	})
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	fields := strings.Fields(lines[1])
+	expectedLine := []string{"api.reco", "api", "reco", "feature/123", "running"}
+	if len(fields) < len(expectedLine) {
+		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
+	}
+	for i, val := range expectedLine {
+		if fields[i] != val {
+			t.Errorf("column %d = %q, expected %q; full line: %v", i, fields[i], val, fields)
+		}
 	}
 }
 

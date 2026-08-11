@@ -211,6 +211,20 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 // returns the path of the entry it created. That path is the ONLY trace the
 // user gets of where their work went, so it is announced for every worktree
 // actually moved.
+//
+// `wt`, name component 2, is READ AS a flattened branch below — a directory
+// name under WorktreeRoot (or a `.den/<wt>` suffix, per-repo layout) is
+// derived from it. That reading stopped being universally true the day `--as`
+// shipped: component 2 can now be an arbitrary instance LABEL that never
+// named a worktree at all (`den spawn api --as reco`, no `-w`). This function
+// only ever runs when there is NO creation record (see cleanWorktrees above)
+// — a `--as` sandbox always has one, written before `sbx create` — so the
+// only way to reach here with a label in `wt` is a record deleted by hand.
+// That is rare enough, and this path is best-effort by contract already, so
+// guessing a directory that turns out not to exist costs nothing worktree.Remove
+// doesn't already tolerate — while REFUSING here would strand a live VM the
+// user asked to destroy (doctrine T13/T16). Guessing wrong is recoverable;
+// refusing is not.
 func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g worktree.Git, force bool, out, warnW io.Writer) error {
 	nestName, wt := sbx.SplitName(sandboxName)
 	if wt == "" {

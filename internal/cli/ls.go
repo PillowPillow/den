@@ -15,8 +15,8 @@ import (
 )
 
 // newLsCmd lists live sandboxes. Without labels on the sbx side, `den ls` is
-// `sbx ls --json` with each name split into (nest, worktree) — see
-// sbx.Sandbox.Nest and sbx.Sandbox.Worktree.
+// `sbx ls --json` with each name split into (nest, instance) — see
+// sbx.Sandbox.Nest and sbx.Sandbox.Instance.
 func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 	return &cobra.Command{
 		Use:   "ls",
@@ -94,7 +94,7 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tNEST\tWORKTREE\tSTATUS\tWORKSPACES")
+			fmt.Fprintln(w, "NAME\tNEST\tINSTANCE\tWORKTREE\tSTATUS\tWORKSPACES")
 			for _, b := range boxes {
 				nestName := b.Nest()
 				// The MARK is decided on the sandbox-derived name, before the
@@ -110,25 +110,37 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 				// The record, when there is one, is the ONLY place these two
 				// strings survive: flattening rewrote the branch on its way
 				// into the sandbox name, and the ":" of a source reference is
-				// not in sbx's --name charset. Fail-open — without a record
-				// the columns show what they have always shown, the flattened
-				// forms.
-				wt := b.Worktree()
-				if m, ok := recorded[b.Name]; ok {
-					if m.Nest.Ref != "" {
-						nestName = m.Nest.Ref
-					}
-					if m.Worktree != nil && m.Worktree.Branch != "" {
-						wt = m.Worktree.Branch
-					}
+				// not in sbx's --name charset.
+				//
+				// The fallback on component 2 now applies ONLY when there is
+				// no record at all. It was written when that component could
+				// only be a flattened branch; under --as it is a label, and
+				// printing it as a branch would name something that does not
+				// exist in any repository. A record WITHOUT a worktree block
+				// means "no worktree", and renders as such.
+				instance := b.Instance()
+				wt := ""
+				m, hasRecord := recorded[b.Name]
+				switch {
+				case !hasRecord:
+					wt = instance
+				case m.Worktree != nil:
+					wt = m.Worktree.Branch
+				}
+				if hasRecord && m.Nest.Ref != "" {
+					nestName = m.Nest.Ref
 				}
 				if undeclared {
 					nestName += " ?" // not declared in ~/.den/nests
 				}
+				if instance == "" {
+					instance = "-"
+				}
 				if wt == "" {
 					wt = "-"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", b.Name, nestName, wt, b.Status, len(b.Workspaces))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
+					b.Name, nestName, instance, wt, b.Status, len(b.Workspaces))
 			}
 			if err := w.Flush(); err != nil {
 				return err
