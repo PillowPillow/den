@@ -145,9 +145,13 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // it does not carry. Annotation only: ticking an unmapped key stays possible,
 // and the refusal that follows is resolveRepoKeys', which names the key, the
 // file and the clone URL. Refusing the tick here would make this a second
-// judge of the mapping, whose single judge is that function. mapping may be
-// nil — every entry then renders unannotated, which is what a path-typed nest
-// wants.
+// judge of the mapping, whose single judge is that function.
+//
+// A nil mapping is NOT a special case, and unmappedNote treats it as none: a
+// path-typed repo renders unannotated either way, and every key-typed one
+// renders annotated. That is the correct reading — an unmapped key is unmapped
+// whether the personal `repos:` is empty or absent — and it is what a nest whose
+// keys nobody has mapped yet must show.
 //
 // Required repos are neither listed nor numbered (spec §6.2): they are always
 // mounted, and numbering them would make "1" designate different repos

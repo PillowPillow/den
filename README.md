@@ -547,6 +547,11 @@ what makes a thirty-repo generic nest usable without cloning thirty repositories
 mapped in your `~/.den/config.yaml` costs nothing as long as you do not select its repo. The
 checklist annotates the keys you have not mapped.
 
+It costs nothing *tomorrow* either, which is the half that is easy to miss: what you decline is
+recorded, and every later attach reads that record back instead of re-deriving a selection from a
+configuration that cannot know which four of thirty repos you picked. Without that, returning to
+your own sandbox would refuse on the first key you had deliberately left out.
+
 Re-attaching to a live `select: prompt` sandbox does not reopen the checklist: den rebuilds the
 selection from the sandbox's creation record, prints the repos it was created with, and names
 `--as <label>` as the way to run a different set alongside it. `-i` on an ordinary live nest

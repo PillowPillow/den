@@ -1517,7 +1517,9 @@ func TestSpawnRefusalForAnSSHDirThatIsAFileStillNamesSSHDir(t *testing.T) {
 }
 
 // assertNoSideEffect is the T13/T16 assertion shared by the refusals that must
-// precede every side effect: no sbx call, no attach, no agent profile on disk.
+// precede every side effect: nothing CREATED on sbx (createdNothing permits the
+// liveness listing, which runs first and creates nothing), no attach, no agent
+// profile and no worktree on disk.
 func assertNoSideEffect(t *testing.T, f *sbx.Fake, denHome string) {
 	t.Helper()
 	if !createdNothing(f) {
