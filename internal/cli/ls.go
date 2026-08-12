@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -34,13 +35,35 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 
-			// The creation records, read ONCE for the two things they serve:
-			// the orphan line below, and the two columns whose real value
-			// survives nowhere else. Fail-open — an unreadable state/ leaves
-			// `den ls` doing exactly what it did before records existed.
-			manifests, _, mErr := manifest.List(home)
+			// The creation records, read ONCE for the three things they serve:
+			// the orphan line below, the "unreadable" warning right after this
+			// block, and the two columns whose real value survives nowhere
+			// else. Fail-open — an unreadable state/ leaves `den ls` doing
+			// exactly what it did before records existed.
+			manifests, brokenManifests, mErr := manifest.List(home)
 			if mErr != nil {
 				manifests = nil
+			}
+
+			// A file that failed to decode is NOT "no record" — see the
+			// switch below — so it earns the same sentence `den doctor`
+			// already prints for it, on stderr, rather than a second dialect
+			// for the same state. unreadable is keyed by SANDBOX name, not
+			// path: manifest.Path is the sole place a record's file name is
+			// composed as "<sandbox>.yaml", so trimming the suffix recovers
+			// exactly the string the switch below compares against b.Name.
+			//
+			// Named brokenManifests, not `broken`: nest.ListNests further down
+			// returns its OWN broken list into a variable named `broken`, and
+			// `:=` reuses an identifier already in scope — reusing this name
+			// would have silently rebound this slice to nest.BrokenNest, a
+			// different type, the moment that line was added.
+			unreadable := make(map[string]bool, len(brokenManifests))
+			for _, b := range brokenManifests {
+				fmt.Fprintf(cmd.ErrOrStderr(), "creation record %s unreadable: %v — den leaves "+
+					"it alone (it may belong to another version of den); delete it by hand once "+
+					"its sandbox is gone\n", b.Path, b.Err)
+				unreadable[strings.TrimSuffix(filepath.Base(b.Path), ".yaml")] = true
 			}
 
 			if len(boxes) == 0 {
@@ -112,16 +135,21 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 				// into the sandbox name, and the ":" of a source reference is
 				// not in sbx's --name charset.
 				//
-				// The fallback on component 2 now applies ONLY when there is
-				// no record at all. It was written when that component could
+				// The fallback on component 2 applies ONLY when there is
+				// truly no record. It was written when that component could
 				// only be a flattened branch; under --as it is a label, and
 				// printing it as a branch would name something that does not
-				// exist in any repository. A record WITHOUT a worktree block
-				// means "no worktree", and renders as such.
+				// exist in any repository. An UNREADABLE record is not "no
+				// record" — den does not know its worktree, and "?" says so
+				// instead of guessing that the label is a branch. A record
+				// WITHOUT a worktree block means "no worktree", and renders
+				// as such.
 				instance := b.Instance()
 				wt := ""
 				m, hasRecord := recorded[b.Name]
 				switch {
+				case unreadable[b.Name]:
+					wt = "?"
 				case !hasRecord:
 					wt = instance
 				case m.Worktree != nil:
@@ -156,9 +184,11 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 //
 // FAIL-OPEN, strictly: `den ls` is the command a user types when everything
 // else is broken, and it must never fail over its own extra. A record that
-// cannot be read is dropped in silence by the caller's manifest.List — `den
-// doctor` is the command that names it, and it is the one with a remedy to
-// offer.
+// cannot be read is never in `manifests` — the caller's manifest.List sorts
+// it into a separate list, warned about at the point that list is read, in
+// the same words `den doctor` uses for the same file — so it cannot become an
+// orphan line here, and this function stays about ONE thing: a record whose
+// sandbox is gone.
 //
 // The comparison is free: this command already holds both the live list and
 // the records.

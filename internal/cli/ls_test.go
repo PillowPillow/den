@@ -314,6 +314,101 @@ func TestLsSurvivesACorruptRecord(t *testing.T) {
 	}
 }
 
+// Finding 5 (PR #68 review) — an UNREADABLE record is not "no record". Before
+// this fix, a corrupt record for a --as sandbox made `den ls` fall through to
+// the no-record branch and print the label under WORKTREE, as though "reco"
+// were a branch that exists in some repository. den does not know the
+// worktree of a record it could not read, and must say so ("?") rather than
+// guess.
+// api.feat12 carries NO record at all, next to api.reco's unreadable one, on
+// purpose: a fix that turned "unreadable" into a blanket `len(broken) > 0`
+// flag (rather than a per-sandbox lookup) would pass a single-sandbox test
+// just as well, since ANY broken file in state/sandboxes/ would trip it. With
+// a second, record-less sandbox in the same run, that mutation prints "?" for
+// api.feat12 too and this test catches it — while also being finding 5's own
+// second checklist item, "no record at all keeps today's fallback", in the
+// one shape TestLsPrintsTheColumns/TestLsFallsBackToTheSandboxNameWithoutARecord
+// do not cover: state/sandboxes/ populated with someone ELSE's broken file.
+func TestLsMarksAnUnreadableRecordAsUnknownWorktree(t *testing.T) {
+	dir := testDenHome(t) // nest "api" is declared there
+	if err := os.MkdirAll(manifest.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Hand-written, not writeManifest: the point of this test is a file
+	// writeManifest could never produce — one that fails to decode. The
+	// filename is exactly what manifest.Path would compose for "api.reco",
+	// which is the mapping newLsCmd relies on to know THIS record is the
+	// unreadable one.
+	if err := os.WriteFile(filepath.Join(manifest.Dir(dir), "api.reco.yaml"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api.reco","status":"running"},` +
+				`{"name":"api.feat12","status":"running"}]}`)},
+	}}
+
+	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "ls")
+	if err != nil {
+		t.Fatalf("den ls must never fail over an unreadable record: %v", err)
+	}
+
+	var lineReco, lineFeat12 string
+	for _, l := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(l)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "api.reco":
+			lineReco = l
+		case "api.feat12":
+			lineFeat12 = l
+		}
+	}
+	if lineReco == "" || lineFeat12 == "" {
+		t.Fatalf("both sandboxes must each appear on a line; got:\n%s", stdout)
+	}
+
+	fields := strings.Fields(lineReco)
+	expectedLine := []string{"api.reco", "api", "reco", "?", "running"}
+	if len(fields) < len(expectedLine) {
+		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
+	}
+	for i, val := range expectedLine {
+		if fields[i] != val {
+			t.Errorf("column %d = %q, expected %q; full line: %v", i, fields[i], val, fields)
+		}
+	}
+
+	// The sibling with no record at all must keep today's fallback — the
+	// flattened component under WORKTREE, exactly as if api.reco's broken
+	// file were not sitting right next to it in state/sandboxes/.
+	fields = strings.Fields(lineFeat12)
+	expectedLine = []string{"api.feat12", "api", "feat12", "feat12", "running"}
+	if len(fields) < len(expectedLine) {
+		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
+	}
+	for i, val := range expectedLine {
+		if fields[i] != val {
+			t.Errorf("column %d = %q, expected %q; full line: %v", i, fields[i], val, fields)
+		}
+	}
+
+	// The message names the FILE (den doctor's own dialect, reused rather
+	// than inventing a second one — see the comment above unreadable in
+	// ls.go), not the sandbox: "api.reco.yaml" is the one substring both
+	// spellings would share, so it also proves the sandbox-name recovery
+	// from the path landed on the right file.
+	if !strings.Contains(stderr, "creation record") || !strings.Contains(stderr, "api.reco.yaml unreadable:") {
+		t.Errorf("the unreadable record must be named on stderr; got:\n%s", stderr)
+	}
+	if strings.Contains(stdout, "unreadable") {
+		t.Errorf("the warning must not appear on stdout; got:\n%s", stdout)
+	}
+}
+
 // Flattening is lossy: `-w feature/12` becomes the sandbox api.feat-12, and
 // before the record there was nowhere left to read "feature/12" from. The NEST
 // column has the same problem in reverse — a source nest spawns as "corp-api"
