@@ -404,10 +404,19 @@ README de la source (« den ≥ X.Y requis ») en est le seul remède préventif
    l'humain.
 
    **Et den n'a AUCUN chemin sûr en écriture à proposer pour deux instances sur une même
-   branche.** `-w` ne l'est pas : `worktree.Add` lance `git worktree add <path> <branch>`
-   (worktree.go:210), et git refuse une branche déjà sortie dans un autre worktree — le second
-   spawn meurt, il ne partage rien. Deux branches distinctes marchent, mais alors la branche
-   distingue déjà les deux sandboxes et `--as` n'y sert plus à rien.
+   branche.** `-w` ne l'est pas, mais pas pour la raison qu'on croirait : `worktree.Ensure`
+   (`worktree.go:162`) est idempotent sur le chemin qu'il calcule, et ce chemin ne dépend que du
+   dépôt et de la branche flattenée (`worktree.Path`, `worktree.go:131`) — jamais du nom de
+   sandbox. Le second spawn ne meurt donc pas : il retombe sur le `worktreePath` du premier, la
+   vérification d'ownership et de branche qu'`Ensure` fait sur un chemin déjà présent passe, et il
+   repart avec le même répertoire — les deux sandboxes MONTENT LE MÊME worktree, sans que
+   `git worktree add` ne soit même rappelé. Depuis que Task 1 a livré, `den rm` sur l'une des deux
+   sandboxes ne réclame plus ce répertoire tant que l'autre enregistrement le nomme encore
+   (`internal/cli/rm.go`, `mountGuard.holderOf`) : il laisse le worktree en place et le dit
+   (`worktree kept: <mount> is also mounted by sandbox <holder>`) — mais rien n'empêche les deux VMs
+   d'écrire dans ce répertoire pendant qu'elles sont vivantes toutes les deux. La seule échappatoire
+   au partage est donc deux branches distinctes : la branche distingue alors déjà les deux sandboxes,
+   et `--as` n'y sert plus à rien.
 
    Le domaine de `--as` est donc exactement celui que l'utilisateur a décrit : la concurrence
    **en lecture dominante** sur des dossiers partagés — deux analyses, deux agents qui explorent.

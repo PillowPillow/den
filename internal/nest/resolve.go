@@ -25,15 +25,14 @@ type Options struct {
 	// scratch .` is assertable without a test having to chdir, and the one
 	// system call lives with the other world access in internal/spawn.
 	Cwd string
-	// TolerateUnmappedOptional is `den nest show`'s ALONE — the one field of this
-	// struct that is not a flag. internal/spawn must never set it, and the
-	// asymmetry is the point: on a `select: prompt` nest an unmapped optional
-	// `key:` is a normal state (the session did not ask for that repo), but a
-	// SPAWN still has to refuse it, because the only way to reach a spawn with an
-	// unmapped key is to have selected it. A dry-run has no such moment: it
-	// resolves the whole declared nest, so the same key it must merely REPORT
-	// would refuse the listing outright — the dry-run of the new mode could not
-	// be run on the nests the mode exists for.
+	// TolerateUnmappedOptional is `den nest show`'s ALONE. internal/spawn must
+	// never set it, and the asymmetry is the point: on a `select: prompt` nest an
+	// unmapped optional `key:` is a normal state (the session did not ask for
+	// that repo), but a SPAWN still has to refuse it, because the only way to
+	// reach a spawn with an unmapped key is to have selected it. A dry-run has no
+	// such moment: it resolves the whole declared nest, so the same key it must
+	// merely REPORT would refuse the listing outright — the dry-run of the new
+	// mode could not be run on the nests the mode exists for.
 	//
 	// Set, it moves those repos out of Resolved.Repos and into
 	// Resolved.UnmappedOptional. Moves, not annotates in place: a Repo in

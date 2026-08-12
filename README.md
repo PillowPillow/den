@@ -552,7 +552,8 @@ checklist annotates the keys you have not mapped, naming that file.
 `den doctor` and `den nest show` read the mode too, so "costs nothing" holds there as well: on a
 `select: prompt` nest an unmapped **optional** key is reported, not failed — doctor stays green and
 names the keys on one line per nest, and `den nest show` resolves the nest and lists them with the
-`repos:` line to add. On a `select: all` nest, and for a **required** key on any nest, it stays a
+`repos:` line to add — unless the key is named on `--only`, where `den nest show` refuses it exactly
+as a spawn does. On a `select: all` nest, and for a **required** key on any nest, it stays a
 failing check and a refusal: there the repo is meant to be mounted.
 
 It costs nothing *tomorrow* either, which is the half that is easy to miss: what you decline is
@@ -563,10 +564,11 @@ your own sandbox would refuse on the first key you had deliberately left out.
 Re-attaching to a live `select: prompt` sandbox does not reopen the checklist: den rebuilds the
 selection from the sandbox's creation record, prints the repos it was created with, and names
 `--as <label>` as the way to run a different set alongside it. `-i` on an ordinary live nest
-rebuilds from the record the same way, silently — no explanation line, since the selection was
-never a nest-wide default to begin with. Without a readable record — an older den, or a sandbox
-created outside den — den resolves every repo the nest declares instead, and says so, naming
-`--only`/`--without` to pick a set explicitly.
+rebuilds from the record the same way and prints the same two lines — `-i` does not reopen the
+checklist, but it no longer drops that explanation in silence. Without a readable
+record — an older den, or a sandbox created outside den — den resolves every repo the nest declares
+instead, and says so, naming `--only`/`--without` to pick a set explicitly — `--only` alone on a
+`select: prompt` nest, where `--without` is refused as above.
 
 ### Addressing
 
