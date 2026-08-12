@@ -1988,6 +1988,25 @@ func TestRmKeepsEveryWorktreeWhenTheRecordsDirectoryCannotBeEnumerated(t *testin
 	if !strings.Contains(out, "worktree kept: "+wt+" — an unreadable record may name it") {
 		t.Errorf("the kept directory must be named, not counted; got:\n%s", out)
 	}
+	// The tail the legacy path prints when it really found no record would be a
+	// lie here: den never looked inside the directory, so a good record for this
+	// sandbox may be in it, and `den doctor --fix` would reclaim these very
+	// worktrees once den can read it. That is also what the guard promises when
+	// it holds them back — the two must not contradict each other.
+	//
+	// This asserts the mode-000 chain too: a permission bit and a FILE reach the
+	// same ENOTDIR/EACCES verdict from manifest.List, hence the same branch, and
+	// only the file needs no privilege to stage.
+	if strings.Contains(out, "remove them by hand") {
+		t.Errorf("a record den has not looked at may still name these worktrees; got:\n%s", out)
+	}
+	if !strings.Contains(out, "den cannot tell whether it has a record for api.feat12") {
+		t.Errorf("den must not claim an absence it did not verify; got:\n%s", out)
+	}
+	if !strings.Contains(out, "`den doctor --fix` reclaims the worktrees a record still names") {
+		t.Errorf("the remedy must survive: these directories are reclaimable once den can read "+
+			"the records; got:\n%s", out)
+	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Errorf("den never deletes what it could not read: %v", err)
 	}

@@ -204,8 +204,10 @@ func decode(content []byte) (Manifest, error) {
 }
 
 // LaxMounts reads ONE record for its `repos[].mount` values alone, without
-// KnownFields and without the schema check — the single deliberate exception
-// to the strict decoding rule the rest of den holds (spec §12).
+// KnownFields and without the schema check — the deliberate exception to the
+// strict decoding rule the rest of den holds (spec §12). The only other
+// non-strict reader is agent.ReadMixin, which rereads the mixin den itself
+// generated under cache/; neither of the two loads configuration.
 //
 // It exists for the records Read and List REFUSE. `den rm` may only reclaim a
 // worktree no other sandbox still mounts, and it answers that from the records

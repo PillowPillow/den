@@ -635,13 +635,28 @@ func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g 
 	}
 	if len(stranded) > 0 {
 		guard.nameUnknownSharers(out, stranded)
-		// The record path ends this state by saying the record of the sandbox
-		// survives, and `den doctor --fix` will finish the job. Here that
-		// sentence would be false: there is no record den can read for this
-		// sandbox — that absence is why this function ran at all — and the VM
-		// is destroyed a moment later. `den doctor` replays records, so nothing
-		// will ever offer these directories again. Said once, rather than left
-		// for the user to discover as a pile under worktree_root.
+		// Two different states end this loop, and they promise opposite things.
+		//
+		// When den could not ENUMERATE the records directory, it never looked
+		// at a single file: a perfectly good record for this sandbox may be
+		// sitting in there, and `den doctor --fix` would reclaim these very
+		// directories once den can read it. Telling the user to remove them by
+		// hand would be false, and it would contradict the guard's own reason
+		// for holding them back (newMountGuard: the records survive to be
+		// replayed). The remedy is the condition, not a chmod: den does not
+		// know whether the directory is unreadable, absent as a directory, or
+		// on a mount that went away, so it names the state it can prove.
+		if guard.unenumerable != nil {
+			fmt.Fprintf(out, "den cannot tell whether it has a record for %s: once it can read "+
+				"%s, `den doctor` reports what it finds and `den doctor --fix` reclaims the "+
+				"worktrees a record still names\n", sandboxName, manifest.Dir(home))
+			return nil
+		}
+		// Here den DID read the directory and found nothing it can replay for
+		// this sandbox — that absence is why this function ran at all — and the
+		// VM is destroyed a moment later. `den doctor` replays records, so
+		// nothing will ever offer these directories again. Said once, rather
+		// than left for the user to discover as a pile under worktree_root.
 		//
 		// "no record den can REPLAY", not "no record": on the undecodable
 		// branch a file does survive under this sandbox's name, den said so on
