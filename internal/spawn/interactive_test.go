@@ -560,16 +560,20 @@ func TestPromptModeDoesNotPromptWhenAttaching(t *testing.T) {
 
 // The same guard, reached by the OTHER entry point. The condition that closes
 // the checklist is `live == nil`, ahead of both entry points, so `-i` on a live
-// sandbox is silent for exactly the reason a prompting nest is: nothing a
-// selection collects can be mounted on a VM whose mounts come from its creation.
+// sandbox draws no checklist for exactly the reason a prompting nest draws none:
+// nothing a selection collects can be mounted on a VM whose mounts come from its
+// creation.
 //
 // An order that depends on a configuration key would be two spawn sequences to
 // keep true, and §6 describes one — this test is what makes the second reading
 // fail out loud rather than drift.
 //
-// It asserts the SILENCE only: on an `api` nest (no `select: prompt`) the
-// explanatory `--as` lines do not print, deliberately — the remedy answers a
-// question this user never asked.
+// The checklist stays shut; the SILENCE around it does not, and this test
+// asserted that silence until the ruling reversed it. It used to read "on an
+// `api` nest the explanatory `--as` lines do not print, deliberately — the
+// remedy answers a question this user never asked". They did ask: they typed
+// `-i`, and den dropped the flag without a word. The explanation now prints for
+// every nest, and this is where an ordinary one is held to it.
 func TestInteractiveDoesNotPromptWhenAttaching(t *testing.T) {
 	denHome, repos := denTestOptional(t)
 
@@ -591,6 +595,65 @@ func TestInteractiveDoesNotPromptWhenAttaching(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "already live") {
 		t.Errorf("the attach must be announced:\n%s", out.String())
+	}
+	// The reversed assertion: a discarded `-i` is never silent, on an ordinary
+	// nest as on a prompting one.
+	if !strings.Contains(out.String(), "--as") {
+		t.Errorf("a dropped -i must be explained on an ordinary nest too:\n%s", out.String())
+	}
+	// Read on a DISTINCT substring from the line above, so neither can cover for
+	// the other: this nest declares two optional repos, so the no-record case is
+	// worth a line here — and that is exactly what
+	// TestAttachSaysNothingAboutASelectionThatCannotExist proves den drops on a
+	// nest that declares none.
+	if !strings.Contains(out.String(), "no creation record") {
+		t.Errorf("den must say it cannot tell which repos this sandbox holds:\n%s", out.String())
+	}
+}
+
+// The guard on that line's OTHER side. `reportUnrebuiltSelection` used to fire on
+// any nest, and on one with no optional repo it described a problem that cannot
+// exist there — every repo is mounted, so the full list den resolves IS what the
+// sandbox was created with — while naming `--only`/`--without` over repos
+// nest.Resolve refuses to remove ("is a required repo of this nest"). A remedy
+// that fails, under a diagnostic nobody needed.
+//
+// denTest's single repo is required (TestSpawnContinuesWhenTheNestHasNoOptionalRepo
+// reads it the same way), and the VM is scripted to mount exactly it: the mute
+// this guard also lifts is reportUnmountedRepos', so a mismatched fixture would
+// litter the output this test reads.
+//
+// The `--as` line still prints — the `-i` was dropped and that stays worth
+// saying. The two facts are independent, and this is the nest that tells them
+// apart.
+func TestAttachSaysNothingAboutASelectionThatCannotExist(t *testing.T) {
+	denHome, repo := denTest(t)
+
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Interactive: true}, d); err != nil {
+		t.Fatalf("attaching spawn: %v", err)
+	}
+	rendered := out.String()
+	if strings.Contains(rendered, "no creation record") {
+		t.Errorf("a nest with no optional repo has no selection to have lost:\n%s", rendered)
+	}
+	for _, flag := range []string{"--only", "--without"} {
+		if strings.Contains(rendered, flag) {
+			t.Errorf("%s cannot remove a required repo: naming it is a remedy that fails:\n%s",
+				flag, rendered)
+		}
+	}
+	if !strings.Contains(rendered, "--as") {
+		t.Errorf("the dropped -i is still worth explaining:\n%s", rendered)
 	}
 }
 

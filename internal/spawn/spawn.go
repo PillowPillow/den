@@ -618,9 +618,31 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	selectionUnknown := false
 	switch {
 	case live != nil && selectionOpen:
+		// A nest with NO optional repo has no selection to lose. Every repo it
+		// declares is mounted, on the create branch and on this one alike, so the
+		// full list den is about to resolve is not a phantom — it is exactly what
+		// this sandbox was created with, record or no record. Both halves of the
+		// no-record case are guarded on that, not just the printed line:
+		//
+		//   - the line itself described a problem that cannot exist there, and
+		//     named `--only`/`--without` over repos nest.Resolve refuses to remove
+		//     ("is a required repo of this nest, it cannot be removed") — a remedy
+		//     that fails, in a diagnostic nobody needed. The create branch says the
+		//     true thing about this shape ("nest %s declares no optional repo"),
+		//     and hasOptionalRepo is the predicate both now read.
+		//   - selectionUnknown mutes reportUnmountedRepos (step 6), for a reason
+		//     that holds only where a selection exists: the "expected" side would
+		//     be a selection nobody made. Here it is the whole declared list and it
+		//     is right, so muting would drop a TRUE warning — a VM genuinely
+		//     missing a repo, silently.
+		//
+		// unresolvedOnALiveSandbox, the other consumer, cannot fire on such a nest
+		// either: it wraps optional unmapped keys only, and there are none.
 		if recordedErr != nil {
-			selectionUnknown = true
-			reportUnrebuiltSelection(d.Out, sandboxName, recordedErr, n.PromptsForRepos())
+			if hasOptionalRepo(n.Repos) {
+				selectionUnknown = true
+				reportUnrebuiltSelection(d.Out, sandboxName, recordedErr, n.PromptsForRepos())
+			}
 			break
 		}
 		without = recordedWithout(n, recorded)
@@ -695,21 +717,35 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// dedups on gitDirs. Keyed by path, the alias falls on the same probe and
 	// the reuse does not reintroduce the call it removes.
 	//
-	// Still run on the ATTACH branch, where step 3 creates nothing. It is a pure
-	// read either way, and it is the only source of git dirs left for a sandbox
-	// with NO readable record. With a record, step 3 takes the git dirs from
-	// there and this probe's answer is DISCARDED — the call is then pure cost,
-	// kept because dropping it would make an attach refuse or not depending on a
-	// file's readability, which is the kind of conditional sequence §6 exists to
-	// prevent.
+	// SCOPED to the spawns that consume the answer, which is the create branch
+	// plus the attach branch's NO-RECORD fallback — the union of step 3's two
+	// reads of commonDirs, and nothing else.
 	//
-	// Its refusal is inherited, and on this branch its message overstates: `-w`
-	// propagates nothing to a live sandbox, whose mounts are frozen at its
-	// creation. den refuses the attach over a flag it would then have ignored.
-	// Left as it is on purpose — loosening a refusal is not this change, and a
-	// live sandbox does not earn a second answer to "is this a git repository".
+	// On an attach WITH a record it ran and its answer was discarded: step 3 takes
+	// the git dirs from the record. The cost was not the call, it was the refusal
+	// the call carries. Since the attach branch stopped propagating `-w` at all
+	// (step 3: it COMPUTES paths, it creates nothing, and with a record it does not
+	// even read the flag), that refusal told the user `-w` propagates a worktree to
+	// every repo of the spawn — on a spawn where it propagates to none. den refused
+	// to attach to a healthy live VM over a consequence that cannot happen there,
+	// which is exactly what T13/T16 forbid: a live sandbox must never be stranded.
+	//
+	// Scoping was chosen over rewording the refusal. A message true on both
+	// branches would have to describe two different things `-w` does, and the
+	// second one — deriving expected paths for a comparison — is not a reason to
+	// refuse an attach at all. Where the probe survives, on the fallback, the
+	// existing sentence is exactly true: the git dirs are derived from `-w` there
+	// and there is nothing else left to derive them from.
+	//
+	// It does make the sequence depend on a file's readability, which the previous
+	// comment here refused. That objection was already spent: step 3 has read the
+	// git dirs from the record when it can and from this probe when it cannot since
+	// the attach branch stopped creating worktrees, so the fork exists either way —
+	// the probe merely stops being run for a branch that ignores it.
+	//
+	// Still a pure read wherever it runs, and still exactly the value step 3 needs.
 	commonDirs := make(map[string]string, len(r.Repos))
-	if o.Worktree != "" {
+	if o.Worktree != "" && (live == nil || recordedErr != nil) {
 		for _, repo := range r.Repos {
 			if _, known := commonDirs[repo.Path]; known {
 				continue
@@ -965,10 +1001,12 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		case live != nil && attachWorktree != "":
 			repoPath = worktree.Path(attachLayout, attachRoot, attachWorktree, repo.Path)
 			// Only on the no-record fallback: with a record, gitDirs was taken
-			// from it above and the step-2bis probe has nothing to add.
-			// commonDirs is populated exactly when `-w` is on the command line,
-			// which on this fallback is exactly when attachWorktree is not
-			// empty — so the map is never read blind.
+			// from it above and the step-2bis probe has nothing to add — which is
+			// why that probe no longer runs there at all.
+			// This condition is one half of the probe's own scope (`-w` given,
+			// and no readable record on a live sandbox); the other half,
+			// `attachWorktree != ""`, is `-w` again on this fallback, where the
+			// layout comes from the flags. So the map is never read blind.
 			if recordedErr != nil {
 				commonDir := commonDirs[repo.Path]
 				if !slices.Contains(gitDirs, commonDir) {
@@ -1122,26 +1160,66 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			fmt.Fprintf(d.Out, "sandbox %s already live: attaching\n", sandboxName)
 		}
 
-		// The other half of decision 6. The checklist stayed shut at step 1bis;
-		// a prompting nest is where that silence would otherwise read as den
-		// forgetting to ask, so it — and only it — gets the explanation.
+		// The other half of decision 6, and the ONE paragraph that says what this
+		// live sandbox did with the flags it could not honour.
+		//
+		// The checklist stays shut on a live sandbox — its mounts come from its
+		// creation and nothing is reapplied (§6), so a selection collected here
+		// could never be mounted. What moved is the EXPLANATION: it used to be
+		// reserved to `select: prompt`, on the reading that an ordinary nest's `-i`
+		// user was never promised a checklist. They were: they typed the flag, and
+		// den dropped it without a word — the silence spec §2 forbids, and the one
+		// case where the reader has no way to guess why nothing was asked.
+		//
+		// Three lines, three conditions, and none of them fires on a plain attach:
+		// a permanent explanation stops being read, which is the doctrine
+		// reportDrift's own guard states.
+		//
+		//   - the RECORDED REPOS answer "then what is in it" — a question only a
+		//     dropped SELECTION raises, and only a record can answer. Never
+		//     re-derived: that is what internal/manifest exists for. A legacy
+		//     sandbox, or one created outside den, simply drops the line.
+		//   - the IGNORED `-w` is the same defect on the other flag: since the
+		//     attach branch takes its worktree from the record, `den spawn api --as
+		//     reco -w other` attached and said nothing about the flag it did not
+		//     honour. It stays quiet when `-w` AGREES with the record, which is the
+		//     ordinary re-attach — the user retypes the command that created the
+		//     sandbox, and a warning on it would fire forever.
+		//   - the REMEDY is shared, because it is the same one: a second sandbox.
+		//     `--as <label>` is what runs a different selection, a different
+		//     worktree, or both, alongside this one.
 		//
 		// Placed AFTER the status line above, never before it: the two would
 		// otherwise contradict each other on a stopped sandbox, which is
 		// attached to and restarted, not "already live".
 		//
-		// The repos come from the RECORD, never from a re-derivation: that is
-		// exactly what internal/manifest exists for. No record (legacy sandbox,
-		// or one created outside den) simply drops that line — the message
-		// keeps its remedy, which is the part that matters.
-		if n.PromptsForRepos() {
-			if recordedErr == nil {
-				names := make([]string, 0, len(recorded.Repos))
-				for _, repo := range recorded.Repos {
-					names = append(names, repo.Name)
-				}
-				fmt.Fprintf(d.Out, "  its repos come from its creation: %s\n", strings.Join(names, ", "))
+		// No flag-choosing here, deliberately: this paragraph names `-w` and
+		// `--as`, never `--only`/`--without`, so it is not a sixth site that has to
+		// know `--without` is refused on a prompting nest.
+		selectionDropped := o.Interactive || n.PromptsForRepos()
+		worktreeIgnored := o.Worktree != "" && recordedErr == nil &&
+			(recorded.Worktree == nil || recorded.Worktree.Name != worktreeName.Dir)
+		if selectionDropped && recordedErr == nil {
+			names := make([]string, 0, len(recorded.Repos))
+			for _, repo := range recorded.Repos {
+				names = append(names, repo.Name)
 			}
+			fmt.Fprintf(d.Out, "  its repos come from its creation: %s\n", strings.Join(names, ", "))
+		}
+		if worktreeIgnored {
+			// The branch as TYPED, on both sides: the user typed `-w other` and the
+			// record keeps the branch next to the flattened component precisely so
+			// a message can compare like with like. The comparison itself is on the
+			// flattened name, which is what a worktree path is built from.
+			mounts := "the repos as they are"
+			if recorded.Worktree != nil {
+				mounts = fmt.Sprintf("worktree %s", recorded.Worktree.Branch)
+			}
+			fmt.Fprintf(d.Out,
+				"  `-w %s` is not applied: this sandbox mounts %s, and a live sandbox keeps the "+
+					"mounts it was created with\n", o.Worktree, mounts)
+		}
+		if selectionDropped || worktreeIgnored {
 			fmt.Fprintf(d.Out, "  to run a different set alongside it, spawn `--as <label>`\n")
 		}
 	} else {
