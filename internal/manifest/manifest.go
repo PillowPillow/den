@@ -203,6 +203,54 @@ func decode(content []byte) (Manifest, error) {
 	return m, nil
 }
 
+// LaxMounts reads ONE record for its `repos[].mount` values alone, without
+// KnownFields and without the schema check — the single deliberate exception
+// to the strict decoding rule the rest of den holds (spec §12).
+//
+// It exists for the records Read and List REFUSE. `den rm` may only reclaim a
+// worktree no other sandbox still mounts, and it answers that from the records
+// alone (it probes no VM). A sibling den could not decode is therefore
+// invisible to that guard, and the most common such file is the recoverable
+// one: written by a NEWER den, perfectly good YAML, refused on `schema` only.
+// Guessing wrong there moves a live sandbox's workspace to the trash, so this
+// one field is read on its own terms rather than not at all.
+//
+// What it does NOT do: it never writes, never deletes, never repairs, and it
+// never produces a Manifest. Nothing else in the file is consumed, so no field
+// whose MEANING may have changed between versions can reach den's logic — the
+// very risk the schema refusal exists to prevent.
+//
+// An error means "this file answers nothing": it will not parse, or it could
+// not even be read (List reports that state as Broken too). A file that parses
+// but names no mount is not an error — it genuinely names none. That includes
+// a future den that renamed the key, which would parse here and yield no
+// protection; nothing readable on disk can distinguish the two, and inventing
+// a third state would only guess.
+func LaxMounts(path string) ([]string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	// An anonymous type, declared here rather than beside Manifest: it is not a
+	// second model of a record, it is one field of one file, and a named type
+	// would invite a second reader to grow on it.
+	var doc struct {
+		Repos []struct {
+			Mount string `yaml:"mount"`
+		} `yaml:"repos"`
+	}
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	var mounts []string
+	for _, r := range doc.Repos {
+		if r.Mount != "" {
+			mounts = append(mounts, r.Mount)
+		}
+	}
+	return mounts, nil
+}
+
 // Remove deletes the manifest. An already-absent file is NOT an error: rm
 // removes it after reclaiming what it listed, and failing there would refuse a
 // `den rm` that did everything it was asked (doctrine T13/T16).

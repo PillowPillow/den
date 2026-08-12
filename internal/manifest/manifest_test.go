@@ -187,6 +187,57 @@ func TestListSkipsBrokenFilesAndToleratesNoStateDir(t *testing.T) {
 	}
 }
 
+// The lax reader's whole reason to exist: the record Read refuses is usually a
+// NEWER den's — an unknown schema, an unknown key, and mounts that are still
+// exactly the paths sbx received. `den rm`'s guard has to see those mounts, or
+// it moves a live sandbox's workspace to the trash.
+func TestLaxMountsReadsWhatReadRefuses(t *testing.T) {
+	denHome := t.TempDir()
+	if err := os.MkdirAll(Dir(denHome), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(Dir(denHome), "api.reco.yaml")
+	content := "schema: 9999\nsandbox: api.reco\ninvented_by_a_newer_den: yes\n" +
+		"repos:\n  - name: api\n    mount: /w/feat12\n    unknown_key: 1\n  - name: web\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(denHome, "api.reco"); err == nil {
+		t.Fatal("this file must still be refused by the strict reader")
+	}
+	mounts, err := LaxMounts(path)
+	if err != nil {
+		t.Fatalf("the lax reader must accept it: %v", err)
+	}
+	// The second repo names no mount and contributes nothing: it is not an
+	// error, it genuinely names no directory.
+	if len(mounts) != 1 || mounts[0] != "/w/feat12" {
+		t.Errorf("mounts must be read, and only mounts; got %#v", mounts)
+	}
+}
+
+// An error means "this file answers nothing" — the caller then treats it as an
+// unknown sharer and reclaims nothing. Both states reach it: unparseable, and
+// unreadable (List reports the second as Broken too).
+func TestLaxMountsFailsOnAFileItCannotRead(t *testing.T) {
+	denHome := t.TempDir()
+	if err := os.MkdirAll(Dir(denHome), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(Dir(denHome), "api.reco.yaml")
+	if err := os.WriteFile(path, []byte("repos: [ {mount: /w/feat12\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LaxMounts(path); err == nil {
+		t.Error("a file that does not parse must be an error, not an empty answer")
+	} else if !strings.Contains(err.Error(), path) {
+		t.Errorf("the message must name the file; got: %v", err)
+	}
+	if _, err := LaxMounts(filepath.Join(Dir(denHome), "absent.yaml")); err == nil {
+		t.Error("a file that cannot be read must be an error too")
+	}
+}
+
 // Removing what is already gone is not a failure: rm calls this after
 // reclaiming everything, and refusing there would fail a `den rm` that did its
 // whole job (doctrine T13/T16).

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/PillowPillow/den/internal/config"
@@ -150,27 +151,18 @@ func cleanWorktrees(ctx context.Context, home, ref, sandboxName string, g worktr
 // whose VM is already gone — one body, so the two can never disagree on what
 // den is allowed to move.
 func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g worktree.Git, force bool, out io.Writer) error {
-	// Every OTHER record, read once for the whole loop rather than once per
-	// repo: `--as` (PR #68) lets two sandboxes share a worktree — spawning
-	// `api -w feature/123` then `api -w feature/123 --as reco` reuses the
-	// same directory, because worktree.Ensure is idempotent on the same
+	// What every OTHER record mounts, read once for the whole loop rather than
+	// once per repo: `--as` (PR #68) lets two sandboxes share a worktree —
+	// spawning `api -w feature/123` then `api -w feature/123 --as reco` reuses
+	// the same directory, because worktree.Ensure is idempotent on the same
 	// branch, and BOTH records end up naming it with Worktree: true. Without
 	// this check `den rm api.reco` would move that directory to the trash
 	// while `api.feature-123` is still running and mounting it.
-	//
-	// A List error is swallowed on purpose, not surfaced: den refuses rather
-	// than normalizing in silence everywhere else (spec §2), but `den rm`
-	// itself must NEVER refuse or hang over a records directory it merely
-	// could not enumerate (doctrine T13/T16) — the guard below is simply
-	// unavailable for this one run, and reclaim proceeds exactly as it did
-	// before this guard existed.
-	//
-	// List's second return (Broken — a manifest it could not decode) is
-	// dropped here too, and that is the same doctrine, not an oversight: a
-	// record den cannot read cannot be asked what Mount it names, so it
-	// cannot be said to "still name" this one. It is out of scope, not
-	// silently trusted to be harmless.
-	others, _, _ := manifest.List(home)
+	holders, unreadable := mountHolders(home, m.Sandbox)
+
+	// Directories kept because a record den could NOT read might be the one
+	// still mounting them — collected here, reported once after the loop.
+	var stranded []string
 
 	for _, r := range m.Repos {
 		// The one bit that matters: den only ever reclaims what it created.
@@ -182,8 +174,25 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 		// record of THIS sandbox is still removed at the end of this
 		// function regardless — den is removing THIS sandbox, not disowning
 		// a directory another one holds.
-		if holder := holderOf(others, m.Sandbox, r.Mount); holder != "" {
+		if holder := holders[r.Mount]; holder != "" {
 			fmt.Fprintf(out, "worktree kept: %s is also mounted by sandbox %s\n", r.Mount, holder)
+			continue
+		}
+		// No record den could read names this Mount — but a record it could
+		// NOT read may name anything, including this one. An unknown sharer
+		// therefore holds back every directory no readable record accounts
+		// for: den leaves them on disk rather than moving a live sandbox's
+		// workspace to the trash on a guess. Leaving a directory is
+		// recoverable; trashing a running VM's workspace is not.
+		//
+		// The kept mounts are named after the loop, never counted: a user who
+		// has to arbitrate between a directory and a live VM needs the paths.
+		// A hand-edited record claiming a worktree with no Mount at all names
+		// no directory to keep, so it contributes nothing to say.
+		if len(unreadable) > 0 {
+			if r.Mount != "" {
+				stranded = append(stranded, r.Mount)
+			}
 			continue
 		}
 		// Layout, Root and the worktree NAME still come from the record, not
@@ -225,32 +234,118 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 			fmt.Fprintf(out, "worktree moved to trash: %s\n", dest)
 		}
 	}
+	if len(stranded) > 0 {
+		for _, b := range unreadable {
+			// The wording `den ls` and `den doctor` already print for this
+			// exact state, on purpose: one dialect for "den left a record
+			// alone", not a second one per command.
+			fmt.Fprintf(out, "creation record %s unreadable: %v — den leaves it alone (it may "+
+				"belong to another version of den); delete it by hand once its sandbox is gone\n",
+				b.Path, b.Err)
+		}
+		for _, mount := range stranded {
+			fmt.Fprintf(out, "worktree kept: %s — an unreadable record may name it, "+
+				"and den does not guess\n", mount)
+		}
+		// The record SURVIVES here, and this is where it is decided. The
+		// review that ordered this scan first said the record still goes,
+		// because `den rm` must never refuse (doctrine T13/T16) — but a
+		// removal is not a refusal, and the rule two branches below already
+		// governs this exact state: the record is the ONLY trace of the
+		// directories still on disk, and deleting it strands them for good.
+		// Nothing is reclaimed here, so this is a skipped reclaim like any
+		// other. The sandbox is still destroyed, and `den rm` still refuses
+		// nothing; the leftover record is a state `den ls` and `den doctor`
+		// already exist to make addressable, and it is exactly what `den
+		// doctor --fix` needs to finish the job on its next run.
+		// The file is named because the user has to find it to act on it — but
+		// only when there IS a name: manifest.Path refuses a sandbox name den
+		// would never have written, and empty parentheses would say less than
+		// nothing.
+		where := ""
+		if path, err := manifest.Path(home, m.Sandbox); err == nil {
+			where = " (" + path + ")"
+		}
+		fmt.Fprintf(out, "the record of %s is kept too%s: `den doctor` reports these "+
+			"worktrees, `den doctor --fix` reclaims them once den can read every record\n",
+			m.Sandbox, where)
+		return nil
+	}
 	// Removed only now, when everything it listed is reclaimed.
 	return manifest.Remove(home, m.Sandbox)
 }
 
-// holderOf returns the Sandbox name of the first OTHER record (not self) that
-// names mount as one of its repos' Mount, or "" when none does.
+// mountHolders maps every mount named by a record OTHER than self to the
+// sandbox naming it, and returns separately the records den could not read at
+// all — the unknown sharers, whose mounts nobody can enumerate.
 //
-// It does not check the other record's own Worktree bit: the danger is a live
-// VM still mounting the directory, and that is true whether the other record
-// believes it created that mount or merely mounted it as-is — a coincidence
-// this narrow is not worth trusting either way.
-func holderOf(others []manifest.Manifest, self, mount string) string {
-	if mount == "" {
-		return "" // nothing to collide on
+// A holder's own Worktree bit is not checked: the danger is a live VM still
+// mounting the directory, and that is true whether the other record believes
+// it created that mount or merely mounted it as-is — a coincidence this narrow
+// is not worth trusting either way.
+//
+// A List error is swallowed on purpose, not surfaced: den refuses rather than
+// normalizing in silence everywhere else (spec §2), but `den rm` itself must
+// NEVER refuse or hang over a records directory it merely could not enumerate
+// (doctrine T13/T16) — the guard is simply unavailable for that one run, and
+// reclaim proceeds exactly as it did before the guard existed.
+//
+// The BROKEN half is consulted too, and that is the point of this function: a
+// sandbox whose record den refused to decode is live all the same, and the
+// most common such record is a NEWER den's — refused on `schema` alone, and
+// otherwise perfectly good YAML. Read for its mounts alone through the one
+// deliberately lax reader (manifest.LaxMounts), it protects its worktrees like
+// any other. Its SANDBOX name is not read from the file: manifest.Path is the
+// sole place a record's file name is composed as "<sandbox>.yaml", so the
+// basename recovers it — the same trim `den ls` does for the same reason.
+//
+// An empty Mount is never a key: two records describing no mount must not
+// collide on "" and keep each other's nothing.
+func mountHolders(home, self string) (map[string]string, []manifest.Broken) {
+	others, broken, _ := manifest.List(home)
+
+	// First naming wins, and both lists are sorted (manifest.List), so the
+	// holder announced to the user is stable from one run to the next.
+	holders := make(map[string]string)
+	claim := func(mount, sandbox string) {
+		if mount == "" {
+			return
+		}
+		if _, seen := holders[mount]; !seen {
+			holders[mount] = sandbox
+		}
 	}
 	for _, o := range others {
 		if o.Sandbox == self {
 			continue
 		}
 		for _, r := range o.Repos {
-			if r.Mount == mount {
-				return o.Sandbox
-			}
+			claim(r.Mount, o.Sandbox)
 		}
 	}
-	return ""
+
+	var unreadable []manifest.Broken
+	for _, b := range broken {
+		// Self, skipped here as above: Read succeeded for the caller, so a
+		// file of the same name landing in Broken is a transient read error on
+		// den's own record, not a sibling.
+		sandbox := strings.TrimSuffix(filepath.Base(b.Path), ".yaml")
+		if sandbox == self {
+			continue
+		}
+		mounts, err := manifest.LaxMounts(b.Path)
+		if err != nil {
+			// b, not the lax error: b.Err is what `den ls` and `den doctor`
+			// print for this file, and the lax reader's own failure adds no
+			// information the user can act on.
+			unreadable = append(unreadable, b)
+			continue
+		}
+		for _, mount := range mounts {
+			claim(mount, sandbox)
+		}
+	}
+	return holders, unreadable
 }
 
 // cleanWorktreesLegacy removes, through worktree.Remove, the worktrees den

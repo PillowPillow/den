@@ -1369,3 +1369,223 @@ func TestRmSingleRecordStillReclaimsItsWorktree(t *testing.T) {
 		t.Errorf("no sibling names this mount, so the guard must not fire; got:\n%s", out)
 	}
 }
+
+// writeRawManifest drops a file in state/sandboxes/ that manifest.Write could
+// never produce. That is the point: these tests are about the records den
+// REFUSES to decode, and every one of them would be unreachable through the
+// typed writer.
+func writeRawManifest(t *testing.T, denHome, sandbox, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(manifest.Dir(denHome), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(manifest.Dir(denHome), sandbox+".yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The hole the guard above left open: it read manifest.List's DECODABLE half
+// only. A sibling written by a NEWER den is refused on its `schema` alone —
+// otherwise perfectly good YAML, naming the very mount this `den rm` is about
+// to trash while that sandbox is live. The lax mount scan makes it visible.
+func TestRmLeavesAMountAnUndecodableRecordStillNames(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	wt := createWorktree(t, repo, root, "feat12")
+
+	// The live sibling, recorded by a den this one does not understand.
+	writeRawManifest(t, denHome, "api.feature-123",
+		"schema: 9999\nsandbox: api.feature-123\ninvented_by_a_newer_den: yes\n"+
+			"repos:\n  - name: api\n    mount: "+wt+"\n")
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.reco",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feature/123", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feature-123", "api.reco")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.reco")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("api.feature-123 still mounts this worktree; it must survive: %v", err)
+	}
+	if !strings.Contains(out, "worktree kept") || !strings.Contains(out, "api.feature-123") {
+		t.Errorf("the message must name the sandbox that still holds the worktree; got:\n%s", out)
+	}
+	if _, err := manifest.Read(denHome, "api.reco"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the record of the removed sandbox must still go: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(manifest.Dir(denHome), "api.feature-123.yaml")); err != nil {
+		t.Errorf("den never deletes a record it could not read: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "api.reco") {
+		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// A record that will not parse AT ALL names no mount anyone can enumerate, so
+// it is an unknown sharer: den reclaims nothing for this run rather than
+// guessing, names the file it could not read and the directories it left, and
+// still destroys the sandbox it was asked to destroy (doctrine T13/T16).
+//
+// Its own record SURVIVES, like after any other skipped reclaim: it is the
+// only trace of the directories still on disk, and it is what `den doctor
+// --fix` needs to finish the job once the unreadable file is gone.
+func TestRmReclaimsNothingWhenARecordCannotBeParsedAtAll(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	wt := createWorktree(t, repo, root, "feat12")
+
+	badPath := writeRawManifest(t, denHome, "api.feature-123", "repos: [ {mount: "+wt+"\n")
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.reco",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feature/123", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feature-123", "api.reco")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.reco")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("an unknown sharer may be mounting it; the worktree must survive: %v", err)
+	}
+	if !strings.Contains(out, badPath) {
+		t.Errorf("the message must name the file den could not read; got:\n%s", out)
+	}
+	if !strings.Contains(out, "worktree kept: "+wt) {
+		t.Errorf("the kept directory must be named, not counted; got:\n%s", out)
+	}
+	if _, err := os.Stat(badPath); err != nil {
+		t.Errorf("den never deletes a record it could not read: %v", err)
+	}
+	if _, err := manifest.Read(denHome, "api.reco"); err != nil {
+		t.Errorf("nothing was reclaimed, so the record must survive as the only trace of "+
+			"those directories — and as what `den doctor --fix` acts on: %v", err)
+	}
+	if !strings.Contains(out, "the record of api.reco is kept too") {
+		t.Errorf("a surviving record after a `den rm` is surprising enough to be said, with "+
+			"what will act on it; got:\n%s", out)
+	}
+	if !f.HasCalled("rm", "--force", "api.reco") {
+		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// A mount a READABLE record still names is reported as held, even while an
+// unreadable file elsewhere holds everything else back. The two messages say
+// opposite things about who to ask before touching a directory, and "reclaim
+// them by hand" aimed at a live sibling's workspace is exactly the deletion
+// this whole guard exists to prevent.
+func TestRmNeverTellsTheUserToReclaimAMountAnotherRecordNames(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	wt := createWorktree(t, repo, root, "feat12")
+
+	// The junk file is about a THIRD sandbox: it holds nothing back that the
+	// readable sibling does not already account for.
+	badPath := writeRawManifest(t, denHome, "web.feat9", "repos: [ {mount: /elsewhere\n")
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feature-123",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feature/123", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.reco",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feature/123", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feature-123", "api.reco", "web.feat9")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.reco")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("api.feature-123 still mounts this worktree; it must survive: %v", err)
+	}
+	if !strings.Contains(out, "worktree kept: "+wt+" is also mounted by sandbox api.feature-123") {
+		t.Errorf("a mount a readable record names must be reported as held; got:\n%s", out)
+	}
+	if strings.Contains(out, "an unreadable record may name it") {
+		t.Errorf("this directory has a known holder, so it must be reported as held, not as "+
+			"a directory nobody can account for; got:\n%s", out)
+	}
+	if _, err := manifest.Read(denHome, "api.reco"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("nothing was held back, so the record of the removed sandbox still goes: %v", err)
+	}
+	if strings.Contains(out, badPath) {
+		t.Errorf("the unreadable file held nothing back here, so naming it would report a "+
+			"problem that had no effect; got:\n%s", out)
+	}
+}
+
+// Regression floor for the lax scan: it must not turn every broken file into a
+// reason to keep everything. A record den cannot decode that names ANOTHER
+// directory holds nothing here, and reclaim proceeds exactly as it did before
+// this scan existed — the floor for "no broken record at all" is held by
+// TestRmSingleRecordStillReclaimsItsWorktree.
+func TestRmStillReclaimsDespiteABrokenRecordNamingAnotherMount(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	wt := createWorktree(t, repo, root, "feat12")
+
+	writeRawManifest(t, denHome, "web.feat9",
+		"schema: 9999\nsandbox: web.feat9\nrepos:\n  - name: web\n    mount: /elsewhere/feat9\n")
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feat12",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feat12", "web.feat9")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("no record names this mount, so it must still be reclaimed: %v", err)
+	}
+	if strings.Contains(out, "worktree kept") || strings.Contains(out, "no worktree reclaimed") {
+		t.Errorf("a broken record naming another directory holds nothing here; got:\n%s", out)
+	}
+	if _, err := manifest.Read(denHome, "api.feat12"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the record must still be removed: %v", err)
+	}
+}
