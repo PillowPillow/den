@@ -1171,9 +1171,16 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// den dropped it without a word — the silence spec §2 forbids, and the one
 		// case where the reader has no way to guess why nothing was asked.
 		//
-		// Three lines, three conditions, and none of them fires on a plain attach:
-		// a permanent explanation stops being read, which is the doctrine
-		// reportDrift's own guard states.
+		// Three lines, three conditions, and none of them fires on a plain attach
+		// of an ORDINARY nest: a permanent explanation stops being read, which is
+		// the doctrine reportDrift's own guard states.
+		//
+		// A `select: prompt` nest is the deliberate exception, and it is not new:
+		// there the paragraph prints on every attach, `-i` or not, because the
+		// checklist not opening IS the surprise — the mode's whole promise is that
+		// den asks, and a bare `den spawn generic` that asks nothing needs the
+		// reason every single time (decision 6). That permanence is asserted by
+		// TestPromptModeDoesNotPromptWhenAttaching and predates this change.
 		//
 		//   - the RECORDED REPOS answer "then what is in it" — a question only a
 		//     dropped SELECTION raises, and only a record can answer. Never
