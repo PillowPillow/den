@@ -114,6 +114,42 @@ type Nest struct {
 // SelectAll instead, where "" would answer false.
 func (n *Nest) PromptsForRepos() bool { return n.Select == SelectPrompt }
 
+// CheckWithout refuses `--without` on a nest that selects its repos at spawn
+// time, and is the SOLE author of that sentence.
+//
+// `--without` subtracts from a default selection, and a `select: prompt` nest
+// declares it has none: that is the whole meaning of the mode, and it is why its
+// checklist starts EMPTY (spawn's promptOptionalRepos). Accepted, the flag
+// silenced the checklist and resolved the MAXIMAL set minus the named repos —
+// den handing out, in silence, the thirty-repo default the nest exists not to
+// have. Refusing is the reading a user cannot misinterpret, and the repo refuses
+// rather than normalizing in silence (spec §2). `--only` stays accepted, and is
+// what the message names: it states the set outright, which is exactly the
+// question the checklist asks.
+//
+// It lives in THIS package, not in internal/spawn where it was first written,
+// because two commands have to give one verdict: `den spawn` (step 0bis) and
+// `den nest show`, which internal/cli documents as its dry-run and which reaches
+// nest.Resolve without ever going through Spawn. One flag answered twice in two
+// dialects is the divergence this function exists to make impossible — the same
+// argument spawn.ResolveStack already carries for the stack reference. Nothing
+// here is learnt about sandboxes: the mode is Nest.Select, the file is
+// FilePath, both this package's own.
+//
+// nestRoot is where the nest was LOADED from — a source's directory for
+// `corp:api`, the den home otherwise — so the message names the file the user
+// must edit and not a local namesake of it.
+func (n *Nest) CheckWithout(nestRoot string, without []string) error {
+	if len(without) == 0 || !n.PromptsForRepos() {
+		return nil
+	}
+	return fmt.Errorf(
+		"nest %s selects its repos at spawn time (`select: prompt` in %s), so there is no "+
+			"default selection for `--without` to subtract from — name the repos you want "+
+			"with `--only repo,...`, this nest's non-interactive spelling",
+		n.Name, FilePath(nestRoot, n.Name))
+}
+
 // NestNotFoundError reports the one LoadNest failure that means "this object
 // does not exist": the nest file is ABSENT. Exported as a type, not a plain
 // message, because the CLI must distinguish this case from others to decide

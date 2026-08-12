@@ -269,18 +269,12 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// anything else.
 	//
 	// `--without` subtracts from a default selection, and a `select: prompt`
-	// nest declares it has none: that is the whole meaning of the mode, and it
-	// is why its checklist starts EMPTY (promptOptionalRepos). Accepted, the flag
-	// silenced the checklist and resolved the MAXIMAL set minus the named repos
-	// — den handing out, in silence, the thirty-repo default the nest exists not
-	// to have. Refusing is the reading a user cannot misinterpret, and the repo
-	// refuses rather than normalizing in silence (spec §2).
-	//
-	// `--only` stays accepted, and is what the message names: it states the set
-	// outright, which is exactly the question the checklist asks — so it is the
-	// scriptable spelling of this mode, the one interactiveWithout's no-terminal
-	// refusal names too (nonInteractiveEquivalents, which takes the mode for this
-	// same reason).
+	// nest declares it has none. The verdict and its sentence are
+	// nest.CheckWithout's — read it for why the flag is refused rather than
+	// normalized, and why `--only` is the spelling the message names. It moved
+	// there when `den nest show`, the documented dry-run of this command, had to
+	// give the SAME answer to the same flag: it never goes through Spawn, so a
+	// refusal written here alone made one flag mean two things.
 	//
 	// UNCONDITIONAL, not restricted to the create branch. On an attach the flag
 	// is not meaningless in the same way — with no readable record den resolves
@@ -290,12 +284,12 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// on whether a VM happens to be up. What the compound case needs instead is a
 	// remedy that works on a prompting nest: the `nest.Resolve` wrap below names
 	// `--only`, and reportUnrebuiltSelection follows the mode as well.
-	if len(o.Without) > 0 && n.PromptsForRepos() {
-		return fmt.Errorf(
-			"nest %s selects its repos at spawn time (`select: prompt` in %s), so there is no "+
-				"default selection for `--without` to subtract from — name the repos you want "+
-				"with `--only repo,...`, this nest's non-interactive spelling",
-			n.Name, nest.FilePath(nestRoot, bareNest))
+	//
+	// nestRoot alone is passed: the file the message names is FilePath(nestRoot,
+	// n.Name), and n.Name IS bareNest — LoadNest set it from the filename two
+	// lines above, unconditionally.
+	if err := n.CheckWithout(nestRoot, o.Without); err != nil {
+		return err
 	}
 
 	// `-i` and `--only`/`--without` are two answers to the same question.
@@ -647,7 +641,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 		without = recordedWithout(n, recorded)
 	case selectionOpen:
-		if without, err = interactiveWithout(d, n, g.Repos); err != nil {
+		if without, err = interactiveWithout(d, denHome, n, g.Repos); err != nil {
 			return err
 		}
 	}

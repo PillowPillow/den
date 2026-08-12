@@ -155,6 +155,22 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 				return err
 			}
 
+			// `--without` on a `select: prompt` nest, refused through the SAME
+			// function internal/spawn.Spawn calls at its step 0bis — a dry-run
+			// that accepts a flag the run refuses is not a dry-run. It stood
+			// accepted here for exactly the reason this command exists as a
+			// separate path: it never goes through Spawn, so a refusal written
+			// inside Spawn reached nothing here, and `den nest show api
+			// --without crm` printed a confident resolution of a command `den
+			// spawn` would have rejected.
+			//
+			// Placed before the stack resolution, mirroring Spawn's own order: a
+			// command line that contradicts itself is answered before den
+			// diagnoses anything else about the nest.
+			if err := n.CheckWithout(nestRoot, opts.Without); err != nil {
+				return err
+			}
+
 			// Stack origin — through spawn.ResolveStack, the SAME function
 			// internal/spawn.Spawn calls: both refusals it can raise (an
 			// absent `stack:` inside a source, a prefixed one) must stay
@@ -182,6 +198,18 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 							"the command line: %w", err)
 				}
 			}
+			// The dry-run tolerates what a spawn must refuse: an optional `key:`
+			// this machine maps nowhere, on a nest that chooses its repos at
+			// spawn time. There it is a normal state — the catalogue of a team,
+			// of which a machine maps what it works on — and refusing made this
+			// command unusable on the very nests the mode was added for. The
+			// resolver keeps those repos out of r.Repos and hands them over
+			// annotated, in r.UnmappedOptional (writeResolution prints them):
+			// nothing is dropped in silence, which is the whole difference
+			// between a tolerance and a hole. See nest.Options for what the flag
+			// deliberately does NOT cover — a `select: all` nest, a required key,
+			// a key named on `--only`.
+			opts.TolerateUnmappedOptional = true
 			r, err := nest.Resolve(home, g, stacks, n, opts)
 			if err != nil {
 				return err
@@ -255,6 +283,28 @@ func writeResolution(w io.Writer, ref string, r *nest.Resolved) {
 			status = "optional"
 		}
 		fmt.Fprintf(w, "  - %s (%s)\n", repo.Path, status)
+	}
+
+	// The optional keys the resolver set aside, in their own block and never in
+	// `repos:` above: that list is paths a spawn would mount, and these repos
+	// have no path on this machine — printing a key where every other line
+	// carries a directory is how a reader concludes den will mount something it
+	// will not.
+	//
+	// The sentence is nest.UnmappedRepoKeyError's own (Remedy), the one a spawn
+	// would have refused with: the fact, the `repos:` line to add, and the clone
+	// URL when the nest declared one. Its escape clause is dropped, and only
+	// there: it explains how to spawn WITHOUT the repo, and this listing already
+	// is the nest without it.
+	if len(r.UnmappedOptional) > 0 {
+		// The header states the CONTEXT (why these are listed rather than
+		// refused) and leaves the fact to the lines: saying "not mapped on this
+		// machine" here too would repeat, once per repo, what each line already
+		// opens with.
+		fmt.Fprintln(w, "unmapped optional repos (this nest selects its repos at spawn time):")
+		for _, u := range r.UnmappedOptional {
+			fmt.Fprintf(w, "  - %s\n", u.Remedy())
+		}
 	}
 
 	fmt.Fprintf(w, "egress (%d):\n", len(r.Egress))

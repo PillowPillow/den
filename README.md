@@ -203,8 +203,9 @@ it is not reconstructible.
 
 `den nest show` takes `--agent`, `--only` and `--without` — the same three as a spawn, and for the
 same reason: resolution is what they act on, so showing a nest under them is how you read what a
-spawn would do without spawning it. It has no `-w`: a worktree changes the sandbox name, not the
-resolved nest.
+spawn would do without spawning it. Including the refusals: `--without` on a `select: prompt` nest
+is rejected here exactly as it is on a spawn, since a dry-run that accepts what the run refuses is
+not one. It has no `-w`: a worktree changes the sandbox name, not the resolved nest.
 
 A stopped sandbox — which `sbx` does on its own after a few minutes of inactivity — is not a
 failure: `den spawn` and `den exec` pick it back up, with its state.
@@ -546,7 +547,13 @@ a *required* one is never offered the escape, since `--without` refuses required
 Local nests can use `select: prompt` too — it is one mechanism, not a sources-only one — and it is
 what makes a thirty-repo generic nest usable without cloning thirty repositories: a key that is not
 mapped in your `~/.den/config.yaml` costs nothing as long as you do not select its repo. The
-checklist annotates the keys you have not mapped.
+checklist annotates the keys you have not mapped, naming that file.
+
+`den doctor` and `den nest show` read the mode too, so "costs nothing" holds there as well: on a
+`select: prompt` nest an unmapped **optional** key is reported, not failed — doctor stays green and
+names the keys on one line per nest, and `den nest show` resolves the nest and lists them with the
+`repos:` line to add. On a `select: all` nest, and for a **required** key on any nest, it stays a
+failing check and a refusal: there the repo is meant to be mounted.
 
 It costs nothing *tomorrow* either, which is the half that is easy to miss: what you decline is
 recorded, and every later attach reads that record back instead of re-deriving a selection from a

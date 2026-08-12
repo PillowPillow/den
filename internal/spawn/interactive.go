@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
 )
 
@@ -85,7 +86,16 @@ func nonInteractiveEquivalents(prompts bool) string {
 // another way to fill its input. That is what makes "-i produces the same
 // sandbox as the equivalent --without" true by construction rather than by
 // coincidence — see TestInteractiveProducesTheSameArgvAsTheEquivalentWithout.
-func interactiveWithout(d Deps, n *nest.Nest, mapping map[string]string) ([]string, error) {
+//
+// denHome is here for one line of output: the checklist's unmapped-key
+// annotation names the file to edit, and that file is <denHome>/config.yaml —
+// NOT the literal "config.yaml" it used to print. Under DEN_HOME (which is what
+// makes den's own suite hermetic, and what a user with two homes types every
+// day) the literal named a file that does not exist at the place the reader
+// would look for it. Threaded rather than derived here, because
+// config.GlobalPath is the sole definition of that path and unmappedNote is the
+// message site that must agree with every other one.
+func interactiveWithout(d Deps, denHome string, n *nest.Nest, mapping map[string]string) ([]string, error) {
 	// Nothing to ask comes FIRST, before the terminal check: a nest with no
 	// optional repo needs no answer, so it needs no terminal either — `den spawn
 	// api -i --detach` from a script keeps working, and says why it asked nothing
@@ -118,7 +128,7 @@ func interactiveWithout(d Deps, n *nest.Nest, mapping map[string]string) ([]stri
 		// mid-sequence.
 		in = os.Stdin
 	}
-	return promptOptionalRepos(d.Out, in, n.Name, n.Repos, n.PromptsForRepos(), mapping)
+	return promptOptionalRepos(d.Out, in, denHome, n.Name, n.Repos, n.PromptsForRepos(), mapping)
 }
 
 // selectionFlagsInPlay names the repo-selection flag `-i` collides with, or ""
@@ -167,8 +177,10 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // fact are two things to keep in agreement — the drift the selectionOpen comment
 // in spawn.go records having already paid for once.
 //
-// mapping is the personal `repos:` of config.yaml, used to ANNOTATE the keys
-// it does not carry. Annotation only: ticking an unmapped key stays possible,
+// mapping is the personal `repos:` of <denHome>/config.yaml, used to ANNOTATE
+// the keys it does not carry — denHome is beside it because the annotation names
+// that file, and the two must describe the same one (unmappedNote).
+// Annotation only: ticking an unmapped key stays possible,
 // and the refusal that follows is resolveRepoKeys', which names the key, the
 // file and the clone URL. Refusing the tick here would make this a second
 // judge of the mapping, whose single judge is that function.
@@ -188,7 +200,7 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // what this checklist needs — print a list, read a line, toggle — is a dozen
 // lines of stdlib. A TUI library would buy cursor movement and colours for the
 // price of the one property the project advertises.
-func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []nest.Repo,
+func promptOptionalRepos(out io.Writer, in io.Reader, denHome, nestName string, repos []nest.Repo,
 	prompts bool, mapping map[string]string) ([]string, error) {
 	startChecked := !prompts
 	equivalents := nonInteractiveEquivalents(prompts)
@@ -218,7 +230,7 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 			if keep[i] {
 				box = "x"
 			}
-			fmt.Fprintf(out, "  %d [%s] %s%s\n", i+1, box, r.Name(), unmappedNote(r, mapping))
+			fmt.Fprintf(out, "  %d [%s] %s%s\n", i+1, box, r.Name(), unmappedNote(r, mapping, denHome))
 		}
 		fmt.Fprintf(out, "toggle by number (space-separated), empty line to confirm — %s\n> ",
 			equivalents)
@@ -263,14 +275,22 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 // unmappedNote annotates a key-typed repo the personal mapping does not carry.
 // Empty for a path-typed repo, and empty for a mapped key: an annotation on
 // every line would annotate nothing.
-func unmappedNote(r nest.Repo, mapping map[string]string) string {
+//
+// It names <denHome>/config.yaml, through config.GlobalPath — never the bare
+// "config.yaml" this line printed before. den has as many config.yaml as the
+// user has den homes (`--den-home`, `DEN_HOME`), and the one this checklist is
+// reading is the only one that can fix the annotation: the bare filename sent a
+// reader with two homes to edit the wrong file, or to look for a path den never
+// stated. Same rule as resolveRepoKeys' own refusal and `den doctor`'s, which is
+// what the reader will see next if they tick this box anyway.
+func unmappedNote(r nest.Repo, mapping map[string]string, denHome string) string {
 	if r.Key == "" {
 		return ""
 	}
 	if _, ok := mapping[r.Key]; ok {
 		return ""
 	}
-	return "      (not mapped in config.yaml)"
+	return "      (not mapped in " + config.GlobalPath(denHome) + ")"
 }
 
 // parseToggles turns a line of numbers into zero-based indexes, or returns the

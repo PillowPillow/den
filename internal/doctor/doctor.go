@@ -413,6 +413,9 @@ func Run(denHome string, d Deps) []Check {
 		if _, err := stacks.Get(stackName); err != nil {
 			add("nest "+n.Name, false, "%v", err)
 		}
+		// The optional keys a `select: prompt` nest declares and this machine
+		// maps nowhere, collected instead of failed — see the branch below.
+		var unmappedOptional []string
 		for _, r := range n.Repos {
 			if r.Key == "" {
 				// path: repo — r.Path is already the concrete machine path
@@ -432,6 +435,27 @@ func Run(denHome string, d Deps) []Check {
 			// refusal always names the thing to fix.
 			path, ok := g.Repos[r.Key]
 			if !ok {
+				// On a `select: prompt` nest an unmapped OPTIONAL key is not a
+				// fault: such a nest declares the whole catalogue of a team —
+				// thirty repos of which a session picks four — and a machine is
+				// expected to map only what it works on. Failed one by one, the
+				// flagship nest of the mode reported as broken, `den doctor`
+				// exited 1 on a correctly configured machine, and the real
+				// problems drowned in twenty-six lines about repos nobody wants.
+				//
+				// Collected here, reported as ONE ok line after the loop.
+				// Aggregated rather than one line per key for the reason the
+				// FAILs were wrong in the first place: at thirty repos, twenty-six
+				// diagnostics are the noise, whatever their level.
+				//
+				// The scope is deliberately narrow, and both halves are load
+				// bearing: `select: all` means the repo IS meant to be mounted,
+				// and a REQUIRED key is mounted by every spawn of the nest
+				// whatever its mode. Either way the FAIL below is the truth.
+				if n.PromptsForRepos() && r.Optional {
+					unmappedOptional = append(unmappedOptional, r.Key)
+					continue
+				}
 				// Same wording family as resolveRepoKeys's own
 				// unmapped-key refusal (internal/nest/resolve.go): the
 				// remedy the user is sent to is the same file either way,
@@ -454,6 +478,22 @@ func Run(denHome string, d Deps) []Check {
 				// missing.
 				add("nest "+n.Name, false, "repo not found: %s (key %q)", path, r.Key)
 			}
+		}
+		// LevelOK, not LevelWarning: this IS the healthy state of a prompting
+		// nest, and a warning would make `den doctor` end on "no failure, but N
+		// warning(s): review the [warn] lines" (internal/cli/doctor.go) for a
+		// machine with nothing to review. The line is printed all the same —
+		// silence would leave a user who mapped a key with a typo staring at a
+		// checklist entry they cannot tick and no diagnostic anywhere.
+		//
+		// Every key is NAMED, not counted: "26 keys unmapped" is unactionable,
+		// and the one name the reader is looking for is the repo they wanted.
+		if len(unmappedOptional) > 0 {
+			add("nest "+n.Name, true,
+				"%d optional repo key(s) not mapped on this machine (%s) — normal on a "+
+					"`select: prompt` nest: the spawn checklist lists them annotated, and "+
+					"mounting one means adding it under `repos:` in %s",
+				len(unmappedOptional), strings.Join(unmappedOptional, ", "), config.GlobalPath(denHome))
 		}
 	}
 	if len(nests) > 0 || len(brokenNests) > 0 {

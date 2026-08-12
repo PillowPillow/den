@@ -412,6 +412,92 @@ func TestResolveOnlyEscapesAnUnmappedOptionalKey(t *testing.T) {
 	}
 }
 
+// The dry-run's tolerance: on a `select: prompt` nest, an unmapped optional
+// `key:` is SET ASIDE and reported instead of refusing the whole resolution.
+// That is what lets `den nest show` run on the nests the mode exists for — a
+// generic nest of thirty repos, of which this machine maps four.
+//
+// The two assertions that matter are the pair: the repo is OUT of Repos (a
+// pathless entry there becomes an `sbx create` workspace downstream) and IN
+// UnmappedOptional carrying the fix. Either alone would pass on a resolution
+// that lost the repo silently.
+func TestResolveSetsAsideAnUnmappedOptionalKeyForTheDryRun(t *testing.T) {
+	g, n := deselectableKeyNest()
+	n.Select = SelectPrompt
+
+	r, err := Resolve("/d", g, stacksTest(), n, Options{TolerateUnmappedOptional: true})
+	if err != nil {
+		t.Fatalf("the dry-run of a prompting nest must resolve, not refuse: %v", err)
+	}
+	if got := names(r.Repos); len(got) != 1 || got[0] != "review-mgmt" {
+		t.Errorf("Repos = %v, expected the mapped repo alone", got)
+	}
+	if len(r.UnmappedOptional) != 1 {
+		t.Fatalf("UnmappedOptional = %v, expected the one unmapped key", r.UnmappedOptional)
+	}
+	// The reported sentence is resolveRepoKeys' own — the file to edit and the
+	// clone URL included — because a reader who wants that repo needs the same
+	// fix the refusal would have named.
+	reported := r.UnmappedOptional[0].Remedy()
+	for _, want := range []string{"front-app", config.GlobalPath("/d"), "git@gitlab.corp:front/app.git"} {
+		if !strings.Contains(reported, want) {
+			t.Errorf("the report %q lacks %q", reported, want)
+		}
+	}
+}
+
+// What the tolerance does NOT cover — every case here still refuses, and each
+// one is a way den could have started mounting less than it was asked to.
+//
+// Read together they say: the tolerance is the dry-run's, on a prompting nest,
+// for a repo nobody named. Anything else is the fault it always was.
+func TestResolveToleranceIsScopedToTheDryRunOfAPromptingNest(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		mode string
+		opts Options
+		// mapped replaces the fixture's personal `repos:` when non-nil.
+		mapped map[string]string
+		// key is the repo the refusal must name — the discriminator, without
+		// which each case would also pass on a refusal raised by something else
+		// entirely.
+		key string
+	}{
+		// The regression floor of every spawn: internal/spawn never sets the
+		// option, so the mode alone must change nothing.
+		{"a prompting nest without the option", SelectPrompt, Options{}, nil, "front-app"},
+		// `select: all` means the repo IS meant to be mounted: unmapped is a
+		// fault there whoever is asking.
+		{"a select: all nest with the option", SelectAll,
+			Options{TolerateUnmappedOptional: true}, nil, "front-app"},
+		// A repo named by hand is a repo asked for. Tolerated, the dry-run would
+		// exit 0 on the exact command line the spawn refuses.
+		{"a key the caller named on --only", SelectPrompt,
+			Options{TolerateUnmappedOptional: true, Only: []string{"front-app"}}, nil, "front-app"},
+		// `select: prompt` governs the OPTIONAL repos; a required one is mounted
+		// by every spawn of the nest. Nothing mapped at all here: the optional
+		// key is set aside as it should be, and the REQUIRED one must still stop
+		// the resolution — same nest, the other question.
+		{"a required unmapped key", SelectPrompt,
+			Options{TolerateUnmappedOptional: true}, map[string]string{}, "review-mgmt"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g, n := deselectableKeyNest()
+			n.Select = c.mode
+			if c.mapped != nil {
+				g.Repos = c.mapped
+			}
+			_, err := Resolve("/d", g, stacksTest(), n, c.opts)
+			if err == nil {
+				t.Fatal("expected a refusal: an unmapped key here is a real fault")
+			}
+			if !strings.Contains(err.Error(), c.key) {
+				t.Errorf("the refusal must name %q; got: %v", c.key, err)
+			}
+		})
+	}
+}
+
 // Fail-loud stays: a key that is still SELECTED refuses, and because this one
 // is optional the refusal must hand over the escape rather than leave the
 // teammate who simply does not have that repo to guess it.

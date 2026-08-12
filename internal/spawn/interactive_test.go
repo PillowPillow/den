@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/sbx"
@@ -35,6 +36,12 @@ func prompt(t *testing.T, input string) ([]string, string, error) {
 	return promptWith(t, input, false, nil)
 }
 
+// promptHome is the den home these unit-level checklist tests render under. A
+// path that is NOT the default home on any machine: the annotation under test
+// names <denHome>/config.yaml, and a fixture that happened to match the real
+// home would let a regression to the bare filename pass unnoticed.
+const promptHome = "/fixture/den-home"
+
 // prompts is the nest's `select: prompt` mode, the single parameter
 // promptOptionalRepos takes: false is `-i` (boxes start full, both flags
 // offered), true is a prompting nest (boxes start empty, `--only` alone).
@@ -42,7 +49,7 @@ func promptWith(t *testing.T, input string, prompts bool,
 	mapping map[string]string) ([]string, string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	without, err := promptOptionalRepos(&out, strings.NewReader(input), "api",
+	without, err := promptOptionalRepos(&out, strings.NewReader(input), promptHome, "api",
 		optionalRepos(), prompts, mapping)
 	return without, out.String(), err
 }
@@ -91,6 +98,10 @@ func TestPromptHeaderAlwaysNamesRequiredRepos(t *testing.T) {
 // mapping, whose single judge is resolveRepoKeys — and it would be a mute
 // refusal on the one surface where the user cannot yet see what they asked
 // for.
+//
+// The annotation names the FILE, path included: see the sub-assertion below and
+// unmappedNote for why the bare "config.yaml" it used to print was a remedy
+// nobody could follow under DEN_HOME.
 func TestPromptAnnotatesUnmappedKeys(t *testing.T) {
 	repos := []nest.Repo{
 		{Path: "/dev/backend"},
@@ -98,13 +109,20 @@ func TestPromptAnnotatesUnmappedKeys(t *testing.T) {
 		{Key: "docs", Optional: true},
 	}
 	var out bytes.Buffer
-	if _, err := promptOptionalRepos(&out, strings.NewReader("\n"), "api", repos, true,
+	if _, err := promptOptionalRepos(&out, strings.NewReader("\n"), promptHome, "api", repos, true,
 		map[string]string{"worker": "/dev/worker"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	rendered := out.String()
 	if !strings.Contains(rendered, "docs") || !strings.Contains(rendered, "not mapped") {
 		t.Errorf("an unmapped key must be annotated:\n%s", rendered)
+	}
+	// config.GlobalPath, not filepath.Join here: that function is the sole
+	// definition of where the file lives, and this assertion exists to keep the
+	// message and the reader agreeing on ONE string.
+	if want := config.GlobalPath(promptHome); !strings.Contains(rendered, want) {
+		t.Errorf("the annotation must name %s, the file this den home would map the key in:\n%s",
+			want, rendered)
 	}
 	for _, line := range strings.Split(rendered, "\n") {
 		if strings.Contains(line, "worker") && strings.Contains(line, "not mapped") {
@@ -1384,5 +1402,33 @@ func TestPromptModeRefusesACheckedUnmappedKey(t *testing.T) {
 	}
 	if !createdNothing(f) {
 		t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
+	}
+}
+
+// The checklist's annotation names the file of THE den home this spawn is
+// running under — end to end, through Spawn, over a temporary home that is
+// nobody's default.
+//
+// The unit test above asserts the same string against a fixture path; this one
+// asserts the THREADING, which is what finding 15 actually broke: denHome is a
+// parameter of Spawn, and the annotation printed the bare "config.yaml" because
+// nothing carried it down to unmappedNote. Under DEN_HOME — the mechanism that
+// makes this very suite hermetic — that named a file the reader would not find,
+// while the refusal one keystroke later (the test above) named the real one.
+// Two messages about one file, disagreeing on where it is.
+func TestPromptAnnotationNamesTheRunningDenHomesConfig(t *testing.T) {
+	denHome := denTestPromptingKeys(t)
+
+	_, d := fakeDeps()
+	d.In = strings.NewReader("\n") // confirm as-is: `crm` stays unticked, nothing refuses
+	d.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, d); err != nil {
+		t.Fatalf("declining the unmapped key must spawn: %v", err)
+	}
+	if want := config.GlobalPath(denHome); !strings.Contains(out.String(), want) {
+		t.Errorf("the checklist annotation must name %s, not a bare filename:\n%s", want, out.String())
 	}
 }
