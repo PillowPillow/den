@@ -1031,7 +1031,16 @@ func TestAttachRefusalOnAnUnmappedKeyNamesTheRemedyThatWorks(t *testing.T) {
 			if err == nil {
 				t.Fatal("an unmapped key that den ends up selecting must refuse, live or not")
 			}
-			for _, want := range []string{"already LIVE", "crm", c.want} {
+			// The config path is the RESOLVED one, tied to this sentence rather
+			// than merely present somewhere in the chain: a message spelling
+			// `config.yaml` by hand names a file the reader cannot find under
+			// DEN_HOME, and config.GlobalPath is its sole definition.
+			for _, want := range []string{
+				"already LIVE",
+				"crm",
+				c.want,
+				"in " + filepath.Join(denHome, "config.yaml") + " would not put that repo",
+			} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal must carry %q; got: %v", want, err)
 				}

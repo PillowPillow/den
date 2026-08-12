@@ -2020,7 +2020,10 @@ func recordedWithout(n *nest.Nest, recorded manifest.Manifest) []string {
 //
 // Which flag it names is read off the error, not recomputed: the type carries
 // the nest's mode for its own escape clause, and a second derivation here is a
-// second thing to keep in agreement.
+// second thing to keep in agreement. The config path comes off the error for the
+// same reason and for a stricter one — config.GlobalPath is the SOLE definition
+// of where that file lives (internal/config/paths.go), and a message spelling
+// `config.yaml` by hand names a file the reader cannot find under DEN_HOME.
 func unresolvedOnALiveSandbox(err error, sandboxName string, selectionUnknown bool) error {
 	if !selectionUnknown {
 		return err
@@ -2036,9 +2039,8 @@ func unresolvedOnALiveSandbox(err error, sandboxName string, selectionUnknown bo
 	return fmt.Errorf(
 		"%w — and sandbox %s is already LIVE: it keeps the mounts it was created with, and den "+
 			"could not read the record naming them, so it resolved every repo the nest declares "+
-			"instead. Mapping %q in config.yaml would not put that repo in this sandbox: attach "+
-			"with %s",
-		err, sandboxName, unmapped.Key, escape)
+			"instead. Mapping %q in %s would not put that repo in this sandbox: attach with %s",
+		err, sandboxName, unmapped.Key, unmapped.ConfigPath, escape)
 }
 
 // reportUnrebuiltSelection says why den is about to resolve every repo the nest
