@@ -149,6 +149,15 @@ type Resolved struct {
 	// hole in its mounts. Each entry is resolveRepoKeys' own refusal, unsent: the
 	// reason it would have refused, with the file to edit and the clone URL, so a
 	// listing renders the SAME sentence a spawn would have printed.
+	//
+	// A SEPARATE field rather than a marker on the Repos entries, and this is the
+	// regression it exists to prevent: internal/spawn turns Repos into `sbx
+	// create`'s workspaces, one argument per entry, and these repos have no Path
+	// on this machine. Left in Repos and merely flagged, the first reader that
+	// forgot the flag would hand sbx a blank workspace — it would compile, it
+	// would pass every test that leaves TolerateUnmappedOptional false, and it
+	// would break in the VM, far from here. Out of Repos, there is nothing to
+	// forget.
 	UnmappedOptional []*UnmappedRepoKeyError
 
 	SSHMode string

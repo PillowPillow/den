@@ -443,10 +443,8 @@ func Run(denHome string, d Deps) []Check {
 				// exited 1 on a correctly configured machine, and the real
 				// problems drowned in twenty-six lines about repos nobody wants.
 				//
-				// Collected here, reported as ONE ok line after the loop.
-				// Aggregated rather than one line per key for the reason the
-				// FAILs were wrong in the first place: at thirty repos, twenty-six
-				// diagnostics are the noise, whatever their level.
+				// Collected here, reported as ONE ok line after the loop —
+				// see that call for the two shapes this line is NOT, and why.
 				//
 				// The scope is deliberately narrow, and both halves are load
 				// bearing: `select: all` means the repo IS meant to be mounted,
@@ -479,12 +477,25 @@ func Run(denHome string, d Deps) []Check {
 				add("nest "+n.Name, false, "repo not found: %s (key %q)", path, r.Key)
 			}
 		}
-		// LevelOK, not LevelWarning: this IS the healthy state of a prompting
-		// nest, and a warning would make `den doctor` end on "no failure, but N
-		// warning(s): review the [warn] lines" (internal/cli/doctor.go) for a
-		// machine with nothing to review. The line is printed all the same —
-		// silence would leave a user who mapped a key with a typo staring at a
-		// checklist entry they cannot tick and no diagnostic anywhere.
+		// The shape of this line is the whole fix, so both forms it REJECTS are
+		// named here rather than left to be rediscovered:
+		//
+		//   - NOT one line per key. That is what doctor did (as FAILs), and the
+		//     level was only half of what was wrong with it: this mode exists for
+		//     thirty-repo nests, so twenty-six diagnostics about repos nobody
+		//     asked for drown the real problems whatever mark they carry. One
+		//     line per nest, naming every key, says the same thing in the space
+		//     the reader has.
+		//   - NOT LevelWarning. A warning keeps the exit code at zero, so it
+		//     looks like it would do — but it makes `den doctor` end on "no
+		//     failure, but N warning(s): review the [warn] lines"
+		//     (internal/cli/doctor.go) for a machine with NOTHING to review,
+		//     which contradicts the very claim this line makes. LevelOK: this IS
+		//     the healthy state of a prompting nest.
+		//
+		// Printed all the same, rather than dropped: silence would leave a user
+		// who mapped a key with a typo staring at a checklist entry they cannot
+		// tick, with no diagnostic anywhere.
 		//
 		// Every key is NAMED, not counted: "26 keys unmapped" is unactionable,
 		// and the one name the reader is looking for is the repo they wanted.
