@@ -77,8 +77,10 @@ type Deps struct {
 	// that it, and not the selection logic, is what stays untested.
 	//
 	// Nil means NO terminal, deliberately: an unwired probe must take `-i`'s
-	// clean refusal — which names --only/--without — rather than let the spawn
-	// block on a read nobody will answer.
+	// clean refusal — which names the flags that make the same selection
+	// without a prompt (`--only`, plus `--without` on a nest that has a default
+	// selection to subtract from) — rather than let the spawn block on a read
+	// nobody will answer.
 	IsTTY func() bool
 	// SSHAgent reports the state of the forwarded SSH agent. Injected, and
 	// nil-tolerant: a nil probe (every test that doesn't exercise SSH, plus the

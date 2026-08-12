@@ -1921,3 +1921,77 @@ func TestRmWithoutAReadableRecordKeepsWhatAThirdPartyMayName(t *testing.T) {
 		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
 	}
 }
+
+// blockRecordsDir puts a FILE where the records directory belongs, so
+// os.ReadDir answers ENOTDIR and manifest.List enumerates nothing at all.
+//
+// A file rather than a mode-000 directory: no test here may depend on a
+// permission bit, since a suite running as root would sail straight through
+// one, and this failure needs no privilege to stage.
+func blockRecordsDir(t *testing.T, denHome string) string {
+	t.Helper()
+	dir := manifest.Dir(denHome)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// The guard's OWN failure mode, at the source: not one record is enumerated,
+// readable or broken. Swallowed, that error made holderOf answer "nobody holds
+// this" for every mount, and `den rm` reclaimed everything on the very run
+// where den knew the least. An unenumerable directory says strictly less than
+// one unparseable record, and a single one of those already holds every
+// directory back — so this earns the same verdict.
+func TestMountGuardHoldsBackWhenTheRecordsDirectoryCannotBeEnumerated(t *testing.T) {
+	denHome := t.TempDir()
+	blockRecordsDir(t, denHome)
+
+	holder, unknown := newMountGuard(denHome, "api.feat12").holderOf("/anywhere")
+	if holder != "" {
+		t.Errorf("no record was read, so no sandbox can be named a holder; got %q", holder)
+	}
+	if !unknown {
+		t.Error("a directory den cannot enumerate may hold any mount: every one is unknown")
+	}
+}
+
+// The same failure through the whole command. den keeps the worktree, names the
+// directory it could not enumerate, and still destroys the sandbox (doctrine
+// T13/T16). There is no record to keep here — the same ENOTDIR is why den fell
+// back on the derivation — but what IS on disk under state/ survives untouched:
+// den never deletes what it could not read.
+func TestRmKeepsEveryWorktreeWhenTheRecordsDirectoryCannotBeEnumerated(t *testing.T) {
+	denHome := t.TempDir()
+	_, _, wt := legacyNest(t, denHome)
+	dir := blockRecordsDir(t, denHome)
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	out, _, err := executeCmdWithSbxSeparateStreams(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("den enumerated no record at all, so a live sibling may mount this "+
+			"worktree; it must survive: %v", err)
+	}
+	if !strings.Contains(out, "creation records unreadable: ") || !strings.Contains(out, dir) {
+		t.Errorf("the directory den could not enumerate must be named; got:\n%s", out)
+	}
+	if strings.Contains(out, "delete it by hand") {
+		t.Errorf("state/ is never purged: den must not send the user to delete the directory "+
+			"holding every record it has; got:\n%s", out)
+	}
+	if !strings.Contains(out, "worktree kept: "+wt+" — an unreadable record may name it") {
+		t.Errorf("the kept directory must be named, not counted; got:\n%s", out)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("den never deletes what it could not read: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
+	}
+}

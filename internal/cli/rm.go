@@ -279,11 +279,17 @@ type mountGuard struct {
 	// unreadable holds the records den could not read at all — the unknown
 	// sharers, whose mounts nobody can enumerate.
 	unreadable []manifest.Broken
+	// unenumerable is set when the records DIRECTORY itself could not be
+	// listed: no record was read, readable or broken, so every mount is a
+	// possible sharer's. It is kept apart from unreadable because what den has
+	// to SAY about it differs — see nameUnknownSharers.
+	unenumerable error
 }
 
 // holderOf reports who still holds mount. holder names a sandbox whose record
-// names it. unknown says no readable record does, while at least one record den
-// could not read AT ALL exists and may name anything, this directory included.
+// names it. unknown says no readable record does, while den holds something it
+// could not read that may name anything, this directory included: a record it
+// failed to decode, or the records directory it failed to enumerate at all.
 //
 // The two are ordered, never combined: a named holder is a fact, an unknown
 // sharer is a possibility, and the caller has a different thing to say about
@@ -292,17 +298,28 @@ func (g mountGuard) holderOf(mount string) (holder string, unknown bool) {
 	if h := g.holders[mount]; h != "" {
 		return h, false
 	}
-	return "", len(g.unreadable) > 0
+	return "", len(g.unreadable) > 0 || g.unenumerable != nil
 }
 
-// nameUnknownSharers prints the records den could not read and the directories
-// it left alone because of them. Shared by both reclaim paths so a hold-back
-// reads identically wherever it happened.
+// nameUnknownSharers prints what den could not read — the individual records,
+// or the directory holding them all — and the directories it left alone because
+// of it. Shared by both reclaim paths so a hold-back reads identically wherever
+// it happened.
 //
 // kept is passed rather than accumulated here: cleanFromManifest holds back
 // recorded mounts and cleanWorktreesLegacy derived ones, and only the caller
 // knows which of its directories the guard actually stopped.
 func (g mountGuard) nameUnknownSharers(out io.Writer, kept []string) {
+	if g.unenumerable != nil {
+		// A sentence of its own, not one more line in the loop below: the
+		// wording there tells the user to delete the file by hand once its
+		// sandbox is gone, and that file would be <denHome>/state/sandboxes —
+		// the directory holding every record den has. state/ is never purged.
+		// The path is already inside the error (manifest.List names the
+		// directory it could not read), so the user still learns where to look.
+		fmt.Fprintf(out, "creation records unreadable: %v — den cannot tell which sandbox "+
+			"mounts what, so it keeps the worktrees it was about to reclaim\n", g.unenumerable)
+	}
 	for _, b := range g.unreadable {
 		// The wording `den ls` and `den doctor` already print for this
 		// exact state, on purpose: one dialect for "den left a record
@@ -326,12 +343,6 @@ func (g mountGuard) nameUnknownSharers(out io.Writer, kept []string) {
 // it created that mount or merely mounted it as-is — a coincidence this narrow
 // is not worth trusting either way.
 //
-// A List error is swallowed on purpose, not surfaced: den refuses rather than
-// normalizing in silence everywhere else (spec §2), but `den rm` itself must
-// NEVER refuse or hang over a records directory it merely could not enumerate
-// (doctrine T13/T16) — the guard is simply unavailable for that one run, and
-// reclaim proceeds exactly as it did before the guard existed.
-//
 // The BROKEN half is consulted too, and that is the point of this function: a
 // sandbox whose record den refused to decode is live all the same, and the
 // most common such record is a NEWER den's — refused on `schema` alone, and
@@ -344,7 +355,25 @@ func (g mountGuard) nameUnknownSharers(out io.Writer, kept []string) {
 // An empty Mount is never a key: two records describing no mount must not
 // collide on "" and keep each other's nothing.
 func newMountGuard(home, self string) mountGuard {
-	others, broken, _ := manifest.List(home)
+	others, broken, err := manifest.List(home)
+	if err != nil {
+		// The guard's OWN failure mode, answered like every other file den
+		// cannot account for rather than swallowed. Swallowed, it left holders
+		// and unreadable both empty, holderOf answered "nobody" for every
+		// mount, and `den rm` reclaimed everything — including a live sibling's
+		// workspace — precisely on the run where den knows the LEAST: an
+		// unenumerable directory (a mode-000 state/sandboxes, a state/sandboxes
+		// that is a file, a den home whose mount went away) says strictly less
+		// than one unparseable record, and a single one of those already holds
+		// every directory back. Leaving a directory is recoverable; trashing a
+		// running VM's workspace is not.
+		//
+		// This is not a refusal and never becomes one: the error is not
+		// returned, the sandbox is still destroyed, and the records survive
+		// untouched to be replayed once the directory is readable again
+		// (doctrine T13/T16).
+		return mountGuard{unenumerable: err}
+	}
 
 	// First naming wins, and both lists are sorted (manifest.List), so the
 	// holder announced to the user is stable from one run to the next.

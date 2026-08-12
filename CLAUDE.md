@@ -36,7 +36,12 @@ format; `-w` flattens a branch name into a legal component (`feature/123` → sa
 (`nests/<n>.yaml`) ← flags, resolved by `nest.Resolve` into a `*nest.Resolved` that spawn consumes.
 Decoding is **strict YAML everywhere** (`KnownFields(true)`): an unknown key is a load error, never a
 silence. Spec §12 gives the reason — a silent `egres:` typo empties the allowlist, and the
-fail-closed settle-loop then dies with no visible cause.
+fail-closed settle-loop then dies with no visible cause. Two readers escape the rule, and neither
+loads config: `manifest.LaxMounts` reads `repos[].mount` alone out of a creation record the strict
+decoder already refused (typically a newer den's, refused on `schema`), for its single caller
+`newMountGuard` in `den rm` — there, reading nothing means guessing that no sibling mounts a
+directory, and guessing wrong moves a live VM's workspace to the trash; `agent.ReadMixin` rereads
+the mixin den itself generated under `cache/`.
 
 **Every system access is injected through `cli.Deps`** (`internal/cli/root.go`), and `deps.Sbx` is
 the *single* `sbx.Runner` shared by `ls`, `sh`, `ports` and spawn — structurally there is no second
