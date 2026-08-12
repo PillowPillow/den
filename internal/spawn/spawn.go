@@ -272,6 +272,43 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return err
 	}
 
+	// 0bis. The fourth contradiction, and the one that could not sit with the
+	// other three at step 0: its verdict needs `select:`, which is in the nest
+	// file loaded on the line above. It is still ahead of every side effect —
+	// the property §6 actually depends on — and ahead of the stack resolution
+	// below, so a nest that contradicts itself is refused before den starts
+	// diagnosing anything else.
+	//
+	// `--without` subtracts from a default selection, and a `select: prompt`
+	// nest declares it has none: that is the whole meaning of the mode, and it
+	// is why its checklist starts EMPTY (promptOptionalRepos). Accepted, the flag
+	// silenced the checklist and resolved the MAXIMAL set minus the named repos
+	// — den handing out, in silence, the thirty-repo default the nest exists not
+	// to have. Refusing is the reading a user cannot misinterpret, and the repo
+	// refuses rather than normalizing in silence (spec §2).
+	//
+	// `--only` stays accepted, and is what the message names: it states the set
+	// outright, which is exactly the question the checklist asks — so it is the
+	// scriptable spelling of this mode, the one interactiveWithout's no-terminal
+	// refusal names too (nonInteractiveEquivalents, which takes the mode for this
+	// same reason).
+	//
+	// UNCONDITIONAL, not restricted to the create branch. On an attach the flag
+	// is not meaningless in the same way — with no readable record den resolves
+	// the full declared list, and a subtraction from THAT list does read — but a
+	// refusal that depends on liveness is two spawn sequences to keep true where
+	// §6 describes one, and it would make the same command legal or not depending
+	// on whether a VM happens to be up. What the compound case needs instead is a
+	// remedy that works on a prompting nest: the `nest.Resolve` wrap below names
+	// `--only`, and reportUnrebuiltSelection follows the mode as well.
+	if len(o.Without) > 0 && n.PromptsForRepos() {
+		return fmt.Errorf(
+			"nest %s selects its repos at spawn time (`select: prompt` in %s), so there is no "+
+				"default selection for `--without` to subtract from — name the repos you want "+
+				"with `--only repo,...`, this nest's non-interactive spelling",
+			n.Name, nest.FilePath(nestRoot, bareNest))
+	}
+
 	// Stack origin. `n.Stack` is a REFERENCE — bare inside a source,
 	// optionally prefixed for a local nest, and for a LOCAL nest only,
 	// falling back to the personal `g.Defaults.Stack` when absent — and
@@ -488,6 +525,26 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// exec`, a script and CI, and `-i` + a flag is refused far upstream (step
 	// 0) as the contradiction it is.
 	//
+	// WHICH flag can silence it follows the nest, since step 0bis: `--without` is
+	// refused on a `select: prompt` nest, so on such a nest `--only` is the only
+	// spelling that reaches this line with selectionOpen false. That was verified
+	// here rather than assumed, because the pair it settles is this function's
+	// whole subject — for a prompting nest selectionOpen is now false in exactly
+	// one case, `--only`, and that case needs no rebuild: the user named the set,
+	// and rebuilding one from the record would discard what they typed, which is
+	// the opposite of "a selection flag answers the question outright". The path
+	// that DID need a rebuild and skipped it is gone with the flag that reached
+	// it: `--without` on a prompting nest's attach used to resolve the full
+	// declared list and refuse on the first `key:` unmapped here — the very
+	// refusal the rebuild below exists to prevent, taken by the one input that
+	// walked past it.
+	//
+	// One refusal survives on both branches alike, and it is not this switch's to
+	// close: a REQUIRED key-typed repo this machine does not map. selectRepos
+	// keeps every required repo whatever the flags say, so no selection escapes
+	// it, on an attach as on a create — pre-existing, symmetric, and already
+	// stated on recordedWithout.
+	//
 	// `live == nil` silences both as well, and that guard IS decision 6: a live
 	// sandbox is attached to, its mounts come from its creation and nothing is
 	// reapplied (§6), so a selection collected here could never be mounted.
@@ -537,6 +594,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// (T13/T16). The attach proceeds on the full list, the one report that would
 	// then lie is muted at step 6, and the user is TOLD (the two cases are one
 	// silence otherwise — see reportUnrebuiltSelection).
+	//
+	// It is also read once more, right after nest.Resolve: proceeding on the full
+	// list is what makes that resolution die on an optional `key:` unmapped here,
+	// and the flag carries the ONLY context that tells that refusal apart from
+	// the same refusal on a create — see unresolvedOnALiveSandbox.
 	selectionOpen := (o.Interactive || n.PromptsForRepos()) &&
 		len(o.Without) == 0 && len(o.Only) == 0
 	without := o.Without
@@ -545,7 +607,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	case live != nil && selectionOpen:
 		if recordedErr != nil {
 			selectionUnknown = true
-			reportUnrebuiltSelection(d.Out, sandboxName, recordedErr)
+			reportUnrebuiltSelection(d.Out, sandboxName, recordedErr, n.PromptsForRepos())
 			break
 		}
 		without = recordedWithout(n, recorded)
@@ -573,7 +635,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		Agent: o.Agent, Without: without, Only: o.Only, Repos: o.Repos, Cwd: cwd,
 	})
 	if err != nil {
-		return err
+		return unresolvedOnALiveSandbox(err, sandboxName, selectionUnknown)
 	}
 
 	// 2. All repos must exist before any create (spec §11).
@@ -1919,6 +1981,53 @@ func recordedWithout(n *nest.Nest, recorded manifest.Manifest) []string {
 	return without
 }
 
+// unresolvedOnALiveSandbox recontextualizes nest.Resolve's unmapped-key refusal
+// when it lands on the ATTACH of a sandbox whose selection den could not rebuild.
+//
+// The refusal itself is correct and stays — den never drops a repo on its own
+// (spec §2) — but its remedy is the create branch's. It sends the user to map
+// the key in config.yaml, which on a running sandbox changes nothing: mounts
+// come from the creation and nothing is reapplied (§6), so the repo would still
+// not be in the VM. The user is left thinking den refuses over a missing
+// checkout, when what actually happened is that den could not read the record
+// that already knew this repo was declined.
+//
+// The tolerant reading — drop the unmapped optional key and attach — was ruled
+// out: den refuses rather than normalizing in silence, and a spawn that quietly
+// mounts one repo fewer than the command says is the state §2 exists to prevent.
+//
+// selectionUnknown is the whole gate, and it implies a live sandbox: it is set
+// in one place, inside `live != nil && selectionOpen`. Passing it rather than
+// re-deriving liveness keeps the two readings the same fact.
+//
+// OPTIONAL keys only. A required one has no escape at all — selectRepos keeps
+// required repos whatever the flags say — so the inner message deliberately
+// offers none (nest.UnmappedRepoKeyError.withoutClause), and wrapping it with a
+// remedy would be worse than the bare error, because a remedy is followed.
+//
+// Which flag it names is read off the error, not recomputed: the type carries
+// the nest's mode for its own escape clause, and a second derivation here is a
+// second thing to keep in agreement.
+func unresolvedOnALiveSandbox(err error, sandboxName string, selectionUnknown bool) error {
+	if !selectionUnknown {
+		return err
+	}
+	var unmapped *nest.UnmappedRepoKeyError
+	if !errors.As(err, &unmapped) || !unmapped.Optional {
+		return err
+	}
+	escape := fmt.Sprintf("`--without %s`", unmapped.Key)
+	if unmapped.Prompts {
+		escape = "`--only repo,...`, naming the repos this sandbox does carry"
+	}
+	return fmt.Errorf(
+		"%w — and sandbox %s is already LIVE: it keeps the mounts it was created with, and den "+
+			"could not read the record naming them, so it resolved every repo the nest declares "+
+			"instead. Mapping %q in config.yaml would not put that repo in this sandbox: attach "+
+			"with %s",
+		err, sandboxName, unmapped.Key, escape)
+}
+
 // reportUnrebuiltSelection says why den is about to resolve every repo the nest
 // declares on a live sandbox, instead of the selection that sandbox was created
 // with.
@@ -1927,9 +2036,14 @@ func recordedWithout(n *nest.Nest, recorded manifest.Manifest) []string {
 // was doing neither: it proceeded, quietly, on a list nobody chose. What makes
 // the silence expensive is the compound case: no readable record PLUS an
 // optional `key:` this machine does not map, and nest.Resolve then refuses the
-// attach of a LIVE VM over a repo the user had declined. Its remedy
-// (`--without <key>`) does work, but nothing said den had failed to read the
-// record that would have answered the question by itself.
+// attach of a LIVE VM over a repo the user had declined. That refusal now says
+// so itself (unresolvedOnALiveSandbox), which is the other half of this line:
+// this one is printed before den even tries, so the user reads why den is
+// resolving the wrong list at the moment it starts, not only if it fails.
+//
+// The flags it offers follow the nest, for the reason step 0bis states: on a
+// `select: prompt` nest `--without` is refused, so naming it here would offer a
+// command den rejects on the one nest this whole path exists for.
 //
 // TWO cases, deliberately not one message. An absent record is ORDINARY — a
 // sandbox older than records, or one created outside den — and a `warning:` on
@@ -1940,12 +2054,15 @@ func recordedWithout(n *nest.Nest, recorded manifest.Manifest) []string {
 //
 // Never an error, on either side: den does not refuse over a record it could not
 // read, and never deletes one — it may belong to a newer den.
-func reportUnrebuiltSelection(out io.Writer, sandboxName string, readErr error) {
+func reportUnrebuiltSelection(out io.Writer, sandboxName string, readErr error, prompts bool) {
 	// The way THROUGH, not the way to a clean record: `den rm` would write one,
 	// but sending someone to destroy a running VM to silence a diagnostic is a
 	// remedy worse than the line it removes.
-	const remedy = "den resolves every repo the nest declares instead — " +
-		"`--only`/`--without` pick a set explicitly"
+	flags := "`--only`/`--without` pick a set explicitly"
+	if prompts {
+		flags = "`--only` picks a set explicitly"
+	}
+	remedy := "den resolves every repo the nest declares instead — " + flags
 	if errors.Is(readErr, os.ErrNotExist) {
 		fmt.Fprintf(out,
 			"sandbox %s has no creation record (an older den, or a sandbox created outside den), "+

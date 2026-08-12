@@ -31,15 +31,18 @@ func optionalRepos() []nest.Repo {
 
 func prompt(t *testing.T, input string) ([]string, string, error) {
 	t.Helper()
-	return promptWith(t, input, true, nil)
+	return promptWith(t, input, false, nil)
 }
 
-func promptWith(t *testing.T, input string, startChecked bool,
+// prompts is the nest's `select: prompt` mode, the single parameter
+// promptOptionalRepos takes: false is `-i` (boxes start full, both flags
+// offered), true is a prompting nest (boxes start empty, `--only` alone).
+func promptWith(t *testing.T, input string, prompts bool,
 	mapping map[string]string) ([]string, string, error) {
 	t.Helper()
 	var out bytes.Buffer
 	without, err := promptOptionalRepos(&out, strings.NewReader(input), "api",
-		optionalRepos(), startChecked, mapping)
+		optionalRepos(), prompts, mapping)
 	return without, out.String(), err
 }
 
@@ -48,15 +51,15 @@ func promptWith(t *testing.T, input string, startChecked bool,
 // the two answer different questions, and both readings live in this one test.
 func TestPromptStartingStateFollowsTheMode(t *testing.T) {
 	for _, c := range []struct {
-		name         string
-		startChecked bool
-		want         []string
+		name    string
+		prompts bool
+		want    []string
 	}{
-		{"-i starts full", true, nil},
-		{"select: prompt starts empty", false, []string{"worker", "docs"}},
+		{"-i starts full", false, nil},
+		{"select: prompt starts empty", true, []string{"worker", "docs"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			without, _, err := promptWith(t, "\n", c.startChecked, nil)
+			without, _, err := promptWith(t, "\n", c.prompts, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -71,13 +74,13 @@ func TestPromptStartingStateFollowsTheMode(t *testing.T) {
 // modes: a select: prompt nest may declare required repos, and "none selected"
 // alone would then be a lie.
 func TestPromptHeaderAlwaysNamesRequiredRepos(t *testing.T) {
-	for _, startChecked := range []bool{true, false} {
-		_, out, err := promptWith(t, "\n", startChecked, nil)
+	for _, prompts := range []bool{true, false} {
+		_, out, err := promptWith(t, "\n", prompts, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !strings.Contains(out, "required repos are always mounted") {
-			t.Errorf("startChecked=%v: header lost its required-repos clause:\n%s", startChecked, out)
+			t.Errorf("prompts=%v: header lost its required-repos clause:\n%s", prompts, out)
 		}
 	}
 }
@@ -94,7 +97,7 @@ func TestPromptAnnotatesUnmappedKeys(t *testing.T) {
 		{Key: "docs", Optional: true},
 	}
 	var out bytes.Buffer
-	if _, err := promptOptionalRepos(&out, strings.NewReader("\n"), "api", repos, false,
+	if _, err := promptOptionalRepos(&out, strings.NewReader("\n"), "api", repos, true,
 		map[string]string{"worker": "/dev/worker"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -421,6 +424,51 @@ func TestPromptModeRefusesWithoutATerminal(t *testing.T) {
 	}
 	if f.HasCalled("create") {
 		t.Errorf("refused, yet something was created: %v", f.Calls)
+	}
+}
+
+// Every message that offers a way OUT of the checklist must name a command that
+// works on the nest it is printed for. `--without` is refused on a `select:
+// prompt` nest — there is no default selection to subtract from — so naming it
+// there sends the user to den's own refusal, in the one kind of sentence that is
+// followed rather than read.
+//
+// Both modes are asserted in one test because what must hold is the DIFFERENCE:
+// on an ordinary nest both flags work and both are still named, and a
+// "simplification" that drops the mode would silence one half or the other with
+// every existing test still passing.
+func TestTheOfferedFlagsFollowTheNestMode(t *testing.T) {
+	// The checklist footer, read off the rendered output — the message a user
+	// with a terminal actually meets.
+	_, prompting, err := promptWith(t, "\n", true, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(prompting, "--only") {
+		t.Errorf("a prompting checklist must name the flag that works on it:\n%s", prompting)
+	}
+	if strings.Contains(prompting, "--without") {
+		t.Errorf("a prompting checklist must not offer a flag den refuses on that nest:\n%s", prompting)
+	}
+	_, interactive, err := promptWith(t, "\n", false, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(interactive, "--only") || !strings.Contains(interactive, "--without") {
+		t.Errorf("-i keeps both equivalents: they both work on an ordinary nest:\n%s", interactive)
+	}
+
+	// The no-terminal refusal, which is the message a pipe or a CI job meets
+	// INSTEAD of that footer — same rule, other surface.
+	denHome := denTestPrompting(t)
+	_, d := fakeDeps()
+	d.IsTTY = func() bool { return false }
+	err = Spawn(context.Background(), denHome, Options{Nest: "generic"}, d)
+	if err == nil {
+		t.Fatal("a prompting nest with no terminal and no --only must be refused")
+	}
+	if strings.Contains(err.Error(), "--without") {
+		t.Errorf("the refusal must not name a flag den refuses on this nest: %v", err)
 	}
 }
 
@@ -760,9 +808,14 @@ func TestPromptModeAttachWithoutARecordStillAttaches(t *testing.T) {
 		t.Errorf("the attach message keeps its remedy with no record:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "no creation record") ||
-		!strings.Contains(out.String(), "--without") {
+		!strings.Contains(out.String(), "--only") {
 		t.Errorf("den must say it could not tell which repos this sandbox holds, and how to say so:\n%s",
 			out.String())
+	}
+	// The nest is a prompting one, where `--without` is refused: the line that
+	// offers a way through must not offer that one.
+	if strings.Contains(out.String(), "--without") {
+		t.Errorf("the way through must be a command that works on this nest:\n%s", out.String())
 	}
 	for _, line := range strings.Split(out.String(), "\n") {
 		if strings.Contains(line, "no creation record") && strings.Contains(line, "warning:") {
@@ -849,11 +902,205 @@ func TestPromptModeAttachNamesARecordItCouldNotRead(t *testing.T) {
 	if !strings.Contains(rendered, "warning:") || !strings.Contains(rendered, path) {
 		t.Errorf("den must name the record it could not read:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "--without") {
+	if !strings.Contains(rendered, "--only") {
 		t.Errorf("the message must name the way through:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "--without") {
+		t.Errorf("the way through must be a command that works on this prompting nest:\n%s", rendered)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("den deleted a record it could not read — it may belong to a newer den: %v", err)
+	}
+}
+
+// `--without` subtracts from a default selection, and a `select: prompt` nest
+// declares it has none — accepted, the flag silenced the checklist and mounted
+// the maximal set minus what was named, which is the thirty-repo default the
+// mode exists not to have. The refusal is the reading a user cannot misread.
+//
+// The ordinary nest is in the same test: `--without` still works there, and a
+// refusal that fired for everyone would be caught here rather than three
+// packages away.
+//
+// The refusal precedes even the `sbx ls` listing — no call at all, not merely no
+// create — because its verdict comes from the nest file and nothing else. That
+// is the placement assertion: it sits at step 0bis, right after the nest is
+// loaded, since step 0 itself runs before there is a nest to ask.
+func TestSpawnRefusesWithoutOnAPromptingNest(t *testing.T) {
+	promptingHome := denTestPrompting(t)
+	f, d := fakeDeps()
+
+	err := Spawn(context.Background(), promptingHome,
+		Options{Nest: "generic", Without: []string{"docs"}}, d)
+	if err == nil {
+		t.Fatal("--without on a nest with no default selection must be refused")
+	}
+	for _, want := range []string{
+		"generic",
+		"--without",
+		"`--only repo,...`",
+		filepath.Join(promptingHome, "nests", "generic.yaml"),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must carry %q; got: %v", want, err)
+		}
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("the refusal is decided on the nest file alone: no sbx call may precede it: %v", f.Calls)
+	}
+
+	// The floor: on a nest with a default selection, subtracting from it is
+	// exactly what --without is for, and it still spawns.
+	ordinaryHome, _ := denTestOptional(t)
+	ordinary, od := fakeDeps()
+	if err := Spawn(context.Background(), ordinaryHome,
+		Options{Nest: "api", Without: []string{"docs"}}, od); err != nil {
+		t.Fatalf("--without on an ordinary nest must keep working: %v", err)
+	}
+	if !ordinary.HasCalled("create") {
+		t.Errorf("nothing was created; calls: %v", ordinary.Calls)
+	}
+}
+
+// The compound failure of the attach branch, and the remedy it must name.
+//
+// A live sandbox, a record den could not read, and an optional `key:` this
+// machine does not map: den resolves every repo the nest declares, and
+// nest.Resolve refuses over a repo the user had declined — on a VM that is
+// running. The refusal stays (den never drops a repo on its own), but its
+// create-branch remedy does not apply here: mapping the key in config.yaml would
+// not put the repo in a sandbox whose mounts are frozen at its creation.
+//
+// The two entry points of the rebuild are both exercised, because they need
+// DIFFERENT remedies and that is the whole point of naming one: `-i` on an
+// ordinary nest can subtract the key, a prompting nest cannot (den refuses
+// `--without` on it) and must name `--only` instead.
+func TestAttachRefusalOnAnUnmappedKeyNamesTheRemedyThatWorks(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		denHome     func(t *testing.T) string
+		o           Options
+		want, avoid string
+	}{
+		{
+			name:    "-i on an ordinary nest",
+			denHome: func(t *testing.T) string { return denTestKeyNest(t, "") },
+			o:       Options{Nest: "crm", Interactive: true},
+			want:    "`--without crm`",
+			avoid:   "--only",
+		},
+		{
+			name:    "a prompting nest",
+			denHome: denTestPromptingKeys,
+			o:       Options{Nest: "crm"},
+			want:    "`--only repo,...`",
+			avoid:   "--without crm",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			denHome := c.denHome(t)
+			f, d := fakeDeps()
+			d.In = failingReader{t}
+			d.IsTTY = func() bool { return true }
+			// Live, and with no record at all: the sandbox den cannot ask.
+			f.Responses["ls --json"] = sbx.Response{
+				Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
+			}
+
+			err := Spawn(context.Background(), denHome, c.o, d)
+			if err == nil {
+				t.Fatal("an unmapped key that den ends up selecting must refuse, live or not")
+			}
+			for _, want := range []string{"already LIVE", "crm", c.want} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal must carry %q; got: %v", want, err)
+				}
+			}
+			if strings.Contains(err.Error(), c.avoid) {
+				t.Errorf("the remedy must be a command that works on this nest; got: %v", err)
+			}
+			if f.HasCalled("create") {
+				t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
+			}
+		})
+	}
+}
+
+// The remedy the refusal above names, taken: `--only` gets a prompting nest
+// attached where the bare form refuses, and it STANDS as the user's set — den
+// does not rebuild one from a record it could not read, and there is nothing to
+// rebuild it from anyway.
+//
+// This is also finding 9's verification, in executable form: `--only` is the one
+// input that now reaches the attach branch of a prompting nest with the
+// selection question shut (`--without` is refused at step 0bis), and it needs no
+// rebuild because the user named the set outright.
+func TestOnlyAttachesAPromptingNestWithNoRecord(t *testing.T) {
+	denHome := denTestPromptingKeys(t)
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "crm", Only: []string{"api"}}, d); err != nil {
+		t.Fatalf("--only must attach where the unmapped key it leaves out would refuse: %v", err)
+	}
+	if f.HasCalled("create") {
+		t.Errorf("the sandbox is live: it must be attached, not recreated; calls: %v", f.Calls)
+	}
+}
+
+// The other half of "--only stands": with a record den CAN read, the flag still
+// wins over it. A selection flag answers the question outright — that is what
+// silences the checklist in the first place — so rebuilding a selection from the
+// record here would discard what the user typed, on the branch where they typed
+// it most deliberately.
+//
+// Read off the output, because the mounts themselves cannot move on a live
+// sandbox: asking for a repo the VM does not carry is exactly what
+// reportUnmountedRepos is for, and its line firing for `worker` is the proof den
+// resolved the user's set and not the record's.
+func TestOnlyStandsOverTheRecordOnAPromptingAttach(t *testing.T) {
+	denHome := denTestPrompting(t)
+
+	_, first := fakeDeps()
+	first.In = strings.NewReader("1\n\n") // tick api alone
+	first.IsTTY = func() bool { return true }
+	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, first); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+	recorded, err := manifest.Read(denHome, "generic")
+	if err != nil {
+		t.Fatalf("reading the record the first spawn wrote: %v", err)
+	}
+	if len(recorded.Repos) != 1 || recorded.Repos[0].Name != "api" {
+		t.Fatalf("the fixture must record exactly api; got %+v", recorded.Repos)
+	}
+
+	f, d := fakeDeps()
+	d.In = failingReader{t}
+	d.IsTTY = func() bool { return true }
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"generic","status":"running","workspaces":["` +
+			recorded.Repos[0].Mount + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "generic", Only: []string{"api", "worker"}}, d); err != nil {
+		t.Fatalf("attaching spawn: %v", err)
+	}
+	if !strings.Contains(out.String(), "worker") || !strings.Contains(out.String(), "is not mounted") {
+		t.Errorf("den must resolve the SET THE USER NAMED and report what the VM lacks:\n%s", out.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.Contains(line, "docs") && strings.Contains(line, "is not mounted") {
+			t.Errorf("a repo outside --only must not be resolved at all: %q", line)
+		}
 	}
 }
 
@@ -975,10 +1222,15 @@ func TestPromptModeComposesWithAnInstanceLabel(t *testing.T) {
 // covered, the refusal half was not.
 //
 // A CHECKED unmapped key must refuse, and the refusal must carry all three
-// things resolveRepoKeys puts in it — the key, the file to edit, and the
-// `--without` escape it offers because the repo is optional. den never drops a
-// repo on its own (spec §2), so this is the one place the checklist's permissive
-// annotation gets settled.
+// things resolveRepoKeys puts in it — the key, the file to edit, and the escape
+// it offers because the repo is optional. den never drops a repo on its own
+// (spec §2), so this is the one place the checklist's permissive annotation gets
+// settled.
+//
+// The escape is `--only` HERE and `--without <key>` on an ordinary nest
+// (TestUnmappedKeyOffersTheEscapeThatWorksOnThisNest holds the pair): den
+// refuses `--without` on a prompting nest, so offering it in this very refusal
+// would answer a refusal with a command that is itself refused.
 func TestPromptModeRefusesACheckedUnmappedKey(t *testing.T) {
 	denHome := denTestPromptingKeys(t)
 
@@ -993,11 +1245,14 @@ func TestPromptModeRefusesACheckedUnmappedKey(t *testing.T) {
 	for _, want := range []string{
 		`repo key "crm" is not mapped on this machine`,
 		filepath.Join(denHome, "config.yaml"),
-		"--without crm",
+		"--only",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal must carry %q; got: %v", want, err)
 		}
+	}
+	if strings.Contains(err.Error(), "--without crm") {
+		t.Errorf("the escape must not name a flag den refuses on this nest: %v", err)
 	}
 	if !createdNothing(f) {
 		t.Errorf("the refusal must create nothing; calls: %v", f.Calls)

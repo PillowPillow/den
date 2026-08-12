@@ -539,8 +539,9 @@ a *required* one is never offered the escape, since `--without` refuses required
   optional repo unless `--without`/`--only`/`-i` says otherwise.
 - `prompt` declares a nest with **no default selection**: the repos are chosen at spawn time. With a
   terminal, the checklist opens without needing `-i`, and starts empty; without one, den refuses and
-  names `--only`/`--without`, which make the same selection from a script or CI. An unknown
-  `select:` value is refused, naming both modes.
+  names `--only`, which states the set outright from a script or CI. `--without` is **refused** on
+  such a nest, for the same reason the checklist starts empty: there is no default selection to
+  subtract from. An unknown `select:` value is refused, naming both modes.
 
 Local nests can use `select: prompt` too — it is one mechanism, not a sources-only one — and it is
 what makes a thirty-repo generic nest usable without cloning thirty repositories: a key that is not

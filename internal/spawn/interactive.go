@@ -59,7 +59,22 @@ func LooksInteractive() bool {
 // nonInteractiveEquivalents is repeated in every refusal of `-i` on purpose: a
 // user who cannot use the checklist needs the way that works, in the same
 // breath, not a pointer to `--help`.
-const nonInteractiveEquivalents = "`--only repo,...` and `--without repo,...` make the same selection without a prompt"
+//
+// It became a function of the MODE the day `--without` stopped working on a
+// `select: prompt` nest (Spawn, step 0bis: such a nest declares no default
+// selection, so there is nothing for `--without` to subtract from). A constant
+// naming both flags would then name a refused command in the very message whose
+// job is to name one that works — the worst place for a stale sentence, since a
+// remedy is followed.
+//
+// `--only` is what both modes keep, and on a prompting nest it is the exact
+// spelling of what the checklist asks: the set, stated outright.
+func nonInteractiveEquivalents(prompts bool) string {
+	if prompts {
+		return "`--only repo,...` makes the same selection without a prompt"
+	}
+	return "`--only repo,...` and `--without repo,...` make the same selection without a prompt"
+}
 
 // interactiveWithout runs the `-i` checklist and returns its answer AS A
 // `--without` LIST.
@@ -90,11 +105,11 @@ func interactiveWithout(d Deps, n *nest.Nest, mapping map[string]string) ([]stri
 			return nil, fmt.Errorf(
 				"nest %s selects its repos at spawn time and there is no terminal on den's input — "+
 					"the checklist has nobody to ask, and reading anyway would block a pipe or a CI "+
-					"job forever; %s", n.Name, nonInteractiveEquivalents)
+					"job forever; %s", n.Name, nonInteractiveEquivalents(true))
 		}
 		return nil, fmt.Errorf(
 			"-i: no terminal on den's input — the checklist has nobody to ask, and reading anyway would "+
-				"block a pipe or a CI job forever; %s", nonInteractiveEquivalents)
+				"block a pipe or a CI job forever; %s", nonInteractiveEquivalents(false))
 	}
 	in := d.In
 	if in == nil {
@@ -103,7 +118,7 @@ func interactiveWithout(d Deps, n *nest.Nest, mapping map[string]string) ([]stri
 		// mid-sequence.
 		in = os.Stdin
 	}
-	return promptOptionalRepos(d.Out, in, n.Name, n.Repos, !n.PromptsForRepos(), mapping)
+	return promptOptionalRepos(d.Out, in, n.Name, n.Repos, n.PromptsForRepos(), mapping)
 }
 
 // selectionFlagsInPlay names the repo-selection flag `-i` collides with, or ""
@@ -133,13 +148,24 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // the toggles until the user confirms. It returns the short names of the repos
 // left unchecked — a `--without` list.
 //
-// startChecked is the initial state of every box, and it is NOT cosmetic. `-i`
-// starts full, because confirming an -i checklist without touching it must
-// produce exactly what `den spawn` alone produces
-// (TestInteractiveProducesTheSameArgvAsTheEquivalentWithout). A `select:
-// prompt` nest starts EMPTY, because it has no default selection to propose by
+// prompts is the nest's MODE — `select: prompt` — and it is the one thing this
+// function needs to know about it, because both of the things it decides follow
+// from it and neither may disagree with the other.
+//
+// It decides the initial state of every box, which is NOT cosmetic. `-i` starts
+// full, because confirming an -i checklist without touching it must produce
+// exactly what `den spawn` alone produces
+// (TestInteractiveProducesTheSameArgvAsTheEquivalentWithout). A `select: prompt`
+// nest starts EMPTY, because it has no default selection to propose by
 // definition — and thirty ticked boxes would turn an empty line into a
 // thirty-repo mount.
+//
+// It also decides which flags the footer names, and that is the same fact read
+// from the other end: a nest with no default selection is exactly the nest
+// `--without` is refused on. Passed as ONE parameter rather than as a
+// `startChecked` plus an equivalents string, because two parameters carrying one
+// fact are two things to keep in agreement — the drift the selectionOpen comment
+// in spawn.go records having already paid for once.
 //
 // mapping is the personal `repos:` of config.yaml, used to ANNOTATE the keys
 // it does not carry. Annotation only: ticking an unmapped key stays possible,
@@ -163,7 +189,9 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // lines of stdlib. A TUI library would buy cursor movement and colours for the
 // price of the one property the project advertises.
 func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []nest.Repo,
-	startChecked bool, mapping map[string]string) ([]string, error) {
+	prompts bool, mapping map[string]string) ([]string, error) {
+	startChecked := !prompts
+	equivalents := nonInteractiveEquivalents(prompts)
 	optional := make([]nest.Repo, 0, len(repos))
 	for _, r := range repos {
 		if r.Optional {
@@ -193,7 +221,7 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 			fmt.Fprintf(out, "  %d [%s] %s%s\n", i+1, box, r.Name(), unmappedNote(r, mapping))
 		}
 		fmt.Fprintf(out, "toggle by number (space-separated), empty line to confirm — %s\n> ",
-			nonInteractiveEquivalents)
+			equivalents)
 
 		if !s.Scan() {
 			if err := s.Err(); err != nil {
@@ -204,7 +232,7 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 			// microVM with a set of repos nobody chose.
 			return nil, fmt.Errorf(
 				"-i: input ended before the selection was confirmed (a pipe, a closed terminal) — "+
-					"nothing was spawned; %s", nonInteractiveEquivalents)
+					"nothing was spawned; %s", equivalents)
 		}
 		line := strings.TrimSpace(s.Text())
 		if line == "" {

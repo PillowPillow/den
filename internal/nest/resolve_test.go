@@ -445,6 +445,40 @@ func TestResolveUnmappedRequiredKeyDoesNotOfferWithout(t *testing.T) {
 	}
 }
 
+// The escape follows the nest's MODE, and the pair is one test because what
+// must hold is the difference: `--without` on an ordinary nest, `--only` on a
+// `select: prompt` one, where internal/spawn refuses `--without` outright.
+//
+// A refusal answered with a command that is itself refused is worse than a
+// refusal naming nothing, because a remedy is followed. The type carries the
+// mode (UnmappedRepoKeyError.Prompts) rather than the caller patching the text,
+// so the sentence has one author.
+func TestResolveUnmappedKeyOffersTheEscapeThatWorksOnThisNest(t *testing.T) {
+	for _, c := range []struct {
+		mode        string
+		selectMode  string
+		want, avoid string
+	}{
+		{"select: all", SelectAll, "--without front-app", "--only"},
+		{"select: prompt", SelectPrompt, "--only", "--without front-app"},
+	} {
+		t.Run(c.mode, func(t *testing.T) {
+			g, n := deselectableKeyNest()
+			n.Select = c.selectMode
+			_, err := Resolve("/d", g, stacksTest(), n, Options{})
+			if err == nil {
+				t.Fatal("expected a refusal: front-app is selected and unmapped")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error %q must offer %q", err, c.want)
+			}
+			if strings.Contains(err.Error(), c.avoid) {
+				t.Errorf("error %q offers %q, which does not work on this nest", err, c.avoid)
+			}
+		})
+	}
+}
+
 func TestResolvePutsCommandLineReposFirst(t *testing.T) {
 	// Workspaces[0] decides where the attached shell starts
 	// (sbx.Sandbox.Workdir). "I am mounting X on the fly" means "I have come to
