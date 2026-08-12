@@ -3868,6 +3868,15 @@ func TestAttachSaysTheWorktreeFlagIsNotApplied(t *testing.T) {
 		t.Errorf("a `-w` that matches the record is the ordinary re-attach, not a dropped flag;\n%s",
 			agreeLog.String())
 	}
+	// The same spawn is a PLAIN attach in every other respect — no `-i`, an
+	// ordinary nest — so the whole paragraph must be absent, remedy included. It
+	// is the direct guard on widening the explanation past `select: prompt`: an
+	// explanation printed on every attach stops being read, which is what the
+	// three conditions exist for.
+	if strings.Contains(agreeLog.String(), "--as") {
+		t.Errorf("a plain attach explains nothing: the paragraph fires only on a dropped request;\n%s",
+			agreeLog.String())
+	}
 }
 
 // The refusal step 2bis inherits — "`-w` propagates a worktree to every repo of
