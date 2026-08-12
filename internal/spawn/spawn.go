@@ -205,21 +205,10 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		d.Err = io.Discard
 	}
 
-	// 0. A contradiction on the command line, refused before anything is read:
-	// `-i` and `--only`/`--without` are two answers to the same question.
-	//
-	// Refusing is the only one of the three possible readings a user cannot
-	// misinterpret — taking the flags as the checklist's initial state, or
-	// letting them win and ignoring `-i`, both leave someone convinced they
-	// selected something they did not. The repo already refuses rather than
-	// normalizing in silence (spec §2).
-	if o.Interactive {
-		if conflicting := selectionFlagsInPlay(o); conflicting != "" {
-			return fmt.Errorf(
-				"-i and %s both select repos, and they contradict each other — drop one: "+
-					"%s is the non-interactive form of the checklist", conflicting, conflicting)
-		}
-	}
+	// 0. The first contradiction, `-i` against `--only`/`--without`, is NOT here:
+	// it moved to step 0bis, below the nest load, because its message names the
+	// flag it tells the user to keep and that flag depends on the nest. The two
+	// that follow depend on the command line alone and stay.
 
 	// The second contradiction, refused in the same place and for the same
 	// reason as the first: --detach says "do not enter the VM", a command says
@@ -272,12 +261,12 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return err
 	}
 
-	// 0bis. The fourth contradiction, and the one that could not sit with the
-	// other three at step 0: its verdict needs `select:`, which is in the nest
-	// file loaded on the line above. It is still ahead of every side effect —
-	// the property §6 actually depends on — and ahead of the stack resolution
-	// below, so a nest that contradicts itself is refused before den starts
-	// diagnosing anything else.
+	// 0bis. The command-line contradictions whose verdict or whose MESSAGE needs
+	// the nest — `select:` is in the file loaded on the line above, and step 0
+	// runs before there is a nest to ask. Still ahead of every side effect (the
+	// property §6 actually depends on) and ahead of the stack resolution below,
+	// so a command that contradicts itself is refused before den diagnoses
+	// anything else.
 	//
 	// `--without` subtracts from a default selection, and a `select: prompt`
 	// nest declares it has none: that is the whole meaning of the mode, and it
@@ -307,6 +296,30 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				"default selection for `--without` to subtract from — name the repos you want "+
 				"with `--only repo,...`, this nest's non-interactive spelling",
 			n.Name, nest.FilePath(nestRoot, bareNest))
+	}
+
+	// `-i` and `--only`/`--without` are two answers to the same question.
+	// Refusing is the only one of the three possible readings a user cannot
+	// misinterpret — taking the flags as the checklist's initial state, or
+	// letting them win and ignoring `-i`, both leave someone convinced they
+	// selected something they did not. The repo already refuses rather than
+	// normalizing in silence (spec §2).
+	//
+	// SECOND, deliberately. On a prompting nest `--without` is not a valid input
+	// at all, so its contradiction with `-i` is not the first thing wrong with
+	// that command line: refused here, the user would be told to keep the flag
+	// den itself rejects, which is this increment's recurring defect — a remedy
+	// naming a command that fails. The refusal above fires instead, and its
+	// remedy (`--only`) is true whether or not `-i` was typed.
+	//
+	// It also had to leave step 0 for that ordering to exist: the verdict is
+	// still pure command line, but the message is not.
+	if o.Interactive {
+		if conflicting := selectionFlagsInPlay(o); conflicting != "" {
+			return fmt.Errorf(
+				"-i and %s both select repos, and they contradict each other — drop one: "+
+					"%s is the non-interactive form of the checklist", conflicting, conflicting)
+		}
 	}
 
 	// Stack origin. `n.Stack` is a REFERENCE — bare inside a source,

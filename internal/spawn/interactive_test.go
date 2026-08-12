@@ -949,6 +949,26 @@ func TestSpawnRefusesWithoutOnAPromptingNest(t *testing.T) {
 		t.Errorf("the refusal is decided on the nest file alone: no sbx call may precede it: %v", f.Calls)
 	}
 
+	// `-i --without` on the same nest: the refusal that wins must be THIS one,
+	// not the `-i` contradiction — that one tells the user to keep `--without`,
+	// which this nest rejects. Two correct-looking refusals, and only one of them
+	// hands over a command that works.
+	pair, pd := fakeDeps()
+	pairErr := Spawn(context.Background(), promptingHome,
+		Options{Nest: "generic", Interactive: true, Without: []string{"docs"}}, pd)
+	if pairErr == nil {
+		t.Fatal("-i with --without on a prompting nest must be refused")
+	}
+	if !strings.Contains(pairErr.Error(), "`--only repo,...`") {
+		t.Errorf("the refusal must hand over the flag that works on this nest: %v", pairErr)
+	}
+	if strings.Contains(pairErr.Error(), "--without is the non-interactive form") {
+		t.Errorf("the refusal must not tell the user to keep a flag den rejects here: %v", pairErr)
+	}
+	if len(pair.Calls) != 0 {
+		t.Errorf("no sbx call may precede the refusal: %v", pair.Calls)
+	}
+
 	// The floor: on a nest with a default selection, subtracting from it is
 	// exactly what --without is for, and it still spawns.
 	ordinaryHome, _ := denTestOptional(t)
