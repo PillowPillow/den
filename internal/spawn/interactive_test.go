@@ -3,6 +3,7 @@ package spawn
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -984,17 +985,24 @@ func TestSpawnRefusesWithoutOnAPromptingNest(t *testing.T) {
 
 // The compound failure of the attach branch, and the remedy it must name.
 //
-// A live sandbox, a record den could not read, and an optional `key:` this
-// machine does not map: den resolves every repo the nest declares, and
-// nest.Resolve refuses over a repo the user had declined — on a VM that is
-// running. The refusal stays (den never drops a repo on its own), but its
-// create-branch remedy does not apply here: mapping the key in config.yaml would
-// not put the repo in a sandbox whose mounts are frozen at its creation.
+// A live sandbox, no record den can read, and an optional `key:` this machine
+// does not map: den resolves every repo the nest declares, and nest.Resolve
+// refuses over a repo the user had declined — on a VM that is running. The
+// refusal stays (den never drops a repo on its own), but its create-branch
+// remedy does not apply here: mapping the key would not put the repo in a
+// sandbox whose mounts are frozen at its creation.
 //
 // The two entry points of the rebuild are both exercised, because they need
 // DIFFERENT remedies and that is the whole point of naming one: `-i` on an
 // ordinary nest can subtract the key, a prompting nest cannot (den refuses
 // `--without` on it) and must name `--only` instead.
+//
+// BOTH halves of "no record" are exercised too, and that is not redundancy:
+// `selectionUnknown` covers an ABSENT record (ordinary — a sandbox older than
+// records, or one created outside den) and an UNREADABLE one (a fault). One
+// sentence serves both, so it must not claim a read that failed; tested against
+// the absent fixture alone, "den could not read the record" passed while telling
+// half its readers about a failure that never happened.
 func TestAttachRefusalOnAnUnmappedKeyNamesTheRemedyThatWorks(t *testing.T) {
 	for _, c := range []struct {
 		name        string
@@ -1010,11 +1018,37 @@ func TestAttachRefusalOnAnUnmappedKeyNamesTheRemedyThatWorks(t *testing.T) {
 			avoid:   "--only",
 		},
 		{
-			name:    "a prompting nest",
+			name:    "a prompting nest, no record at all",
 			denHome: denTestPromptingKeys,
 			o:       Options{Nest: "crm"},
 			want:    "`--only repo,...`",
 			avoid:   "--without crm",
+		},
+		{
+			// A newer SCHEMA, not random bytes: the record may belong to a newer
+			// den, which is why den neither refuses over it nor deletes it
+			// (T13/T16) — the same fixture TestPromptModeAttachNamesARecordItCouldNotRead
+			// proves reaches manifest.Read's error path.
+			name: "a prompting nest whose record den cannot read",
+			denHome: func(t *testing.T) string {
+				denHome := denTestPromptingKeys(t)
+				path, err := manifest.Path(denHome, "crm")
+				if err != nil {
+					t.Fatal(err)
+				}
+				write(t, path, "schema: 9999\nsandbox: crm\n")
+				// Guard on the fixture: a record written somewhere manifest.Read
+				// does not look would make this row the absent-record case again,
+				// silently — the two would then be one test twice.
+				if _, err := manifest.Read(denHome, "crm"); err == nil ||
+					errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("the fixture must produce an UNREADABLE record, got: %v", err)
+				}
+				return denHome
+			},
+			o:     Options{Nest: "crm"},
+			want:  "`--only repo,...`",
+			avoid: "--without crm",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -1022,7 +1056,6 @@ func TestAttachRefusalOnAnUnmappedKeyNamesTheRemedyThatWorks(t *testing.T) {
 			f, d := fakeDeps()
 			d.In = failingReader{t}
 			d.IsTTY = func() bool { return true }
-			// Live, and with no record at all: the sandbox den cannot ask.
 			f.Responses["ls --json"] = sbx.Response{
 				Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
 			}
@@ -1039,6 +1072,9 @@ func TestAttachRefusalOnAnUnmappedKeyNamesTheRemedyThatWorks(t *testing.T) {
 				"already LIVE",
 				"crm",
 				c.want,
+				// True of an absent record and of an unreadable one alike: this
+				// one sentence serves both, and only one of them is a failure.
+				"has no record it could read",
 				"in " + filepath.Join(denHome, "config.yaml") + " would not put that repo",
 			} {
 				if !strings.Contains(err.Error(), want) {

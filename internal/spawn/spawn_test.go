@@ -4387,7 +4387,7 @@ func TestSpawnRunsTheGivenCommandInsteadOfAShell(t *testing.T) {
 }
 
 // Refused, and refused BEFORE anything is read — like `-i` with
-// `--only`/`--without`, the contradiction den already refuses at step 0.
+// `--only`/`--without`, the contradiction den already refuses at step 0bis.
 //
 // It is a contradiction and not a shortcut because `sbx exec -d` does NOT
 // detach: measured 2026-08-10 on v0.38.0, it blocks for the command's whole

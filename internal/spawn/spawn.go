@@ -536,7 +536,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// A selection flag answers the question outright, so it silences both
 	// entry points — that is what makes a prompting nest usable from `den
 	// exec`, a script and CI, and `-i` + a flag is refused far upstream (step
-	// 0) as the contradiction it is.
+	// 0bis) as the contradiction it is.
 	//
 	// WHICH flag can silence it follows the nest, since step 0bis: `--without` is
 	// refused on a `select: prompt` nest, so on such a nest `--only` is the only
@@ -2002,8 +2002,16 @@ func recordedWithout(n *nest.Nest, recorded manifest.Manifest) []string {
 // the key in config.yaml, which on a running sandbox changes nothing: mounts
 // come from the creation and nothing is reapplied (§6), so the repo would still
 // not be in the VM. The user is left thinking den refuses over a missing
-// checkout, when what actually happened is that den could not read the record
-// that already knew this repo was declined.
+// checkout, when what actually happened is that den had no record naming the
+// repos this sandbox already holds.
+//
+// "no record it could read" covers BOTH cases selectionUnknown carries, and the
+// wording is chosen for that rather than trimmed: an absent record is ORDINARY —
+// a sandbox older than records, or one created outside den — and telling its
+// owner that den "could not read" one states a failure that never happened.
+// reportUnrebuiltSelection is where the two are told apart, and it has already
+// printed its line by the time this refusal is built; saying it twice, in two
+// dialects, is what that function's own comment refuses.
 //
 // The tolerant reading — drop the unmapped optional key and attach — was ruled
 // out: den refuses rather than normalizing in silence, and a spawn that quietly
@@ -2038,7 +2046,7 @@ func unresolvedOnALiveSandbox(err error, sandboxName string, selectionUnknown bo
 	}
 	return fmt.Errorf(
 		"%w — and sandbox %s is already LIVE: it keeps the mounts it was created with, and den "+
-			"could not read the record naming them, so it resolved every repo the nest declares "+
+			"has no record it could read to name them, so it resolved every repo the nest declares "+
 			"instead. Mapping %q in %s would not put that repo in this sandbox: attach with %s",
 		err, sandboxName, unmapped.Key, unmapped.ConfigPath, escape)
 }
