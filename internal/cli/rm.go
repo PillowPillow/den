@@ -150,10 +150,40 @@ func cleanWorktrees(ctx context.Context, home, ref, sandboxName string, g worktr
 // whose VM is already gone — one body, so the two can never disagree on what
 // den is allowed to move.
 func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g worktree.Git, force bool, out io.Writer) error {
+	// Every OTHER record, read once for the whole loop rather than once per
+	// repo: `--as` (PR #68) lets two sandboxes share a worktree — spawning
+	// `api -w feature/123` then `api -w feature/123 --as reco` reuses the
+	// same directory, because worktree.Ensure is idempotent on the same
+	// branch, and BOTH records end up naming it with Worktree: true. Without
+	// this check `den rm api.reco` would move that directory to the trash
+	// while `api.feature-123` is still running and mounting it.
+	//
+	// A List error is swallowed on purpose, not surfaced: den refuses rather
+	// than normalizing in silence everywhere else (spec §2), but `den rm`
+	// itself must NEVER refuse or hang over a records directory it merely
+	// could not enumerate (doctrine T13/T16) — the guard below is simply
+	// unavailable for this one run, and reclaim proceeds exactly as it did
+	// before this guard existed.
+	//
+	// List's second return (Broken — a manifest it could not decode) is
+	// dropped here too, and that is the same doctrine, not an oversight: a
+	// record den cannot read cannot be asked what Mount it names, so it
+	// cannot be said to "still name" this one. It is out of scope, not
+	// silently trusted to be harmless.
+	others, _, _ := manifest.List(home)
+
 	for _, r := range m.Repos {
 		// The one bit that matters: den only ever reclaims what it created.
 		// A repo mounted as-is is the user's own working directory.
 		if !r.Worktree {
+			continue
+		}
+		// A live sibling still naming this Mount outranks reclaiming it: the
+		// record of THIS sandbox is still removed at the end of this
+		// function regardless — den is removing THIS sandbox, not disowning
+		// a directory another one holds.
+		if holder := holderOf(others, m.Sandbox, r.Mount); holder != "" {
+			fmt.Fprintf(out, "worktree kept: %s is also mounted by sandbox %s\n", r.Mount, holder)
 			continue
 		}
 		// Layout, Root and the worktree NAME still come from the record, not
@@ -197,6 +227,30 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 	}
 	// Removed only now, when everything it listed is reclaimed.
 	return manifest.Remove(home, m.Sandbox)
+}
+
+// holderOf returns the Sandbox name of the first OTHER record (not self) that
+// names mount as one of its repos' Mount, or "" when none does.
+//
+// It does not check the other record's own Worktree bit: the danger is a live
+// VM still mounting the directory, and that is true whether the other record
+// believes it created that mount or merely mounted it as-is — a coincidence
+// this narrow is not worth trusting either way.
+func holderOf(others []manifest.Manifest, self, mount string) string {
+	if mount == "" {
+		return "" // nothing to collide on
+	}
+	for _, o := range others {
+		if o.Sandbox == self {
+			continue
+		}
+		for _, r := range o.Repos {
+			if r.Mount == mount {
+				return o.Sandbox
+			}
+		}
+	}
+	return ""
 }
 
 // cleanWorktreesLegacy removes, through worktree.Remove, the worktrees den

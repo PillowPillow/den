@@ -1275,3 +1275,97 @@ func TestRmWarnsAndStillDestroysOnACorruptManifest(t *testing.T) {
 		t.Errorf("the message must say what to do with the file it leaves behind; got:\n%s", out)
 	}
 }
+
+// Finding 1 — `--as` (PR #68) lets two sandboxes share one worktree: spawning
+// `api -w feature/123` then `api -w feature/123 --as reco` reuses the
+// directory the first spawn created (worktree.Ensure is idempotent on the
+// same branch), so BOTH records end up naming it. `den rm api.reco` must not
+// move that directory to the trash while `api.feature-123` is still running
+// and mounting it — only the record of the sandbox actually being removed
+// goes.
+func TestRmLeavesAMountAnotherRecordStillNames(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	wt := createWorktree(t, repo, root, "feat12")
+
+	// The live sibling still holding the mount.
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feature-123",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feature/123", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	// The `--as` sandbox being removed, recorded with the SAME mount.
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.reco",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feature/123", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feature-123", "api.reco")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.reco")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("api.feature-123 still mounts this worktree; it must survive: %v", err)
+	}
+	if _, err := manifest.Read(denHome, "api.reco"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the record of the removed sandbox must still go: den is removing THIS " +
+			"sandbox, not disowning the directory the sibling holds")
+	}
+	if _, err := manifest.Read(denHome, "api.feature-123"); err != nil {
+		t.Errorf("the sibling's own record must be untouched: %v", err)
+	}
+	if !strings.Contains(out, "api.feature-123") {
+		t.Errorf("the message must name the sandbox that still holds the worktree; got:\n%s", out)
+	}
+	if !f.HasCalled("rm", "--force", "api.reco") {
+		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
+	}
+}
+
+// Regression floor for Finding 1's fix: a single record with no sibling
+// naming its Mount must reclaim exactly as it did before the guard existed.
+func TestRmSingleRecordStillReclaimsItsWorktree(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	wt := createWorktree(t, repo, root, "feat12")
+
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feat12",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: root},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
+		}},
+	})
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("with no sibling record, the worktree must still be reclaimed: %v", err)
+	}
+	if _, err := manifest.Read(denHome, "api.feat12"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the record must still be removed: %v", err)
+	}
+	if strings.Contains(out, "worktree kept") {
+		t.Errorf("no sibling names this mount, so the guard must not fire; got:\n%s", out)
+	}
+}
