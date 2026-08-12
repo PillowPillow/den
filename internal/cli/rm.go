@@ -158,7 +158,7 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 	// branch, and BOTH records end up naming it with Worktree: true. Without
 	// this check `den rm api.reco` would move that directory to the trash
 	// while `api.feature-123` is still running and mounting it.
-	holders, unreadable := mountHolders(home, m.Sandbox)
+	guard := newMountGuard(home, m.Sandbox)
 
 	// Directories kept because a record den could NOT read might be the one
 	// still mounting them — collected here, reported once after the loop.
@@ -174,7 +174,8 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 		// record of THIS sandbox is still removed at the end of this
 		// function regardless — den is removing THIS sandbox, not disowning
 		// a directory another one holds.
-		if holder := holders[r.Mount]; holder != "" {
+		holder, unknown := guard.holderOf(r.Mount)
+		if holder != "" {
 			fmt.Fprintf(out, "worktree kept: %s is also mounted by sandbox %s\n", r.Mount, holder)
 			continue
 		}
@@ -189,7 +190,7 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 		// has to arbitrate between a directory and a live VM needs the paths.
 		// A hand-edited record claiming a worktree with no Mount at all names
 		// no directory to keep, so it contributes nothing to say.
-		if len(unreadable) > 0 {
+		if unknown {
 			if r.Mount != "" {
 				stranded = append(stranded, r.Mount)
 			}
@@ -235,22 +236,11 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 		}
 	}
 	if len(stranded) > 0 {
-		for _, b := range unreadable {
-			// The wording `den ls` and `den doctor` already print for this
-			// exact state, on purpose: one dialect for "den left a record
-			// alone", not a second one per command.
-			fmt.Fprintf(out, "creation record %s unreadable: %v — den leaves it alone (it may "+
-				"belong to another version of den); delete it by hand once its sandbox is gone\n",
-				b.Path, b.Err)
-		}
-		for _, mount := range stranded {
-			fmt.Fprintf(out, "worktree kept: %s — an unreadable record may name it, "+
-				"and den does not guess\n", mount)
-		}
+		guard.nameUnknownSharers(out, stranded)
 		// The record SURVIVES here, and this is where it is decided. The
 		// review that ordered this scan first said the record still goes,
 		// because `den rm` must never refuse (doctrine T13/T16) — but a
-		// removal is not a refusal, and the rule two branches below already
+		// removal is not a refusal, and the rule two branches above already
 		// governs this exact state: the record is the ONLY trace of the
 		// directories still on disk, and deleting it strands them for good.
 		// Nothing is reclaimed here, so this is a skipped reclaim like any
@@ -275,9 +265,61 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 	return manifest.Remove(home, m.Sandbox)
 }
 
-// mountHolders maps every mount named by a record OTHER than self to the
-// sandbox naming it, and returns separately the records den could not read at
-// all — the unknown sharers, whose mounts nobody can enumerate.
+// mountGuard answers the ONE question both reclaim paths have to answer the
+// same way: who else still mounts this directory? Its verdict is shared —
+// cleanFromManifest asks about a RECORDED mount, cleanWorktreesLegacy about a
+// DERIVED one — so the two branches of `den rm` can never disagree about what
+// den may move. What each of them PRINTS afterwards is its own business: the
+// legacy path has no record to keep, so the sentence about what survives the
+// run differs, and only that sentence does.
+type mountGuard struct {
+	// holders maps a mount to the sandbox naming it. Only mounts a record
+	// den could ENUMERATE appear here.
+	holders map[string]string
+	// unreadable holds the records den could not read at all — the unknown
+	// sharers, whose mounts nobody can enumerate.
+	unreadable []manifest.Broken
+}
+
+// holderOf reports who still holds mount. holder names a sandbox whose record
+// names it. unknown says no readable record does, while at least one record den
+// could not read AT ALL exists and may name anything, this directory included.
+//
+// The two are ordered, never combined: a named holder is a fact, an unknown
+// sharer is a possibility, and the caller has a different thing to say about
+// each.
+func (g mountGuard) holderOf(mount string) (holder string, unknown bool) {
+	if h := g.holders[mount]; h != "" {
+		return h, false
+	}
+	return "", len(g.unreadable) > 0
+}
+
+// nameUnknownSharers prints the records den could not read and the directories
+// it left alone because of them. Shared by both reclaim paths so a hold-back
+// reads identically wherever it happened.
+//
+// kept is passed rather than accumulated here: cleanFromManifest holds back
+// recorded mounts and cleanWorktreesLegacy derived ones, and only the caller
+// knows which of its directories the guard actually stopped.
+func (g mountGuard) nameUnknownSharers(out io.Writer, kept []string) {
+	for _, b := range g.unreadable {
+		// The wording `den ls` and `den doctor` already print for this
+		// exact state, on purpose: one dialect for "den left a record
+		// alone", not a second one per command.
+		fmt.Fprintf(out, "creation record %s unreadable: %v — den leaves it alone (it may "+
+			"belong to another version of den); delete it by hand once its sandbox is gone\n",
+			b.Path, b.Err)
+	}
+	for _, mount := range kept {
+		fmt.Fprintf(out, "worktree kept: %s — an unreadable record may name it, "+
+			"and den does not guess\n", mount)
+	}
+}
+
+// newMountGuard maps every mount named by a record OTHER than self to the
+// sandbox naming it, and collects separately the records den could not read at
+// all.
 //
 // A holder's own Worktree bit is not checked: the danger is a live VM still
 // mounting the directory, and that is true whether the other record believes
@@ -301,7 +343,7 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 //
 // An empty Mount is never a key: two records describing no mount must not
 // collide on "" and keep each other's nothing.
-func mountHolders(home, self string) (map[string]string, []manifest.Broken) {
+func newMountGuard(home, self string) mountGuard {
 	others, broken, _ := manifest.List(home)
 
 	// First naming wins, and both lists are sorted (manifest.List), so the
@@ -309,6 +351,18 @@ func mountHolders(home, self string) (map[string]string, []manifest.Broken) {
 	holders := make(map[string]string)
 	claim := func(mount, sandbox string) {
 		if mount == "" {
+			return
+		}
+		// An unnamed claimant is not stored, and the reason is the "seen"
+		// test right below: holderOf reads an empty holder as "nobody named
+		// this mount", so storing one would both fail to protect the
+		// directory AND mask the next record's real claim on it — first
+		// naming wins. Skipping protects nothing by itself; it only keeps a
+		// nameless entry from silencing a named one. den never writes such a
+		// record (manifest.Path refuses an empty sandbox name), so this is a
+		// hand-edited file; the one shape of it den can recognize by name is
+		// escalated to an unknown sharer below.
+		if sandbox == "" {
 			return
 		}
 		if _, seen := holders[mount]; !seen {
@@ -326,11 +380,26 @@ func mountHolders(home, self string) (map[string]string, []manifest.Broken) {
 
 	var unreadable []manifest.Broken
 	for _, b := range broken {
-		// Self, skipped here as above: Read succeeded for the caller, so a
-		// file of the same name landing in Broken is a transient read error on
-		// den's own record, not a sibling.
+		// Self, skipped here as above, and it is not a detail: the legacy
+		// reclaim path runs precisely when den could NOT read this sandbox's
+		// own record, so that file is sitting in `broken` under this very
+		// name. Counting it would make every such `den rm` hold back its own
+		// worktrees forever, over a record den is about to leave behind
+		// anyway. den is removing THIS sandbox; its own record never speaks
+		// for a third party.
 		sandbox := strings.TrimSuffix(filepath.Base(b.Path), ".yaml")
 		if sandbox == self {
+			continue
+		}
+		// manifest.List admits ANY entry ending in ".yaml", including a file
+		// named exactly ".yaml", whose trim leaves no sandbox name at all.
+		// Such a file names nobody, so it can hold no mount under a name the
+		// user could act on — and it is not a record den wrote. It is counted
+		// as an unknown sharer rather than read: the cautious path exists for
+		// exactly the files den cannot account for, and the alternative (a
+		// nameless claim) is the entry claim refuses to store above.
+		if sandbox == "" {
+			unreadable = append(unreadable, b)
 			continue
 		}
 		mounts, err := manifest.LaxMounts(b.Path)
@@ -345,7 +414,7 @@ func mountHolders(home, self string) (map[string]string, []manifest.Broken) {
 			claim(mount, sandbox)
 		}
 	}
-	return holders, unreadable
+	return mountGuard{holders: holders, unreadable: unreadable}
 }
 
 // cleanWorktreesLegacy removes, through worktree.Remove, the worktrees den
@@ -374,6 +443,15 @@ func mountHolders(home, self string) (map[string]string, []manifest.Broken) {
 // doesn't already tolerate — while REFUSING here would strand a live VM the
 // user asked to destroy (doctrine T13/T16). Guessing wrong is recoverable;
 // refusing is not.
+//
+// It consults the SAME mountGuard as the record path, for the same reason `--as`
+// created: two sandboxes of one nest can share a worktree, and this branch would
+// otherwise move a live sibling's workspace to the trash — the guard exists on
+// one branch and the data loss on the other is the same data loss. A hold-back
+// is announced on `out`, not on warnW, deliberately: it is the outcome of the
+// run rather than a resolution that degraded, and cleanFromManifest already
+// prints it there. The same event must not land on two different streams
+// depending on which branch reclaimed.
 func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g worktree.Git, force bool, out, warnW io.Writer) error {
 	nestName, wt := sbx.SplitName(sandboxName)
 	if wt == "" {
@@ -421,6 +499,25 @@ func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g 
 		return nil
 	}
 
+	// Read ONCE for the whole loop, like the record path: every repo of this
+	// nest is checked against the same set of records.
+	//
+	// self is this sandbox's own name, and skipping it matters more here than
+	// there: this function also runs when den could not DECODE this sandbox's
+	// record, and that file is then sitting among the broken ones.
+	//
+	// The guard is keyed on the mounts records NAME, while the path looked up
+	// below is derived from today's configuration — the very drift this whole
+	// path is best-effort about. A `worktree_root` moved since the spawn makes
+	// the derivation miss, and the guard miss with it. Neither side is
+	// normalized here: the same keys serve the record path, on records that
+	// need no repair.
+	guard := newMountGuard(home, sandboxName)
+
+	// Directories left alone because a record den could NOT read might be the
+	// one still mounting them — collected here, reported once after the loop.
+	var stranded []string
+
 	for _, repo := range n.Repos {
 		// The KEY is resolved here, through the same personal mapping spawn
 		// used when it created the worktree — LoadNest leaves a `key:` entry's
@@ -445,6 +542,47 @@ func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g 
 				n.Name, repo.Key, wt, config.GlobalPath(home))
 			continue
 		}
+		// The directory this repo's worktree would be at, derived exactly as
+		// worktree.Remove derives it below — same worktree.Path, same
+		// arguments. It is computed here for the guard alone and NOT passed as
+		// Target.WorktreePath: that field means "the directory as recorded at
+		// creation", and this branch is precisely the caller that has no
+		// record.
+		mount := worktree.Path(gl.WorktreeLayout, gl.WorktreeRoot, wt, path)
+		// The guard is skipped for a directory that DEFINITIVELY does not
+		// exist, and that is what keeps this path's tolerance intact. A path
+		// nothing exists at cannot be a live sandbox's workspace, so nothing a
+		// sharer holds slips through; and skipping worktree.Remove on it would
+		// skip the stale registration `prune` and the locked-registration
+		// re-check it does for a directory already gone. The derivation above
+		// is a guess by contract: a guess that lands nowhere costs nothing
+		// today, and holding back a directory that is not on disk would start
+		// charging for it — with a message naming a path the user cannot even
+		// go look at.
+		//
+		// ErrNotExist alone, never "Stat failed": an unreadable parent answers
+		// "den cannot tell", and reading that as "nothing is there" would drop
+		// the guard on a directory a live sibling may well be mounting. Any
+		// other failure keeps the check, and worktree.Remove — which stats
+		// again and refuses what it cannot attribute — has the last word.
+		if _, err := os.Stat(mount); !os.IsNotExist(err) {
+			// The same two verdicts as the record path, in the same order:
+			// a named holder is a fact and outranks an unreadable file's
+			// possibility. den is removing THIS sandbox, not disowning a
+			// directory another one holds.
+			holder, unknown := guard.holderOf(mount)
+			if holder != "" {
+				fmt.Fprintf(out, "worktree kept: %s is also mounted by sandbox %s\n", mount, holder)
+				continue
+			}
+			// No readable record names it, but a record den could not read may
+			// name anything. Leaving a directory is recoverable; moving a
+			// running VM's workspace to the trash on a guess is not.
+			if unknown {
+				stranded = append(stranded, mount)
+				continue
+			}
+		}
 		// One deadline PER repo, not one for the whole loop: a broken repo must
 		// not eat the budget of the next repos of the same nest.
 		repoCtx, cancel := context.WithTimeout(ctx, gitProbeTimeout)
@@ -465,6 +603,24 @@ func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g 
 			continue // the directory was already gone: nothing to announce
 		}
 		fmt.Fprintf(out, "worktree moved to trash: %s\n", dest)
+	}
+	if len(stranded) > 0 {
+		guard.nameUnknownSharers(out, stranded)
+		// The record path ends this state by saying the record of the sandbox
+		// survives, and `den doctor --fix` will finish the job. Here that
+		// sentence would be false: there is no record den can read for this
+		// sandbox — that absence is why this function ran at all — and the VM
+		// is destroyed a moment later. `den doctor` replays records, so nothing
+		// will ever offer these directories again. Said once, rather than left
+		// for the user to discover as a pile under worktree_root.
+		//
+		// "no record den can REPLAY", not "no record": on the undecodable
+		// branch a file does survive under this sandbox's name, den said so on
+		// the way in, and `den ls` and `den doctor` report it. What no longer
+		// exists is anything that could name these directories again.
+		fmt.Fprintf(out, "den has no record it can replay for %s: `den doctor --fix` will not "+
+			"reclaim these worktrees, so remove them by hand once you know no live sandbox "+
+			"mounts them\n", sandboxName)
 	}
 	return nil
 }
