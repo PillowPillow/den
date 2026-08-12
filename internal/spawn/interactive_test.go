@@ -634,18 +634,22 @@ func denTestPromptingRepos(t *testing.T) (denHome string, repos map[string]strin
 }
 
 // What the rebuild is worth, read off the OUTPUT rather than off internal
-// state: step 3 prints one `worktree <repo>: <path>` line per RESOLVED repo, so
-// the set of those lines is a direct readout of r.Repos.
+// state. The readout used to be step 3's `worktree <repo>: <path>` lines, one
+// per resolved repo — that line is a CREATION announcement and no longer prints
+// on the attach branch, which creates nothing. What is left, and is just as
+// direct a readout of r.Repos, is reportUnmountedRepos: against a VM that mounts
+// none of them it prints one `is not mounted` line per resolved repo.
 //
-// Asserting the drift warnings are silent would not do: two empty comparisons
-// pass whatever the selection did — the trap the "Guard on the guard" of
-// TestInteractiveProducesTheSameArgvAsTheEquivalentWithout already names. The
-// second half of this test scripts a MISMATCHED workspace and requires the
-// warning to fire, so the silence of the first half means something.
+// So the readout is the SECOND half, on a mismatched VM, and it is an equality
+// (exactly one line, naming api) rather than a presence check. The first half
+// requires the silence that a correct rebuild produces; asserting silence alone
+// would not do — two empty comparisons pass whatever the selection did, the trap
+// the "Guard on the guard" of TestInteractiveProducesTheSameArgvAsTheEquivalentWithout
+// already names.
 //
-// `-w` is also the case where re-derivation costs disk, not just noise: two
-// worktrees created for repos this sandbox was never spawned with, which the
-// user then has to find and remove.
+// `-w` is also the case where re-derivation used to cost disk, not just noise:
+// two worktrees created for repos this sandbox was never spawned with, which the
+// user then had to find and remove.
 func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 	denHome, _ := denTestPromptingRepos(t)
 
@@ -656,7 +660,7 @@ func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 		Options{Nest: "generic", Worktree: "feat"}, first); err != nil {
 		t.Fatalf("first spawn: %v", err)
 	}
-	// The mount comes from the RECORD, so the fixture and den agree on the
+	// The mounts come from the RECORD, so the fixture and den agree on the
 	// worktree path without this test recomputing the layout.
 	recorded, err := manifest.Read(denHome, "generic.feat")
 	if err != nil {
@@ -671,26 +675,24 @@ func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 	d.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	d.Out = &out
+	// The git dirs are scripted too, exactly as the create branch passed them:
+	// a VM missing them is a real defect (reportMissingGitDirs) and has its own
+	// test — leaving them out here would print an unrelated warning into the
+	// output this test reads.
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"generic.feat","status":"running","workspaces":["` +
-			recorded.Repos[0].Mount + `"]}]}`),
+		Output: []byte(`{"sandboxes":[{"name":"generic.feat","status":"running","workspaces":` +
+			jsonStrings(append([]string{recorded.Repos[0].Mount}, recorded.GitDirs...)) + `}]}`),
 	}
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "generic", Worktree: "feat"}, d); err != nil {
 		t.Fatalf("attaching spawn: %v", err)
 	}
 
-	var worktreeLines []string
-	for _, line := range strings.Split(out.String(), "\n") {
-		if strings.HasPrefix(line, "worktree ") {
-			worktreeLines = append(worktreeLines, line)
-		}
+	if strings.Contains(out.String(), "is not mounted") {
+		t.Errorf("the VM mounts exactly what the record names; nothing may be reported:\n%s",
+			out.String())
 	}
-	if len(worktreeLines) != 1 || !strings.HasPrefix(worktreeLines[0], "worktree api: ") {
-		t.Errorf("the attach must resolve exactly the recorded repo; worktree lines: %v\n%s",
-			worktreeLines, out.String())
-	}
-	// On disk too: the line could be missing while the directory exists.
+	// On disk too: a warning could be silent while the directory exists.
 	for _, name := range []string{"worker", "docs"} {
 		if _, err := os.Stat(filepath.Join(denHome, "worktrees", "feat", name)); err == nil {
 			t.Errorf("a worktree was created for %s, which this sandbox was never spawned with", name)
@@ -698,8 +700,8 @@ func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 	}
 
 	// Guard on the guard: with a workspace the VM does NOT mount, the warning
-	// must fire. Without this, every assertion above passes on a spawn that
-	// resolved nothing at all.
+	// must fire — and name exactly the recorded repo. Without this, every
+	// assertion above passes on a spawn that resolved nothing at all.
 	mismatched, md := fakeDeps()
 	md.In = failingReader{t}
 	md.IsTTY = func() bool { return true }
@@ -712,8 +714,18 @@ func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 		Options{Nest: "generic", Worktree: "feat"}, md); err != nil {
 		t.Fatalf("attaching spawn (mismatched): %v", err)
 	}
-	if !strings.Contains(mismatchedOut.String(), "is not mounted") {
-		t.Errorf("a repo the VM does not mount must still be reported:\n%s", mismatchedOut.String())
+	var unmounted []string
+	for _, line := range strings.Split(mismatchedOut.String(), "\n") {
+		if strings.HasSuffix(line, " is not mounted") {
+			// "  - <path> is not mounted": both the bullet and the indent are
+			// presentation, and the path is what this test reads.
+			unmounted = append(unmounted,
+				strings.TrimPrefix(strings.TrimSpace(strings.TrimSuffix(line, " is not mounted")), "- "))
+		}
+	}
+	if len(unmounted) != 1 || unmounted[0] != recorded.Repos[0].Mount {
+		t.Errorf("the attach must resolve exactly the recorded repo (%s); reported: %v\n%s",
+			recorded.Repos[0].Mount, unmounted, mismatchedOut.String())
 	}
 }
 

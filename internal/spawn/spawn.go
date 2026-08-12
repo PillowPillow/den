@@ -619,6 +619,20 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// repository (a clone and one of its worktrees), the case step 3 already
 	// dedups on gitDirs. Keyed by path, the alias falls on the same probe and
 	// the reuse does not reintroduce the call it removes.
+	//
+	// Still run on the ATTACH branch, where step 3 creates nothing. It is a pure
+	// read either way, and it is the only source of git dirs left for a sandbox
+	// with NO readable record. With a record, step 3 takes the git dirs from
+	// there and this probe's answer is DISCARDED — the call is then pure cost,
+	// kept because dropping it would make an attach refuse or not depending on a
+	// file's readability, which is the kind of conditional sequence §6 exists to
+	// prevent.
+	//
+	// Its refusal is inherited, and on this branch its message overstates: `-w`
+	// propagates nothing to a live sandbox, whose mounts are frozen at its
+	// creation. den refuses the attach over a flag it would then have ignored.
+	// Left as it is on purpose — loosening a refusal is not this change, and a
+	// live sandbox does not earn a second answer to "is this a git repository".
 	commonDirs := make(map[string]string, len(r.Repos))
 	if o.Worktree != "" {
 		for _, repo := range r.Repos {
@@ -768,20 +782,85 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 	}
 
-	// 3. Worktrees, if requested. The first workspace must stay the first
-	// repo: sbx.Sandbox.Workdir depends on it for attach, and nothing at
-	// its level can verify the list was built in this order.
+	// 3. Worktrees. The first workspace must stay the first repo:
+	// sbx.Sandbox.Workdir depends on it for attach, and nothing at its level
+	// can verify the list was built in this order.
+	//
+	// TWO code paths, forked on the create/attach verdict of step 1bis, and
+	// they answer two different questions:
+	//
+	//   - CREATING, under -w: den MATERIALIZES a worktree per repo
+	//     (worktree.Ensure) and mounts it. The only side effect of this step.
+	//   - ATTACHING: den COMPUTES the paths the VM is expected to mount
+	//     (worktree.Path, pure) and creates nothing. Attaching reapplies
+	//     nothing to a live VM (§6), so a worktree created here would be
+	//     mounted by no sandbox, ever — and the manifest is not rewritten on
+	//     this branch, so `den rm` could not reclaim it either. `-w` on a live
+	//     `--as` instance used to leave exactly that: one directory and one
+	//     branch per repo, with no den command able to remove them.
+	//
+	// It strengthens the ordering property this function is built on. That
+	// property was "a refusal never leaves an orphaned worktree", held by
+	// PLACING this step after everything rejectable from config alone; it now
+	// also holds for what is not a refusal at all — a successful attach, which
+	// used to leave one worktree per repo behind every single time. The
+	// placement is still what protects the create branch, and is unchanged.
+	//
+	// Not "the attach branch has no side effect": step 4 still creates the
+	// agent profile directory, on both branches. But that one is mounted by the
+	// live VM already, so it is the last thing this branch writes and nothing
+	// it writes is orphaned.
 	workspaces := make([]string, 0, 2*len(r.Repos)+2)
 	// Common git dirs are collected separately and appended AFTER all
 	// worktrees, so the repo list stays contiguous and first.
 	var gitDirs []string
+	// What the ATTACH branch expects to be mounted, taken from the RECORD and
+	// not from today's flags: what den mounted is recorded, not re-derived
+	// (internal/manifest). The record answers the one question the flags
+	// cannot — the sandbox name's second component is the INSTANCE LABEL since
+	// `--as`, so it no longer says whether the VM mounts worktrees, which ones,
+	// or under which layout. Re-deriving from `-w` made `den spawn api --as
+	// reco -w other` compare the VM against paths it was never created with,
+	// and reportUnmountedRepos then printed "is not mounted" for every repo of
+	// a perfectly healthy sandbox, with `den rm` as the advice.
+	//
+	// An empty name means "this sandbox mounts the repos as they are", which is
+	// what a record with no `worktree:` block says — including when `-w` is on
+	// today's command line. The flags do not get a say here: the VM's mounts
+	// are frozen at its creation.
+	//
+	// No READABLE record (a legacy sandbox, one created outside den, or a file
+	// den could not decode) falls back to today's derivation from the flags,
+	// which is all that is left to derive from. den never refuses over a record
+	// it could not read and must never strand a live VM (T13/T16); the report
+	// that would then lie is already muted at step 6.
+	attachLayout, attachRoot, attachWorktree := r.WorktreeLayout, r.WorktreeRoot, worktreeName.Dir
+	if live != nil && recordedErr == nil {
+		attachLayout, attachRoot, attachWorktree = "", "", ""
+		if recorded.Worktree != nil {
+			attachLayout = recorded.Worktree.Layout
+			attachRoot = recorded.Worktree.Root
+			attachWorktree = recorded.Worktree.Name
+		}
+		// The git dirs come from the same record, for the same reason and to
+		// keep the two halves consistent: they are the paths `sbx create`
+		// really received. Derived instead from today's `-w`, an attach to a
+		// sandbox created WITHOUT a worktree would expect git dirs that
+		// sandbox never had, and reportMissingGitDirs would answer a healthy
+		// VM with "git is dead there: `den rm` then relaunch".
+		gitDirs = recorded.GitDirs
+	}
 	for _, repo := range r.Repos {
 		repoPath := repo.Path
-		if o.Worktree != "" {
+		switch {
+		case live == nil && o.Worktree != "":
 			repoPath, err = worktree.Ensure(ctx, d.Git, r.WorktreeLayout, r.WorktreeRoot, worktreeName, repo.Path)
 			if err != nil {
 				return err
 			}
+			// A progress line for a creation, so it prints where a creation
+			// happens: on the attach branch there is nothing to announce, and
+			// the line named a path den had NOT just created.
 			fmt.Fprintf(d.Out, "worktree %s: %s\n", repo.Name(), repoPath)
 
 			// Without this mount the worktree arrives in the VM with a
@@ -807,6 +886,19 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			commonDir := commonDirs[repo.Path]
 			if !slices.Contains(gitDirs, commonDir) {
 				gitDirs = append(gitDirs, commonDir)
+			}
+		case live != nil && attachWorktree != "":
+			repoPath = worktree.Path(attachLayout, attachRoot, attachWorktree, repo.Path)
+			// Only on the no-record fallback: with a record, gitDirs was taken
+			// from it above and the step-2bis probe has nothing to add.
+			// commonDirs is populated exactly when `-w` is on the command line,
+			// which on this fallback is exactly when attachWorktree is not
+			// empty — so the map is never read blind.
+			if recordedErr != nil {
+				commonDir := commonDirs[repo.Path]
+				if !slices.Contains(gitDirs, commonDir) {
+					gitDirs = append(gitDirs, commonDir)
+				}
 			}
 		}
 		workspaces = append(workspaces, repoPath)

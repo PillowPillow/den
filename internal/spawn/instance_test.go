@@ -1,11 +1,15 @@
 package spawn
 
 import (
+	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/PillowPillow/den/internal/manifest"
+	"github.com/PillowPillow/den/internal/sbx"
 )
 
 // sandboxNameFrom spawns with the given options and returns the name `sbx
@@ -106,6 +110,128 @@ func TestInstanceDoesNotRenameTheWorktreeDirectory(t *testing.T) {
 	}
 	if m.Worktree.Branch != "feature/123" {
 		t.Errorf("Worktree.Branch = %q, want %q", m.Worktree.Branch, "feature/123")
+	}
+}
+
+// `-w` on a LIVE instance creates NOTHING.
+//
+// A live sandbox is attached to and nothing is reapplied to it (§6): its mounts
+// are frozen at its creation. den used to run worktree.Ensure on this branch
+// anyway, so `den spawn api --as reco -w brand/new` created a git worktree per
+// repo plus the branch — for a sandbox that mounts none of it. The manifest is
+// not rewritten on the attach branch either, so `den rm` reclaimed nothing: the
+// directories and the branches were orphaned, with no den command able to
+// remove them.
+//
+// Both halves are asserted, on disk and in git: the directory is what the user
+// trips over, the branch is what `git branch` shows them forever after.
+func TestWorktreeFlagOnALiveInstanceCreatesNothing(t *testing.T) {
+	denHome, repo := denTest(t)
+
+	// The sandbox is created WITHOUT -w: it mounts the repo as it is, and that
+	// is what its record says.
+	_, first := fakeDeps()
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Instance: "reco"}, first); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["` +
+			repo + `"]}]}`),
+	}
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Instance: "reco", Worktree: "brand/new"}, d); err != nil {
+		t.Fatalf("attaching a live instance must not refuse over a -w it cannot honour: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(denHome, "worktrees", "brand-new")); err == nil {
+		t.Error("a worktree was created for a sandbox that mounts none of it, " +
+			"and no den command can reclaim it")
+	}
+	if branchExists(t, repo, "brand/new") {
+		t.Error("a branch was created for a sandbox that mounts none of it")
+	}
+	// The attach still happens, in the directory the VM really mounts.
+	if !f.HasAttached("exec", "-it", "-w", repo, "api.reco", "bash", "-l") {
+		t.Errorf("den must attach to the live instance; attaches: %v", f.Attaches)
+	}
+	// And the VM is not slandered: it mounts exactly what its record names.
+	if strings.Contains(out.String(), "is not mounted") {
+		t.Errorf("the VM mounts what it was created with; nothing may be reported:\n%s", out.String())
+	}
+	// The progress line goes with the creation it announces. Matched on the
+	// CREATE shape (`worktree <repo>: `), never on the `worktree ` prefix: step
+	// 1bis prints `worktree "brand/new": branch name kept, sandbox becomes
+	// api.reco` on this very spawn, and a prefix match would fail on a line
+	// that is correct and wanted.
+	if strings.Contains(out.String(), "worktree api: ") {
+		t.Errorf("a creation was announced on a branch that creates nothing:\n%s", out.String())
+	}
+}
+
+// The other side of the same coin: an `--as` instance created WITH -w,
+// re-attached WITHOUT repeating it.
+//
+// The sandbox name's second component is the LABEL since `--as`, so it says
+// nothing about worktrees: den has to read the record. Deriving the expected
+// mounts from the flags instead left `workspaces` holding the raw repo paths
+// while the VM mounts the worktrees, and every repo of a healthy sandbox came
+// back "is not mounted", with `den rm` — destruction — as the advice.
+func TestAttachingAnInstanceWithoutRepeatingTheWorktreeReportsNothing(t *testing.T) {
+	denHome, _ := denTest(t)
+
+	_, first := fakeDeps()
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Instance: "reco", Worktree: "feature/123"}, first); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+	// The mounts come from the RECORD, so the fixture and den agree on the
+	// worktree path without this test recomputing the layout.
+	recorded, err := manifest.Read(denHome, "api.reco")
+	if err != nil {
+		t.Fatalf("reading the record the first spawn wrote: %v", err)
+	}
+	mounts := []string{}
+	for _, r := range recorded.Repos {
+		mounts = append(mounts, r.Mount)
+	}
+	mounts = append(mounts, recorded.GitDirs...)
+
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":` +
+			jsonStrings(mounts) + `}]}`),
+	}
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Instance: "reco"}, d); err != nil {
+		t.Fatalf("attaching spawn: %v", err)
+	}
+
+	if strings.Contains(out.String(), "is not mounted") {
+		t.Errorf("the VM mounts every repo its record names:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "den rm") {
+		t.Errorf("destruction must not be advised over a healthy sandbox:\n%s", out.String())
+	}
+	// Guard on the guard: the silence above must come from a comparison that
+	// happened, not from an empty one. A VM mounting something else must still
+	// be reported.
+	mismatched, md := fakeDeps()
+	var mismatchedOut bytes.Buffer
+	md.Out = &mismatchedOut
+	mismatched.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["/w/elsewhere"]}]}`),
+	}
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Instance: "reco"}, md); err != nil {
+		t.Fatalf("attaching spawn (mismatched): %v", err)
+	}
+	if !strings.Contains(mismatchedOut.String(), mounts[0]+" is not mounted") {
+		t.Errorf("a repo the VM does not mount must still be reported:\n%s", mismatchedOut.String())
 	}
 }
 

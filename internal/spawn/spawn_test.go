@@ -3,6 +3,7 @@ package spawn
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -108,6 +109,29 @@ func createRepo(t *testing.T, path string) {
 			t.Fatalf("git %v: %v\n%s", c, err, out)
 		}
 	}
+}
+
+// branchExists asks git, rather than looking for a file under `refs/heads`: a
+// branch created by `git worktree add -b` may be packed, and a test that only
+// stats the loose ref would report "not created" for a branch that is right
+// there.
+func branchExists(t *testing.T, repo, branch string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "branch", "--list", branch)
+	cmd.Dir = repo
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list %s (in %s): %v\n%s", branch, repo, err, out)
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
+// jsonStrings renders paths as the `workspaces` array of a scripted `sbx ls
+// --json`. Hand-concatenated quotes stay readable for one path; past that, a
+// missing one reads as a den bug rather than as the typo it is.
+func jsonStrings(values []string) string {
+	encoded, _ := json.Marshal(values) // a []string cannot fail to marshal
+	return string(encoded)
 }
 
 // writeConfig (re)writes the den home's config.yaml. Split out of
@@ -1188,6 +1212,45 @@ func TestSpawnWithWorktree(t *testing.T) {
 	}
 }
 
+// The regression floor for the CREATE branch: everything step 3 stopped doing
+// on the attach branch, it must still do here — materialize the worktree, mount
+// it, and ANNOUNCE it.
+//
+// The announcement is the half no other test holds. It used to be asserted from
+// the attach side (TestPromptModeAttachResolvesOnlyTheRecordedRepos read the
+// `worktree <repo>: <path>` lines as a readout of the resolved repos); that line
+// is a creation announcement and no longer prints there, so without this test a
+// refactor could delete it from the one branch that still owes it. The user
+// needs it: it names the directory den just created in their filesystem, and it
+// is what the manifest.Write refusal at step 6 relies on having printed.
+func TestSpawnAnnouncesTheWorktreeItCreates(t *testing.T) {
+	denHome, repo := denTest(t)
+	_, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	worktreePath := filepath.Join(denHome, "worktrees", "feat12", "api")
+	want := "worktree api: " + worktreePath
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("the create branch must announce the worktree it creates (%q); output:\n%s",
+			want, out.String())
+	}
+	// The line must not be the only trace: it could print over a directory
+	// that was never created, which is exactly what the attach branch used to
+	// do in reverse.
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Errorf("the announced worktree must exist at %s: %v", worktreePath, err)
+	}
+	if !branchExists(t, repo, "feat12") {
+		t.Error("the create branch must create the git branch too")
+	}
+}
+
 // F1: a worktree mounted ALONE is a worktree where git is dead.
 //
 // A linked worktree's `.git` is not a directory but a file reading
@@ -1284,6 +1347,16 @@ func TestSpawnReportsAVMMissingGitDirs(t *testing.T) {
 	// user may have good reasons to return to it without git.
 	if !f.HasAttached("exec", "-it", "-w", wt, "api.feat12", "bash", "-l") {
 		t.Errorf("den must still attach; attaches: %v", f.Attaches)
+	}
+	// This fixture is also the NO-RECORD attach: a live sandbox this den home
+	// has no manifest for, spawned with `-w`. It is the one attach path that
+	// still derives its paths from the flags, so it is the one that most
+	// resembles the call that used to create them — and it silently did, until
+	// step 3 stopped calling worktree.Ensure on this branch. den computes `wt`
+	// here; it must not exist on disk.
+	if _, err := os.Stat(wt); err == nil {
+		t.Errorf("%s was created on the attach branch: no sandbox mounts it and no den "+
+			"command can reclaim it", wt)
 	}
 	if !strings.Contains(out.String(), "git") {
 		t.Errorf("den must report that git will be inoperative; output:\n%s", out.String())
