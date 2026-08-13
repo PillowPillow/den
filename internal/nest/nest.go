@@ -71,17 +71,83 @@ type Ports struct {
 	Publish []PortDecl `yaml:"publish"`
 }
 
+// The values of a nest's `select:` — how it decides WHICH of its optional
+// repos a spawn mounts.
+//
+// A string rather than a `generic: true` boolean: "all" is a value one can
+// write to state the intent, and a third mode later would not have to break
+// the type. The zero value "" means SelectAll, so no existing nest changes
+// behaviour by being re-read.
+const (
+	// SelectAll mounts every optional repo unless --without/--only/-i says
+	// otherwise. The historical behaviour, and the default.
+	SelectAll = "all"
+	// SelectPrompt declares a nest with NO default selection: the repos are
+	// chosen at spawn time. It exists for the generic nest of a microservice
+	// team — thirty repos of which a session wants four, in a combination
+	// that changes weekly — where a nest file per feature is not tenable.
+	SelectPrompt = "prompt"
+)
+
 // Nest is a spawnable object (spec §4.3).
 type Nest struct {
 	// Name comes from the file's basename, NEVER from its content: an object
 	// has a single, non-forgeable identity (spec §2).
-	Name   string            `yaml:"-"`
-	Stack  string            `yaml:"stack"`
+	Name  string `yaml:"-"`
+	Stack string `yaml:"stack"`
+	// Select is `select:`; see SelectAll / SelectPrompt. LoadNest refuses any
+	// other value.
+	Select string            `yaml:"select"`
 	Env    map[string]string `yaml:"env"`
 	Egress []string          `yaml:"egress"`
 	Repos  []Repo            `yaml:"repos"`
 	Ports  Ports             `yaml:"ports"`
 	Agents map[string]string `yaml:"agents"` // per-agent config_dir override
+}
+
+// PromptsForRepos reports whether this nest chooses its repos at spawn time.
+//
+// A method rather than `n.Select == SelectPrompt` at each call site: three
+// packages ask the question (spawn's entry point, the checklist's starting
+// state, the no-terminal refusal), and the zero value has to mean SelectAll in
+// all three — a comparison written by hand would eventually be written against
+// SelectAll instead, where "" would answer false.
+func (n *Nest) PromptsForRepos() bool { return n.Select == SelectPrompt }
+
+// CheckWithout refuses `--without` on a nest that selects its repos at spawn
+// time, and is the SOLE author of that sentence.
+//
+// `--without` subtracts from a default selection, and a `select: prompt` nest
+// declares it has none: that is the whole meaning of the mode, and it is why its
+// checklist starts EMPTY (spawn's promptOptionalRepos). Accepted, the flag
+// silenced the checklist and resolved the MAXIMAL set minus the named repos —
+// den handing out, in silence, the thirty-repo default the nest exists not to
+// have. Refusing is the reading a user cannot misinterpret, and the repo refuses
+// rather than normalizing in silence (spec §2). `--only` stays accepted, and is
+// what the message names: it states the set outright, which is exactly the
+// question the checklist asks.
+//
+// It lives in THIS package, not in internal/spawn where it was first written,
+// because two commands have to give one verdict: `den spawn` (step 0bis) and
+// `den nest show`, which internal/cli documents as its dry-run and which reaches
+// nest.Resolve without ever going through Spawn. One flag answered twice in two
+// dialects is the divergence this function exists to make impossible — the same
+// argument spawn.ResolveStack already carries for the stack reference. Nothing
+// here is learnt about sandboxes: the mode is Nest.Select, the file is
+// FilePath, both this package's own.
+//
+// nestRoot is where the nest was LOADED from — a source's directory for
+// `corp:api`, the den home otherwise — so the message names the file the user
+// must edit and not a local namesake of it.
+func (n *Nest) CheckWithout(nestRoot string, without []string) error {
+	if len(without) == 0 || !n.PromptsForRepos() {
+		return nil
+	}
+	return fmt.Errorf(
+		"nest %s selects its repos at spawn time (`select: prompt` in %s), so there is no "+
+			"default selection for `--without` to subtract from — name the repos you want "+
+			"with `--only repo,...`, this nest's non-interactive spelling",
+		n.Name, FilePath(nestRoot, n.Name))
 }
 
 // NestNotFoundError reports the one LoadNest failure that means "this object
@@ -147,6 +213,20 @@ func LoadNest(denHome, name string) (*Nest, error) {
 	}
 
 	n.Name = name // the filename is authoritative, unconditionally
+	// Validated here rather than at spawn: `den nest ls` and `den lint` must
+	// see the same refusal, and the earliest reader is the one that gives the
+	// user the shortest path to the faulty line.
+	switch n.Select {
+	case "", SelectAll, SelectPrompt:
+	default:
+		// %q on the offending value, not %s: a `select: "prompt "` with a
+		// trailing space would otherwise render as a message naming the right
+		// word and refusing it anyway.
+		return nil, fmt.Errorf(
+			"nest %q: `select:` is %q, which is not a known mode — use %q (mount every optional "+
+				"repo, the default) or %q (choose the repos at spawn time); fix `select:` in %s",
+			name, n.Select, SelectAll, SelectPrompt, path)
+	}
 	for i, r := range n.Repos {
 		switch {
 		case r.Path != "" && r.Key != "":

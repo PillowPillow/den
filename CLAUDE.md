@@ -24,17 +24,24 @@ go test ./internal/spawn/ -run TestSpawnAddsNoWorkspaceOutsideMountMode -count=1
 
 ## Architecture
 
-**Identity is the sandbox name** `<nest>[.<worktree>]`. `sbx create` has no `--label` (probed
-2026-07-28), so that string is the only handle: `den ls`/`sh`/`rm`/`ports`, scoped policy, the mixin
-cache and the worktree trash all key off it. `sbx.SandboxName` / `sbx.SplitName` own the format;
-`-w` flattens a branch name into a legal component (`feature/123` → sandbox `api.feature-123`) while
-git keeps the branch as typed.
+**Identity is the sandbox name** `<nest>[.<instance>]`. Component 2 is the INSTANCE — the `--as`
+label, or the flattened branch of `-w`, or empty — not necessarily a worktree branch
+(`sbx.Sandbox.Instance()`'s own comment: "It is NOT 'the worktree'"). `sbx create` has no `--label`
+(probed 2026-07-28), so that string is the only handle: `den ls`/`sh`/`rm`/`ports`, scoped policy,
+the mixin cache and the worktree trash all key off it. `sbx.SandboxName` / `sbx.SplitName` own the
+format; `-w` flattens a branch name into a legal component (`feature/123` → sandbox
+`api.feature-123`) while git keeps the branch as typed.
 
 **Config cascade**: global (`~/.den/config.yaml`) ← stack (`stacks/<n>/stack.yaml`) ← nest
 (`nests/<n>.yaml`) ← flags, resolved by `nest.Resolve` into a `*nest.Resolved` that spawn consumes.
 Decoding is **strict YAML everywhere** (`KnownFields(true)`): an unknown key is a load error, never a
 silence. Spec §12 gives the reason — a silent `egres:` typo empties the allowlist, and the
-fail-closed settle-loop then dies with no visible cause.
+fail-closed settle-loop then dies with no visible cause. Two readers escape the rule, and neither
+loads config: `manifest.LaxMounts` reads `repos[].mount` alone out of a creation record the strict
+decoder already refused (typically a newer den's, refused on `schema`), for its single caller
+`newMountGuard` in `den rm` — there, reading nothing means guessing that no sibling mounts a
+directory, and guessing wrong moves a live VM's workspace to the trash; `agent.ReadMixin` rereads
+the mixin den itself generated under `cache/`.
 
 **Every system access is injected through `cli.Deps`** (`internal/cli/root.go`), and `deps.Sbx` is
 the *single* `sbx.Runner` shared by `ls`, `sh`, `ports` and spawn — structurally there is no second

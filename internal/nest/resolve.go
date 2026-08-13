@@ -25,6 +25,23 @@ type Options struct {
 	// scratch .` is assertable without a test having to chdir, and the one
 	// system call lives with the other world access in internal/spawn.
 	Cwd string
+	// TolerateUnmappedOptional is `den nest show`'s ALONE. internal/spawn must
+	// never set it, and the asymmetry is the point: on a `select: prompt` nest an
+	// unmapped optional `key:` is a normal state (the session did not ask for
+	// that repo), but a SPAWN still has to refuse it, because the only way to
+	// reach a spawn with an unmapped key is to have selected it. A dry-run has no
+	// such moment: it resolves the whole declared nest, so the same key it must
+	// merely REPORT would refuse the listing outright — the dry-run of the new
+	// mode could not be run on the nests the mode exists for.
+	//
+	// Set, it moves those repos out of Resolved.Repos and into
+	// Resolved.UnmappedOptional. Moves, not annotates in place: a Repo in
+	// Resolved.Repos with an empty Path becomes an `sbx create` workspace
+	// downstream, and that would compile, pass every test that leaves this field
+	// false, and hand sbx a blank argument the day something else set it.
+	//
+	// It never covers a key the caller named on `--only`: see setAsideUnmapped.
+	TolerateUnmappedOptional bool
 }
 
 // Mount is a resolved `mounts:` entry, ready for the spawn argv and the mixin.
@@ -125,6 +142,22 @@ type Resolved struct {
 
 	Egress []string // sorted union of baseline ∪ stack ∪ nest
 	Repos  []Repo   // applied selection, declaration order
+	// UnmappedOptional holds the optional `key:` repos this machine maps nowhere,
+	// set aside instead of refused — always empty unless the caller asked for
+	// that (Options.TolerateUnmappedOptional), so a spawn cannot grow a silent
+	// hole in its mounts. Each entry is resolveRepoKeys' own refusal, unsent: the
+	// reason it would have refused, with the file to edit and the clone URL, so a
+	// listing renders the SAME sentence a spawn would have printed.
+	//
+	// A SEPARATE field rather than a marker on the Repos entries, and this is the
+	// regression it exists to prevent: internal/spawn turns Repos into `sbx
+	// create`'s workspaces, one argument per entry, and these repos have no Path
+	// on this machine. Left in Repos and merely flagged, the first reader that
+	// forgot the flag would hand sbx a blank workspace — it would compile, it
+	// would pass every test that leaves TolerateUnmappedOptional false, and it
+	// would break in the VM, far from here. Out of Repos, there is nothing to
+	// forget.
+	UnmappedOptional []*UnmappedRepoKeyError
 
 	SSHMode string
 	// Mounts carries `ssh.dir` too, as the ssh.mode sugar (resolveMounts). No
@@ -177,6 +210,130 @@ func resolveAgent(g *config.Global, n *Nest, flagAgent string) (string, config.A
 	return name, a, configDir, nil
 }
 
+// UnmappedRepoKeyError is resolveRepoKeys' refusal, given a TYPE so a caller can
+// act on the verdict instead of matching its text — the same reason
+// config.UnreadableStackError has one.
+//
+// internal/spawn is the caller, and what it knows that this package must not is
+// LIVENESS: on a sandbox that is already running, its mounts are frozen at its
+// creation, so mapping the key in config.yaml adds nothing to that VM and the
+// remedy this message names is the wrong one there. Resolve stays pure and
+// learns nothing about sandboxes; the verdict stays its own, and only becomes
+// inspectable with errors.As.
+//
+// The fields are the message's own parts rather than a pre-formatted string:
+// spawn needs Key to name the flag's argument, and one source for the text is
+// what keeps README's quoted copy of it honest.
+type UnmappedRepoKeyError struct {
+	Key      string // the `key:` no personal `repos:` entry carries
+	Optional bool   // the nest's `optional:` marker — an escape exists only there
+	// Prompts is the nest's `select: prompt` mode. It is here because the escape
+	// this message offers is not the same flag in both modes: internal/spawn
+	// REFUSES `--without` on a prompting nest (it has no default selection to
+	// subtract from), so offering it here would name a command den rejects. The
+	// mode is this package's own — Nest.Select, PromptsForRepos — so nothing is
+	// learnt about sandboxes to know it.
+	Prompts    bool
+	URL        string // the nest's `url:`, when it declared one: what to clone
+	ConfigPath string // the personal config.yaml this machine would map it in
+}
+
+// Error keeps, word for word, the message resolveRepoKeys built inline before
+// the type existed — README quotes its opening and internal/spawn asserts
+// substrings of it. Only the escape clause moved, and only on a prompting nest,
+// where the flag it used to offer is now refused.
+func (e *UnmappedRepoKeyError) Error() string {
+	return e.Remedy() + e.withoutClause()
+}
+
+// Remedy is the message WITHOUT its escape clause: the fact and the fix, which
+// are true wherever this key is met.
+//
+// Split out for `den nest show`, which lists the keys it set aside rather than
+// refusing on them (Resolved.UnmappedOptional). There the escape clause would be
+// an answer to a question nobody asked — the repo is ALREADY left out of that
+// listing — while the fact and the fix are exactly what the reader came for.
+// Rebuilding a shorter sentence at the listing site instead would be a second
+// dialect for one remedy, which is the defect this type was extracted to end.
+func (e *UnmappedRepoKeyError) Remedy() string {
+	hint := ""
+	if e.URL != "" {
+		hint = fmt.Sprintf(" (clone: %s)", e.URL)
+	}
+	return fmt.Sprintf(
+		"repo key %q is not mapped on this machine — add `%s: <local path>` under `repos:` "+
+			"in %s%s", e.Key, e.Key, e.ConfigPath, hint)
+}
+
+// withoutClause offers the escape — but only on an OPTIONAL repo, because only
+// there is there one. A teammate who simply does not have the front-end repo
+// needs to be told it rather than left to discover that the flag exists; a
+// teammate missing a REQUIRED repo must not be sent to a flag selectRepos
+// refuses outright ("is a required repo of this nest, it cannot be removed"),
+// which would be a remedy naming a command that itself fails.
+//
+// Which flag it names follows the nest's mode, for exactly that reason one step
+// further: on a `select: prompt` nest `--without` is the command that fails, so
+// the escape there is `--only`, the spelling that states the set outright.
+//
+// Key, not Repo.Name(): the two are the same string for a key-typed repo
+// (Name() returns the Key), and this error only ever describes one.
+func (e *UnmappedRepoKeyError) withoutClause() string {
+	if !e.Optional {
+		return ""
+	}
+	if e.Prompts {
+		return " — or, since this repo is optional, leave it out of this spawn by naming the " +
+			"repos you do want with `--only repo,...` (this nest selects its repos at spawn " +
+			"time, so `--without` is refused on it)"
+	}
+	return fmt.Sprintf(
+		" — or, since this repo is optional, leave it out of this spawn with `--without %s`", e.Key)
+}
+
+// setAsideUnmapped splits the OPTIONAL key-typed repos this machine maps nowhere
+// out of the selection, and returns them as the refusals resolveRepoKeys would
+// have raised on them. It is what Options.TolerateUnmappedOptional turns on, and
+// Resolve calls it only on a `select: prompt` nest.
+//
+// Two exclusions, and both are the whole point:
+//
+//   - REQUIRED repos are never set aside. `select: prompt` governs the optional
+//     repos — a required one is mounted by every spawn of the nest, so an
+//     unmapped key there is a real fault on a prompting nest exactly as it is on
+//     any other, and it must still refuse.
+//   - a repo the caller named on `--only` is never set aside. `--only crm` is a
+//     user asking for crm by hand; a dry-run that quietly listed it as "not
+//     mapped" and exited 0, where the spawn of that same command line refuses,
+//     would be a dry-run disagreeing with the run — the divergence this whole
+//     surface exists to close. Naming it is what makes the refusal theirs to see.
+//
+// only is matched on Repo.Name(), the same identity selectRepos addresses a repo
+// by (the Key for a key-typed entry), so the two cannot drift apart.
+func setAsideUnmapped(denHome string, mapping map[string]string, repos []Repo,
+	only []string) (kept []Repo, aside []*UnmappedRepoKeyError) {
+
+	kept = make([]Repo, 0, len(repos))
+	for _, r := range repos {
+		if r.Key == "" || !r.Optional || slices.Contains(only, r.Name()) {
+			kept = append(kept, r)
+			continue
+		}
+		if _, ok := mapping[r.Key]; ok {
+			kept = append(kept, r)
+			continue
+		}
+		aside = append(aside, &UnmappedRepoKeyError{
+			Key:        r.Key,
+			Optional:   r.Optional,
+			Prompts:    true, // the only mode Resolve calls this in
+			URL:        r.URL,
+			ConfigPath: config.GlobalPath(denHome),
+		})
+	}
+	return kept, aside
+}
+
 // resolveRepoKeys fills the Path of every key-typed repo from the personal
 // mapping. Refusal BEFORE any side effect, naming the exact file and line to
 // add — and the clone command when the nest declared one (spec 2026-08-04
@@ -196,7 +353,7 @@ func resolveAgent(g *config.Global, n *Nest, flagAgent string) (string, config.A
 // What does NOT change is the doctrine: a key on a repo that is still
 // SELECTED refuses, loudly, and den drops nothing on its own. The refusal
 // only gains the escape when there IS one — see withoutClause.
-func resolveRepoKeys(denHome string, mapping map[string]string, repos []Repo) ([]Repo, error) {
+func resolveRepoKeys(denHome string, mapping map[string]string, repos []Repo, prompts bool) ([]Repo, error) {
 	out := slices.Clone(repos)
 	for i, r := range out {
 		if r.Key == "" {
@@ -204,32 +361,17 @@ func resolveRepoKeys(denHome string, mapping map[string]string, repos []Repo) ([
 		}
 		path, ok := mapping[r.Key]
 		if !ok {
-			hint := ""
-			if r.URL != "" {
-				hint = fmt.Sprintf(" (clone: %s)", r.URL)
+			return nil, &UnmappedRepoKeyError{
+				Key:        r.Key,
+				Optional:   r.Optional,
+				Prompts:    prompts,
+				URL:        r.URL,
+				ConfigPath: config.GlobalPath(denHome),
 			}
-			return nil, fmt.Errorf(
-				"repo key %q is not mapped on this machine — add `%s: <local path>` under `repos:` "+
-					"in %s%s%s", r.Key, r.Key, config.GlobalPath(denHome), hint, withoutClause(r))
 		}
 		out[i].Path = path
 	}
 	return out, nil
-}
-
-// withoutClause offers `--without <name>` — but only on an OPTIONAL repo,
-// because only there does it work. A teammate who simply does not have the
-// front-end repo needs to be told the escape rather than left to discover
-// that the flag exists; a teammate missing a REQUIRED repo must not be sent
-// to a flag selectRepos refuses outright ("is a required repo of this nest,
-// it cannot be removed"), which would be a remedy naming a command that
-// itself fails.
-func withoutClause(r Repo) string {
-	if !r.Optional {
-		return ""
-	}
-	return fmt.Sprintf(
-		" — or, since this repo is optional, leave it out of this spawn with `--without %s`", r.Name())
 }
 
 // Resolve applies the full global ← stack ← nest ← flags cascade.
@@ -272,12 +414,23 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 	if err != nil {
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
+	// The dry-run's tolerance, between the selection and the key resolution:
+	// after selectRepos, because a repo `--without` already dropped is not
+	// "unmapped", it is absent; before resolveRepoKeys, because that function's
+	// job is to refuse precisely what this one has just set aside. Guarded on the
+	// MODE as well as on the option — an unmapped key on a `select: all` nest is
+	// a fault whoever is asking, and the listing of such a nest must keep
+	// refusing (Options.TolerateUnmappedOptional).
+	var unmappedOptional []*UnmappedRepoKeyError
+	if o.TolerateUnmappedOptional && n.PromptsForRepos() {
+		repos, unmappedOptional = setAsideUnmapped(denHome, g.Repos, repos, o.Only)
+	}
 	// Key resolution BEFORE the positionals are merged in, so the merged list
 	// holds nothing but real paths: checkNoDuplicatePaths below compares them,
 	// and an unresolved key (Path still empty) would silently sit out the very
 	// comparison that catches `den backend ~/dev/review-mgmt` repeating a repo
 	// the nest already maps to that same directory.
-	repos, err = resolveRepoKeys(denHome, g.Repos, repos)
+	repos, err = resolveRepoKeys(denHome, g.Repos, repos, n.PromptsForRepos())
 	if err != nil {
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
@@ -311,18 +464,19 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 	}
 
 	return &Resolved{
-		DenHome:        denHome,
-		Nest:           n,
-		Stack:          s,
-		AgentName:      agentName,
-		Agent:          agent,
-		AgentConfigDir: configDir,
-		Env:            mergeEnv(agent.Env, n.Env, configDir),
-		Egress:         unionEgress(g.Egress, s.Egress, n.Egress),
-		Repos:          repos,
-		SSHMode:        g.SSH.Mode,
-		Mounts:         resolveMounts(g),
-		WorktreeLayout: g.WorktreeLayout,
-		WorktreeRoot:   g.WorktreeRoot,
+		DenHome:          denHome,
+		Nest:             n,
+		Stack:            s,
+		AgentName:        agentName,
+		Agent:            agent,
+		AgentConfigDir:   configDir,
+		Env:              mergeEnv(agent.Env, n.Env, configDir),
+		Egress:           unionEgress(g.Egress, s.Egress, n.Egress),
+		Repos:            repos,
+		UnmappedOptional: unmappedOptional,
+		SSHMode:          g.SSH.Mode,
+		Mounts:           resolveMounts(g),
+		WorktreeLayout:   g.WorktreeLayout,
+		WorktreeRoot:     g.WorktreeRoot,
 	}, nil
 }

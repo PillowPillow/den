@@ -34,7 +34,7 @@ func TestLsPrintsTheColumns(t *testing.T) {
 	}
 
 	header := strings.Fields(lines[0])
-	expectedHeader := []string{"NAME", "NEST", "WORKTREE", "STATUS", "WORKSPACES"}
+	expectedHeader := []string{"NAME", "NEST", "INSTANCE", "WORKTREE", "STATUS", "WORKSPACES"}
 	if len(header) != len(expectedHeader) {
 		t.Fatalf("header = %v, expected %v", header, expectedHeader)
 	}
@@ -45,9 +45,11 @@ func TestLsPrintsTheColumns(t *testing.T) {
 	}
 
 	fields := strings.Fields(lines[1])
-	// NAME stays the full name; NEST and WORKTREE are the pieces SPLIT by
-	// sbx.Sandbox.Nest()/Worktree(), not found by accident inside NAME.
-	expectedLine := []string{"api.feat12", "api", "feat12", "running"}
+	// NAME stays the full name; NEST and INSTANCE are the pieces SPLIT by
+	// sbx.Sandbox.Nest()/Instance(), not found by accident inside NAME. This
+	// sandbox carries no creation record, so WORKTREE falls back to the same
+	// flattened component as INSTANCE — the only string den has left.
+	expectedLine := []string{"api.feat12", "api", "feat12", "feat12", "running"}
 	if len(fields) < len(expectedLine) {
 		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
 	}
@@ -312,6 +314,101 @@ func TestLsSurvivesACorruptRecord(t *testing.T) {
 	}
 }
 
+// Finding 5 (PR #68 review) — an UNREADABLE record is not "no record". Before
+// this fix, a corrupt record for a --as sandbox made `den ls` fall through to
+// the no-record branch and print the label under WORKTREE, as though "reco"
+// were a branch that exists in some repository. den does not know the
+// worktree of a record it could not read, and must say so ("?") rather than
+// guess.
+// api.feat12 carries NO record at all, next to api.reco's unreadable one, on
+// purpose: a fix that turned "unreadable" into a blanket `len(broken) > 0`
+// flag (rather than a per-sandbox lookup) would pass a single-sandbox test
+// just as well, since ANY broken file in state/sandboxes/ would trip it. With
+// a second, record-less sandbox in the same run, that mutation prints "?" for
+// api.feat12 too and this test catches it — while also being finding 5's own
+// second checklist item, "no record at all keeps today's fallback", in the
+// one shape TestLsPrintsTheColumns/TestLsFallsBackToTheSandboxNameWithoutARecord
+// do not cover: state/sandboxes/ populated with someone ELSE's broken file.
+func TestLsMarksAnUnreadableRecordAsUnknownWorktree(t *testing.T) {
+	dir := testDenHome(t) // nest "api" is declared there
+	if err := os.MkdirAll(manifest.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Hand-written, not writeManifest: the point of this test is a file
+	// writeManifest could never produce — one that fails to decode. The
+	// filename is exactly what manifest.Path would compose for "api.reco",
+	// which is the mapping newLsCmd relies on to know THIS record is the
+	// unreadable one.
+	if err := os.WriteFile(filepath.Join(manifest.Dir(dir), "api.reco.yaml"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api.reco","status":"running"},` +
+				`{"name":"api.feat12","status":"running"}]}`)},
+	}}
+
+	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "ls")
+	if err != nil {
+		t.Fatalf("den ls must never fail over an unreadable record: %v", err)
+	}
+
+	var lineReco, lineFeat12 string
+	for _, l := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(l)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "api.reco":
+			lineReco = l
+		case "api.feat12":
+			lineFeat12 = l
+		}
+	}
+	if lineReco == "" || lineFeat12 == "" {
+		t.Fatalf("both sandboxes must each appear on a line; got:\n%s", stdout)
+	}
+
+	fields := strings.Fields(lineReco)
+	expectedLine := []string{"api.reco", "api", "reco", "?", "running"}
+	if len(fields) < len(expectedLine) {
+		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
+	}
+	for i, val := range expectedLine {
+		if fields[i] != val {
+			t.Errorf("column %d = %q, expected %q; full line: %v", i, fields[i], val, fields)
+		}
+	}
+
+	// The sibling with no record at all must keep today's fallback — the
+	// flattened component under WORKTREE, exactly as if api.reco's broken
+	// file were not sitting right next to it in state/sandboxes/.
+	fields = strings.Fields(lineFeat12)
+	expectedLine = []string{"api.feat12", "api", "feat12", "feat12", "running"}
+	if len(fields) < len(expectedLine) {
+		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
+	}
+	for i, val := range expectedLine {
+		if fields[i] != val {
+			t.Errorf("column %d = %q, expected %q; full line: %v", i, fields[i], val, fields)
+		}
+	}
+
+	// The message names the FILE (den doctor's own dialect, reused rather
+	// than inventing a second one — see the comment above unreadable in
+	// ls.go), not the sandbox: "api.reco.yaml" is the one substring both
+	// spellings would share, so it also proves the sandbox-name recovery
+	// from the path landed on the right file.
+	if !strings.Contains(stderr, "creation record") || !strings.Contains(stderr, "api.reco.yaml unreadable:") {
+		t.Errorf("the unreadable record must be named on stderr; got:\n%s", stderr)
+	}
+	if strings.Contains(stdout, "unreadable") {
+		t.Errorf("the warning must not appear on stdout; got:\n%s", stdout)
+	}
+}
+
 // Flattening is lossy: `-w feature/12` becomes the sandbox api.feat-12, and
 // before the record there was nowhere left to read "feature/12" from. The NEST
 // column has the same problem in reverse — a source nest spawns as "corp-api"
@@ -410,6 +507,103 @@ func TestLsMarksASourceSandboxWhoseSourceNestIsGone(t *testing.T) {
 	}
 	if !strings.Contains(line, "corp:api ?") {
 		t.Errorf("a source sandbox whose source nest no longer exists must still be marked; line: %q", line)
+	}
+}
+
+// A sandbox named by --as carries a label in component 2, and a label is not a
+// branch. With a record present, the WORKTREE column must read from the record
+// alone: the pre-existing fallback on component 2 was written when that
+// component could only ever be a flattened branch.
+func TestLsDoesNotPrintTheInstanceAsAWorktree(t *testing.T) {
+	denHome := testDenHome(t) // nest "api" is declared there
+	// lsManifest is not used here: it hard-codes a Worktree block, and the
+	// scenario this test proves is `--as` WITHOUT `-w` — the record spawn
+	// itself writes for that case carries no Worktree block at all (see
+	// TestInstanceWithoutWorktreeRecordsNoWorktreeBlock in internal/spawn).
+	// A record claiming a worktree while Repos carries none is a shape only
+	// a hand-edit could produce, so Repos here stays plain (Worktree: false).
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox: "api.reco",
+		Nest:    manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: "/dev/api", Mount: "/w/api",
+		}},
+	})
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	header := strings.Fields(lines[0])
+	expectedHeader := []string{"NAME", "NEST", "INSTANCE", "WORKTREE", "STATUS", "WORKSPACES"}
+	if len(header) != len(expectedHeader) {
+		t.Fatalf("header = %v, expected %v", header, expectedHeader)
+	}
+	for i, col := range expectedHeader {
+		if header[i] != col {
+			t.Errorf("header column %d = %q, expected %q", i, header[i], col)
+		}
+	}
+
+	fields := strings.Fields(lines[1])
+	expectedLine := []string{"api.reco", "api", "reco", "-", "running"}
+	if len(fields) < len(expectedLine) {
+		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
+	}
+	for i, val := range expectedLine {
+		if fields[i] != val {
+			t.Errorf("column %d = %q, expected %q; full line: %v", i, fields[i], val, fields)
+		}
+	}
+}
+
+// The flagship scenario of --as: a label AND a worktree together, on the same
+// sandbox. INSTANCE and WORKTREE must show two DIFFERENT strings — the switch
+// in newLsCmd has a third branch (hasRecord && m.Worktree != nil) that the two
+// tests above never exercise, since one has no record and the other's record
+// has no worktree block.
+func TestLsShowsBothTheInstanceAndItsWorktree(t *testing.T) {
+	denHome := testDenHome(t) // nest "api" is declared there
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox: "api.reco",
+		Nest:    manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{
+			Name: "feature-123", Branch: "feature/123", Layout: "central",
+			Root: filepath.Join(denHome, "worktrees"),
+		},
+		Repos: []manifest.Repo{{
+			Name: "api", Origin: manifest.OriginPath, Repo: "/dev/api",
+			Mount: filepath.Join(denHome, "worktrees", "feature-123", "api"), Worktree: true,
+		}},
+	})
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	fields := strings.Fields(lines[1])
+	expectedLine := []string{"api.reco", "api", "reco", "feature/123", "running"}
+	if len(fields) < len(expectedLine) {
+		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
+	}
+	for i, val := range expectedLine {
+		if fields[i] != val {
+			t.Errorf("column %d = %q, expected %q; full line: %v", i, fields[i], val, fields)
+		}
 	}
 }
 

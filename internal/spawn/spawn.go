@@ -77,8 +77,10 @@ type Deps struct {
 	// that it, and not the selection logic, is what stays untested.
 	//
 	// Nil means NO terminal, deliberately: an unwired probe must take `-i`'s
-	// clean refusal — which names --only/--without — rather than let the spawn
-	// block on a read nobody will answer.
+	// clean refusal — which names the flags that make the same selection
+	// without a prompt (`--only`, plus `--without` on a nest that has a default
+	// selection to subtract from) — rather than let the spawn block on a read
+	// nobody will answer.
 	IsTTY func() bool
 	// SSHAgent reports the state of the forwarded SSH agent. Injected, and
 	// nil-tolerant: a nil probe (every test that doesn't exercise SSH, plus the
@@ -122,6 +124,19 @@ func (d Deps) goos() string {
 type Options struct {
 	Nest     string
 	Worktree string
+	// Instance is `--as`: the label that goes into the SECOND component of the
+	// sandbox name, the one -w fills with the flattened branch. It exists
+	// because that component is den's only discriminator — sbx has no
+	// --label — so without it two different repo selections of one nest are
+	// one sandbox, and the second spawn silently attaches the first
+	// (2026-08-04-adhoc-repos-design.md, decision 7, which deferred exactly
+	// this).
+	//
+	// It renames the SANDBOX and nothing else. The worktree directory keeps
+	// being named after the flattened branch (worktree.Name.Dir): a label is
+	// arbitrary, and two nests spawned `--as x` would otherwise fight over
+	// <worktree_root>/x/<repo>.
+	Instance string
 	Agent    string
 	Without  []string
 	Only     []string
@@ -192,21 +207,10 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		d.Err = io.Discard
 	}
 
-	// 0. A contradiction on the command line, refused before anything is read:
-	// `-i` and `--only`/`--without` are two answers to the same question.
-	//
-	// Refusing is the only one of the three possible readings a user cannot
-	// misinterpret — taking the flags as the checklist's initial state, or
-	// letting them win and ignoring `-i`, both leave someone convinced they
-	// selected something they did not. The repo already refuses rather than
-	// normalizing in silence (spec §2).
-	if o.Interactive {
-		if conflicting := selectionFlagsInPlay(o); conflicting != "" {
-			return fmt.Errorf(
-				"-i and %s both select repos, and they contradict each other — drop one: "+
-					"%s is the non-interactive form of the checklist", conflicting, conflicting)
-		}
-	}
+	// 0. The first contradiction, `-i` against `--only`/`--without`, is NOT here:
+	// it moved to step 0bis, below the nest load, because its message names the
+	// flag it tells the user to keep and that flag depends on the nest. The two
+	// that follow depend on the command line alone and stay.
 
 	// The second contradiction, refused in the same place and for the same
 	// reason as the first: --detach says "do not enter the VM", a command says
@@ -259,6 +263,61 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		return err
 	}
 
+	// 0bis. The command-line contradictions whose verdict or whose MESSAGE needs
+	// the nest — `select:` is in the file loaded on the line above, and step 0
+	// runs before there is a nest to ask. Still ahead of every side effect (the
+	// property §6 actually depends on) and ahead of the stack resolution below,
+	// so a command that contradicts itself is refused before den diagnoses
+	// anything else.
+	//
+	// `--without` subtracts from a default selection, and a `select: prompt`
+	// nest declares it has none. The verdict and its sentence are
+	// nest.CheckWithout's — read it for why the flag is refused rather than
+	// normalized, and why `--only` is the spelling the message names. It moved
+	// there when `den nest show`, the documented dry-run of this command, had to
+	// give the SAME answer to the same flag: it never goes through Spawn, so a
+	// refusal written here alone made one flag mean two things.
+	//
+	// UNCONDITIONAL, not restricted to the create branch. On an attach the flag
+	// is not meaningless in the same way — with no readable record den resolves
+	// the full declared list, and a subtraction from THAT list does read — but a
+	// refusal that depends on liveness is two spawn sequences to keep true where
+	// §6 describes one, and it would make the same command legal or not depending
+	// on whether a VM happens to be up. What the compound case needs instead is a
+	// remedy that works on a prompting nest: the `nest.Resolve` wrap below names
+	// `--only`, and reportUnrebuiltSelection follows the mode as well.
+	//
+	// nestRoot alone is passed: the file the message names is FilePath(nestRoot,
+	// n.Name), and n.Name IS bareNest — LoadNest set it from the filename two
+	// lines above, unconditionally.
+	if err := n.CheckWithout(nestRoot, o.Without); err != nil {
+		return err
+	}
+
+	// `-i` and `--only`/`--without` are two answers to the same question.
+	// Refusing is the only one of the three possible readings a user cannot
+	// misinterpret — taking the flags as the checklist's initial state, or
+	// letting them win and ignoring `-i`, both leave someone convinced they
+	// selected something they did not. The repo already refuses rather than
+	// normalizing in silence (spec §2).
+	//
+	// SECOND, deliberately. On a prompting nest `--without` is not a valid input
+	// at all, so its contradiction with `-i` is not the first thing wrong with
+	// that command line: refused here, the user would be told to keep the flag
+	// den itself rejects, which is this increment's recurring defect — a remedy
+	// naming a command that fails. The refusal above fires instead, and its
+	// remedy (`--only`) is true whether or not `-i` was typed.
+	//
+	// It also had to leave step 0 for that ordering to exist: the verdict is
+	// still pure command line, but the message is not.
+	if o.Interactive {
+		if conflicting := selectionFlagsInPlay(o); conflicting != "" {
+			return fmt.Errorf(
+				"-i and %s both select repos, and they contradict each other — drop one: "+
+					"%s is the non-interactive form of the checklist", conflicting, conflicting)
+		}
+	}
+
 	// Stack origin. `n.Stack` is a REFERENCE — bare inside a source,
 	// optionally prefixed for a local nest, and for a LOCAL nest only,
 	// falling back to the personal `g.Defaults.Stack` when absent — and
@@ -302,36 +361,27 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 	}
 
-	// `-i` feeds the SAME input as `--without`, and nothing more: the checklist
-	// is a source of input placed in front of a selection rule that already
-	// exists and is already tested (nest.Resolve). Nothing here reopens it.
-	without := o.Without
-	if o.Interactive {
-		if without, err = interactiveWithout(d, n); err != nil {
-			return err
-		}
-	}
-	// The working directory is read HERE, once, and handed to internal/nest,
-	// which stays pure: `den spawn scratch .` is then assertable without a test having
-	// to chdir. os.Getwd is world access, like the os.Stat probes at step 2 —
-	// this side of the boundary is where it belongs.
+	// ORDER, load-bearing. The name is computed and the sandbox list is read
+	// BEFORE the checklist, so a live sandbox is attached to without a
+	// question nobody can act on.
 	//
-	// Read only when there IS a positional: a spawn with none must not fail
-	// because the process sits in a deleted directory.
-	cwd := ""
-	if len(o.Repos) > 0 {
-		if cwd, err = os.Getwd(); err != nil {
-			return fmt.Errorf(
-				"reading the working directory, needed to resolve the repos given on "+
-					"the command line: %w", err)
-		}
-	}
-	r, err := nest.Resolve(denHome, g, stacks, n, nest.Options{
-		Agent: o.Agent, Without: without, Only: o.Only, Repos: o.Repos, Cwd: cwd,
-	})
-	if err != nil {
-		return err
-	}
+	// This puts a `sbx ls` READ ahead of the config refusals nest.Resolve
+	// carries (an unmapped key, a missing git dir). §6's promise survives
+	// verbatim — it is about SIDE EFFECTS ("a refusal never leaves an orphaned
+	// worktree") and listing creates nothing. What moves is the order of
+	// DIAGNOSTICS: a typo in `repos:` now surfaces after a call to sbx. The
+	// order of the sbx calls themselves is unchanged (`ls`, then the image
+	// check's `template ls`, then `create`) — only host-side work moved
+	// between them.
+	//
+	// Nothing in what follows CREATES anything: two Flatten calls (pure), an
+	// os.Stat and crossSourceCollision (reads), sbx.SandboxName (pure), one
+	// announce line and a listing. Selection-independent, not pure — which is
+	// the only property §6 depends on.
+	//
+	// Unconditional, not reserved to `select: prompt` nests: an order that
+	// depends on a configuration key is two spawn sequences to keep true, and
+	// §6 describes one.
 
 	// The name is computed before any side effect: a worktree den cannot
 	// name is refused before anything is created.
@@ -351,6 +401,22 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			return err
 		}
 		worktreeName = worktree.Name{Dir: flattened, Branch: o.Worktree}
+	}
+	// The second component: `--as` when given, else the flattened branch.
+	//
+	// NOT worktreeName.Dir under --as, deliberately. Dir names the worktree
+	// DIRECTORY (worktree.Path) and lands in the manifest as Worktree.Name;
+	// letting the label reach it would put feature/123's worktree under
+	// <root>/reco/api, and would make two different nests spawned `--as x`
+	// collide on <root>/x/<repo>. A branch is a meaningful discriminator, a
+	// label is not.
+	instance := worktreeName.Dir
+	if o.Instance != "" {
+		flattened, err := config.FlattenSandboxComponent("instance", o.Instance)
+		if err != nil {
+			return err
+		}
+		instance = flattened
 	}
 	// Sandbox naming: ":" is not in sbx's `--name` charset, so a nest loaded
 	// FROM a source cannot spawn under its prefixed reference verbatim — its
@@ -396,17 +462,211 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				o.Nest, nestComponent, otherPath, nest.FilePath(nestRoot, bareNest), otherPath)
 		}
 	}
-	sandboxName, err := sbx.SandboxName(nestComponent, worktreeName.Dir)
+	sandboxName, err := sbx.SandboxName(nestComponent, instance)
 	if err != nil {
 		return err
 	}
 	// Announced early: otherwise the user looks for "feature/123" in
 	// `den ls` and never finds it — the sandbox carries the flattened name
-	// there.
-	if worktreeName.Dir != worktreeName.Branch {
+	// there. Under --as the gap is wider still (the sandbox carries neither
+	// the branch nor anything derived from it), so the same line covers both
+	// and the condition stays one condition.
+	// Three cases, all checked: `-w feature/123` alone fires (Branch
+	// "feature/123" vs instance "feature-123", as before); `-w feature/123
+	// --as reco` fires and names api.reco, which is precisely the case where
+	// the user would otherwise hunt for their branch in `den ls`; `-w feat`
+	// alone stays silent, nothing having been rewritten. Do not "simplify"
+	// back to Dir != Branch — that form cannot see the label at all.
+	if worktreeName.Branch != "" && worktreeName.Branch != instance {
 		fmt.Fprintf(d.Out,
 			"worktree %q: branch name kept, sandbox becomes %s\n",
 			worktreeName.Branch, sandboxName)
+	}
+
+	// 1bis. Spawn-or-attach is decided HERE, on the name just computed. The
+	// verdict is what closes the checklist below, and the stack image check it
+	// also feeds stays at its own site further down — that one consumes
+	// `r.Stack`, which does not exist until nest.Resolve has run.
+	//
+	// What the move does widen is the window between this verdict and the `sbx
+	// create` at step 6, which nest.Resolve, the repo probes and the worktree
+	// operations now sit inside and which git can make slow. A concurrent `den` on the SAME sandbox name can create
+	// it meanwhile, and this one would then create where attaching was the
+	// correct answer; the duplicate then lands on sbx, which owns the name and
+	// is the only thing that can arbitrate it. Not verified: what `sbx create`
+	// answers on a name that already exists — den expects a refusal naming the
+	// collision, and even so this is the cheap side of the trade. The regression
+	// the old position produced was neither rare nor conditional on a race: one
+	// orphaned git worktree per repo, on EVERY refusal, left to clean up by hand.
+	//
+	// The found Sandbox is KEPT, not reduced to a bool: only it carries the
+	// real status and the workspaces the VM actually mounts.
+	boxes, err := sbx.Ls(ctx, d.Sbx)
+	if err != nil {
+		return err
+	}
+	live := sbx.Find(boxes, sandboxName)
+
+	// The creation record, read ONCE for the whole function. Two consumers, and
+	// the first of them is the selection rebuild below, which runs before
+	// nest.Resolve — so the read cannot wait for the attach branch, where it
+	// used to sit.
+	//
+	// Unconditional rather than guarded on `live != nil`: on the create branch
+	// nothing consumes it, a stale record with no sandbox is an accepted state
+	// (see the manifest.Write comment at step 6), and a branch here would buy
+	// one os.Open in exchange for a second thing to keep true.
+	//
+	// denHome, not r.DenHome: Resolve has not run yet. The two are the same
+	// string whenever Resolve accepts — it sets r.DenHome = denHome only for an
+	// absolute path and refuses everything else — and a relative one makes this
+	// Read fail, which takes the no-record path below; Resolve then refuses the
+	// den home two steps later exactly as it did before.
+	recorded, recordedErr := manifest.Read(denHome, sandboxName)
+
+	// The checklist has TWO entry points and ONE implementation: `-i` on any
+	// nest, and a `select: prompt` nest that has no default selection to
+	// offer. Both write into the SAME `without` list that --without fills, so
+	// nest.Resolve keeps applying the one selection rule it already owns.
+	//
+	// A selection flag answers the question outright, so it silences both
+	// entry points — that is what makes a prompting nest usable from `den
+	// exec`, a script and CI, and `-i` + a flag is refused far upstream (step
+	// 0bis) as the contradiction it is.
+	//
+	// WHICH flag can silence it follows the nest, since step 0bis: `--without` is
+	// refused on a `select: prompt` nest, so on such a nest `--only` is the only
+	// spelling that reaches this line with selectionOpen false. That was verified
+	// here rather than assumed, because the pair it settles is this function's
+	// whole subject — for a prompting nest selectionOpen is now false in exactly
+	// one case, `--only`, and that case needs no rebuild: the user named the set,
+	// and rebuilding one from the record would discard what they typed, which is
+	// the opposite of "a selection flag answers the question outright". The path
+	// that DID need a rebuild and skipped it is gone with the flag that reached
+	// it: `--without` on a prompting nest's attach used to resolve the full
+	// declared list and refuse on the first `key:` unmapped here — the very
+	// refusal the rebuild below exists to prevent, taken by the one input that
+	// walked past it.
+	//
+	// One refusal survives on both branches alike, and it is not this switch's to
+	// close: a REQUIRED key-typed repo this machine does not map. selectRepos
+	// keeps every required repo whatever the flags say, so no selection escapes
+	// it, on an attach as on a create — pre-existing, symmetric, and already
+	// stated on recordedWithout.
+	//
+	// `live == nil` silences both as well, and that guard IS decision 6: a live
+	// sandbox is attached to, its mounts come from its creation and nothing is
+	// reapplied (§6), so a selection collected here could never be mounted.
+	// Asking for it anyway is the silence §2 forbids, put to somebody with no
+	// way to guess the question is pointless. It covers `-i` too, deliberately:
+	// an order that depends on a flag is two spawn sequences to keep true, and
+	// the explanation the user gets on the attach branch below is the same one
+	// either way.
+	//
+	// selectionOpen is that whole question, named ONCE and consumed by both
+	// branches. It was spelled out twice, and the two spellings drifted apart
+	// inside this very increment: the rebuild first shipped scoped to
+	// `n.PromptsForRepos()` alone, which turned `-i` on a live nest with an
+	// unmapped optional `key:` into a refusal where it used to prompt. A comment
+	// and two tests were holding an equality the compiler can hold for free, so
+	// the duplication is gone — a named invariant that has already broken once
+	// is not one to keep by hand.
+	//
+	// The two branches are the two sides of ONE channel, which is why they must
+	// cover exactly the same spawns:
+	//
+	//   - on a LIVE sandbox the question is SHUT and answered from the RECORD.
+	//     Its mounts come from its creation and nothing is reapplied (§6), so a
+	//     selection collected here could never be mounted; what den mounted is
+	//     recorded, not re-derived, which is what internal/manifest exists for.
+	//     Re-deriving is not merely noisy, it REFUSES: today's config has no idea
+	//     which four of thirty repos this VM was created with, so every declined
+	//     `key:` repo comes back selected and resolveRepoKeys
+	//     (internal/nest/resolve.go) dies on the first one unmapped on this
+	//     machine.
+	//   - on the CREATE branch the same question goes to the checklist.
+	//
+	// Narrow one side alone and the spawns it stops covering keep the shut half
+	// with nothing put back — the regression above, exactly.
+	// TestInteractiveAttachRebuildsTheSelectionFromTheRecord and
+	// TestPromptModeAttachRebuildsTheSelectionFromTheRecord are the two entry
+	// points, held against one fixture.
+	//
+	// The bare attach of an ordinary nest is outside selectionOpen entirely, and
+	// that is what keeps reportNestChangedSinceCreation alive: rebuilt for every
+	// nest, the one warning whose job is to say the nest moved under a VM that
+	// did not could never fire again on an optional-repo edit, for anybody.
+	//
+	// selectionUnknown is the no-record case: a legacy sandbox, one created
+	// outside den, or a record den could not READ — alike here, since den never
+	// refuses over a record it could not read and must never strand a live VM
+	// (T13/T16). The attach proceeds on the full list, the one report that would
+	// then lie is muted at step 6, and the user is TOLD (the two cases are one
+	// silence otherwise — see reportUnrebuiltSelection).
+	//
+	// It is also read once more, right after nest.Resolve: proceeding on the full
+	// list is what makes that resolution die on an optional `key:` unmapped here,
+	// and the flag carries the ONLY context that tells that refusal apart from
+	// the same refusal on a create — see unresolvedOnALiveSandbox.
+	selectionOpen := (o.Interactive || n.PromptsForRepos()) &&
+		len(o.Without) == 0 && len(o.Only) == 0
+	without := o.Without
+	selectionUnknown := false
+	switch {
+	case live != nil && selectionOpen:
+		// A nest with NO optional repo has no selection to lose. Every repo it
+		// declares is mounted, on the create branch and on this one alike, so the
+		// full list den is about to resolve is not a phantom — it is exactly what
+		// this sandbox was created with, record or no record. Both halves of the
+		// no-record case are guarded on that, not just the printed line:
+		//
+		//   - the line itself described a problem that cannot exist there, and
+		//     named `--only`/`--without` over repos nest.Resolve refuses to remove
+		//     ("is a required repo of this nest, it cannot be removed") — a remedy
+		//     that fails, in a diagnostic nobody needed. The create branch says the
+		//     true thing about this shape ("nest %s declares no optional repo"),
+		//     and hasOptionalRepo is the predicate both now read.
+		//   - selectionUnknown mutes reportUnmountedRepos (step 6), for a reason
+		//     that holds only where a selection exists: the "expected" side would
+		//     be a selection nobody made. Here it is the whole declared list and it
+		//     is right, so muting would drop a TRUE warning — a VM genuinely
+		//     missing a repo, silently.
+		//
+		// unresolvedOnALiveSandbox, the other consumer, cannot fire on such a nest
+		// either: it wraps optional unmapped keys only, and there are none.
+		if recordedErr != nil {
+			if hasOptionalRepo(n.Repos) {
+				selectionUnknown = true
+				reportUnrebuiltSelection(d.Out, sandboxName, recordedErr, n.PromptsForRepos())
+			}
+			break
+		}
+		without = recordedWithout(n, recorded)
+	case selectionOpen:
+		if without, err = interactiveWithout(d, denHome, n, g.Repos); err != nil {
+			return err
+		}
+	}
+	// The working directory is read HERE, once, and handed to internal/nest,
+	// which stays pure: `den spawn scratch .` is then assertable without a test having
+	// to chdir. os.Getwd is world access, like the os.Stat probes at step 2 —
+	// this side of the boundary is where it belongs.
+	//
+	// Read only when there IS a positional: a spawn with none must not fail
+	// because the process sits in a deleted directory.
+	cwd := ""
+	if len(o.Repos) > 0 {
+		if cwd, err = os.Getwd(); err != nil {
+			return fmt.Errorf(
+				"reading the working directory, needed to resolve the repos given on "+
+					"the command line: %w", err)
+		}
+	}
+	r, err := nest.Resolve(denHome, g, stacks, n, nest.Options{
+		Agent: o.Agent, Without: without, Only: o.Only, Repos: o.Repos, Cwd: cwd,
+	})
+	if err != nil {
+		return unresolvedOnALiveSandbox(err, sandboxName, selectionUnknown)
 	}
 
 	// 2. All repos must exist before any create (spec §11).
@@ -452,8 +712,36 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// repository (a clone and one of its worktrees), the case step 3 already
 	// dedups on gitDirs. Keyed by path, the alias falls on the same probe and
 	// the reuse does not reintroduce the call it removes.
+	//
+	// SCOPED to the spawns that consume the answer, which is the create branch
+	// plus the attach branch's NO-RECORD fallback — the union of step 3's two
+	// reads of commonDirs, and nothing else.
+	//
+	// On an attach WITH a record it ran and its answer was discarded: step 3 takes
+	// the git dirs from the record. The cost was not the call, it was the refusal
+	// the call carries. Since the attach branch stopped propagating `-w` at all
+	// (step 3: it COMPUTES paths, it creates nothing, and with a record it does not
+	// even read the flag), that refusal told the user `-w` propagates a worktree to
+	// every repo of the spawn — on a spawn where it propagates to none. den refused
+	// to attach to a healthy live VM over a consequence that cannot happen there,
+	// which is exactly what T13/T16 forbid: a live sandbox must never be stranded.
+	//
+	// Scoping was chosen over rewording the refusal. A message true on both
+	// branches would have to describe two different things `-w` does, and the
+	// second one — deriving expected paths for a comparison — is not a reason to
+	// refuse an attach at all. Where the probe survives, on the fallback, the
+	// existing sentence is exactly true: the git dirs are derived from `-w` there
+	// and there is nothing else left to derive them from.
+	//
+	// It does make the sequence depend on a file's readability, which the previous
+	// comment here refused. That objection was already spent: step 3 has read the
+	// git dirs from the record when it can and from this probe when it cannot since
+	// the attach branch stopped creating worktrees, so the fork exists either way —
+	// the probe merely stops being run for a branch that ignores it.
+	//
+	// Still a pure read wherever it runs, and still exactly the value step 3 needs.
 	commonDirs := make(map[string]string, len(r.Repos))
-	if o.Worktree != "" {
+	if o.Worktree != "" && (live == nil || recordedErr != nil) {
 		for _, repo := range r.Repos {
 			if _, known := commonDirs[repo.Path]; known {
 				continue
@@ -569,11 +857,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// itself assertable from a test that sets nothing but its arguments.
 	warnEmptySSHAgent(d.Err, r.SSHMode, os.Getenv("SSH_AUTH_SOCK"), d.SSHAgent, d.goos())
 
-	// 2quater. Spawn-or-attach is decided HERE, before the first side effect, and
-	// the stack image is checked on the create branch (spec §11).
+	// 2quater. The stack image is checked on the create branch (spec §11),
+	// against the verdict read at step 1bis.
 	//
-	// The reading used to sit at step 6, next to the create/attach fork it
-	// feeds. It moved up because the image check has to be BOTH:
+	// The check used to sit at step 6, next to the create/attach fork the
+	// verdict feeds. It moved up because it has to be BOTH:
 	//
 	//   - conditional on creating. A live sandbox is attached to, and attaching
 	//     needs no image — refusing there would refuse a `den spawn` that works,
@@ -583,27 +871,13 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	//     up, which is the exact regression the ordering of this function exists
 	//     to prevent.
 	//
-	// Nothing between here and step 6 touches sbx, so no call order changed —
-	// only git work now happens after the reading instead of before it.
+	// It stays HERE rather than travelling up with the listing: it consumes
+	// `r.Stack`, which does not exist until nest.Resolve has run. `live` is
+	// still in scope, so the condition means exactly what it did.
 	//
-	// What the move does widen is the window between this verdict and the `sbx
-	// create` at step 6, which the worktree operations now sit inside and which
-	// git can make slow. A concurrent `den` on the SAME sandbox name can create
-	// it meanwhile, and this one would then create where attaching was the
-	// correct answer; the duplicate then lands on sbx, which owns the name and
-	// is the only thing that can arbitrate it. Not verified: what `sbx create`
-	// answers on a name that already exists — den expects a refusal naming the
-	// collision, and even so this is the cheap side of the trade. The regression
-	// the old position produced was neither rare nor conditional on a race: one
-	// orphaned git worktree per repo, on EVERY refusal, left to clean up by hand.
-	//
-	// The found Sandbox is KEPT, not reduced to a bool: only it carries the
-	// real status and the workspaces the VM actually mounts.
-	boxes, err := sbx.Ls(ctx, d.Sbx)
-	if err != nil {
-		return err
-	}
-	live := sbx.Find(boxes, sandboxName)
+	// Nothing between here and step 6 touches sbx, so the sbx call order is
+	// still `ls`, then this `template ls`, then `create` — what moved between
+	// them is host-side work only.
 	if live == nil {
 		// stackSrcName, not srcName: the stack's own origin. A LOCAL nest may
 		// carry a prefixed `stack:`, and a source nest's stack always resolves
@@ -615,20 +889,85 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 	}
 
-	// 3. Worktrees, if requested. The first workspace must stay the first
-	// repo: sbx.Sandbox.Workdir depends on it for attach, and nothing at
-	// its level can verify the list was built in this order.
+	// 3. Worktrees. The first workspace must stay the first repo:
+	// sbx.Sandbox.Workdir depends on it for attach, and nothing at its level
+	// can verify the list was built in this order.
+	//
+	// TWO code paths, forked on the create/attach verdict of step 1bis, and
+	// they answer two different questions:
+	//
+	//   - CREATING, under -w: den MATERIALIZES a worktree per repo
+	//     (worktree.Ensure) and mounts it. The only side effect of this step.
+	//   - ATTACHING: den COMPUTES the paths the VM is expected to mount
+	//     (worktree.Path, pure) and creates nothing. Attaching reapplies
+	//     nothing to a live VM (§6), so a worktree created here would be
+	//     mounted by no sandbox, ever — and the manifest is not rewritten on
+	//     this branch, so `den rm` could not reclaim it either. `-w` on a live
+	//     `--as` instance used to leave exactly that: one directory and one
+	//     branch per repo, with no den command able to remove them.
+	//
+	// It strengthens the ordering property this function is built on. That
+	// property was "a refusal never leaves an orphaned worktree", held by
+	// PLACING this step after everything rejectable from config alone; it now
+	// also holds for what is not a refusal at all — a successful attach, which
+	// used to leave one worktree per repo behind every single time. The
+	// placement is still what protects the create branch, and is unchanged.
+	//
+	// Not "the attach branch has no side effect": step 4 still creates the
+	// agent profile directory, on both branches. But that one is mounted by the
+	// live VM already, so it is the last thing this branch writes and nothing
+	// it writes is orphaned.
 	workspaces := make([]string, 0, 2*len(r.Repos)+2)
 	// Common git dirs are collected separately and appended AFTER all
 	// worktrees, so the repo list stays contiguous and first.
 	var gitDirs []string
+	// What the ATTACH branch expects to be mounted, taken from the RECORD and
+	// not from today's flags: what den mounted is recorded, not re-derived
+	// (internal/manifest). The record answers the one question the flags
+	// cannot — the sandbox name's second component is the INSTANCE LABEL since
+	// `--as`, so it no longer says whether the VM mounts worktrees, which ones,
+	// or under which layout. Re-deriving from `-w` made `den spawn api --as
+	// reco -w other` compare the VM against paths it was never created with,
+	// and reportUnmountedRepos then printed "is not mounted" for every repo of
+	// a perfectly healthy sandbox, with `den rm` as the advice.
+	//
+	// An empty name means "this sandbox mounts the repos as they are", which is
+	// what a record with no `worktree:` block says — including when `-w` is on
+	// today's command line. The flags do not get a say here: the VM's mounts
+	// are frozen at its creation.
+	//
+	// No READABLE record (a legacy sandbox, one created outside den, or a file
+	// den could not decode) falls back to today's derivation from the flags,
+	// which is all that is left to derive from. den never refuses over a record
+	// it could not read and must never strand a live VM (T13/T16); the report
+	// that would then lie is already muted at step 6.
+	attachLayout, attachRoot, attachWorktree := r.WorktreeLayout, r.WorktreeRoot, worktreeName.Dir
+	if live != nil && recordedErr == nil {
+		attachLayout, attachRoot, attachWorktree = "", "", ""
+		if recorded.Worktree != nil {
+			attachLayout = recorded.Worktree.Layout
+			attachRoot = recorded.Worktree.Root
+			attachWorktree = recorded.Worktree.Name
+		}
+		// The git dirs come from the same record, for the same reason and to
+		// keep the two halves consistent: they are the paths `sbx create`
+		// really received. Derived instead from today's `-w`, an attach to a
+		// sandbox created WITHOUT a worktree would expect git dirs that
+		// sandbox never had, and reportMissingGitDirs would answer a healthy
+		// VM with "git is dead there: `den rm` then relaunch".
+		gitDirs = recorded.GitDirs
+	}
 	for _, repo := range r.Repos {
 		repoPath := repo.Path
-		if o.Worktree != "" {
+		switch {
+		case live == nil && o.Worktree != "":
 			repoPath, err = worktree.Ensure(ctx, d.Git, r.WorktreeLayout, r.WorktreeRoot, worktreeName, repo.Path)
 			if err != nil {
 				return err
 			}
+			// A progress line for a creation, so it prints where a creation
+			// happens: on the attach branch there is nothing to announce, and
+			// the line named a path den had NOT just created.
 			fmt.Fprintf(d.Out, "worktree %s: %s\n", repo.Name(), repoPath)
 
 			// Without this mount the worktree arrives in the VM with a
@@ -654,6 +993,21 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			commonDir := commonDirs[repo.Path]
 			if !slices.Contains(gitDirs, commonDir) {
 				gitDirs = append(gitDirs, commonDir)
+			}
+		case live != nil && attachWorktree != "":
+			repoPath = worktree.Path(attachLayout, attachRoot, attachWorktree, repo.Path)
+			// Only on the no-record fallback: with a record, gitDirs was taken
+			// from it above and the step-2bis probe has nothing to add — which is
+			// why that probe no longer runs there at all.
+			// This condition is one half of the probe's own scope (`-w` given,
+			// and no readable record on a live sandbox); the other half,
+			// `attachWorktree != ""`, is `-w` again on this fallback, where the
+			// layout comes from the flags. So the map is never read blind.
+			if recordedErr != nil {
+				commonDir := commonDirs[repo.Path]
+				if !slices.Contains(gitDirs, commonDir) {
+					gitDirs = append(gitDirs, commonDir)
+				}
 			}
 		}
 		workspaces = append(workspaces, repoPath)
@@ -703,8 +1057,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	previous, previousErr := agent.ReadMixin(r.DenHome, sandboxName)
 
 	// 6. Spawn-or-attach: a name that's already live is not an error
-	// (spec §11). `live` was read at step 2quater — the image check needed the
-	// verdict before any worktree existed.
+	// (spec §11). `live` was read at step 1bis, above the checklist: three
+	// things need the verdict before this point — the checklist must not open
+	// on a sandbox nothing can be mounted on, the selection is rebuilt from the
+	// record on that branch, and the image check (step 2quater) needs it before
+	// any worktree exists.
 
 	// The attach workdir: the config's on the create branch (the VM will
 	// mount exactly these workspaces), the VM's on the other.
@@ -747,8 +1104,10 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// remounted on a live VM.
 		//
 		// Read, not required: a sandbox created before records existed has
-		// none, and attaching to it must keep working exactly as before.
-		if recorded, err := manifest.Read(r.DenHome, sandboxName); err == nil {
+		// none, and attaching to it must keep working exactly as before. The
+		// record was read at step 1bis, where the selection rebuild needs it —
+		// one read, so the two consumers can never disagree.
+		if recordedErr == nil {
 			mounts := make([]string, 0, len(recorded.Repos))
 			for _, rr := range recorded.Repos {
 				mounts = append(mounts, rr.Mount)
@@ -759,7 +1118,23 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// exactly one per repo, before the git dirs, the agent profile and
 		// ssh.dir. Slicing there rather than recomputing keeps the comparison on
 		// the paths the VM would actually have received, worktrees included.
-		reportUnmountedRepos(d.Out, sandboxName, workdir, live.Workspaces, workspaces[:len(r.Repos)])
+		//
+		// Muted when the selection could not be rebuilt: with no record, the
+		// "expected" side is every repo the nest declares — a selection nobody
+		// made — and the warning would name repos the user deliberately left out
+		// of a sandbox den simply has no memory of. reportNestChangedSinceCreation
+		// needs no such guard: it is already inside the record's own branch.
+		//
+		// The moved-start line goes quiet with it, as collateral. That one is
+		// about the workdir, not the selection, and stays true with no record —
+		// but it triggers off expected[0], which on a phantom selection is a
+		// first repo nobody picked, so it can fire spuriously here too. Splitting
+		// reportUnmountedRepos in two to keep half of it would buy one line back
+		// at the cost of a second warning to keep true; the mute is the cheaper
+		// side, and this is the only place that reads it.
+		if !selectionUnknown {
+			reportUnmountedRepos(d.Out, sandboxName, workdir, live.Workspaces, workspaces[:len(r.Repos)])
+		}
 
 		// After the repos, because the repos are what the user came for: a
 		// mount is support material, and reading its warning first would bury
@@ -779,6 +1154,76 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			fmt.Fprintf(d.Out, "sandbox %s is stopped: it restarts on attach (its state is kept)\n", sandboxName)
 		} else {
 			fmt.Fprintf(d.Out, "sandbox %s already live: attaching\n", sandboxName)
+		}
+
+		// The other half of decision 6, and the ONE paragraph that says what this
+		// live sandbox did with the flags it could not honour.
+		//
+		// The checklist stays shut on a live sandbox — its mounts come from its
+		// creation and nothing is reapplied (§6), so a selection collected here
+		// could never be mounted. What moved is the EXPLANATION: it used to be
+		// reserved to `select: prompt`, on the reading that an ordinary nest's `-i`
+		// user was never promised a checklist. They were: they typed the flag, and
+		// den dropped it without a word — the silence spec §2 forbids, and the one
+		// case where the reader has no way to guess why nothing was asked.
+		//
+		// Three lines, three conditions, and none of them fires on a plain attach
+		// of an ORDINARY nest: a permanent explanation stops being read, which is
+		// the doctrine reportDrift's own guard states.
+		//
+		// A `select: prompt` nest is the deliberate exception, and it is not new:
+		// there the paragraph prints on every attach, `-i` or not, because the
+		// checklist not opening IS the surprise — the mode's whole promise is that
+		// den asks, and a bare `den spawn generic` that asks nothing needs the
+		// reason every single time (decision 6). That permanence is asserted by
+		// TestPromptModeDoesNotPromptWhenAttaching and predates this change.
+		//
+		//   - the RECORDED REPOS answer "then what is in it" — a question only a
+		//     dropped SELECTION raises, and only a record can answer. Never
+		//     re-derived: that is what internal/manifest exists for. A legacy
+		//     sandbox, or one created outside den, simply drops the line.
+		//   - the IGNORED `-w` is the same defect on the other flag: since the
+		//     attach branch takes its worktree from the record, `den spawn api --as
+		//     reco -w other` attached and said nothing about the flag it did not
+		//     honour. It stays quiet when `-w` AGREES with the record, which is the
+		//     ordinary re-attach — the user retypes the command that created the
+		//     sandbox, and a warning on it would fire forever.
+		//   - the REMEDY is shared, because it is the same one: a second sandbox.
+		//     `--as <label>` is what runs a different selection, a different
+		//     worktree, or both, alongside this one.
+		//
+		// Placed AFTER the status line above, never before it: the two would
+		// otherwise contradict each other on a stopped sandbox, which is
+		// attached to and restarted, not "already live".
+		//
+		// No flag-choosing here, deliberately: this paragraph names `-w` and
+		// `--as`, never `--only`/`--without`, so it is not a sixth site that has to
+		// know `--without` is refused on a prompting nest.
+		selectionDropped := o.Interactive || n.PromptsForRepos()
+		worktreeIgnored := o.Worktree != "" && recordedErr == nil &&
+			(recorded.Worktree == nil || recorded.Worktree.Name != worktreeName.Dir)
+		if selectionDropped && recordedErr == nil {
+			names := make([]string, 0, len(recorded.Repos))
+			for _, repo := range recorded.Repos {
+				names = append(names, repo.Name)
+			}
+			fmt.Fprintf(d.Out, "  its repos come from its creation: %s\n", strings.Join(names, ", "))
+		}
+		if worktreeIgnored {
+			// The branch as TYPED, on both sides: the user typed `-w other` and the
+			// record keeps the branch next to the flattened component precisely so
+			// a message can compare like with like. The comparison itself is on the
+			// flattened name, which is what a worktree path is built from.
+			mounts := "the repos as they are"
+			if recorded.Worktree != nil {
+				mounts = fmt.Sprintf("worktree %s", recorded.Worktree.Branch)
+			}
+			fmt.Fprintf(d.Out,
+				"  `-w %s` is not applied: this sandbox mounts %s, and a live sandbox keeps the "+
+					"mounts it was created with\n", o.Worktree, mounts)
+		}
+		if selectionDropped || worktreeIgnored {
+			fmt.Fprintf(d.Out, "  to run a different set alongside it, spawn `--as <label>`\n")
 		}
 	} else {
 		// The creation record, written BEFORE `sbx create` (spec 2026-08-05
@@ -1583,6 +2028,154 @@ func reportUnmountedRepos(out io.Writer, sandboxName, workdir string, mounted, e
 		fmt.Fprintf(out, "  the shell starts in %s, as it did at create time\n", workdir)
 	}
 	fmt.Fprintf(out, "  `den rm %s` then relaunch to change either.\n", sandboxName)
+}
+
+// recordedWithout rebuilds, as a --without list, the selection a live sandbox
+// was created with.
+//
+// It goes through the SAME channel a user's --without goes through, so
+// nest.Resolve keeps applying the one selection rule it already owns — the
+// property the checklist was built on, and the reason there is no second
+// selection path to keep true.
+//
+// Compared on Repo.Name(): manifest.Repo.Name is written from that very method
+// (manifestOf), and Name() returns the Key for a key-typed repo without
+// touching disk — which is the whole point, since the repos this list names are
+// exactly the ones that may be unmapped here.
+//
+// OPTIONAL repos only. selectRepos refuses --without on a required repo ("is a
+// required repo of this nest, it cannot be removed"), so naming one would turn
+// an attach into the very refusal this function exists to prevent. A repo that
+// was optional at create time and is required now is therefore selected again,
+// and if it is an unmapped key den still refuses — a case --without cannot
+// reach by construction, and one that needs both a nest edit and a live VM.
+func recordedWithout(n *nest.Nest, recorded manifest.Manifest) []string {
+	mounted := make(map[string]bool, len(recorded.Repos))
+	for _, r := range recorded.Repos {
+		// DECLARED repos only. A positional and a declared key can carry the
+		// same short name — manifest.Repo.Name is Repo.Name(), which for a
+		// command-line entry is filepath.Base of the path typed — and an ad-hoc
+		// mount answers no question the checklist asked. Counting it as "this
+		// repo was selected" makes den omit the declared one from the rebuilt
+		// --without, so nest.Resolve selects it again and resolveRepoKeys
+		// refuses the attach of a LIVE VM over a key the user had declined:
+		// `den spawn digitaleo ~/dev/crm`, decline `key: crm`, re-attach, and
+		// den refuses on crm. Origin is the only thing that tells the two apart.
+		if r.Origin == manifest.OriginCommandLine {
+			continue
+		}
+		mounted[r.Name] = true
+	}
+	var without []string
+	for _, repo := range n.Repos {
+		if repo.Optional && !mounted[repo.Name()] {
+			without = append(without, repo.Name())
+		}
+	}
+	return without
+}
+
+// unresolvedOnALiveSandbox recontextualizes nest.Resolve's unmapped-key refusal
+// when it lands on the ATTACH of a sandbox whose selection den could not rebuild.
+//
+// The refusal itself is correct and stays — den never drops a repo on its own
+// (spec §2) — but its remedy is the create branch's. It sends the user to map
+// the key in config.yaml, which on a running sandbox changes nothing: mounts
+// come from the creation and nothing is reapplied (§6), so the repo would still
+// not be in the VM. The user is left thinking den refuses over a missing
+// checkout, when what actually happened is that den had no record naming the
+// repos this sandbox already holds.
+//
+// "no record it could read" covers BOTH cases selectionUnknown carries, and the
+// wording is chosen for that rather than trimmed: an absent record is ORDINARY —
+// a sandbox older than records, or one created outside den — and telling its
+// owner that den "could not read" one states a failure that never happened.
+// reportUnrebuiltSelection is where the two are told apart, and it has already
+// printed its line by the time this refusal is built; saying it twice, in two
+// dialects, is what that function's own comment refuses.
+//
+// The tolerant reading — drop the unmapped optional key and attach — was ruled
+// out: den refuses rather than normalizing in silence, and a spawn that quietly
+// mounts one repo fewer than the command says is the state §2 exists to prevent.
+//
+// selectionUnknown is the whole gate, and it implies a live sandbox: it is set
+// in one place, inside `live != nil && selectionOpen`. Passing it rather than
+// re-deriving liveness keeps the two readings the same fact.
+//
+// OPTIONAL keys only. A required one has no escape at all — selectRepos keeps
+// required repos whatever the flags say — so the inner message deliberately
+// offers none (nest.UnmappedRepoKeyError.withoutClause), and wrapping it with a
+// remedy would be worse than the bare error, because a remedy is followed.
+//
+// Which flag it names is read off the error, not recomputed: the type carries
+// the nest's mode for its own escape clause, and a second derivation here is a
+// second thing to keep in agreement. The config path comes off the error for the
+// same reason and for a stricter one — config.GlobalPath is the SOLE definition
+// of where that file lives (internal/config/paths.go), and a message spelling
+// `config.yaml` by hand names a file the reader cannot find under DEN_HOME.
+func unresolvedOnALiveSandbox(err error, sandboxName string, selectionUnknown bool) error {
+	if !selectionUnknown {
+		return err
+	}
+	var unmapped *nest.UnmappedRepoKeyError
+	if !errors.As(err, &unmapped) || !unmapped.Optional {
+		return err
+	}
+	escape := fmt.Sprintf("`--without %s`", unmapped.Key)
+	if unmapped.Prompts {
+		escape = "`--only repo,...`, naming the repos this sandbox does carry"
+	}
+	return fmt.Errorf(
+		"%w — and sandbox %s is already LIVE: it keeps the mounts it was created with, and den "+
+			"has no record it could read to name them, so it resolved every repo the nest declares "+
+			"instead. Mapping %q in %s would not put that repo in this sandbox: attach with %s",
+		err, sandboxName, unmapped.Key, unmapped.ConfigPath, escape)
+}
+
+// reportUnrebuiltSelection says why den is about to resolve every repo the nest
+// declares on a live sandbox, instead of the selection that sandbox was created
+// with.
+//
+// den refuses rather than normalizing in silence (spec §2) — and on this path it
+// was doing neither: it proceeded, quietly, on a list nobody chose. What makes
+// the silence expensive is the compound case: no readable record PLUS an
+// optional `key:` this machine does not map, and nest.Resolve then refuses the
+// attach of a LIVE VM over a repo the user had declined. That refusal now says
+// so itself (unresolvedOnALiveSandbox), which is the other half of this line:
+// this one is printed before den even tries, so the user reads why den is
+// resolving the wrong list at the moment it starts, not only if it fails.
+//
+// The flags it offers follow the nest, for the reason step 0bis states: on a
+// `select: prompt` nest `--without` is refused, so naming it here would offer a
+// command den rejects on the one nest this whole path exists for.
+//
+// TWO cases, deliberately not one message. An absent record is ORDINARY — a
+// sandbox older than records, or one created outside den — and a `warning:` on
+// it would teach the reader to skip the line that matters. An unreadable one is
+// a fault worth looking at, so it carries the marker and the error, which names
+// the file and says what went wrong (manifest.Read wraps through
+// config.FileError precisely so the two can be told apart).
+//
+// Never an error, on either side: den does not refuse over a record it could not
+// read, and never deletes one — it may belong to a newer den.
+func reportUnrebuiltSelection(out io.Writer, sandboxName string, readErr error, prompts bool) {
+	// The way THROUGH, not the way to a clean record: `den rm` would write one,
+	// but sending someone to destroy a running VM to silence a diagnostic is a
+	// remedy worse than the line it removes.
+	flags := "`--only`/`--without` pick a set explicitly"
+	if prompts {
+		flags = "`--only` picks a set explicitly"
+	}
+	remedy := "den resolves every repo the nest declares instead — " + flags
+	if errors.Is(readErr, os.ErrNotExist) {
+		fmt.Fprintf(out,
+			"sandbox %s has no creation record (an older den, or a sandbox created outside den), "+
+				"so den cannot tell which repos it was created with: %s\n", sandboxName, remedy)
+		return
+	}
+	fmt.Fprintf(out,
+		"warning: sandbox %s: %v — den cannot tell which repos it was created with, so %s\n",
+		sandboxName, readErr, remedy)
 }
 
 // reportNestChangedSinceCreation warns when the repos the configuration now

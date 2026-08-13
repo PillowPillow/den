@@ -950,6 +950,17 @@ passe inaperçue laisse l'allowlist vide et produit une sandbox qui n'atteint pl
 `api.anthropic.com`, settle-loop fail-closed sans cause visible — le pire mode de défaillance de ce
 projet, et précisément ce que `den doctor` doit attraper.
 
+**L'exception délibérée** ne porte sur aucun fichier de config : `manifest.LaxMounts` relit un
+*enregistrement de création* (`state/sandboxes/<sandbox>.yaml`) que le décodeur strict a déjà
+refusé — typiquement celui d'un den plus récent, refusé sur son seul `schema` — et n'en extrait que
+`repos[].mount`, sans `KnownFields` et sans contrôle de schéma. Un seul appelant : `newMountGuard`
+(`den rm`). Raison : `den rm` ne sonde aucune VM, il décide depuis les enregistrements seuls, et ne
+rien lire là revient à parier qu'aucune sandbox voisine ne monte le répertoire — pari perdu, c'est
+l'espace de travail d'une VM vivante qui part à la corbeille. Aucun autre champ n'est consommé,
+donc aucun champ dont le SENS aurait changé entre versions n'atteint la logique de den. (Le seul
+autre décodage non strict est `agent.ReadMixin`, qui relit le mixin que den a lui-même généré sous
+`cache/` — pas davantage un fichier de config.)
+
 **Layout du dépôt (la CLI) :**
 ```
 cmd/den/                 # entrée cobra

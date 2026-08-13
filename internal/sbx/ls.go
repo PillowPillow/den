@@ -63,10 +63,13 @@ func (s Sandbox) Nest() string {
 	return nest
 }
 
-// Worktree is the originating worktree, empty if the sandbox carries none.
-func (s Sandbox) Worktree() string {
-	_, wt := SplitName(s.Name)
-	return wt
+// Instance is the second name component: the label of `--as`, or the
+// flattened branch of `-w`, or empty. It is NOT "the worktree" — that
+// reading was true only while -w was the sole thing that could fill this
+// component. The branch, when there is one, lives in the manifest.
+func (s Sandbox) Instance() string {
+	_, instance := SplitName(s.Name)
+	return instance
 }
 
 // Workdir is the natural working directory: the FIRST workspace, which is by

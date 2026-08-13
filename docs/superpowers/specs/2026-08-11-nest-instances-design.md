@@ -1,0 +1,480 @@
+# Spec — instances de nest : `--as` et `select: prompt`
+
+**Date** : 2026-08-11
+**Statut** : validé (brainstorming du 2026-08-11)
+**Complète** : `2026-07-27-den-cli-design.md` (§2 identité, §6 séquence de spawn, §8 ports),
+`2026-08-04-adhoc-repos-design.md` (lève sa décision 7, explicitement différée),
+`2026-08-05-spawn-command-design.md` (nouveaux drapeaux de `den spawn`).
+
+## Problème
+
+Deux manques, et le second est la cause du premier.
+
+**1. Un nest par fonctionnalité n'est pas tenable.** Une équipe microservices — Digitaleo, une
+dizaine de repos ouverts selon ce qu'on touche — doit aujourd'hui écrire un `nests/<n>.yaml` par
+combinaison de repos, puis l'effacer. `optional:` + `-i` couvrent le cas d'un nest à deux ou trois
+repos facultatifs ; ils ne couvrent pas un nest « générique » de trente repos dont on en veut
+quatre, et dont la combinaison change chaque semaine.
+
+**2. Deux montages différents ne sont pas distinguables.** L'identité est le nom de sandbox
+`<nest>[.<worktree>]` (§2), et la spec `2026-08-04-adhoc-repos-design.md` a verrouillé, décision 7,
+que les repos donnés en ligne de commande n'entrent PAS dans l'identité :
+
+> `den scratch ~/dev/a` et `den scratch ~/dev/b` visent la même sandbox `scratch` : la seconde
+> commande attache la première et ne monte rien de neuf. […] Rendre deux montages différents
+> distinguables serait un changement de dérivation du nom de sandbox — hors scope, à chiffrer à
+> part.
+
+C'est ce chiffrage. Sans lui, un nest générique est cassé par construction : la sélection du
+mardi attache la sandbox du lundi et ne monte rien. Et le manque se lit aussi hors nest générique —
+faire tourner deux analyses concurrentes sur **les mêmes repos**, dans deux microVMs séparées, sans
+worktree, n'a aujourd'hui aucune écriture.
+
+**Le nommage est donc la primitive, le nest dynamique la feature.** L'ordre de cette spec le suit.
+
+## Ce qui n'est PAS le problème
+
+- **Un `den run` sans nest.** Déjà écarté par `2026-08-04-adhoc-repos-design.md`, pour la même
+  raison qu'ici : un spawn sans nest n'a aucune source de nom. Non rouvert.
+- **Un nouveau sélecteur.** `internal/spawn/interactive.go` EST la checklist, `--only` / `--without`
+  sa forme non interactive, `nest.Resolve` la règle de sélection. Cette spec ajoute un point
+  d'entrée et une valeur de départ, elle ne réécrit aucune des trois.
+- **Un nom d'instance engendré par den.** Écarté explicitement (décision 5) : faire tourner deux
+  instances identiques doit être une action VOULUE, jamais un effet de bord.
+- **Rendre la sélection persistante dans un fichier.** Écrire `nests/<label>.yaml` à chaque spawn
+  réintroduirait exactement le fichier par fonctionnalité que cette spec supprime. Le seul
+  enregistrement est le manifeste, que den écrit déjà (`internal/manifest`).
+
+## Interface utilisateur
+
+```bash
+# La primitive : nommer l'instance.
+den spawn dg:op-inscription --as analyse-a     # sandbox dg-op-inscription.analyse-a
+den spawn dg:op-inscription --as analyse-b     # dg-op-inscription.analyse-b — mêmes 9 repos, 2 VMs
+
+# Le nest générique.
+den spawn dg:digitaleo                          # checklist, départ VIDE → sandbox dg-digitaleo
+den spawn dg:digitaleo --as leo-fix             # checklist → dg-digitaleo.leo-fix
+den spawn dg:digitaleo --as leo-fix --only php.flow,js.ai-assistant   # sans invite
+den spawn dg:digitaleo --as leo-fix | cat       # REFUS : pas de terminal, pas de --only
+```
+
+### Le nom de sandbox
+
+Le second composant devient l'**instance**. Il n'est plus « le worktree », il est « ce qui
+distingue deux sandboxes du même nest » — ce que le worktree était le seul à savoir faire.
+
+| commande | sandbox | `worktree:` du manifeste |
+|---|---|---|
+| `den spawn dg:api` | `dg-api` | absent |
+| `den spawn dg:api -w feature/123` | `dg-api.feature-123` | `{name: feature-123, branch: feature/123}` |
+| `den spawn dg:api --as reco` | `dg-api.reco` | absent |
+| `den spawn dg:api -w feature/123 --as reco` | `dg-api.reco` | `{name: feature-123, branch: feature/123}` |
+
+`-w` REMPLIT le composant avec la branche aplatie — la règle d'aujourd'hui, inchangée. `--as` ÉCRASE
+ce remplissage. Rien d'autre ne bouge : `sbx.SandboxName` garde sa signature à deux composants,
+`sbx.SplitName` garde ses deux retours, et aucun des dix appelants de `SplitName` ne change de
+forme.
+
+`--as` traverse `config.ValidateSandboxComponent` et `config.FlattenSandboxComponent`, comme `-w` :
+une seule définition de charset, un seul aplatissement, aucun second chemin à garder synchronisé.
+
+### `select:` — le nest générique
+
+Nouvelle clé de nest, deux valeurs :
+
+```yaml
+# nests/digitaleo.yaml
+stack: base
+select: prompt          # défaut : all
+repos:
+  - { key: php.baseo, optional: true }
+  - { key: php.flow,  optional: true }
+  # … 28 autres, tous optional
+```
+
+- `all` (défaut) : le comportement d'aujourd'hui. Tous les optionnels sont montés, `-i` reste
+  opt-in et sa checklist démarre TOUT COCHÉ.
+- `prompt` : le nest n'a pas de sélection par défaut. Avec un terminal, la checklist s'ouvre sans
+  `-i` et démarre **VIDE**. Sans terminal et sans `--only`, den refuse.
+
+Une valeur inconnue est une erreur de chargement, pas un silence : le décodage est strict
+(`KnownFields(true)`) et `select:` est validé à la même place que le reste du nest.
+
+## Décisions verrouillées
+
+1. **Le second composant est réutilisé, pas doublé.** Un troisième composant
+   (`<nest>.<worktree>.<label>`) rendrait worktree et instance indépendants, au prix de faire
+   grandir `sbx.SplitName` de deux à trois retours et, avec elle, `sbx/ls.go`, `cli/rm.go`,
+   `cli/ports.go`, `cli/reference.go`, `agent/mixin.go`, `source/decode.go` et
+   `manifest/manifest.go`. Le bénéfice serait de lire la branche DANS le nom ; or la branche telle
+   que tapée est déjà ailleurs, et à un meilleur endroit.
+
+2. **La branche vit dans le manifeste, jamais dans le nom.** `manifest.Worktree` sépare déjà `Name`
+   (le composant aplati) de `Branch` (la branche telle que tapée) — l'aplatissement étant lossy,
+   le manifeste est déjà « le seul endroit où l'original survit une fois le spawn terminé ».
+   `--as` n'y touche à RIEN : `Name` reste la branche aplatie et `Branch` la branche tapée (voir
+   décision 4). Ce que le label déplace, c'est uniquement le nom de sandbox, qui n'est plus dérivé
+   de `Name`. C'est ce qui rend la décision 1 bon marché plutôt qu'astucieuse : le lien
+   « composant 2 == nom du worktree » n'était déjà plus une dérivation, seulement une coïncidence
+   que le manifeste avait rendue inutile.
+
+3. **`--as` vaut pour tout nest, pas seulement les génériques.** Deux analyses concurrentes sur
+   `dg:op-inscription` sont le cas d'usage nommé par l'utilisateur, et il n'a rien à voir avec
+   `select:`. Lier `--as` à `select: prompt` inventerait un couplage que rien ne demande.
+
+4. **`--as` renomme la SANDBOX, jamais le répertoire de worktree.** `worktree.Name` porte deux
+   noms (`Dir`, `Branch`) et `worktree.Path(layout, root, wt, repoPath)` dérive le répertoire de
+   `Dir`. Laisser `--as` écraser `Dir` — la lecture naïve de « le composant 2 devient le label » —
+   ferait deux dégâts : le worktree de `feature/123` atterrirait sous `<root>/reco/api`, illisible
+   dans un `ls`, et **deux nests différents lancés avec le même `--as x` se disputeraient
+   `<root>/x/<repo>`**. Une branche est un nom porteur de sens et donc un discriminant honnête ;
+   un label est arbitraire, et la collision est vraisemblable.
+
+   Donc : `Dir` reste la branche aplatie, le manifeste l'enregistre telle quelle (`Worktree.Name`),
+   et seul `sbx.SandboxName` reçoit le label. Ce que le commentaire de `worktree.Name` appelle
+   « `den rm` retrouve le répertoire à partir du seul nom de sandbox » n'est plus vrai sous `--as`
+   — mais ça ne l'est déjà plus depuis `internal/manifest`, qui enregistre `Name`, `Layout` et
+   `Root` précisément pour couper cette dépendance. La dérivation par le nom ne sert plus que les
+   sandboxes SANS enregistrement, et une sandbox `--as` en a toujours un.
+
+5. **den n'engendre JAMAIS un nom d'instance.** Sans `--as`, la sandbox est `<nest>` — l'instance
+   par défaut du nest, celle d'aujourd'hui. Une seconde instance existe parce que quelqu'un a tapé
+   `--as`, jamais parce que den a horodaté un spawn. Un label engendré (`dg-digitaleo.20260811-1432`)
+   a été proposé et REFUSÉ : il fait de « deux VMs identiques » l'effet de bord par défaut de la
+   commande la plus banale, alors que c'est l'opération la plus coûteuse que den sache déclencher.
+   Corollaire assumé : `d.Now` n'entre pas dans le chemin de nommage, et il n'y a aucune horloge à
+   injecter pour cette feature.
+
+6. **Le contrôle de vivacité passe DEVANT la checklist.** Aujourd'hui `-i` s'exécute au début de
+   `Spawn` (spawn.go:203) et la liste des sandboxes est lue bien plus tard (spawn.go:606). Sous
+   `select: prompt`, l'ordre s'inverse : si la sandbox visée est vivante, den attache et n'ouvre
+   AUCUNE invite. Faire choisir des repos qui ne seront pas montés est précisément le silence que
+   §2 interdit — et l'invite serait posée à quelqu'un qui n'a aucun moyen de deviner qu'elle ne
+   sert à rien.
+
+   Le message d'attache nomme le remède :
+
+   ```
+   sandbox dg-digitaleo already live: attaching
+     its repos come from its creation: php.baseo, php.flow
+     to run a different set alongside it, spawn `--as <label>`
+   ```
+
+   Les repos cités viennent du manifeste, pas d'une re-dérivation — c'est exactement ce pour quoi
+   `internal/manifest` existe.
+
+   **Ce qui bouge, précisément.** Deux blocs remontent, et un seul est un accès système :
+
+   - le calcul du nom (spawn.go:343-399, aplatissement + `sbx.SandboxName`) — PUR, il ne dépend
+     que de `o.Nest`, `o.Worktree` et `o.Instance`, jamais de la sélection ;
+   - la lecture `sbx.Find(boxes, sandboxName)` (spawn.go:606).
+
+   Ils passent au-dessus de la checklist et donc au-dessus de `nest.Resolve`, ce qui met la
+   LECTURE `sbx ls` avant les refus de configuration que `Resolve` porte (clé non mappée, dossier
+   git manquant). La promesse de §6 survit mot pour mot — elle porte sur les **effets de bord**
+   (« un refus ne laisse jamais un worktree orphelin ») et lister ne crée rien. Ce qui change est
+   l'ordre des **diagnostics** : une faute de frappe dans `repos:` sort désormais après un appel à
+   `sbx`. Coût réel : les tests de ce chemin ont tous besoin d'un `sbx.Fake` qui répond une liste
+   — ils en ont déjà un, `internal/sbx/fake.go` étant un fichier de production précisément pour
+   cet usage.
+
+   Le déplacement est INCONDITIONNEL, pas réservé aux nests `select: prompt` : un ordre qui
+   dépend d'une clé de configuration est deux séquences de spawn à garder vraies, et §6 en décrit
+   une seule.
+
+   **Ce que « inconditionnel » veut dire pour `-i`, écrit parce que ça a déjà dérivé une fois.**
+   `-i` est l'AUTRE porte d'entrée de la checklist. Fermer la checklist sur une sandbox vivante la
+   ferme donc aussi pour `-i` — et `-i` GAGNE en échange la reconstruction de la décision 12, pas
+   le silence. Les deux moitiés portent sur exactement les mêmes spawns : `selectionOpen`
+   (spawn.go) est l'expression unique qui les tient, et elle existe précisément parce que les deux
+   conditions, écrites deux fois, ont divergé une fois — la reconstruction avait d'abord été livrée
+   restreinte à `select: prompt`, ce qui transformait `-i` sur une sandbox vivante portant une clé
+   optionnelle non mappée en REFUS là où il y avait une invite.
+
+7. **Une invite ne peut pas être littéralement obligatoire.** `spawn` refuse déjà `-i` sans
+   terminal, et `den exec` existe pour les pipes et la CI (v1.6.0). Un nest qui EXIGE une invite
+   serait inutilisable en headless. `select: prompt` se lit donc : invite quand il y a un terminal
+   et aucun drapeau de sélection ; refus nommant `--only` sinon.
+
+   ```
+   error: nest digitaleo selects its repos at spawn time and there is no terminal on den's
+     input — the checklist has nobody to ask, and reading anyway would block a pipe or a CI
+     job forever; `--only repo,...` and `--without repo,...` make the same selection without
+     a prompt
+   ```
+
+   > **Correction 2026-08-11 (revue finale).** Cet échantillon épelait son propre remède
+   > (« use `--only php.baseo,php.flow` »). Le code ne l'épelle pas : il réutilise la constante
+   > `nonInteractiveEquivalents` (interactive.go), partagée avec le refus de `-i`. **C'est le code
+   > qui a raison**, sous la règle de la maison — une situation, une formulation — et l'échantillon
+   > ci-dessus est celui que den émet réellement. La spec est corrigée, pas le code.
+
+   **`-i` sur un nest `select: prompt` est ACCEPTÉ et ne fait rien de plus.** Il demande la
+   checklist que le nest ouvre déjà : c'est une redondance, pas une contradiction, et les deux
+   refus existants de `Spawn` (`-i` + `--only`, `-i` + `--without`) restent inchangés — ils valent
+   ici mot pour mot, un drapeau de sélection contredisant l'invite quel que soit le `select:` du
+   nest. Laisser `-i` sans réponse écrite serait la normalisation muette que §2 interdit sur la
+   seule surface où l'utilisateur croit avoir demandé quelque chose.
+
+8. **`--only a,b --as x` est l'équivalent EXACT de la checklist confirmée sur a et b.** Même
+   invariant que celui déjà verrouillé pour `-i` par
+   `TestInteractiveProducesTheSameArgvAsTheEquivalentWithout` : la checklist est une source
+   d'entrée placée devant `nest.Resolve`, jamais une seconde règle de sélection. Le test s'étend à
+   `select: prompt`, il ne se duplique pas.
+
+9. **La checklist d'un `select: prompt` démarre VIDE, celle de `-i` reste TOUT COCHÉ.** Ce n'est
+   pas une incohérence, ce sont deux questions différentes. `-i` sur un nest ordinaire répond
+   « lesquels des optionnels retirer », et son départ tout coché EST l'invariant de la décision 8
+   ci-dessus (à ne pas confondre avec la décision 7 d'adhoc-repos, citée en décision 11) :
+   confirmer sans rien toucher doit produire ce que `den spawn` seul produit. `select: prompt`
+   répond « lesquels monter » : un nest sans sélection par défaut n'en a, par définition, aucune à
+   proposer, et trente cases cochées feraient d'une ligne vide un montage de trente repos.
+
+10. **Une clé non mappée ne coûte rien tant que son repo n'est pas sélectionné.** C'est la
+   propriété qui rend un nest générique de trente repos utilisable : personne ne mappe — ni ne
+   clone — les trente. Elle est DÉJÀ vraie et déjà verrouillée : `nest.Resolve` appelle
+   `selectRepos` (resolve.go:271) AVANT `resolveRepoKeys` (resolve.go:279), et le commentaire de
+   `resolveRepoKeys` dit pourquoi l'ordre porte la charge — résoudre d'abord rendait le refus
+   inéluctable, et `optional:` ne voulait alors rien dire pour une entrée `key:`.
+
+   `select: prompt` en hérite par construction : la checklist n'écrit que dans le `without` que
+   `selectRepos` consomme, et elle affiche `Repo.Name()`, qui rend la clé et ne demande aucun
+   chemin. Aucune ligne n'est à écrire pour obtenir ce comportement — mais un test le fixe
+   (surface de test), parce qu'un jour quelqu'un rendra l'ordre « plus logique ».
+
+   Ce que cette spec ajoute : la checklist **annote** les clés non mappées, `g.Repos` étant déjà
+   chargé quand elle s'ouvre (`LoadGlobal` précède `interactiveWithout` dans `Spawn`).
+
+   ```
+   nest digitaleo: 30 optional repo(s), none selected — required repos are always mounted
+     1 [ ] php.baseo
+     2 [ ] php.flow      (not mapped in config.yaml)
+   ```
+
+   > **Correction 2026-08-11 (revue finale).** L'échantillon disait
+   > `(not mapped in ~/.den/config.yaml)`. Le code émet `(not mapped in config.yaml)`, et **c'est
+   > le code qui a raison** : sous `DEN_HOME` (ou `--den-home`) le fichier n'est pas dans `~/.den`,
+   > et un chemin en dur y désignerait un fichier que l'utilisateur ne lit pas. La spec est
+   > corrigée, pas le code.
+
+   L'en-tête garde sa clause « required repos are always mounted », mot pour mot celle de
+   `promptOptionalRepos` : un `select: prompt` n'interdit pas les repos requis, et « none
+   selected » sans elle serait faux dès qu'un nest générique en déclare un.
+
+   L'annotation n'interdit RIEN : cocher une entrée non mappée reste possible, et le refus qui
+   suit est le message habituel de `resolveRepoKeys`, qui nomme la clé, le fichier et l'URL de
+   clone. Refuser la coche à la place ferait de la checklist un second juge de la carte des
+   repos, alors que le seul juge est `resolveRepoKeys` — et ce serait un refus muet sur la seule
+   surface où l'utilisateur ne voit pas encore ce qu'il demande.
+
+11. **Un label n'est pas une sélection.** Deux spawns avec le même `--as` et des `--only` différents
+   visent la même sandbox : le second attache le premier. C'est la décision 7 d'adhoc-repos, et
+   elle est INCHANGÉE — le label entre dans l'identité, les repos toujours pas. den ne détecte pas
+   un label « mal réutilisé » ; `reportUnmountedRepos` (spawn.go:762), qui nomme déjà chaque chemin
+   non monté sur une sandbox vivante, est le seul signal, et il suffit.
+
+12. **Sur la branche d'attache, la sélection est RECONSTRUITE depuis le manifeste.** La décision 6
+   ferme la question ; celle-ci dit ce qui y répond à la place. Quand la question de sélection est
+   ouverte (`selectionOpen` : `-i` ou `select: prompt`, et aucun drapeau de sélection) et que la
+   sandbox est vivante, `without` est dérivé de l'enregistrement : les repos OPTIONNELS du nest
+   absents de `manifest.Repos` (`recordedWithout`, spawn.go). Ce que den a monté est ENREGISTRÉ,
+   pas re-dérivé — c'est exactement ce pour quoi `internal/manifest` existe.
+
+   **La raison, parce qu'elle n'est pas évidente : re-dériver ne fait pas que bruiter, ça REFUSE.**
+   La configuration d'aujourd'hui n'a aucun moyen de savoir lesquels des quatre repos sur trente
+   cette VM a montés. Sans reconstruction, `without` reste vide, `selectRepos` sélectionne TOUT, et
+   `resolveRepoKeys` (nest/resolve.go) meurt sur la première clé non mappée sur cette machine —
+   un refus visant un repo que l'utilisateur avait justement décliné, sur une VM qui tourne. Un
+   nest `select: prompt` était inutilisable passé son premier spawn.
+
+   Deux précisions que le code porte à son site :
+
+   - **Repos DÉCLARÉS seulement.** Un positionnel et une clé déclarée peuvent porter le même nom
+     court (`manifest.Repo.Name` vaut `Repo.Name()`, soit le basename du chemin tapé pour une
+     entrée `command-line`), et un montage ad hoc ne répond à aucune question posée par la
+     checklist. Compté comme « sélectionné », il fait omettre la clé déclarée du `--without`
+     reconstruit, et le refus ci-dessus revient. `Origin` est la seule chose qui distingue les deux.
+   - **Optionnels seulement.** `selectRepos` refuse `--without` sur un repo requis, donc en nommer
+     un transformerait l'attache en ce même refus.
+
+   **Sans enregistrement — ou avec un enregistrement que den n'a pas su LIRE — den ne refuse pas.**
+   Il retombe sur la liste complète, tait `reportUnmountedRepos` (dont le côté « attendu » serait
+   une sélection que personne n'a faite), et le DIT (`reportUnrebuiltSelection`) : sans marqueur
+   pour un enregistrement absent, qui est ordinaire (sandbox antérieure aux enregistrements, ou
+   créée hors de den), avec `warning:` et le nom du fichier pour un enregistrement illisible, qui
+   est une panne. Les deux cas sont distincts parce que `manifest.Read` les distingue déjà, en
+   enveloppant `os.ErrNotExist` à travers `config.FileError` pour cette raison précise. den ne
+   refuse jamais sur un enregistrement qu'il n'a pas pu lire et n'en supprime jamais un : il peut
+   appartenir à un den plus récent (doctrine T13/T16).
+
+## Modèle
+
+```go
+// internal/spawn/spawn.go
+type Options struct {
+    // …
+    Worktree string // -w, inchangé
+    Instance string // --as : écrase le composant que -w remplit
+}
+
+// internal/nest/nest.go
+type Nest struct {
+    // …
+    Select string `yaml:"select"` // "" (= all) | "all" | "prompt"
+}
+```
+
+`Select` est une chaîne et non un booléen `Generic` : `all` est une valeur qu'on peut écrire pour
+dire « ce nest monte tout », et une troisième valeur future (`prompt-required`, par exemple) ne
+demanderait pas de casser le type. Le zéro `""` vaut `all`, donc aucun nest existant ne change de
+comportement en étant relu.
+
+### Aplatissement et validation
+
+Aucune fonction nouvelle. Dans `spawn.go`, le bloc qui aplatit `-w` (spawn.go:343) reçoit une
+branche : si `o.Instance` est non vide, c'est LUI qu'on aplatit et valide, et le résultat de `-w`
+n'alimente plus que `manifest.Worktree.Branch`. `sbx.SandboxName(nestComponent, instance)`
+(spawn.go:399) est appelée telle quelle.
+
+### Ce que `den ls` doit corriger
+
+`internal/cli/ls.go:116` retombe aujourd'hui sur le composant 2 quand l'enregistrement ne porte pas
+de bloc `worktree:` — un repli « fail-open » écrit quand composant 2 ne pouvait être qu'un worktree
+aplati. Avec `--as reco` sans `-w`, ce repli imprimerait `reco` dans la colonne WORKTREE : une
+branche qui n'existe pas. Le repli ne vaut donc plus que pour les sandboxes SANS enregistrement
+(legacy, ou créées hors den) ; dès qu'un manifeste est lu, l'absence de bloc `worktree:` signifie
+« pas de worktree », et se rend comme telle.
+
+Une colonne INSTANCE apparaît à côté : c'est ce que composant 2 vaut désormais, et c'est le nom que
+`den exec` / `den rm` prennent en argument.
+
+## Ce qui ne change pas
+
+- **`internal/manifest`** — `Worktree{Name, Branch, Layout, Root}` couvre déjà le cas. Zéro champ
+  ajouté, zéro bump de `Schema`.
+- **`internal/cli/rm.go`** — il lit l'enregistrement ; la dérivation legacy
+  (`cleanWorktreesLegacy`) ne tourne qu'en l'absence d'enregistrement, et den en écrit un à chaque
+  `create`. Une sandbox `--as` en a donc toujours un.
+- **`sbx.SandboxName` / `sbx.SplitName`** — signatures et sémantique de découpe identiques.
+- **Les fenêtres de ports** — `internal/cli/ports.go:20` sème la fenêtre sur le NEST, jamais sur la
+  sandbox, précisément pour que l'URL de §8 ne dépende pas du worktree qui tourne. Une seconde
+  instance tombe donc sur une fenêtre décalée, non canonique, et `ports.Window.Canonical` le dit
+  déjà. Aucun travail.
+- **L'ordre `selectRepos` → `resolveRepoKeys` dans `nest.Resolve`** — il porte déjà la décision 10
+  et n'est pas touché. Il gagne seulement un test qui le fixe.
+- **`internal/lint`** — il valide `select:` comme le reste, sans règle nouvelle : la clé n'est pas
+  une référence, elle ne peut pas être préfixée par une source.
+
+## Ordre de livraison — non optionnel
+
+Le décodage est strict partout et `internal/lint` est fail-closed dans `den source add` (qui
+refuse **et supprime** le clone) comme dans `den source update`. Un `select:` ajouté à
+`digitaleo-den-env` avant que l'équipe ait monté de version fait donc **échouer le
+`den source update` de chaque collègue**, et supprime le clone de qui tente un `source add`.
+
+Et le diagnostic ne dit PAS « monte de version » — c'est tout l'intérêt de le nommer ici. Un
+collègue sur un den antérieur lit le message de clé inconnue que `rewriteUnknownKeys`
+(`internal/config/yaml.go:82`) produit pour toute faute de frappe :
+
+```
+den source update dg
+error: nests/digitaleo.yaml: decoding errors:
+  line 3: unknown key "select"
+```
+
+Mot pour mot ce qu'un `selct:` mal tapé produirait. Rien n'y pointe la version de den, parce que
+rien dans den ne sait distinguer un champ FUTUR d'une faute de frappe — et l'en faire deviner
+serait rouvrir exactement le `egres:` silencieux que la spec §12 refuse. La reconnaissance de la
+panne est donc humaine, et cette section est l'endroit où elle est écrite. La ligne à ajouter au
+README de la source (« den ≥ X.Y requis ») en est le seul remède préventif.
+
+1. Livrer den avec `--as` et `select:`.
+2. Faire monter de version l'équipe (`den version` le dit).
+3. **Puis** éditer la source `dg` : ajouter `nests/digitaleo.yaml`, et une ligne dans son README
+   qui nomme la version minimale de den.
+
+## Limites assumées
+
+1. **Deux sandboxes montent le même working tree.** C'est le cas d'usage nommé — deux analyses
+   concurrentes sur les mêmes dossiers — et den n'a aucun chemin lecture seule à offrir :
+   `2026-08-04-adhoc-repos-design.md`, décision 5, a refusé `:ro` parce qu'un common git dir monté
+   `:ro` fait mourir `commit` sur « Unable to create index.lock ». Deux VMs qui écrivent le même
+   index git peuvent le corrompre. den l'autorise ; l'écriture concurrente est la décision de
+   l'humain.
+
+   **Et den n'a AUCUN chemin sûr en écriture à proposer pour deux instances sur une même
+   branche.** `-w` ne l'est pas, mais pas pour la raison qu'on croirait : `worktree.Ensure`
+   (`worktree.go:162`) est idempotent sur le chemin qu'il calcule, et ce chemin ne dépend que du
+   dépôt et de la branche flattenée (`worktree.Path`, `worktree.go:131`) — jamais du nom de
+   sandbox. Le second spawn ne meurt donc pas : il retombe sur le `worktreePath` du premier, la
+   vérification d'ownership et de branche qu'`Ensure` fait sur un chemin déjà présent passe, et il
+   repart avec le même répertoire — les deux sandboxes MONTENT LE MÊME worktree, sans que
+   `git worktree add` ne soit même rappelé. Depuis que Task 1 a livré, `den rm` sur l'une des deux
+   sandboxes ne réclame plus ce répertoire tant que l'autre enregistrement le nomme encore
+   (`internal/cli/rm.go`, `mountGuard.holderOf`) : il laisse le worktree en place et le dit
+   (`worktree kept: <mount> is also mounted by sandbox <holder>`) — mais rien n'empêche les deux VMs
+   d'écrire dans ce répertoire pendant qu'elles sont vivantes toutes les deux. La seule échappatoire
+   au partage est donc deux branches distinctes : la branche distingue alors déjà les deux sandboxes,
+   et `--as` n'y sert plus à rien.
+
+   Le domaine de `--as` est donc exactement celui que l'utilisateur a décrit : la concurrence
+   **en lecture dominante** sur des dossiers partagés — deux analyses, deux agents qui explorent.
+   Dès que les deux instances écrivent le même repo, la réponse est deux branches, donc deux
+   worktrees, donc `-w` seul. `--as` combiné à `-w` ne sert plus qu'à donner un nom court à une
+   sandbox worktreée (`dg-api.reco` plutôt que `dg-api.feature-123`), et ne change rien au
+   répertoire de worktree (décision 4).
+
+2. **Une seconde instance est explicite, jamais implicite.** `den spawn dg:digitaleo` vise toujours
+   la même sandbox ; seul `--as` en crée une autre. Le coût est symétrique : deux instances sont
+   deux noms à retenir, et `den ls` est l'endroit où on les relit.
+
+3. **Fenêtre de ports non canonique pour l'instance suivante.** L'URL bookmarkable de §8 appartient
+   à la fenêtre canonique du nest ; la seconde instance est décalée. `den ports` le signale déjà.
+
+4. **La checklist reste `bufio`, sans TUI.** Trente entrées se cochent en tapant des numéros
+   (`> 3 7 12`). den n'a que `cobra` et `yaml.v3` comme dépendances, et c'est une propriété
+   annoncée (binaire statique, HANDOFF §8) — une bibliothèque TUI achèterait le curseur et la
+   couleur au prix de cette propriété. Si trente entrées se révèlent pénibles à l'usage, un filtre
+   par préfixe tapé se code dans le même `bufio` ; hors scope ici, à chiffrer sur mesure réelle.
+
+## Surface de test
+
+Hermétique intégralement : aucun socket, aucun process, aucune horloge (décision 5).
+
+- **Nommage** : table `-w` seul / `--as` seul / les deux / aucun → nom de sandbox, et bloc
+  `worktree:` du manifeste attendu pour chaque ligne.
+- **`--as`** : aplatissement (`--as feat/x` → `feat-x`), refus d'un composant vide ou hostile,
+  refus d'un nom commençant par `-`.
+- **`select:`** : décodage strict d'une valeur inconnue ; `""` vaut `all` (aucun nest existant ne
+  change) ; `prompt` sans terminal et sans `--only` refuse, en nommant `--only`.
+- **Checklist** : départ vide sous `prompt`, départ tout coché sous `-i` — les deux dans le même
+  test de table, pour que la décision 8 se lise en un endroit.
+- **Équivalence** : extension de `TestInteractiveProducesTheSameArgvAsTheEquivalentWithout` à
+  `select: prompt` — même argv pour la checklist confirmée sur {a,b} et pour `--only a,b`.
+- **Clés non mappées** (décision 10) : un nest `select: prompt` dont la moitié des clés n'est pas
+  mappée spawn sans erreur dès lors que les non mappées ne sont pas cochées — le test fixe l'ordre
+  `selectRepos` → `resolveRepoKeys`, que rien n'empêche aujourd'hui d'inverser. Et : une entrée non
+  mappée est annotée dans la checklist ; cochée, elle produit le refus de `resolveRepoKeys`, mot
+  pour mot.
+- **Répertoire de worktree** (décision 4) : `-w feature/123 --as reco` crée le worktree sous
+  `<root>/feature-123/<repo>`, PAS sous `<root>/reco/<repo>` ; et `manifest.Worktree.Name` vaut
+  `feature-123`. Un test par couche, parce que la coïncidence « composant 2 == nom du répertoire »
+  a exactement une chance sur deux de se réintroduire dans chacune.
+- **`-i` sous `select: prompt`** : accepté, même argv qu'un spawn sans `-i` ; `-i --only` refuse,
+  mot pour mot comme aujourd'hui.
+- **Attache** : sous `prompt`, une sandbox vivante n'ouvre aucune invite (l'entrée du test est un
+  reader qui échoue si on le lit) et le message nomme `--as`.
+- **Reconstruction depuis le manifeste** (décision 12), trois tests :
+  `TestPromptModeAttachRebuildsTheSelectionFromTheRecord` — une sandbox `select: prompt` créée en
+  déclinant une clé non mappée se ré-attache sans refus ;
+  `TestInteractiveAttachRebuildsTheSelectionFromTheRecord` — le même, par la porte `-i` sur un nest
+  ORDINAIRE, contre la même fixture au `select: prompt` près : c'est ce test qui tient l'égalité des
+  deux moitiés de `selectionOpen` ;
+  `TestPromptModeAttachNamesARecordItCouldNotRead` — un enregistrement au schéma plus récent
+  n'empêche pas l'attache, est nommé à l'utilisateur avec son chemin, et n'est pas supprimé.
+  Plus `TestPromptModeAttachIgnoresAdHocMountsWhenRebuilding` pour le point « repos déclarés
+  seulement », et `TestPromptModeAttachWithoutARecordStillAttaches` pour le repli sans
+  enregistrement.
+- **`den ls`** : colonne INSTANCE ; WORKTREE vide quand un manifeste sans bloc `worktree:` est lu ;
+  repli sur le composant 2 conservé quand il n'y a AUCUN manifeste.
