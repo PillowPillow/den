@@ -207,3 +207,67 @@ func TestRedactedSpelling(t *testing.T) {
 		t.Errorf("Redacted = %q", converge.Redacted)
 	}
 }
+
+// The choices a human makes about ambiguous repositories land in the SAME
+// Answers an answer file would have carried: the second planning pass then
+// cannot tell the two apart, which is what keeps one planner for both flows.
+func TestResolveRepoChoicesWritesConfirmedChoicesIntoTheAnswers(t *testing.T) {
+	matches := []converge.RepoMatch{
+		{ // confirmed already: never asked about
+			Requirement: converge.RepoRequirement{Key: "api"},
+			Kind:        converge.MatchRemote, Path: "/dev/api", Confirmed: true,
+		},
+		{ // two candidates: the user picks the second
+			Requirement: converge.RepoRequirement{Key: "crm", URL: "https://example.test/team/crm.git"},
+			Kind:        converge.MatchAmbiguous, Candidates: []string{"/dev/one/crm", "/dev/two/crm"},
+		},
+		{ // a name-only guess the user declines
+			Requirement: converge.RepoRequirement{Key: "docs"},
+			Kind:        converge.MatchName, Path: "/dev/docs",
+		},
+		{ // absent: there is nothing to choose
+			Requirement: converge.RepoRequirement{Key: "ops"},
+			Kind:        converge.MatchAbsent,
+		},
+	}
+	cmd, out := answersCmd("2\n\n")
+	a := converge.Answers{}
+	if err := resolveRepoChoices(cmd, Deps{IsTTY: func() bool { return true }}, matches, &a); err != nil {
+		t.Fatalf("resolveRepoChoices: %v", err)
+	}
+	if a.Repos["crm"] != "/dev/two/crm" {
+		t.Errorf("repos = %#v, want the chosen candidate", a.Repos)
+	}
+	if _, mapped := a.Repos["docs"]; mapped {
+		t.Error("a declined guess must stay unmapped: den mounts no directory it could not attribute")
+	}
+	if strings.Contains(out.String(), "ops") {
+		t.Errorf("an absent repository has nothing to choose:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "api") {
+		t.Errorf("a confirmed match must not be re-asked:\n%s", out.String())
+	}
+}
+
+// Without a terminal the unconfirmed matches are REPORTED, not refused: a
+// scripted run installs what it can and names what it could not attribute,
+// with the answer-file key that settles it.
+func TestResolveRepoChoicesReportsWithoutATerminal(t *testing.T) {
+	matches := []converge.RepoMatch{{
+		Requirement: converge.RepoRequirement{Key: "crm"},
+		Kind:        converge.MatchAmbiguous, Candidates: []string{"/dev/one/crm", "/dev/two/crm"},
+	}}
+	cmd, out := answersCmd("")
+	a := converge.Answers{}
+	if err := resolveRepoChoices(cmd, Deps{}, matches, &a); err != nil {
+		t.Fatalf("resolveRepoChoices: %v", err)
+	}
+	if len(a.Repos) != 0 {
+		t.Errorf("repos = %#v, expected nothing chosen without a terminal", a.Repos)
+	}
+	for _, want := range []string{"crm", "repos:"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output must name %q:\n%s", want, out.String())
+		}
+	}
+}

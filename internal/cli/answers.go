@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -165,4 +166,83 @@ func (d Deps) getenv() func(string) string {
 		return func(string) string { return "" }
 	}
 	return d.Getenv
+}
+
+// resolveRepoChoices settles the discovery matches den will not act on
+// alone — a directory named like the repository, or several candidates — and
+// writes the confirmed ones into a.Repos.
+//
+// Into the ANSWERS, not into a separate result: the second planning pass reads
+// the same Answers the first one did, so a choice made here is indistinguishable
+// from one an answer file supplied. That is what keeps the interactive and the
+// automated flow on one planner.
+//
+// Nothing is chosen by default. An answer that is skipped leaves the repository
+// unmapped, and the nests needing it become not_ready — a state the user can
+// fix later with `den source configure`, unlike a wrong directory silently
+// mounted into every sandbox.
+func resolveRepoChoices(cmd *cobra.Command, d Deps, matches []converge.RepoMatch,
+	a *converge.Answers) error {
+
+	pending := converge.UnconfirmedMatches(matches)
+	if len(pending) == 0 {
+		return nil
+	}
+	out := cmd.OutOrStdout()
+	if d.IsTTY == nil || !d.IsTTY() {
+		// Not a refusal: a non-interactive run installs what it can and reports
+		// the rest. The repositories den could not attribute stay unmapped, and
+		// the plan says so — `repos:` in the answer file is how a scripted run
+		// answers them.
+		for _, m := range pending {
+			fmt.Fprintf(out, "repo %s: not confirmed (%s) — name it under `repos:` in the answer file "+
+				"to map it\n", m.Requirement.Key, m.Kind)
+		}
+		return nil
+	}
+
+	in := bufio.NewReader(cmd.InOrStdin())
+	for _, m := range pending {
+		candidates := m.Candidates
+		if len(candidates) == 0 && m.Path != "" {
+			candidates = []string{m.Path}
+		}
+		fmt.Fprintf(out, "\nrepo %s (%s)\n", m.Requirement.Key, m.Requirement.URL)
+		switch m.Kind {
+		case converge.MatchName:
+			fmt.Fprintln(out, "  a directory carries this name, but its remotes do not confirm it:")
+		case converge.MatchAmbiguous:
+			fmt.Fprintln(out, "  several directories could be it:")
+		}
+		for i, c := range candidates {
+			fmt.Fprintf(out, "  %d %s\n", i+1, c)
+		}
+		fmt.Fprint(out, "  choose a number, type a path, or press enter to leave it unmapped > ")
+
+		line, err := in.ReadString('\n')
+		if err != nil && line == "" {
+			return fmt.Errorf("reading the choice for repo %s: %w", m.Requirement.Key, err)
+		}
+		answer := strings.TrimSpace(line)
+		if answer == "" {
+			continue
+		}
+		chosen := answer
+		if n, convErr := strconv.Atoi(answer); convErr == nil {
+			if n < 1 || n > len(candidates) {
+				return fmt.Errorf("repo %s: %q is outside the list (expected 1 to %d, or a path)",
+					m.Requirement.Key, answer, len(candidates))
+			}
+			chosen = candidates[n-1]
+		}
+		expanded, err := config.ExpandPath(chosen)
+		if err != nil {
+			return err
+		}
+		if a.Repos == nil {
+			a.Repos = map[string]string{}
+		}
+		a.Repos[m.Requirement.Key] = expanded
+	}
+	return nil
 }

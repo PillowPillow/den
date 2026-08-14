@@ -483,6 +483,14 @@ git commit -m "feat(init): add reusable onboarding answers"
 
 ### Task 6: Discover repositories without cloning them
 
+> Settled in Task 6: `RepoRequirement` splits `RequiredBy` / `OptionalFor` (a key can be required by
+> one nest and optional in another, and only the first makes a nest not_ready). `MatchExplicit` was
+> added beside the planned kinds so an answer-file override is distinguishable from a remote match
+> in the plan. `cli.resolveRepoChoices` landed here, with the discovery it consumes, instead of in
+> Task 5. `internal/converge` now runs real git in its tests, so it has a `TestMain` calling
+> `worktree.NeutralizeGitEnvironment()` like `cli`, `spawn` and `source`.
+
+
 **Files:**
 - Create: `internal/converge/discovery.go`
 - Create: `internal/converge/discovery_test.go`
@@ -491,11 +499,11 @@ git commit -m "feat(init): add reusable onboarding answers"
 - Consumes: exported nests, `nest.Repo`, `Answers.RepositoryRoots`, `Answers.Repos`, and `worktree.Git`.
 - Produces: `converge.DiscoverRepos(ctx, git, requirements, answers) ([]RepoMatch, error)` and `converge.CollectRepoRequirements(root string, manifest *source.Manifest) ([]RepoRequirement, error)`.
 
-- [ ] **Step 1: Write URL normalization tests**
+- [x] **Step 1: Write URL normalization tests**
 
 Cover `git@gitlab.example.com:team/api.git`, `ssh://git@gitlab.example.com/team/api.git`, and `https://gitlab.example.com/team/api.git` converging to the same `gitlab.example.com/team/api` identity. Preserve host and owner path; strip credentials, scheme, trailing slash, and `.git` only.
 
-- [ ] **Step 2: Write discovery classification tests with temporary Git repos**
+- [x] **Step 2: Write discovery classification tests with temporary Git repos**
 
 ```go
 func TestDiscoverReposPrefersNormalizedRemote(t *testing.T) {
@@ -509,7 +517,7 @@ func TestDiscoverReposPrefersNormalizedRemote(t *testing.T) {
 
 Cover name-only, ambiguous, explicit override, absent, shared key across nests, conflicting URLs for one key, required, and optional behavior. Assert only direct children are scanned.
 
-- [ ] **Step 3: Implement deterministic collection and discovery**
+- [x] **Step 3: Implement deterministic collection and discovery**
 
 ```go
 type RepoRequirement struct {
@@ -530,7 +538,7 @@ type RepoMatch struct {
 
 Sort keys, dependent nests, roots, and candidates. `MatchRemote` is confirmed automatically. `MatchName` and `MatchAmbiguous` require an answer override or interactive choice. `MatchAbsent` remains unmapped.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run: `go test ./internal/converge -run 'Normalize|Discover|Requirements'`
 
