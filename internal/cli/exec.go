@@ -58,6 +58,111 @@ func spawnArgs(cmd *cobra.Command, args []string) error {
 	return atLeastOneArg(cmd, args)
 }
 
+// enterOptions carries what every door into a live sandbox needs. It exists so
+// `den exec` and `den shell` cannot drift: #60's own comment (below) says two
+// spellings of one door is the failure mode, and after 2026-08-14 there really
+// ARE two commands — so the shared body is what keeps that from being true of
+// the behaviour as well as the name.
+type enterOptions struct {
+	denHome   *string
+	runner    sbx.Runner
+	sshAgent  func() sshagent.Result
+	goos      string
+	freshness agent.GateOptions
+	isTTY     func() bool
+}
+
+// enterSandbox is the body `den exec` and `den shell` share: find the sandbox,
+// check it is attachable, hold the §9.1 gate, warn about an empty ssh agent,
+// then hand `spawn.Enter` a command and a workdir.
+//
+// tty is a PARAMETER rather than computed here, and that is the one thing the
+// two callers genuinely disagree about: `den exec` lets the probe and -T decide,
+// because `sbx exec -t` with no terminal behind it silently DISCARDS the
+// command's output while still returning its status (measured 2026-08-10 on
+// v0.38.0, spec §14.0). `den shell` passes true unconditionally — a login shell
+// without a terminal is worth nothing, which is why it refuses -T instead.
+//
+// command EMPTY means the login shell, and the default is NOT applied here: it
+// lives in spawn.Command.Argv (internal/spawn/enter.go:85), one layer down,
+// where `den spawn` reads it too.
+func enterSandbox(cmd *cobra.Command, ref string, command []string, tty bool,
+	workdir string, o enterOptions) error {
+
+	// The SANDBOX name is the flattened reference: ":" is not in sbx's
+	// `--name` charset, so a nest loaded from a source never spawns under its
+	// prefixed name (spawn.go) — the live VM this command must find is already
+	// "corp-api", not "corp:api".
+	//
+	// This is the ONLY thing this door needs from the reference pair: it reads
+	// no nest file, so nestOfSandbox — the reverse decode `den ports` and
+	// `den rm` share — has nothing to do here.
+	name, err := sandboxNameOf(ref)
+	if err != nil {
+		return err
+	}
+	boxes, err := sbx.Ls(cmd.Context(), o.runner)
+	if err != nil {
+		return err
+	}
+	b := sbx.Find(boxes, name)
+	if b == nil {
+		names := liveNames(boxes)
+		if len(names) == 0 {
+			return fmt.Errorf("sandbox %q not found — no sandbox is running", name)
+		}
+		return fmt.Errorf("sandbox %q not found (live: %v)", name, names)
+	}
+	// Same guard as `den spawn`, through the same helper: both paths end in an
+	// `sbx exec`. A STOPPED VM passes, `sbx exec` restarts it.
+	if err := b.CheckAttachable(); err != nil {
+		return err
+	}
+	// den's OWN lines go to stderr as soon as a caller might be piping stdout:
+	// `den exec -T api go build | tee log` must carry the command's output and
+	// nothing else. On the interactive path they stay on stdout, where `den sh`
+	// always put them — no pipe is listening there, and moving them would change
+	// a surface #60 does not touch.
+	chatter := cmd.ErrOrStderr()
+	if tty {
+		chatter = cmd.OutOrStdout()
+	}
+	stopped := b.IsStopped()
+	if stopped {
+		fmt.Fprintf(chatter,
+			"sandbox %s is stopped: it restarts on attach (its state is kept)\n", b.Name)
+	}
+	// The §9.1 gate WAITS here even with no terminal, and that is the decision
+	// #60 asked for. Under `--detach` den reads once because nobody is at a
+	// prompt; `den exec <sb> <cmd>` fits neither case — nobody is at a prompt
+	// AND the command being run is very often the agent itself. The gate's
+	// reason ("you are about to run that agent") is more true here, not less.
+	if err := spawn.CheckFreshnessOnReentry(
+		cmd.Context(), o.runner, chatter, b.Name, stopped, o.freshness); err != nil {
+		return err
+	}
+	// Before the attach, never after: once the shell has the terminal, a
+	// warning printed behind it is a line the user scrolls past on the way out.
+	warnEmptyAgentOnReentry(cmd, o.denHome, o.sshAgent, o.goos)
+	// The workdir comes from the workspaces REPORTED BY THE VM, never from a
+	// path recomputed from the config: without them the user lands in the VM's
+	// home, not in their code. Which of them, and how --workdir and the cwd
+	// rank, is spawn.StartDir's verdict — `den spawn` calls the same judge, so
+	// the sibling commands cannot open a shell in two different places (#69).
+	//
+	// The cwd is read HERE, at the caller's edge, and handed in: the judge stays
+	// pure, and an unreadable working directory is not an error.
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "" // StartDir skips its cwd rule on "" and falls back.
+	}
+	return spawn.Enter(cmd.Context(), o.runner, b.Name, spawn.Command{
+		Argv:    command,
+		Workdir: spawn.StartDir(workdir, cwd, b.Workspaces),
+		TTY:     tty,
+	})
+}
+
 // newExecCmd opens a shell in an already live sandbox, or runs one command in
 // it.
 //
@@ -146,85 +251,9 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 					"-T asks for no terminal and no command asks for a shell, which needs one — " +
 						"give a command after `--`, or drop -T")
 			}
-
-			// The SANDBOX name is the flattened reference: ":" is not in
-			// sbx's `--name` charset, so a nest loaded from a source never
-			// spawns under its prefixed name (spawn.go) — the live VM this
-			// command must find is already "corp-api", not "corp:api".
-			//
-			// This is the ONLY thing `den exec` needs from the reference pair:
-			// it reads no nest file, so nestOfSandbox — the reverse decode
-			// `den ports` and `den rm` share — has nothing to do here.
-			name, err := sandboxNameOf(args[0])
-			if err != nil {
-				return err
-			}
-			boxes, err := sbx.Ls(cmd.Context(), runner)
-			if err != nil {
-				return err
-			}
-			b := sbx.Find(boxes, name)
-			if b == nil {
-				names := liveNames(boxes)
-				if len(names) == 0 {
-					return fmt.Errorf("sandbox %q not found — no sandbox is running", name)
-				}
-				return fmt.Errorf("sandbox %q not found (live: %v)", name, names)
-			}
-			// Same guard as `den spawn`, through the same helper: both
-			// paths end in an `sbx exec`. A STOPPED VM passes, `sbx exec`
-			// restarts it.
-			if err := b.CheckAttachable(); err != nil {
-				return err
-			}
-			// den's OWN lines go to stderr as soon as a caller might be piping
-			// stdout: `den exec api -T -- go build | tee log` must carry the
-			// command's output and nothing else. On the interactive path they
-			// stay on stdout, where `den sh` always put them — no pipe is
-			// listening there, and moving them would change a surface #60 does
-			// not touch.
-			chatter := cmd.ErrOrStderr()
-			if tty {
-				chatter = cmd.OutOrStdout()
-			}
-			stopped := b.IsStopped()
-			if stopped {
-				fmt.Fprintf(chatter,
-					"sandbox %s is stopped: it restarts on attach (its state is kept)\n", b.Name)
-			}
-			// The §9.1 gate WAITS here even with no terminal, and that is the
-			// decision #60 asked for. Under `--detach` den reads once because
-			// nobody is at a prompt; `den exec -- <cmd>` fits neither case —
-			// nobody is at a prompt AND the command being run is very often the
-			// agent itself. The gate's reason ("you are about to run that
-			// agent") is more true here, not less.
-			if err := spawn.CheckFreshnessOnReentry(
-				cmd.Context(), runner, chatter, b.Name, stopped, freshness); err != nil {
-				return err
-			}
-			// Before the attach, never after: once the shell has the terminal,
-			// a warning printed behind it is a line the user scrolls past on
-			// the way out.
-			warnEmptyAgentOnReentry(cmd, denHome, sshAgent, goos)
-			// The workdir comes from the workspaces REPORTED BY THE VM, never
-			// from a path recomputed from the config: without them the user
-			// lands in the VM's home, not in their code. Which of them, and
-			// how --workdir and the cwd rank, is spawn.StartDir's verdict —
-			// `den spawn` calls the same judge, so the two sibling commands
-			// cannot open a shell in two different places (#69).
-			//
-			// The cwd is read HERE, at the caller's edge, and handed in: the
-			// judge stays pure, and an unreadable working directory is not an
-			// error — `den exec` then behaves exactly as it did before, on the
-			// first workspace.
-			cwd, err := os.Getwd()
-			if err != nil {
-				cwd = "" // StartDir skips its cwd rule on "" and falls back.
-			}
-			return spawn.Enter(cmd.Context(), runner, b.Name, spawn.Command{
-				Argv:    command,
-				Workdir: spawn.StartDir(workdir, cwd, b.Workspaces),
-				TTY:     tty,
+			return enterSandbox(cmd, args[0], command, tty, workdir, enterOptions{
+				denHome: denHome, runner: runner, sshAgent: sshAgent,
+				goos: goos, freshness: freshness, isTTY: isTTY,
 			})
 		},
 	}

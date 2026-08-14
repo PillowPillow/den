@@ -139,6 +139,11 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// `den spawn` would, and this is the surface that re-enters most often.
 	// runtime.GOOS is named here, at the wiring site, like the spawn's below.
 	root.AddCommand(newExecCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS, deps.Freshness, deps.IsTTY))
+	// `den shell` gets exactly what `den exec` gets, and for the same reasons: it
+	// is the same door with `bash -l` as its argument. Wiring it from the same
+	// fields is what makes "one door, two spellings" false — enterSandbox is
+	// shared, and so is everything injected into it.
+	root.AddCommand(newShellCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS, deps.Freshness, deps.IsTTY))
 	root.AddCommand(newRmCmd(&denHome, deps.Sbx, deps.Git))
 	// `den ports` reads the SAME sbx as `den ls` and `den exec` (deps.Sbx is the
 	// single runner) and gets its port scanner AND its browser opener from Deps,

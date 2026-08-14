@@ -12,6 +12,7 @@ Commands:
   nest        Inspect the declared nests
   ports       Show where a sandbox's declared ports land on the host
   rm          Destroy a sandbox (the agent profile persists)
+  shell       Open a login shell in an existing sandbox
   source      Manage team source repositories (stacks/nests shared over git)
   spawn       Spawn or attach a nest's sandbox
   version     Print den's version
