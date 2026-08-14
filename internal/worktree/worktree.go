@@ -694,10 +694,10 @@ func repoDir(common string) string {
 // samePath compares two paths, resolving symlinks when possible: git returns the
 // resolved path where den handles the one it was given.
 func samePath(a, b string) bool {
-	return resolvePath(a) == resolvePath(b)
+	return ResolvePath(a) == ResolvePath(b)
 }
 
-// resolvePath returns the canonical form of a path, including when it NO LONGER
+// ResolvePath returns the canonical form of a path, including when it NO LONGER
 // EXISTS.
 //
 // That is the deciding case, not an edge one: the dead-end guards (stale
@@ -709,7 +709,14 @@ func samePath(a, b string) bool {
 //
 // So we resolve the longest ancestor that still exists and reattach the rest of
 // the path to it.
-func resolvePath(p string) string {
+//
+// EXPORTED because internal/worktree owns symlink canonicalization for the
+// whole project and spawn.StartDir needs the same verdict: on darwin a cwd
+// read with os.Getwd() comes back under /private, while the mount den handed
+// sbx is the declared path. A second copy of this walk in internal/spawn would
+// be a second place for "the same directory" to mean two things — the drift
+// the one-judge rule exists to prevent (see spawn.StartDir's own comment).
+func ResolvePath(p string) string {
 	p = filepath.Clean(p)
 	if resolved, err := filepath.EvalSymlinks(p); err == nil {
 		return filepath.Clean(resolved)

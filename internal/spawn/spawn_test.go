@@ -4627,3 +4627,192 @@ func TestSpawnWorkdirOverridesTheReportedOne(t *testing.T) {
 		t.Errorf("--workdir must override the VM-reported \"/w\"; pipes = %v", f.Pipes)
 	}
 }
+
+// #69: the shell starts where the user typed the command, not in the first
+// workspace. The information was always there — the process's own working
+// directory — and den threw it away.
+//
+// The fixture leans on the ONE directory a hermetic test knows is both real
+// and under a mount it can declare: the package's own working directory. No
+// chdir (the suite forbids it, and StartDir takes cwd as a parameter for
+// exactly that reason), no process, no socket — the mount is declared as the
+// PARENT of that directory, so a correct implementation must answer the
+// deeper one.
+func TestSpawnStartsInTheDirectoryTheUserTypedFrom(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	denHome := denTestRepoAt(t, filepath.Dir(cwd))
+	f, d := fakeDeps()
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", cwd, "api", "bash", "-l") {
+		t.Errorf("-w must be the cwd, not the mount root; attaches: %v", f.Attaches)
+	}
+}
+
+// The same rule on the ATTACH branch, where the mounts come from the VM and
+// not from the cascade. Nothing is reapplied to a live VM, but WHERE the shell
+// opens is decided at attach time — so a cwd under a workspace the VM reports
+// is as valid there as on create.
+func TestSpawnAttachStartsInTheDirectoryTheUserTypedFrom(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	denHome := denTestRepoAt(t, filepath.Dir(cwd))
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
+			filepath.Dir(cwd) + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", cwd, "api", "bash", "-l") {
+		t.Errorf("-w must be the cwd on attach too; attaches: %v", f.Attaches)
+	}
+}
+
+// The regression #69 drags in, and must fix in the same breath: movedStart
+// compares the attach's workdir against expected[0] BY EQUALITY, to say "you
+// asked to work in b and the shell starts in a". Once the workdir is
+// cwd-derived that equality fails on the HAPPY path — the user stands in a
+// subdirectory of the repo, lands exactly there, and den warns about a
+// directory they are already in. Containment, not equality.
+func TestSpawnPrintsNoMovedStartWhenTheShellStartsWhereTheUserStood(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	denHome := denTestRepoAt(t, filepath.Dir(cwd))
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
+			filepath.Dir(cwd) + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if log := out.String(); strings.Contains(log, "the shell starts in") {
+		t.Errorf("no moved-start line is due when the shell starts where the user stood; log = %q", log)
+	}
+}
+
+// …and the warning must SURVIVE for the case it was written for: the user
+// stands nowhere near the mounts, asks for repo b, and the VM starts them in
+// a. Deleting the half instead of narrowing it would pass the test above and
+// lose this one.
+func TestSpawnStillReportsAMovedStartOutsideEveryMount(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running",` +
+			`"workspaces":["/mounted/first","` + repo + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if log := out.String(); !strings.Contains(log, "the shell starts in /mounted/first") {
+		t.Errorf("a start directory outside every asked-for repo must still be named; log = %q", log)
+	}
+}
+
+// denTestRepoAt is denTestSSH's fixture with the repo pointed at an EXISTING
+// directory of the caller's choosing instead of a fresh git repo — the lever
+// the #69 tests need, since the only directory that both exists and contains
+// the test process's cwd is the source tree itself, which no test may git-init
+// into. No worktree is involved, so no `.git` is required.
+func denTestRepoAt(t *testing.T, repo string) string {
+	t.Helper()
+	denHome := t.TempDir()
+	writeConfig(t, denHome, "  mode: agent-forward\n", oneHostEgress)
+	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
+		"image: devx:v1\nkits: [transverse]\nkit: devx-kit\n")
+	for _, kit := range []string{"transverse", "devx-kit"} {
+		if err := os.MkdirAll(filepath.Join(denHome, "stacks", "devx", kit), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	return denHome
+}
+
+// From outside every mount, #69 changes NOTHING: the shell starts in the first
+// workspace the VM reports, and den prints no line it did not print before.
+// The silent fallback is half the feature — a warning on the ordinary "I
+// spawned from somewhere else" gesture is a warning that stops being read.
+func TestSpawnFallsBackSilentlyFromOutsideEveryMount(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	// The VM mounts exactly the repo the nest declares, and the test process
+	// stands in the source tree — under neither.
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
+			repo + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", repo, "api", "bash", "-l") {
+		t.Errorf("-w must stay the first workspace; attaches: %v", f.Attaches)
+	}
+	if log := out.String(); strings.Contains(log, "does not fully match") {
+		t.Errorf("a cwd outside every mount is ordinary and warrants no warning; log = %q", log)
+	}
+}
+
+// The trailing-slash false positive, now owned by the containment test: sbx
+// normalizes the workspaces it echoes (measured 2026-08-10, v0.37.1) while a
+// declared `repos:` entry is only tilde-expanded, never cleaned. `repos: {api:
+// ~/dev/api/}` used to print a permanent lie about a repo that IS mounted;
+// #56 fixed it on the equality comparison, and the containment one inherits
+// the duty rather than reopening it.
+func TestSpawnPrintsNoMovedStartOnATrailingSlashInTheConfig(t *testing.T) {
+	denHome := denTestRepoAt(t, t.TempDir()+string(filepath.Separator))
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+	declared := readNestRepo(t, denHome)
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
+			filepath.Clean(declared) + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if log := out.String(); strings.Contains(log, "does not fully match") {
+		t.Errorf("a trailing slash must cost neither a mount line nor a moved-start line; log = %q", log)
+	}
+}
+
+// readNestRepo gives a test back the repo path denTestRepoAt wrote, suffix
+// included — the point of the fixture in the trailing-slash case is that the
+// declared string is NOT the cleaned one.
+func readNestRepo(t *testing.T, denHome string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(denHome, "nests", "api.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, after, ok := strings.Cut(string(b), "path: ")
+	if !ok {
+		t.Fatalf("no repo path in %s", b)
+	}
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(after), "}"))
+}

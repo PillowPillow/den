@@ -206,21 +206,31 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 			// a warning printed behind it is a line the user scrolls past on
 			// the way out.
 			warnEmptyAgentOnReentry(cmd, denHome, sshAgent, goos)
-			// The workdir comes from the first workspace REPORTED BY THE VM,
-			// never from a path recomputed from the config: without it the user
-			// lands in the VM's home, not in their code. --workdir overrides it
-			// for a caller that knows better.
-			dir := workdir
-			if dir == "" {
-				dir = b.Workdir()
+			// The workdir comes from the workspaces REPORTED BY THE VM, never
+			// from a path recomputed from the config: without them the user
+			// lands in the VM's home, not in their code. Which of them, and
+			// how --workdir and the cwd rank, is spawn.StartDir's verdict —
+			// `den spawn` calls the same judge, so the two sibling commands
+			// cannot open a shell in two different places (#69).
+			//
+			// The cwd is read HERE, at the caller's edge, and handed in: the
+			// judge stays pure, and an unreadable working directory is not an
+			// error — `den exec` then behaves exactly as it did before, on the
+			// first workspace.
+			cwd, err := os.Getwd()
+			if err != nil {
+				cwd = "" // StartDir skips its cwd rule on "" and falls back.
 			}
-			return spawn.Enter(cmd.Context(), runner, b.Name,
-				spawn.Command{Argv: command, Workdir: dir, TTY: tty})
+			return spawn.Enter(cmd.Context(), runner, b.Name, spawn.Command{
+				Argv:    command,
+				Workdir: spawn.StartDir(workdir, cwd, b.Workspaces),
+				TTY:     tty,
+			})
 		},
 	}
 
 	cmd.Flags().StringVar(&workdir, "workdir", "",
-		"working directory for the command (default: the first workspace the sandbox reports)")
+		"working directory for the command (default: the directory you ran den from, when the sandbox mounts it; otherwise the first workspace it reports)")
 	// Long name `--no-tty` because cobra requires one; -T is the spelling that
 	// matters, and it is docker compose's. `-w` is NOT taken here: it is `den
 	// spawn`'s worktree, and one letter meaning two things across sibling

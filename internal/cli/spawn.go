@@ -92,7 +92,7 @@ func newSpawnCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 	cmd.Flags().BoolVarP(&o.Interactive, "interactive", "i", false,
 		"pick the nest's optional repos from a checklist (contradicts --only/--without)")
 	cmd.Flags().StringVar(&o.Workdir, "workdir", "",
-		"working directory for the command (default: the first workspace the sandbox reports)")
+		"working directory for the command (default: the directory you ran den from, when the sandbox mounts it; otherwise the first workspace it reports)")
 	cmd.Flags().BoolVarP(&o.NoTTY, "no-tty", "T", false,
 		"do not allocate a terminal (for pipes and CI)")
 	return cmd

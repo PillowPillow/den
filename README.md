@@ -107,7 +107,7 @@ Options of `den spawn`:
 | `--agent <name>` | overrides `defaults.agent` |
 | `-- <cmd> [args...]` | runs this command instead of opening a shell; its exit status becomes den's |
 | `-T` | never allocate a terminal — for pipes and CI; refused together with no command after `--` — a shell needs one |
-| `--workdir <path>` | working directory for the command (default: the first workspace the sandbox reports) |
+| `--workdir <path>` | working directory for the command (default: the directory you ran `den` from, when the sandbox mounts it; otherwise the first workspace it reports) |
 
 `-w` takes a **branch** name, and a branch name often contains a `/`.
 The branch keeps the name as typed — that is the name in `git log` and in the PR — while the
@@ -146,7 +146,7 @@ Options of `den exec`:
 |---|---|
 | `-- <cmd> [args...]` | runs this command instead of opening a shell; its exit status becomes den's |
 | `-T` | never allocate a terminal — for pipes and CI; refused together with no command after `--` — a shell needs one |
-| `--workdir <path>` | working directory for the command (default: the first workspace the sandbox reports) |
+| `--workdir <path>` | working directory for the command (default: the directory you ran `den` from, when the sandbox mounts it; otherwise the first workspace it reports) |
 
 ### Mounting a repo on the fly
 
