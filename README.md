@@ -80,7 +80,8 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den init` | creates a den home from the shipped example (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`); refuses if `config.yaml` already exists |
 | `den spawn <nest> [repo...] [-- <cmd>]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise; extra repos are mounted on the fly; runs `<cmd>` instead of a shell when one is given |
 | `den ls` | lists live sandboxes, with their nest, instance, worktree, status and workspace count |
-| `den exec <name> [-- <cmd>]` | runs one command in an existing sandbox, or opens a shell when no command is given |
+| `den exec <name> <cmd> [args...]` | runs one command in an existing sandbox and exits with that command's own status |
+| `den shell <name>` | opens a login shell in an existing sandbox |
 | `den ports <name>` | publishes the nest's declared ports into that sandbox and prints where they land on the host |
 | `den rm <name>` | destroys a sandbox and cleans up the worktrees den created (the agent profile persists) |
 | `den build [<stack>]` | builds stack images in `parent` order, playing each stack's `provision.steps` in a throwaway build VM |
@@ -140,13 +141,17 @@ VMs writing one git index can corrupt it. `--as` is for read-mostly concurrency 
 agents exploring the same checkout. Two writers means two branches, hence `-w` alone: `git worktree
 add` refuses a branch already checked out elsewhere, so two instances cannot share one.
 
-Options of `den exec`:
+Options of `den exec` and `den shell`:
 
 | Option | Effect |
 |---|---|
-| `-- <cmd> [args...]` | runs this command instead of opening a shell; its exit status becomes den's |
-| `-T` | never allocate a terminal — for pipes and CI; refused together with no command after `--` — a shell needs one |
-| `--workdir <path>` | working directory for the command (default: the directory you ran `den` from, when the sandbox mounts it; otherwise the first workspace it reports) |
+| `-T` | never allocate a terminal — for pipes and CI. On `den shell` it is refused: a login shell needs one |
+| `--workdir <path>` | working directory (default: the directory you ran `den` from, when the sandbox mounts it; otherwise the first workspace it reports) |
+
+den's own flags go **before** the sandbox name; everything after it is the command, verbatim, its
+own flags included — `den exec -T api go test -v` passes `-v` to `go test`. This is
+`docker compose exec`'s rule, and it is why no `--` is needed. `den exec api --help` asks the
+program in the sandbox for its help, not den.
 
 ### Mounting a repo on the fly
 
@@ -583,7 +588,7 @@ flattened sandbox name: `corp:backend` becomes sandbox `corp-backend` — the sa
 already applies to branch names. A flattening collision (a local nest already named `corp-backend`,
 say) is refused at spawn, never silently renamed.
 
-`den exec`, `den rm` and `den ports` take **either** spelling: the reference you typed
+`den exec`, `den shell`, `den rm` and `den ports` take **either** spelling: the reference you typed
 (`corp:backend`, `corp:backend.feat12`) or the literal name `den ls` prints (`corp-backend`,
 `corp-backend.feat12`). The literal one is decoded back to its source, which is unambiguous
 precisely because spawn refused both competing decompositions up front.
