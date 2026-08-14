@@ -52,12 +52,25 @@ func TestShellAttachesWithATtyNotARun(t *testing.T) {
 	}
 }
 
-// The refusal the spec moves here from `den exec`: it must stay identical, in
-// the same words, to den spawn's (TestNoTTYReachesSpawnOptions,
-// spawn_test.go). -T and --no-tty are one flag with two spellings, so both
-// reach it — and on EITHER side of the sandbox name, because `den shell` does
-// not set SetInterspersed(false) (see newShellCmd's comment). That is the whole
-// observable difference from `den exec`, so it is pinned here.
+// noTTYRefusal is the message BOTH commands that can be asked for a terminless
+// login shell must produce, byte for byte: `den shell` (shell.go) and
+// `den spawn` with no command (internal/spawn/spawn.go). One contradiction must
+// not read as two rules (spec §2).
+//
+// Spelled out in full here and in TestSpawnRefusesNoTTYWithNoCommand rather
+// than asserted with strings.Contains, which is what both sides did until
+// 2026-08-14: `Contains(err, "-T")` passes on any message naming the flag, so
+// the identity the two production comments promise each other was held by
+// nothing. Reword one side now and its own test fails, which is what sends the
+// author to the other.
+const noTTYRefusal = "-T asks for no terminal and no command asks for a shell, which needs one — " +
+	"give a command after `--`, or drop -T"
+
+// The refusal the spec moves here from `den exec`. -T and --no-tty are one flag
+// with two spellings, so both reach it — and on EITHER side of the sandbox
+// name, because `den shell` does not set SetInterspersed(false) (see
+// newShellCmd's comment). That is the whole observable difference from
+// `den exec`, so it is pinned here.
 func TestShellRefusesNoTTY(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -74,8 +87,9 @@ func TestShellRefusesNoTTY(t *testing.T) {
 			if err == nil {
 				t.Fatal("-T on a login shell must be refused")
 			}
-			if !strings.Contains(err.Error(), "-T") {
-				t.Errorf("the refusal must name the flag in play: %v", err)
+			if err.Error() != noTTYRefusal {
+				t.Errorf("the refusal must be den spawn's, byte for byte:\n got  %q\n want %q",
+					err.Error(), noTTYRefusal)
 			}
 			if len(f.Calls) != 0 {
 				t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)

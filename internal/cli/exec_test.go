@@ -632,18 +632,31 @@ func TestExecAllocatesATtyOnlyWhenDenHasOne(t *testing.T) {
 
 // -T is the docker compose spelling, and it wins over a real terminal: it
 // exists so a caller in a terminal can still pipe cleanly.
+//
+// Both spellings are exercised. They are one flag, but only the long one is
+// wired through cobra's `--name` path, and `den exec` has no other test left
+// that reaches --no-tty at all: the deleted TestExecRefusesNoTTYWithNoCommand
+// carried it as a subtest, and TestExecRefusesItsOwnFlagsAfterTheSandboxName
+// only proves the long form is refused on the WRONG side of the name.
 func TestExecMinusTSuppressesTheTtyEvenOnATerminal(t *testing.T) {
-	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
-	}}
-	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: func() bool { return true }}
-	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
-		"exec", "-T", "api", "true"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(f.Attaches) != 0 {
-		t.Errorf("-T must forbid the tty; attaches = %v", f.Attaches)
+	for _, flag := range []string{"-T", "--no-tty"} {
+		t.Run(flag, func(t *testing.T) {
+			f := &sbx.Fake{Responses: map[string]sbx.Response{
+				"ls --json": {Output: []byte(
+					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			}}
+			deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: func() bool { return true }}
+			if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+				"exec", flag, "api", "true"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(f.Attaches) != 0 {
+				t.Errorf("%s must forbid the tty; attaches = %v", flag, f.Attaches)
+			}
+			if !f.HasPiped("exec", "-w", "/w/api", "api", "true") {
+				t.Errorf("the command must still run, without a terminal; pipes = %v", f.Pipes)
+			}
+		})
 	}
 }
 

@@ -4562,18 +4562,27 @@ func TestSpawnRefusesDetachWithACommand(t *testing.T) {
 // NoTTY governs a GIVEN command only (spawn.go's own comment above the tty
 // line): a spawn with no command hands out a login shell, which is worth
 // nothing without a terminal, so `-T` alone is a contradiction — the same one
-// `den exec` refuses (internal/cli/exec.go). Refused at step 0, before
-// anything is read, like its two neighbours above.
+// `den shell` refuses (internal/cli/shell.go, since 2026-08-14; it was
+// `den exec` before, which now requires a command and so contradicts nothing).
+// Refused at step 0, before anything is read, like its two neighbours above.
+//
+// The message is asserted WHOLE, and the same literal appears in
+// TestShellRefusesNoTTY (internal/cli/shell_test.go). Both sides used
+// strings.Contains until 2026-08-14, which passes on any message naming the
+// flag: the byte-for-byte identity the two production comments promise each
+// other was held by nothing. Reword one side and its own test fails, which is
+// what sends the author to the other.
 func TestSpawnRefusesNoTTYWithNoCommand(t *testing.T) {
+	const want = "-T asks for no terminal and no command asks for a shell, which needs one — " +
+		"give a command after `--`, or drop -T"
 	o := Options{Nest: "api", NoTTY: true}
 	err := Spawn(context.Background(), t.TempDir(), o, Deps{})
 	if err == nil {
 		t.Fatal("-T with no command must be refused")
 	}
-	for _, want := range []string{"-T", "shell"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal must name %q; got %q", want, err.Error())
-		}
+	if err.Error() != want {
+		t.Errorf("the refusal must be den shell's, byte for byte:\n got  %q\n want %q",
+			err.Error(), want)
 	}
 }
 
