@@ -4,7 +4,7 @@ Commands:
   build       Build stack images, in dependency order
   completion  Generate the autocompletion script for the specified shell
   doctor      Diagnose den's configuration and environment
-  exec        Run a command in an existing sandbox, or open a shell
+  exec        Run a command in an existing sandbox
   help        Help about any command
   init        Create a den home from the shipped example
   lint        Validate a source checkout (stacks, nests, references, confinement)

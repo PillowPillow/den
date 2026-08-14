@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/PillowPillow/den/internal/agent"
@@ -13,35 +14,66 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// execArgs accepts one sandbox name, and a command only behind an explicit
-// `--`.
+// execFlagNames is the CLOSED set of tokens den refuses in first-command
+// position. Closed rather than "anything starting with -", because a command's
+// own flags MUST pass through: `den exec api go test -v` is the whole point of
+// SetInterspersed(false), and a prefix rule would eat it.
 //
-// The separator is REQUIRED rather than inferred, and that is a refusal den
-// makes on purpose (spec §2). `den exec api go test` has two readings — a
-// sandbox `api` running `go test`, or three sandbox names — and cobra hands
-// both to the command as the same slice. Guessing would make the surface
-// depend on whether a word happens to name a live sandbox.
+// `--help` and `-h` are deliberately absent. Cobra does not intercept them past
+// the first positional (measured 2026-08-14 in den's real command tree), so
+// `den exec api mytool --help` asks mytool for its help, inside the sandbox —
+// which is what `docker compose exec` does too.
+var execFlagNames = []string{"-T", "--no-tty", "--workdir"}
+
+// execArgs accepts a sandbox name followed by a command. The command needs no
+// `--`, and that separator is now refused rather than tolerated.
 //
-// cmd.ArgsLenAtDash is the only thing that survives cobra's flag parsing to
-// say where `--` was: it returns the number of positionals seen BEFORE it, or
-// -1 when there was none.
+// This reverses the 2026-08-10 contract, on purpose, and the old comment here
+// argued for it with a reading that never existed: "`den exec api go test` has
+// two readings — a sandbox `api` running `go test`, or three sandbox names".
+// The previous execArgs refused anything but exactly one name before `--`
+// (`dash != 1`), so three names was never reachable. The genuine ambiguity was
+// which side owned a FLAG, and Flags().SetInterspersed(false) — set in
+// newExecCmd, the same mechanism docker compose uses — closes it: cobra stops
+// parsing flags at the first positional.
+//
+// Consequence, and it is the real break of 2026-08-14: den's own flags must sit
+// LEFT of the sandbox name. `den exec -T api go build`, not `den exec api -T`.
+// Refusing the wrong order by name is cheaper than letting `-T` reach the VM,
+// where it fails as `bash: -T: command not found` — an error that names nothing
+// the user can act on.
+//
+// cmd.ArgsLenAtDash() is consulted for ONE shape only, and it is the shape
+// SetInterspersed(false) does not neutralize. Measured 2026-08-14 on cobra
+// v1.10.2: pflag handles the `--` terminator BEFORE its interspersed check, so
+// a LEADING `--` still eats the separator and answers 0 — `den exec -- a b`
+// arrives here as args == ["a","b"], which would run `b` in a sandbox named
+// `a`. Past the first positional the flag parser has already stopped, so `--`
+// arrives as an ordinary argument and dash is -1; that shape is the exact
+// string comparison below, not a heuristic.
 func execArgs(cmd *cobra.Command, args []string) error {
-	dash := cmd.ArgsLenAtDash()
-	if dash < 0 {
-		if len(args) == 1 {
-			return nil
-		}
-		if len(args) == 0 {
-			return fmt.Errorf("%s: one argument expected, none received — usage: %s",
-				cmd.CommandPath(), cmd.UseLine())
-		}
-		return fmt.Errorf(
-			"%s: a command must be separated by `--` — write `%s %s -- %s`",
-			cmd.CommandPath(), cmd.CommandPath(), args[0], strings.Join(args[1:], " "))
+	if cmd.ArgsLenAtDash() == 0 {
+		return fmt.Errorf("%s: `--` is not needed, and a sandbox name must come first — write `%s %s`",
+			cmd.CommandPath(), cmd.CommandPath(), strings.Join(args, " "))
 	}
-	if dash != 1 {
-		return fmt.Errorf("%s: exactly one sandbox name expected before `--`, %d received — usage: %s",
-			cmd.CommandPath(), dash, cmd.UseLine())
+	if len(args) == 0 {
+		return fmt.Errorf("%s: a sandbox name and a command expected, none received — usage: %s",
+			cmd.CommandPath(), cmd.UseLine())
+	}
+	if len(args) == 1 {
+		return fmt.Errorf(
+			"%s: no command given — write `%s %s go test`, or `den shell %s` for a shell",
+			cmd.CommandPath(), cmd.CommandPath(), args[0], args[0])
+	}
+	if args[1] == "--" {
+		return fmt.Errorf("%s: `--` is not needed — write `%s %s %s`",
+			cmd.CommandPath(), cmd.CommandPath(), args[0], strings.Join(args[2:], " "))
+	}
+	name, _, _ := strings.Cut(args[1], "=")
+	if slices.Contains(execFlagNames, name) {
+		return fmt.Errorf(
+			"%s: den's flags go before the sandbox name — write `%s %s %s %s`",
+			cmd.CommandPath(), cmd.CommandPath(), args[1], args[0], strings.Join(args[2:], " "))
 	}
 	return nil
 }
@@ -163,8 +195,11 @@ func enterSandbox(cmd *cobra.Command, ref string, command []string, tty bool,
 	})
 }
 
-// newExecCmd opens a shell in an already live sandbox, or runs one command in
-// it.
+// newExecCmd runs one command in an already live sandbox.
+//
+// It opened a login shell too, when given no command, until 2026-08-14: that
+// form is `den shell` now (shell.go), and a command is mandatory here — the
+// contract `docker compose exec` has, which this command claimed to follow.
 //
 // It was `den sh` until 2026-08-10, and the rename is the whole point of #60,
 // not a matter of taste: den had exactly one door into a live sandbox and it
@@ -214,43 +249,36 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 	var noTTY bool
 
 	cmd := &cobra.Command{
-		Use:   "exec <name> [-- <cmd> [args...]]",
-		Short: "Run a command in an existing sandbox, or open a shell",
+		Use:   "exec <name> <cmd> [args...]",
+		Short: "Run a command in an existing sandbox",
 		Args:  execArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Everything after `--`. execArgs has already refused every other
-			// shape, so this slice is either empty or a real command.
-			//
-			// `--` with nothing after it (`den exec api --`) leaves command
-			// empty too, deliberately: that is the one silent normalization
-			// this file allows itself, on purpose — an empty tail is treated
-			// as "no command", so it opens a shell exactly as bare `den exec
-			// api` does, rather than refusing a separator the user did write.
-			var command []string
-			if dash := cmd.ArgsLenAtDash(); dash >= 0 {
-				command = args[dash:]
-			}
+			// execArgs has refused every other shape, so args[1:] is a real
+			// command. No ArgsLenAtDash: under SetInterspersed(false) it is
+			// always -1 past the sandbox name, and a leading `--` — the one
+			// shape where it is not — execArgs already refused.
+			command := args[1:]
 			// A nil probe is "no terminal", never "assume one" — the same rule
 			// spawn.interactive applies to `-i`, and the reason the wiring
 			// tests that leave IsTTY nil get the non-interactive path instead
 			// of a verdict from whatever terminal the suite runs under.
 			//
-			// With NO command the tty is unconditional: a login shell without
-			// one is worth nothing, and that is the behaviour `den sh` had.
-			// -T with no command is therefore a contradiction, refused below.
+			// The probe DECIDES, and that is not a preference: `sbx exec -t`
+			// with no terminal behind it silently DISCARDS the command's output
+			// while still returning its status (measured 2026-08-10 on v0.38.0
+			// — `echo hello` into a redirected stdout lands empty, spec §14.0).
+			// Passing -it in CI would lose every byte the command wrote and
+			// report success.
 			//
-			// With a command the probe DECIDES, and that is not a preference:
-			// `sbx exec -t` with no terminal behind it silently DISCARDS the
-			// command's output while still returning its status (measured
-			// 2026-08-10 on v0.38.0 — `echo hello` into a redirected stdout
-			// lands empty, spec §14.0). Passing -it in CI would lose every byte
-			// the command wrote and report success.
-			tty := len(command) == 0 || (!noTTY && isTTY != nil && isTTY())
-			if noTTY && len(command) == 0 {
-				return fmt.Errorf(
-					"-T asks for no terminal and no command asks for a shell, which needs one — " +
-						"give a command after `--`, or drop -T")
-			}
+			// The "-T asks for no terminal and no command asks for a shell"
+			// refusal used to live here. It moved to `den shell` on 2026-08-14,
+			// unchanged: `den exec` now requires a command, so -T contradicts
+			// nothing on this command. The spec 2026-08-10 pinned that message
+			// as identical byte for byte between two commands; the pair is now
+			// `den shell` ↔ `den spawn`, not `den exec` ↔ `den spawn`. Change
+			// one and you must change the other (spec §2: one contradiction,
+			// one rule).
+			tty := !noTTY && isTTY != nil && isTTY()
 			return enterSandbox(cmd, args[0], command, tty, workdir, enterOptions{
 				denHome: denHome, runner: runner, sshAgent: sshAgent,
 				goos: goos, freshness: freshness, isTTY: isTTY,
@@ -266,6 +294,11 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 	// commands is the collision den refuses elsewhere.
 	cmd.Flags().BoolVarP(&noTTY, "no-tty", "T", false,
 		"do not allocate a terminal (for pipes and CI)")
+	// The mechanism that removes `--`, and the same one docker compose uses:
+	// cobra stops parsing flags at the first positional, so everything after the
+	// sandbox name is the command, verbatim, its own flags included. Without
+	// this, `den exec api go test -v` fails on "unknown shorthand flag: 'v'".
+	cmd.Flags().SetInterspersed(false)
 	return cmd
 }
 

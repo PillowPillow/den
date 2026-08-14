@@ -314,13 +314,19 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 		{
 			"exec, missing argument",
 			[]string{"exec"},
-			"den exec: one argument expected, none received — usage: den exec <name> [-- <cmd> [args...]] [flags]",
+			"den exec: a sandbox name and a command expected, none received — " +
+				"usage: den exec <name> <cmd> [args...] [flags]",
 		},
+		// A sandbox name alone, NOT `exec b c`: since 2026-08-14 that pair is a
+		// legal command, so it passes execArgs and reaches the real `sbx ls` —
+		// this table runs through NewRootCmd(), whose runner is the machine's.
+		// It really did list the developer's live sandboxes before the case was
+		// changed. Every case here must refuse on the argument shape alone.
 		{
-			"exec, command without --",
-			[]string{"exec", "b", "c"},
-			`den exec: a command must be separated by ` + "`--`" + ` — write ` +
-				"`den exec b -- c`",
+			"exec, no command",
+			[]string{"exec", "b"},
+			"den exec: no command given — write `den exec b go test`, " +
+				"or `den shell b` for a shell",
 		},
 		{
 			"rm, missing argument",

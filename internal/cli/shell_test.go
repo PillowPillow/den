@@ -6,6 +6,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/sshagent"
 )
 
 // `den shell` is the login shell `den exec` opened until 2026-08-14, moved
@@ -24,6 +25,30 @@ func TestShellAttachesALoginShellInTheWorkdir(t *testing.T) {
 	}
 	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
 		t.Errorf("attaches = %v", f.Attaches)
+	}
+}
+
+// The fixture's `:ro` suffix is not decorative: it separates b.Workdir()
+// (which strips it) from b.Workspaces[0] (which would keep it). Without it,
+// both implementations pass — measured by review, on this exact file.
+//
+// Necessary complement to the test above, which scans f.Calls: Calls CONFLATES
+// Run and Attach (see sbx/fake.go), so a `Run("exec", ...)` — a mute shell,
+// no tty — satisfies it just as much as a real attach. Only f.Attaches tells
+// the two apart. This test also locks the `-it` flag and the FULL argv, in
+// order: `sbx exec [flags] SANDBOX COMMAND` — a postponed `-w` would land as-is
+// on `bash -l` instead of setting the working directory.
+func TestShellAttachesWithATtyNotARun(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]}`)},
+	}}
+
+	if _, err := executeCmdWithSbx(t, f, "shell", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+		t.Errorf("the attach must be an Attach, with the full ordered argv; attaches: %v", f.Attaches)
 	}
 }
 
@@ -90,6 +115,40 @@ func TestShellRefusesASecondPositional(t *testing.T) {
 	f := &sbx.Fake{}
 	if _, err := executeCmdWithSbx(t, f, "shell", "api", "bash"); err == nil {
 		t.Error("den shell takes one sandbox name")
+	}
+}
+
+// THE constraint that makes the ssh-agent warning acceptable on this door at
+// all: it reads the den home only to learn ssh.mode, and a den home it cannot
+// read costs the user NOTHING — no error, no missing shell. The whole point of
+// the command is that a broken ~/.den never stands between the user and a live
+// sandbox; the warning is advisory, so it is what gives way, silently.
+//
+// The empty temp dir is exactly that state: no config.yaml at all.
+func TestShellOpensWhenTheDenHomeCannotBeRead(t *testing.T) {
+	execSocket(t)
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	probed := false
+
+	_, stderr, err := runExecWithAgent(t, t.TempDir(), f, func() sshagent.Result {
+		probed = true
+		return sshagent.Result{State: sshagent.StateEmpty}
+	}, "shell", "api")
+	if err != nil {
+		t.Fatalf("an unreadable den home must not cost the user their shell: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
+		t.Fatalf("the shell must open regardless; attaches: %v", f.Attaches)
+	}
+	if probed {
+		t.Error("with no readable ssh.mode, den cannot know the agent is even forwarded: " +
+			"probing it decides on a mode it never read")
+	}
+	if strings.Contains(stderr, "warning") {
+		t.Errorf("stderr = %q, a den home den could not read must produce no verdict", stderr)
 	}
 }
 
