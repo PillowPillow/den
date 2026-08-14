@@ -45,7 +45,7 @@ func ExitCodeOf(err error) (int, bool) {
 // status, and den's own machinery did not fail.
 //
 // The distinction is the whole of #60's "usable in CI" requirement. Without a
-// type here, `den exec api -- false` and a den config error are the same event
+// type here, `den exec api false` and a den config error are the same event
 // to cmd/den/main.go, which exits 1 on any error. With it, main exits on the
 // child's status AND prints nothing: the child already wrote whatever it had
 // to say, and a "den: ..." line over it would be den claiming an error that

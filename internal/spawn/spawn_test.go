@@ -556,7 +556,10 @@ func TestSpawnDetachedDoesNotCallAStoppedSandboxReady(t *testing.T) {
 		t.Errorf("nothing restarted the VM, so it is not ready: den may not claim it; output:\n%s",
 			out.String())
 	}
-	for _, want := range []string{"stays stopped", "state preserved", "den exec api", "den ports api"} {
+	// `den shell api`, not `den exec api`: the line names the way back into the
+	// sandbox, and `den exec` has required a command since 2026-08-14. Asserting
+	// the old spelling is what kept the stale advice green through that change.
+	for _, want := range []string{"stays stopped", "state preserved", "den shell api", "den ports api"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the detached line must state %q; output:\n%s", want, out.String())
 		}
@@ -582,6 +585,13 @@ func TestSpawnDetachedStillCallsAFreshSandboxReady(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ready (detached)") {
 		t.Errorf("a sandbox just created is running: the line must say ready; output:\n%s", out.String())
+	}
+	// The way back IN is pinned here, and not only on the stopped branch above:
+	// this line is the one a --detach user copies, and until 2026-08-14 nothing
+	// asserted which command it named. It named `den exec api`, which by then
+	// answered "no command given".
+	if !strings.Contains(out.String(), "den shell api") {
+		t.Errorf("the detached line must name a command den still accepts; output:\n%s", out.String())
 	}
 }
 
@@ -1534,6 +1544,15 @@ func TestSpawnRefusesAMissingMountHostBeforeAnySideEffect(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mounts[0].host") {
 		t.Fatalf("the refusal must cite the key the user wrote, got: %v", err)
+	}
+	// The escape hatch is pinned, because this gate also fires on the ATTACH
+	// branch: a vanished host locks the user out of a live sandbox holding work,
+	// and the message is the only place naming the command that skips the gate.
+	// It named `den exec <sandbox>` until 2026-08-14, by which time `den exec`
+	// required a command — a locked-out user's remedy that refuses on the first
+	// try. Nothing asserted it, so nothing failed.
+	if !strings.Contains(err.Error(), "`den shell <sandbox>`") {
+		t.Errorf("the refusal must name the command that still enters a live sandbox, got: %v", err)
 	}
 	assertNoSideEffect(t, f, denHome)
 }
@@ -4562,18 +4581,32 @@ func TestSpawnRefusesDetachWithACommand(t *testing.T) {
 // NoTTY governs a GIVEN command only (spawn.go's own comment above the tty
 // line): a spawn with no command hands out a login shell, which is worth
 // nothing without a terminal, so `-T` alone is a contradiction — the same one
-// `den exec` refuses (internal/cli/exec.go). Refused at step 0, before
-// anything is read, like its two neighbours above.
+// `den shell` refuses (internal/cli/shell.go, since 2026-08-14; it was
+// `den exec` before, which now requires a command and so contradicts nothing).
+// Refused at step 0, before anything is read, like its two neighbours above.
+//
+// The message is asserted WHOLE, and it is `den spawn`'s OWN — it is no longer
+// the same literal as TestShellRefusesNoTTY's. The identity broke on the
+// remedy, not on the contradiction: `den spawn` still takes a command after
+// `--`, so "give a command after `--`" is true HERE and only here, while
+// `den shell` has no command form and must name `den exec`, which refuses `--`.
+// newShellCmd's comment (internal/cli/shell.go) holds the argument.
+//
+// Asserted whole rather than with strings.Contains, which is what both sides
+// did until 2026-08-14: `Contains(err, "-T")` passes on any message naming the
+// flag, so the remedy half was pinned by nothing and went stale unnoticed on
+// the other side.
 func TestSpawnRefusesNoTTYWithNoCommand(t *testing.T) {
+	const want = "-T asks for no terminal and no command asks for a shell, which needs one — " +
+		"give a command after `--`, or drop -T"
 	o := Options{Nest: "api", NoTTY: true}
 	err := Spawn(context.Background(), t.TempDir(), o, Deps{})
 	if err == nil {
 		t.Fatal("-T with no command must be refused")
 	}
-	for _, want := range []string{"-T", "shell"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal must name %q; got %q", want, err.Error())
-		}
+	if err.Error() != want {
+		t.Errorf("den spawn's refusal, byte for byte:\n got  %q\n want %q",
+			err.Error(), want)
 	}
 }
 

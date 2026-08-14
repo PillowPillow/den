@@ -238,12 +238,19 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// place: -T asks for no terminal, and with no command that is a login
 	// shell asked to give up the one thing that makes it worth opening.
 	//
-	// `den exec` (internal/cli/exec.go) refuses this exact pair already; the
-	// two commands share the flag and must share the refusal, in the same
-	// words, or a user meeting -T on one and not the other would read it as
-	// two different rules rather than the one contradiction it is. Leaving it
-	// unrefused here would be the silent normalization spec §2 forbids: -T
-	// would simply do nothing, on the sibling command that does refuse it.
+	// `den shell` (internal/cli/shell.go) refuses -T too, and MUST keep doing
+	// so: leaving it unrefused on either side is the silent normalization spec
+	// §2 forbids — -T would simply do nothing, on a sibling command that does
+	// refuse it.
+	//
+	// The two messages are no longer identical, and that is deliberate since
+	// 2026-08-14. This comment used to promise `den exec` an identical string;
+	// `den exec` requires a command now and contradicts nothing, and the
+	// remedies of the two surviving refusals genuinely differ: here the way out
+	// is a command after `--`, which `den spawn` still takes, while `den shell`
+	// has no command form at all and must send the user to `den exec`. Copying
+	// this sentence there would hand a `--` to the one command that refuses it.
+	// Keep the refusal on both; keep each remedy true of its own command.
 	if o.NoTTY && len(o.Command) == 0 {
 		return fmt.Errorf(
 			"-T asks for no terminal and no command asks for a shell, which needs one — " +
@@ -789,7 +796,10 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// This applies when RE-ATTACHING to a live sandbox too: if a mount host
 	// disappears from disk, `den spawn` can no longer attach even though none
 	// of this is re-read at attach time (the VM keeps its create-time mounts).
-	// `den exec <name>` is the one path that skips all of this.
+	// `den shell <name>` is the one path that skips all of this. It was
+	// `den exec <name>` until 2026-08-14, when that form stopped meaning "enter":
+	// `den exec` requires a command now, so the escape hatch is the command that
+	// still opens a shell alone.
 	//
 	// The message cites m.Key — the key the USER wrote. For the ssh.mode sugar
 	// that is `ssh.dir`, not `mounts[0]`, which appears in no config file.
@@ -815,16 +825,21 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 						"instead of your keys",
 					m.Host, config.GlobalPath(denHome))
 			}
-			// `den exec` is NAMED, not merely implied by the comment above: this
+			// `den shell` is NAMED, not merely implied by the comment above: this
 			// gate runs on the attach branch too, so a host path that vanished
 			// (an unmounted volume, a directory not created yet) refuses entry
 			// to a sandbox that is alive and holding work. The user needs the
 			// one command that skips all of this, in the message, at the moment
 			// they are locked out.
+			//
+			// The command NAMED here must be one den still accepts. It said
+			// `den exec <sandbox>` until 2026-08-14, and that form now answers
+			// "no command given" — a remedy handed to a locked-out user that
+			// refuses on the first try is worse than no remedy at all.
 			return fmt.Errorf(
 				"%s.host: %s not found — fix `mounts:` in %s: this directory is mounted in the "+
 					"sandbox, and a missing path would mount an empty directory instead of your files "+
-					"(`den exec <sandbox>` still enters an already-live sandbox)",
+					"(`den shell <sandbox>` still enters an already-live sandbox)",
 				m.Key, m.Host, config.GlobalPath(denHome))
 		case !fi.IsDir():
 			if m.Key == nest.SSHDirKey {
@@ -1168,10 +1183,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 
 		// A SINGLE status line, naming which of the two cases this is.
 		// "restarts on attach", not "resumed": under --detach den runs no
-		// exec, so nothing restarts now — the next `den exec` does. True on
+		// exec, so nothing restarts now — the next attach does. True on
 		// either side of this branch.
 		if live.IsStopped() {
-			// The exact sentence `den exec` uses (internal/cli/exec.go), not a
+			// The exact sentence the re-entry door uses (enterSandbox, in
+			// internal/cli/exec.go, shared by `den exec` and `den shell`), not a
 			// paraphrase: one situation, one wording, the same house rule
 			// internal/cli/ports.go states for "sandbox not found" — a second
 			// dialect for the same state is a message users have to learn
@@ -1375,12 +1391,17 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			fmt.Fprintf(d.Out,
 				"sandbox %s stays stopped (detached) — den started nothing: its configuration is "+
 					"checked and its state preserved, and it restarts on the next attach "+
-					"(`den exec %s`, or `den ports %s`, which starts it because publishing needs a "+
+					"(`den shell %s`, or `den ports %s`, which starts it because publishing needs a "+
 					"live endpoint)\n",
 				sandboxName, sandboxName, sandboxName)
 			return nil
 		}
-		fmt.Fprintf(d.Out, "sandbox %s ready (detached) — run `den exec %s` to enter\n",
+		// `den shell`, not `den exec`, on BOTH detached lines: they name the way
+		// back IN, and since 2026-08-14 `den exec` requires a command —
+		// `den exec api` answers "no command given". A success message handing
+		// the user a form den refuses teaches the wrong contract at the one
+		// moment they are certain to copy it.
+		fmt.Fprintf(d.Out, "sandbox %s ready (detached) — run `den shell %s` to enter\n",
 			sandboxName, sandboxName)
 		return nil
 	}

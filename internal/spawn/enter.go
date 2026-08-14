@@ -21,7 +21,7 @@ type Command struct {
 	//
 	// It applies to a COMMAND exactly as it applies to the shell, and that was
 	// arbitrated rather than inherited. The alternative — no workdir unless
-	// --workdir is given — would drop `den exec api -- go test ./...` into the
+	// --workdir is given — would drop `den exec api go test ./...` into the
 	// VM's home, where it fails for a reason nothing on screen explains. A
 	// caller holding only a sandbox name has no better cwd to offer, and one
 	// that does has --workdir.
@@ -45,15 +45,15 @@ type Command struct {
 //     the context cancellation do nothing, so a Ctrl-C typed inside the shell
 //     is the tty driver's business and never leaves the terminal in raw mode;
 //   - without one, Pipe — the three descriptors pass through unmerged and the
-//     context can kill the child, which is what a Ctrl-C on `den exec -T --
-//     go test ./...` must do.
+//     context can kill the child, which is what a Ctrl-C on
+//     `den exec -T api go test ./...` must do.
 //
 // No flag at all on the non-tty path: a piped stdin reaches the command with
 // none on sbx v0.38.0 (measured 2026-08-10, spec §14.0), unlike docker exec,
 // which needs -i. den passes what the attested surface needs and nothing else.
 //
-// A child that exits nonzero comes back as *sbx.ChildExit, so `den exec api --
-// false` exits 1 as the command did rather than as den failing. Anything else
+// A child that exits nonzero comes back as *sbx.ChildExit, so `den exec api false`
+// exits 1 as the command did rather than as den failing. Anything else
 // — sbx missing (exec.ErrNotFound, no ExitCode()), a cancellation (a signalled
 // child answers -1, which ExitCodeOf refuses: internal/sbx/exit.go) — stays
 // den's error, with den's message. cmd/den/main.go tells the two apart
