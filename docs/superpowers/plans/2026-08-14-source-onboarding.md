@@ -251,7 +251,7 @@ git commit -m "feat(source): define declarative source manifest"
 - Consumes: `config.DecodeYAMLStrict` and `config.ExpandPath`.
 - Produces: `source.LoadPersonal`, `source.ExpandedRepos`, `source.WritePersonal`, `source.LoadReceipt`, `source.WriteReceipt`, `source.PersonalPath`, and `source.ReceiptPath`.
 
-- [ ] **Step 1: Write failing round-trip, permission, and atomicity tests**
+- [x] **Step 1: Write failing round-trip, permission, and atomicity tests**
 
 ```go
 func TestWritePersonalRoundTripsPrivately(t *testing.T) {
@@ -269,13 +269,13 @@ func TestWritePersonalRoundTripsPrivately(t *testing.T) {
 
 Add a failure injection around rename to prove the old file remains readable when replacement fails.
 
-- [ ] **Step 2: Run tests and verify the APIs are absent**
+- [x] **Step 2: Run tests and verify the APIs are absent**
 
 Run: `go test ./internal/source -run 'Personal|Receipt'`
 
 Expected: FAIL to compile.
 
-- [ ] **Step 3: Implement strict models and one private atomic writer**
+- [x] **Step 3: Implement strict models and one private atomic writer**
 
 ```go
 type Personal struct {
@@ -313,11 +313,11 @@ type ReceiptNest struct {
 
 Define the closed `SourceStatus` constants `StatusReady = "ready"`, `StatusPartiallyReady = "partially_ready"`, `StatusBlocked = "blocked"`, `StatusUnknown = "unknown"`, and `StatusApplying = "applying"` in `internal/source`; define matching `ResourceReady`, `ResourceBlocked`, and `ResourceUnknown` constants for receipt components. `internal/converge` consumes them and never becomes an import of `internal/source`. Write into a sibling temporary file with `0600`, `Sync`, close, then `Rename`. Create parent directories with `0700`. Validate source names before composing paths. `LoadPersonal` preserves repo paths as authored; `ExpandedRepos` returns a separate expanded map for resolution so a later write does not replace `~` with an absolute path.
 
-- [ ] **Step 4: Test schema refusal and secret absence**
+- [x] **Step 4: Test schema refusal and secret absence**
 
 Assert unknown keys and schema versions fail. Marshal a receipt and assert it contains none of the credential input names, environment variable names, repository roots, or supplied sentinel secret values.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run: `go test ./internal/source`
 
