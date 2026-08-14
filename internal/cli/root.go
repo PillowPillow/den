@@ -217,10 +217,15 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 // here. Without this paragraph the next reader "fixes" the swallowed second
 // Ctrl-C and breaks `den exec`.
 //
-// The wiring itself is an untestable one-liner, in the shape spawn.
-// LooksInteractive and ports.ListenScanner already are: sending a real signal
-// to the test binary is not something a hermetic suite does. No test exists
-// for this line; do not add one that sends signals.
+// The wiring itself is an untestable one-liner, in the shape ports.
+// ListenScanner already is: sending a real signal to the test binary is not
+// something a hermetic suite does. No test exists for this line; do not add one
+// that sends signals.
+//
+// spawn.LooksInteractive used to be named here too, and #66 removed it from
+// the list: its negative verdicts are tested now (spawn/isterminal_test.go) and
+// only "a real terminal answers true" is out of reach. This line has no such
+// half — a signal is all or nothing.
 func Execute() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

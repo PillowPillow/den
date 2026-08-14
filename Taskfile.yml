@@ -39,9 +39,20 @@ tasks:
       - go test -count=1 ./...
 
   typecheck:
-    desc: Compile every package
+    desc: Compile every package, for both platforms den ships
+    # BOTH GOOS, not just the runner's. `go build ./...` compiles only the files
+    # matching the host's GOOS, so since #66 — which introduced the first
+    # platform-specific files (internal/spawn/isterminal_darwin.go and
+    # isterminal_linux.go) — a typo in the linux probe would sail through a gate
+    # run on a mac and fail in the release build instead. `gofmt -l .` sees every
+    # file regardless, so formatting was already covered; type-checking was not.
+    #
+    # CGO_ENABLED=0 matches .goreleaser.yml: the shipped binaries are static and
+    # cross-compiled from one runner, and a gate that compiled with cgo would be
+    # checking a build nobody releases.
     cmds:
-      - go build ./...
+      - GOOS=darwin CGO_ENABLED=0 go build ./...
+      - GOOS=linux CGO_ENABLED=0 go build ./...
 
   lint:
     desc: go vet plus an enforced gofmt

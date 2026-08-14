@@ -81,6 +81,12 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
 - No test calls `t.Parallel()`, opens a socket, or spawns a process. Keep it that way — hermeticity
   is the reason the untestable one-liners (`ports.ListenScanner`, `ports.OpenURL`,
   `spawn.LooksInteractive`) are isolated behind interfaces.
+- `spawn.LooksInteractive` is a HALF exception since #66: it delegates to `spawn.isTerminal`, whose
+  negative verdicts are tested against real descriptors (`internal/spawn/isterminal_test.go` —
+  `/dev/null`, a regular file, a closed fd). Only "a real terminal answers true" stays untested,
+  and it stays that way on purpose. The test file is tagged `darwin || linux`: the
+  `!darwin && !linux` build keeps the pre-#66 `os.ModeCharDevice` heuristic, under which
+  `/dev/null` answers true.
 - Packages running real git (`cli`, `spawn`, `worktree`) call `worktree.NeutralizeGitEnvironment()`
   in `TestMain`. Without it the suite has actually committed into unrelated repos via an inherited
   `GIT_DIR`/`GIT_WORK_TREE`.
