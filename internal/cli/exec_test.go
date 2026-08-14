@@ -596,11 +596,15 @@ func TestExecAcceptsAWorktreedSourceReference(t *testing.T) {
 // the shell is what happens when no command is given — not the reverse.
 //
 // Deviation from the brief: executeCmdWithSbx leaves IsTTY as the REAL probe
-// (spawn.LooksInteractive), so this test would flip verdict depending on what
-// fd 0 and fd 1 happen to be wherever it runs. `go test` under a plain shell
-// leaves both attached to the developer's terminal — true — and a CI runner
-// redirects them — false. The injection below is what makes the verdict the
-// test's own.
+// (spawn.LooksInteractive), so this test's verdict would follow whatever fd 0
+// and fd 1 happen to be wherever it runs — a developer's terminal, a CI runner's
+// redirections, the pipes `go test` puts between itself and the test binary, a
+// `go test -c` binary exec'd by hand. Which of those applies is not the point
+// and must not become the point: it is a property of the harness, it differs by
+// invocation and by toolchain, and pinning a claim about it here is how this
+// comment went stale the last time. The rule is the one that holds regardless —
+// this test must depend on NO real descriptor of the process. The injection
+// below is what makes the verdict the test's own.
 //
 // The reason was sharper before #66, when the real probe answered true for ANY
 // pair of char devices including /dev/null; the probe is exact now
