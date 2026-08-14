@@ -549,6 +549,14 @@ git commit -m "feat(init): discover existing work repositories"
 
 ### Task 7: Define deterministic plans, readiness, statuses, and redacted rendering
 
+> Settled in Task 7: `Plan.Nests` is a SORTED SLICE, not a map — a map cannot render deterministically
+> and determinism is what the acceptance tests compare. `ResourcePlan.Known` carries the
+> observability verdict beside `Action`, so `unknown` (den could not observe) stays distinct from
+> `blocked` (den observed, cannot converge); `AggregateStatus(resources, nests)` reads both.
+> `Plan.Receipt` builds the receipt from the plan, so what a user confirmed and what den attests
+> cannot drift.
+
+
 **Files:**
 - Create: `internal/converge/model.go`
 - Create: `internal/converge/model_test.go`
@@ -559,7 +567,7 @@ git commit -m "feat(init): discover existing work repositories"
 - Consumes: typed manifest resources, repo matches, and resource observations.
 - Produces: `converge.Plan`, `converge.EvaluateReadiness`, `converge.AggregateStatus`, `converge.RenderPlan`, and `converge.RenderStatus`; `converge.Status` aliases `source.SourceStatus`.
 
-- [ ] **Step 1: Write status aggregation tests**
+- [x] **Step 1: Write status aggregation tests**
 
 Use table cases for all resources/nests ready, missing required repo, managed resource blocked, observer failure, and missing optional repo. Assert command success is true only for `ready` and `partially_ready`.
 
@@ -572,11 +580,11 @@ tests := []struct{ resource source.SourceStatus; nest NestStatus; want source.So
 }
 ```
 
-- [ ] **Step 2: Write deterministic rendering and redaction tests**
+- [x] **Step 2: Write deterministic rendering and redaction tests**
 
 Build plans in different map insertion orders and assert byte-identical output. Seed credential values with `sentinel-secret` and assert neither that string nor its environment variable name occurs in rendered plan, status, errors, or marshaled receipt. The visible value is exactly `<redacted>`. Construct a `ResourceError` and assert it names resource ID, observed state, expected state, remaining action, and exact resume command.
 
-- [ ] **Step 3: Implement the closed plan model**
+- [x] **Step 3: Implement the closed plan model**
 
 ```go
 type Action string
@@ -624,7 +632,7 @@ func (p *Plan) UnconfirmedRepoMatches() []RepoMatch
 
 Construct all slices in stable manifest order, then key order where the manifest has maps. `RenderPlan` names the source and stack provision files before confirmation.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run: `go test ./internal/converge -run 'Status|Readiness|Render|Redact'`
 
