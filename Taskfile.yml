@@ -50,9 +50,19 @@ tasks:
     # CGO_ENABLED=0 matches .goreleaser.yml: the shipped binaries are static and
     # cross-compiled from one runner, and a gate that compiled with cgo would be
     # checking a build nobody releases.
+    #
+    # The windows line is NOT dead weight, and it is not a claim that den runs
+    # there — it never will, it drives `sbx`. It is the only build that compiles
+    # internal/spawn/isterminal_other.go, the `!darwin && !linux` fallback. Add
+    # the two shipped platforms and stop, and that file becomes the one file in
+    # the repo no gate type-checks — the exact hole these lines exist to close,
+    # pointed at the fallback instead of at the linux probe. Deleting this line
+    # costs nothing on the day it is deleted, which is what makes it easy to
+    # delete.
     cmds:
       - GOOS=darwin CGO_ENABLED=0 go build ./...
       - GOOS=linux CGO_ENABLED=0 go build ./...
+      - GOOS=windows CGO_ENABLED=0 go build ./...
 
   lint:
     desc: go vet plus an enforced gofmt

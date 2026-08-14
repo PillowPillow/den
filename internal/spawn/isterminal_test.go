@@ -65,6 +65,13 @@ func TestIsTerminalRejectsARegularFile(t *testing.T) {
 // with EBADF and the probe must read that as "no terminal", never panic and
 // never answer true. den calls this on os.Stdin and os.Stdout, and a process
 // started with fd 0 closed is a real shape (`den spawn api <&-`).
+//
+// The test asserts on a descriptor it no longer owns: the kernel is free to
+// hand that number to the next open, and the go test binary opens files. The
+// risk is accepted rather than hidden — a reused fd in a test binary lands on a
+// regular file or a pipe, and both answer false too, so the assertion holds
+// either way. Only a reuse that produced a TERMINAL could flip it, and nothing
+// in a hermetic suite opens one.
 func TestIsTerminalRejectsAClosedDescriptor(t *testing.T) {
 	f, err := os.Open(os.DevNull)
 	if err != nil {

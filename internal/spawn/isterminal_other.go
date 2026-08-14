@@ -24,6 +24,10 @@ import "os"
 // `darwin || linux` — asserting false here would assert against this documented
 // fallback rather than against a bug.
 //
+// It IS type-checked, despite shipping nowhere: `task typecheck` builds
+// GOOS=windows for this file and this file alone. Without that line it would be
+// the only file in the repo no gate compiles.
+//
 // os.NewFile does NOT take ownership of the descriptor for a Stat: the file is
 // never closed, so fd stays the caller's to manage — which matters, since every
 // caller passes os.Stdin or os.Stdout.
