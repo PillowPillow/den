@@ -389,9 +389,29 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 				"git worktree and sbx create, where cwd is no longer guaranteed)", denHome)
 	}
 
-	stackName := n.Stack
+	// TrimSpace on both halves, not `== ""`: since defaults.stack became
+	// optional (config.Validate no longer requires it — see the comment at its
+	// removed check), nothing upstream refuses a blank spelling anymore, and a
+	// `stack: "   "` would otherwise be carried to stacks.Get as a real name.
+	stackName := strings.TrimSpace(n.Stack)
 	if stackName == "" {
-		stackName = g.Defaults.Stack
+		stackName = strings.TrimSpace(g.Defaults.Stack)
+	}
+	// Neither half of the cascade named a stack. Refused HERE rather than at
+	// load: config.Validate sees only the global default, and the nest's own
+	// `stack:` is what makes an absent default legitimate — a source-aware den
+	// home has no default at all and every nest it spawns declares its own.
+	//
+	// The empty name must never reach stacks.Get: its verdict would be
+	// `stack "" not found (declared stacks: [...])`, which reads as an
+	// invitation to create a stack whose name is the empty string — the same
+	// fault the blank-field discipline in config.Validate exists to prevent.
+	// Both files are named because the fix belongs to exactly one of them and
+	// the user cannot tell which from the outside.
+	if stackName == "" {
+		return nil, fmt.Errorf(
+			"nest %q: no stack is configured — add `stack:` to %s, or set `defaults.stack` in %s",
+			n.Name, FilePath(denHome, n.Name), config.GlobalPath(denHome))
 	}
 	s, err := stacks.Get(stackName)
 	if err != nil {

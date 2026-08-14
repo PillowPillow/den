@@ -73,7 +73,7 @@ Each new production file gets a sibling `_test.go`. Cross-component flows live i
 - Consumes: existing `config.Global`, `nest.Nest`, and `config.Stacks.Get`.
 - Produces: `den.SourceAwareDenHome fs.FS`; `defaults.stack` may be empty, while `nest.Resolve` still returns a contextual error when both the nest stack and global default are empty.
 
-- [ ] **Step 1: Write failing validation and resolution tests**
+- [x] **Step 1: Write failing validation and resolution tests**
 
 ```go
 func TestValidateAllowsEmptyDefaultStack(t *testing.T) {
@@ -96,13 +96,13 @@ func TestResolveNamesMissingNestAndGlobalStack(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and verify the old requirement fails them**
+- [x] **Step 2: Run the focused tests and verify the old requirement fails them**
 
 Run: `go test ./internal/config ./internal/nest -run 'TestValidateAllowsEmptyDefaultStack|TestResolveNamesMissingNestAndGlobalStack'`
 
 Expected: FAIL because validation requires `defaults.stack`, then because resolution calls `stacks.Get("")`.
 
-- [ ] **Step 3: Remove only the global requirement and add the contextual resolution guard**
+- [x] **Step 3: Remove only the global requirement and add the contextual resolution guard**
 
 ```go
 stackName := n.Stack
@@ -118,17 +118,17 @@ if stackName == "" {
 
 Keep every other `Global.Validate` check unchanged.
 
-- [ ] **Step 4: Embed and test a minimal source-aware home**
+- [x] **Step 4: Embed and test a minimal source-aware home**
 
 Create `examples/den-home-source/config.yaml` with the same shipped Claude agent, default agent, SSH, worktree layout, and baseline egress as `examples/den-home/config.yaml`, but omit `defaults.stack`, `repos`, `nests/`, and `stacks/`. Add a second `//go:embed` variable in `embed.go` and assert that its only file is a loadable `config.yaml`.
 
-- [ ] **Step 5: Run package and full tests**
+- [x] **Step 5: Run package and full tests**
 
 Run: `go test ./internal/config ./internal/nest ./...`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/config internal/nest examples/den-home-source embed.go embed_test.go
@@ -907,6 +907,13 @@ Make the injected runner return the observed keychain/daemon error. Assert docto
 `Service.Status` loads installed manifest/config/receipt, runs resource `Inspect` only, reevaluates exported nests, and never calls `Apply`, `fetch`, or a mutating sbx command. `source status` uses `RenderStatus`.
 
 - [ ] **Step 4: Extend doctor dependencies and levels**
+
+> Divergence recorded in Task 1: `internal/doctor/doctor.go:405-413` still falls back on
+> `g.Defaults.Stack` per nest and calls `stacks.Get("")` when both are empty, so a source-aware home
+> with a stackless local nest is diagnosed as `stack "" not found` instead of "no stack is
+> configured". `nest.Resolve` now refuses that case with both file paths named. Align doctor with
+> that judge here, with its own test.
+
 
 Add the same injected `sbx.Runner` and Git reader already available at CLI wiring. Map `ready` to OK, `partially_ready` to warning, and `blocked`/`unknown` to fail. Report receipt/checkout/config divergence as fail.
 

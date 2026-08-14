@@ -3,6 +3,7 @@ package nest
 import (
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -171,6 +172,44 @@ func TestResolveStackDefaultsFromNestWhenAbsent(t *testing.T) {
 	}
 	if r.Stack.Name != "devx" {
 		t.Errorf("Stack.Name = %q, expected the default devx", r.Stack.Name)
+	}
+}
+
+// Neither the nest nor the global default names a stack. Since `defaults.stack`
+// became optional (source-aware den home), config.Validate no longer catches
+// this, and Resolve is the only judge that sees BOTH halves of the cascade.
+//
+// The message matters as much as the refusal: without this guard the empty
+// name reaches stacks.Get(""), whose verdict is `stack "" not found in
+// <denHome>/stacks` — an invitation to create a stack whose name is the empty
+// string, the same fault the blank-field discipline in config.Validate exists
+// to prevent. Blank spellings are the same state as absent, so they take the
+// same branch.
+func TestResolveNamesMissingNestAndGlobalStack(t *testing.T) {
+	for _, blank := range []string{"", "   ", "\t"} {
+		t.Run(strconv.Quote(blank), func(t *testing.T) {
+			g := globalTest()
+			g.Defaults.Stack = blank
+			n := nestTest()
+			n.Stack = blank
+
+			_, err := Resolve("/d", g, stacksTest(), n, Options{})
+			if err == nil {
+				t.Fatal("expected a refusal when no stack is configured anywhere")
+			}
+			// The nest's file and the global config, both named: the fix is in
+			// one of the two, and the user cannot know which without being told
+			// where each lives.
+			for _, want := range []string{
+				`nest "fullstack": no stack is configured`,
+				FilePath("/d", "fullstack"),
+				config.GlobalPath("/d"),
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, expected a mention of %q", err.Error(), want)
+				}
+			}
+		})
 	}
 }
 
