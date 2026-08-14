@@ -42,6 +42,37 @@ type Options struct {
 	//
 	// It never covers a key the caller named on `--only`: see setAsideUnmapped.
 	TolerateUnmappedOptional bool
+
+	// RepoMapping is the mapping a `key:` resolves through, when the caller
+	// has one of its own. nil — the local and legacy case — keeps
+	// config.yaml.repos, so nothing changes for a den without manifested
+	// sources.
+	//
+	// An EMPTY, non-nil map is NOT the same as nil, and the distinction is the
+	// whole mechanism: a manifested source that maps nothing yet must refuse
+	// its keys naming its own file, never resolve them through the personal
+	// global mapping — a key like `api` means different repositories in
+	// different sources, and one global answer would silently hand a spawn
+	// the wrong repository (spec §6). source.Personal.ExpandedRepos always
+	// returns a non-nil map for exactly this reason.
+	//
+	// A plain map, deliberately, and not a source object: internal/source
+	// imports this package (decode.go), so the reverse edge would be a cycle.
+	RepoMapping map[string]string
+	// RepoMappingPath is the file an unmapped-key refusal must send the user
+	// to. Read only when RepoMapping is non-nil; otherwise the message keeps
+	// naming config.GlobalPath(denHome).
+	RepoMappingPath string
+}
+
+// repoMapping returns the mapping to resolve `key:` entries through, and the
+// file a refusal must name. ONE function, so the resolution and the message
+// can never disagree about which file the user has to edit.
+func (o Options) repoMapping(denHome string, g *config.Global) (map[string]string, string) {
+	if o.RepoMapping == nil {
+		return g.Repos, config.GlobalPath(denHome)
+	}
+	return o.RepoMapping, o.RepoMappingPath
 }
 
 // Mount is a resolved `mounts:` entry, ready for the spawn argv and the mixin.
@@ -310,7 +341,12 @@ func (e *UnmappedRepoKeyError) withoutClause() string {
 //
 // only is matched on Repo.Name(), the same identity selectRepos addresses a repo
 // by (the Key for a key-typed entry), so the two cannot drift apart.
-func setAsideUnmapped(denHome string, mapping map[string]string, repos []Repo,
+// configPath is the file the returned refusals name — config.yaml for a local
+// nest, the source's own source-config/<name>.yaml for a manifested one. It is
+// passed in rather than derived here: only Resolve knows which mapping it
+// selected, and a message naming the other file would send the user to edit a
+// key that is not there.
+func setAsideUnmapped(configPath string, mapping map[string]string, repos []Repo,
 	only []string) (kept []Repo, aside []*UnmappedRepoKeyError) {
 
 	kept = make([]Repo, 0, len(repos))
@@ -328,7 +364,7 @@ func setAsideUnmapped(denHome string, mapping map[string]string, repos []Repo,
 			Optional:   r.Optional,
 			Prompts:    true, // the only mode Resolve calls this in
 			URL:        r.URL,
-			ConfigPath: config.GlobalPath(denHome),
+			ConfigPath: configPath,
 		})
 	}
 	return kept, aside
@@ -353,7 +389,7 @@ func setAsideUnmapped(denHome string, mapping map[string]string, repos []Repo,
 // What does NOT change is the doctrine: a key on a repo that is still
 // SELECTED refuses, loudly, and den drops nothing on its own. The refusal
 // only gains the escape when there IS one — see withoutClause.
-func resolveRepoKeys(denHome string, mapping map[string]string, repos []Repo, prompts bool) ([]Repo, error) {
+func resolveRepoKeys(configPath string, mapping map[string]string, repos []Repo, prompts bool) ([]Repo, error) {
 	out := slices.Clone(repos)
 	for i, r := range out {
 		if r.Key == "" {
@@ -366,7 +402,7 @@ func resolveRepoKeys(denHome string, mapping map[string]string, repos []Repo, pr
 				Optional:   r.Optional,
 				Prompts:    prompts,
 				URL:        r.URL,
-				ConfigPath: config.GlobalPath(denHome),
+				ConfigPath: configPath,
 			}
 		}
 		out[i].Path = path
@@ -428,6 +464,12 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
 
+	// Which mapping resolves this nest's `key:` entries, and which file a
+	// refusal about them names. Read ONCE, here, and passed down: the two
+	// consumers below (the dry-run's set-aside and the resolution proper) must
+	// never answer that question apart.
+	mapping, mappingPath := o.repoMapping(denHome, g)
+
 	// SELECTION FIRST, then key resolution — see resolveRepoKeys for why the
 	// order is load-bearing: reversed, no flag could escape an unmapped key.
 	repos, err := selectRepos(n.Repos, o.Without, o.Only)
@@ -443,14 +485,14 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 	// refusing (Options.TolerateUnmappedOptional).
 	var unmappedOptional []*UnmappedRepoKeyError
 	if o.TolerateUnmappedOptional && n.PromptsForRepos() {
-		repos, unmappedOptional = setAsideUnmapped(denHome, g.Repos, repos, o.Only)
+		repos, unmappedOptional = setAsideUnmapped(mappingPath, mapping, repos, o.Only)
 	}
 	// Key resolution BEFORE the positionals are merged in, so the merged list
 	// holds nothing but real paths: checkNoDuplicatePaths below compares them,
 	// and an unresolved key (Path still empty) would silently sit out the very
 	// comparison that catches `den backend ~/dev/review-mgmt` repeating a repo
 	// the nest already maps to that same directory.
-	repos, err = resolveRepoKeys(denHome, g.Repos, repos, n.PromptsForRepos())
+	repos, err = resolveRepoKeys(mappingPath, mapping, repos, n.PromptsForRepos())
 	if err != nil {
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}

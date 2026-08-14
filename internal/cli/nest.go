@@ -150,9 +150,26 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The SAME gate internal/spawn.Spawn passes before it reads
+			// anything: a manifested source is consumable only while its
+			// checkout, its configured version and its receipt agree, and its
+			// nests resolve their repo keys through its own mapping (spec §6,
+			// §11.3). A dry-run that resolved through the global mapping would
+			// print paths the spawn of that same reference never uses.
+			var active *source.Active
+			if srcName != "" {
+				if active, err = source.RequireUsable(home, srcName); err != nil {
+					return err
+				}
+			}
 			n, err := nest.LoadNest(nestRoot, bareNest)
 			if err != nil {
 				return err
+			}
+			opts.RepoMapping = active.RepoMapping()
+			opts.RepoMappingPath = active.MappingPath(home)
+			if opts.RepoMapping == nil {
+				opts.RepoMappingPath = config.GlobalPath(home)
 			}
 
 			// `--without` on a `select: prompt` nest, refused through the SAME

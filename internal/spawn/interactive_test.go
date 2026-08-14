@@ -38,9 +38,17 @@ func prompt(t *testing.T, input string) ([]string, string, error) {
 
 // promptHome is the den home these unit-level checklist tests render under. A
 // path that is NOT the default home on any machine: the annotation under test
-// names <denHome>/config.yaml, and a fixture that happened to match the real
-// home would let a regression to the bare filename pass unnoticed.
+// names the mapping file, and a fixture that happened to match the real home
+// would let a regression to the bare filename pass unnoticed.
+//
+// promptMappingPath is what the checklist now RECEIVES: since a manifested
+// source resolves its keys through source-config/<name>.yaml, the file to name
+// is the caller's answer, not a path this layer derives (see
+// interactiveWithout). Spawn passes config.GlobalPath for a local nest, which
+// is what these tests reproduce.
 const promptHome = "/fixture/den-home"
+
+var promptMappingPath = config.GlobalPath(promptHome)
 
 // prompts is the nest's `select: prompt` mode, the single parameter
 // promptOptionalRepos takes: false is `-i` (boxes start full, both flags
@@ -49,7 +57,7 @@ func promptWith(t *testing.T, input string, prompts bool,
 	mapping map[string]string) ([]string, string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	without, err := promptOptionalRepos(&out, strings.NewReader(input), promptHome, "api",
+	without, err := promptOptionalRepos(&out, strings.NewReader(input), promptMappingPath, "api",
 		optionalRepos(), prompts, mapping)
 	return without, out.String(), err
 }
@@ -109,7 +117,7 @@ func TestPromptAnnotatesUnmappedKeys(t *testing.T) {
 		{Key: "docs", Optional: true},
 	}
 	var out bytes.Buffer
-	if _, err := promptOptionalRepos(&out, strings.NewReader("\n"), promptHome, "api", repos, true,
+	if _, err := promptOptionalRepos(&out, strings.NewReader("\n"), promptMappingPath, "api", repos, true,
 		map[string]string{"worker": "/dev/worker"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -957,3 +957,94 @@ func TestResolveOrdersConfigMountsBeforeTheSSHSugar(t *testing.T) {
 		t.Fatalf("got %+v, want mounts[0] then ssh.dir", r.Mounts)
 	}
 }
+
+// A manifested source resolves its repo keys through ITS OWN mapping, never
+// through the personal config.yaml.repos (spec §6). Two sources declaring the
+// same key is the case that proves it: one global mapping could only ever
+// answer one of them.
+func TestResolveUsesTheSourceScopedMapping(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"api": "/dev/global-api"}
+	n := nestTest()
+	n.Repos = []Repo{{Key: "api"}}
+
+	for _, c := range []struct {
+		name    string
+		mapping map[string]string
+		want    string
+	}{
+		{"source A", map[string]string{"api": "/dev/a/api"}, "/dev/a/api"},
+		{"source B", map[string]string{"api": "/dev/b/api"}, "/dev/b/api"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, err := Resolve("/d", g, stacksTest(), n, Options{
+				RepoMapping:     c.mapping,
+				RepoMappingPath: "/d/source-config/x.yaml",
+			})
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if r.Repos[0].Path != c.want {
+				t.Errorf("path = %q, want %q", r.Repos[0].Path, c.want)
+			}
+		})
+	}
+
+	// A local nest keeps using the global mapping: nil means "no source scope".
+	r, err := Resolve("/d", g, stacksTest(), n, Options{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r.Repos[0].Path != "/dev/global-api" {
+		t.Errorf("path = %q, expected the global mapping for a local nest", r.Repos[0].Path)
+	}
+}
+
+// An EMPTY source mapping is not an absent one. A manifested source that maps
+// nothing yet must refuse, naming its own file — falling back on the global
+// mapping would resolve a key the source never mapped, to a path meant for
+// another source entirely.
+func TestResolveNeverFallsBackFromAnEmptySourceMapping(t *testing.T) {
+	g := globalTest()
+	g.Repos = map[string]string{"api": "/dev/global-api"}
+	n := nestTest()
+	n.Repos = []Repo{{Key: "api"}}
+
+	_, err := Resolve("/d", g, stacksTest(), n, Options{
+		RepoMapping:     map[string]string{},
+		RepoMappingPath: "/d/source-config/dg.yaml",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal: the source maps nothing, the global mapping is not consulted")
+	}
+	if !strings.Contains(err.Error(), "/d/source-config/dg.yaml") {
+		t.Errorf("error = %q, expected it to name the source's own file", err.Error())
+	}
+	if strings.Contains(err.Error(), "/d/config.yaml") {
+		t.Errorf("error = %q, must not send the user to the global config for a source nest", err.Error())
+	}
+}
+
+// The same asymmetry on the dry-run's tolerance: `den nest show` sets aside
+// unmapped optional keys, and the remedy it prints must name the file the user
+// has to edit for THAT source.
+func TestSetAsideUnmappedNamesTheSourceFile(t *testing.T) {
+	n := nestTest()
+	n.Select = SelectPrompt
+	n.Repos = []Repo{{Key: "api", Optional: true}}
+
+	r, err := Resolve("/d", globalTest(), stacksTest(), n, Options{
+		TolerateUnmappedOptional: true,
+		RepoMapping:              map[string]string{},
+		RepoMappingPath:          "/d/source-config/dg.yaml",
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(r.UnmappedOptional) != 1 {
+		t.Fatalf("UnmappedOptional = %+v, expected the single optional key", r.UnmappedOptional)
+	}
+	if got := r.UnmappedOptional[0].Remedy(); !strings.Contains(got, "/d/source-config/dg.yaml") {
+		t.Errorf("remedy = %q, expected the source's own file", got)
+	}
+}

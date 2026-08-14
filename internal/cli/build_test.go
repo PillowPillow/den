@@ -8,6 +8,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/source"
 )
 
 // buildStack writes one stack.yaml plus the provision step file its
@@ -378,5 +379,44 @@ func TestBuildWithoutAnArgumentIgnoresInstalledSources(t *testing.T) {
 	}
 	if got := strings.Join(builtStacks(f), ","); got != "base,mid,leaf" {
 		t.Errorf("built = %v, want base,mid,leaf (the source's teamstack must be absent)", builtStacks(f))
+	}
+}
+
+// A manifested source whose checkout, configured version and receipt disagree
+// is half-converged. Building its stack there would save an image the source's
+// own credentials and policies do not match (spec §11.3), so `den build` takes
+// the same gate a spawn does — and refuses before any sbx call.
+func TestBuildRefusesADivergingManifestedSource(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "sources", "corp")
+	buildStack(t, root, "teamstack", "image: teamstack:v1\nbase: claude\nprovision:\n  steps: [step.sh]\n")
+	mustWriteFile(t, filepath.Join(root, "den-source.yaml"), `schema_version: 1
+kind: source
+metadata: { name: corp, version: 1.1.0 }
+exports:
+  stacks:
+    - { name: teamstack, path: stacks/teamstack/stack.yaml }
+`)
+	if err := source.WritePersonal(denHome, "corp", source.Personal{Version: "1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.WriteReceipt(denHome, "corp", source.Receipt{
+		Status: source.StatusReady, Version: "1.0.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": noPriorSandboxes}}
+
+	_, _, err := runBuild(t, f, "--den-home", denHome, "build", "corp:teamstack")
+	if err == nil {
+		t.Fatal("expected a refusal on a half-converged source")
+	}
+	for _, want := range []string{"1.1.0", "den source configure corp"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected a mention of %q", err.Error(), want)
+		}
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("the refusal must come before any sbx call; calls: %v", f.Calls)
 	}
 }

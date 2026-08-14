@@ -263,9 +263,32 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	if err != nil {
 		return err
 	}
+	// A source nest is only usable while its checkout, its configured exact
+	// version and its receipt agree (spec §11.3) — and it resolves its repo
+	// keys through its OWN mapping, never the personal config.yaml.repos. Both
+	// answers come from the same gate, before the nest is even read: a spawn
+	// that started converging a half-applied source would mix a new catalogue
+	// with old infrastructure, silently.
+	//
+	// A LEGACY source (no den-source.yaml) passes through unchanged, with a nil
+	// mapping — that nil is what keeps every existing den working exactly as
+	// before.
+	var active *source.Active
+	if srcName != "" {
+		if active, err = source.RequireUsable(denHome, srcName); err != nil {
+			return err
+		}
+	}
 	n, err := nest.LoadNest(nestRoot, bareNest)
 	if err != nil {
 		return err
+	}
+	// Selected once, used by both the checklist and nest.Resolve: two readings
+	// of "which mapping" is exactly how a dry-run and a run start disagreeing.
+	repoMapping := active.RepoMapping()
+	repoMappingPath := active.MappingPath(denHome)
+	if repoMapping == nil {
+		repoMappingPath = config.GlobalPath(denHome)
 	}
 
 	// 0bis. The command-line contradictions whose verdict or whose MESSAGE needs
@@ -648,7 +671,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 		without = recordedWithout(n, recorded)
 	case selectionOpen:
-		if without, err = interactiveWithout(d, denHome, n, g.Repos); err != nil {
+		if without, err = interactiveWithout(d, repoMappingPath, n, repoMapping); err != nil {
 			return err
 		}
 	}
@@ -674,6 +697,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	}
 	r, err := nest.Resolve(denHome, g, stacks, n, nest.Options{
 		Agent: o.Agent, Without: without, Only: o.Only, Repos: o.Repos, Cwd: cwd,
+		RepoMapping: repoMapping, RepoMappingPath: repoMappingPath,
 	})
 	if err != nil {
 		return unresolvedOnALiveSandbox(err, sandboxName, selectionUnknown)

@@ -328,6 +328,18 @@ git commit -m "feat(source): persist personal config and receipts"
 
 ### Task 4: Route manifested nests through source-scoped mappings
 
+> Divergences settled in Task 4: (1) `nest.Options` carries `RepoMapping` **and** `RepoMappingPath`;
+> a nil mapping means "no source scope" (global `config.yaml.repos`), an empty non-nil map means
+> "manifested, nothing mapped" and refuses — `source.Personal.ExpandedRepos` therefore never returns
+> nil. (2) `spawn.interactiveWithout`/`promptOptionalRepos`/`unmappedNote` now take that same
+> `mappingPath` instead of a den home, so the checklist and the resolver never name two files.
+> (3) `cli/rm.go`'s LEGACY worktree cleanup (`cleanWorktreesLegacy`, used only when the creation
+> record is absent or unreadable) still resolves `key:` through `config.yaml.repos` and names that
+> file — reaching the source mapping there needs `nestOfSandbox` to return the source name, which
+> `den ports` shares. Left out on purpose: `den rm` must never refuse (doctrine T13/T16), and this
+> path already degrades to a warning. Fix it with the doctor alignment in Task 12.
+
+
 **Files:**
 - Create: `internal/source/version.go`
 - Create: `internal/source/version_test.go`
@@ -344,7 +356,7 @@ git commit -m "feat(source): persist personal config and receipts"
 - Consumes: `source.LoadManifest`, `source.LoadPersonal`, `source.LoadReceipt`, and existing `source.Locate` results.
 - Produces: `source.RequireUsable(denHome, name string) (*Active, error)` and `nest.Options.RepoMapping map[string]string`.
 
-- [ ] **Step 1: Write failing source-scoping tests**
+- [x] **Step 1: Write failing source-scoping tests**
 
 Create two manifested sources that both declare key `api`, map them to different directories, and assert each source nest resolves its own path. Assert a local nest still uses `config.yaml.repos`. Assert a manifested source never falls back to the global mapping.
 
@@ -354,17 +366,17 @@ if err != nil { t.Fatal(err) }
 if resolved.Repos[0].Path != repoA { t.Fatalf("path = %q", resolved.Repos[0].Path) }
 ```
 
-- [ ] **Step 2: Write divergence-guard tests**
+- [x] **Step 2: Write divergence-guard tests**
 
 Cover checkout manifest version differing from `Personal.Version`, an `applying` receipt, target commit mismatch, missing final receipt, and a completely legacy source. Every manifested refusal must name `den source configure <name>` and the pending exact version.
 
-- [ ] **Step 3: Run tests and verify current global-only behavior fails**
+- [x] **Step 3: Run tests and verify current global-only behavior fails**
 
 Run: `go test ./internal/source ./internal/nest ./internal/spawn ./internal/cli -run 'SourceScoped|RequireUsable|VersionDivergence'`
 
 Expected: FAIL because `Resolve` reads only `g.Repos` and no version guard exists.
 
-- [ ] **Step 4: Add mapping injection and the active-source guard**
+- [x] **Step 4: Add mapping injection and the active-source guard**
 
 ```go
 type Active struct {
@@ -380,11 +392,11 @@ func RequireUsable(denHome, name string) (*Active, error)
 
 `RequireUsable` returns legacy mode when the manifest is absent. For a manifested source it requires checkout version, configured version, and final receipt version/commit to agree, then exposes `ExpandedRepos(Personal.Repos)` for runtime resolution. `nest.Resolve` selects `Options.RepoMapping` when non-nil; nil preserves `g.Repos` for local and legacy callers. Update spawn, nest show, and named source build to call this guard before loading source objects.
 
-- [ ] **Step 5: Update unmapped-key diagnostics**
+- [x] **Step 5: Update unmapped-key diagnostics**
 
 Pass the selected mapping path into `resolveRepoKeys`. A manifested source error points to `source.PersonalPath(home, name)`; local and legacy errors still point to `config.GlobalPath(home)`.
 
-- [ ] **Step 6: Run affected and full tests, then commit**
+- [x] **Step 6: Run affected and full tests, then commit**
 
 Run: `go test ./internal/source ./internal/nest ./internal/spawn ./internal/cli ./...`
 

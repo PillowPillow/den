@@ -35,16 +35,30 @@ func Locate(denHome, ref string) (root, src, name string, err error) {
 	if src == "" {
 		return denHome, "", name, nil
 	}
-	if err := config.ValidateSourceName(src); err != nil {
+	dir, err := requireInstalled(denHome, src)
+	if err != nil {
 		return "", "", "", err
 	}
-	dir := Dir(denHome, src)
-	if fi, statErr := os.Stat(dir); statErr != nil || !fi.IsDir() {
-		return "", "", "", fmt.Errorf(
-			"source %q: not installed — expected %s; run `den source add <url> --name %s`",
-			src, dir, src)
-	}
 	return dir, src, name, nil
+}
+
+// requireInstalled validates a source name and returns its checkout
+// directory, or the ONE refusal den gives for a source that is not there.
+//
+// Extracted so RequireUsable (version.go) cannot answer that same question in
+// a second dialect: a user who typed `corp:api` and a user running `den build
+// corp:base` must be told the same thing, with the same remedy.
+func requireInstalled(denHome, name string) (string, error) {
+	if err := config.ValidateSourceName(name); err != nil {
+		return "", err
+	}
+	dir := Dir(denHome, name)
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf(
+			"source %q: not installed — expected %s; run `den source add <url> --name %s`",
+			name, dir, name)
+	}
+	return dir, nil
 }
 
 // StaleAfter is the age past which the spawn hints at `den source update`.

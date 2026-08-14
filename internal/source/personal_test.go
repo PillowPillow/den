@@ -146,3 +146,19 @@ func TestPersonalRefusesAnIllegalSourceName(t *testing.T) {
 		t.Error("LoadPersonal accepted a traversing source name")
 	}
 }
+
+// Empty and absent are the SAME answer here, and it must not be nil: nil is
+// how nest.Resolve recognizes a caller with no source scope, so a manifested
+// source that maps nothing would fall back on the global config.yaml.repos —
+// the mapping spec §6 says is never consulted for a manifested source.
+func TestExpandedReposIsNeverNil(t *testing.T) {
+	for _, p := range []*Personal{{}, {Repos: map[string]string{}}} {
+		got, err := p.ExpandedRepos()
+		if err != nil {
+			t.Fatalf("ExpandedRepos: %v", err)
+		}
+		if got == nil {
+			t.Fatal("ExpandedRepos returned nil: an unmapped manifested source must still refuse, not fall back")
+		}
+	}
+}

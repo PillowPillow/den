@@ -102,10 +102,14 @@ func LoadPersonal(denHome, name string) (*Personal, error) {
 // discovered repository) and a round trip through an expanded value would
 // silently replace the user's "~/Development/api" with an absolute path tied
 // to one account. Resolution needs real paths; the file keeps the author's.
+// The result is ALWAYS non-nil, and that is load-bearing rather than tidy:
+// nest.Resolve reads `Options.RepoMapping == nil` as "this caller has no
+// source scope, use the global config.yaml.repos". A manifested source that
+// maps nothing yet — the normal state right after `den init --source` finds
+// no repository — would then silently resolve its keys through the personal
+// global mapping, which spec §6 says is never consulted for a manifested
+// source. Empty-but-present means "manifested, nothing mapped": refuse.
 func (p *Personal) ExpandedRepos() (map[string]string, error) {
-	if len(p.Repos) == 0 {
-		return nil, nil
-	}
 	out := make(map[string]string, len(p.Repos))
 	for _, key := range slices.Sorted(maps.Keys(p.Repos)) {
 		expanded, err := config.ExpandPath(p.Repos[key])
