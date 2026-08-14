@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/lint"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -78,7 +77,7 @@ func Stale(denHome, name string, now time.Time) bool {
 // sources/ directory is an empty list, not an error, the same doctrine List
 // documents above.
 //
-// This exists because List is not free: `den source ls` pays a `lint.Run`
+// This exists because List is not free: `den source ls` pays a `source.Lint`
 // plus a `git remote get-url` and a `git rev-parse` PER installed source,
 // work that exists to answer "what is installed and is it healthy". A bare
 // `den source update` needs only the names to iterate over — source.Update
@@ -129,7 +128,7 @@ func List(ctx context.Context, git worktree.Git, denHome string) ([]Info, error)
 		}
 		name := e.Name()
 		dir := Dir(denHome, name)
-		info := Info{Name: name, LintErrs: lint.Run(dir)}
+		info := Info{Name: name, LintErrs: Lint(dir)}
 		if raw, err := git.Run(ctx, dir, "remote", "get-url", "origin"); err == nil {
 			info.URL = strings.TrimSpace(string(raw))
 		} else {

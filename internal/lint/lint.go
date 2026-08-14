@@ -25,12 +25,106 @@ import (
 // (config.LoadStacks, nest.ListNests) so lint can never accept what a spawn
 // would later refuse — one judge, not two.
 func Run(root string) []error {
+	resolved, errs := resolveRoot(root)
+	if len(errs) > 0 {
+		return errs
+	}
+	stacks, err := config.LoadStacks(resolved)
+	if err != nil {
+		return []error{err} // structural: nothing more can be judged
+	}
+	nests, broken, err := nest.ListNests(resolved)
+	if err != nil {
+		return []error{err}
+	}
+	for _, b := range broken {
+		errs = append(errs, fmt.Errorf("nest %q: %w", b.Name, b.Err))
+	}
+	return append(errs, judge(resolved, stacks, nests)...)
+}
+
+// Catalogue is the explicit export list of a manifested source: the names it
+// publishes, nothing else. Names only, no paths — a manifested source's
+// exports are validated to sit at the canonical location before lint runs
+// (source.ValidateManifest), so the loaders' own by-name rule is what reads
+// them here, as it is at spawn.
+type Catalogue struct {
+	Stacks []string
+	Nests  []string
+}
+
+// RunCatalogue is Run for a source that PUBLISHES its objects (spec
+// 2026-08-14 §5.2): the same checks, over the declared catalogue instead of
+// whatever the directories contain.
+//
+// The difference is not cosmetic. A stack present in the checkout but absent
+// from `exports.stacks` is an implementation detail of the source, so an
+// exported nest may not resolve its `stack:` through it — the teammate who
+// installs the source addresses exported names and nothing else. Feeding the
+// directory scan to these checks would accept exactly that, and the refusal
+// would only appear on the teammate's machine, at spawn.
+//
+// Symmetrically, an unexported object's own faults are not findings: nothing
+// published can reach it.
+func RunCatalogue(root string, cat Catalogue) []error {
+	resolved, errs := resolveRoot(root)
+	if len(errs) > 0 {
+		return errs
+	}
+
+	// Built by name rather than filtered from LoadStacks: an EXPORTED stack
+	// that does not load must be reported (the catalogue promised it), and a
+	// filter over the scan would silently drop it — the scan skips a
+	// directory without a stack.yaml entirely.
+	stacks := config.Stacks{Healthy: map[string]*config.Stack{}, Root: filepath.Join(resolved, "stacks")}
+	for _, name := range cat.Stacks {
+		s, err := config.LoadStack(resolved, name)
+		if err != nil {
+			stacks.Broken = append(stacks.Broken, config.BrokenStack{Name: name, Err: err})
+			continue
+		}
+		stacks.Healthy[name] = s
+	}
+
+	var nests []*nest.Nest
+	for _, name := range cat.Nests {
+		n, err := nest.LoadNest(resolved, name)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("nest %q: %w", name, err))
+			continue
+		}
+		nests = append(nests, n)
+	}
+	return append(errs, judge(resolved, stacks, nests)...)
+}
+
+// judge is the shared verdict: the checks themselves never learn WHERE the
+// objects came from. One implementation, so a manifested source can never be
+// accepted on a rule a legacy one is refused on, or the reverse.
+func judge(root string, stacks config.Stacks, nests []*nest.Nest) []error {
+	var errs []error
+	for _, b := range stacks.Broken {
+		errs = append(errs, fmt.Errorf("stack %q: %w", b.Name, b.Err))
+	}
+	for _, name := range stacks.Names() {
+		errs = append(errs, checkStack(root, stacks, stacks.Healthy[name])...)
+	}
+	errs = append(errs, checkCycles(stacks)...)
+	for _, n := range nests {
+		errs = append(errs, checkNest(root, stacks, n)...)
+	}
+	return errs
+}
+
+// resolveRoot turns the caller's path into the one every confinement check
+// compares against.
+func resolveRoot(root string) (string, []error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
-		return []error{fmt.Errorf("resolving %q: %w", root, err)}
+		return "", []error{fmt.Errorf("resolving %q: %w", root, err)}
 	}
 	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
-		return []error{fmt.Errorf("%s: not a directory — `den lint` validates a checkout root", abs)}
+		return "", []error{fmt.Errorf("%s: not a directory — `den lint` validates a checkout root", abs)}
 	}
 	// EvalSymlinks the root itself, once, so every confinement check below
 	// compares like-for-like: a declared path is resolved the SAME way (see
@@ -40,38 +134,11 @@ func Run(root string) []error {
 	// resolves a plain t.TempDir() under a symlinked /var → /private/var
 	// (Task 4 review finding #2). Stat above already proved abs exists, so
 	// this cannot fail on ENOENT.
-	root, err = filepath.EvalSymlinks(abs)
+	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return []error{fmt.Errorf("resolving %s: %w", abs, err)}
+		return "", []error{fmt.Errorf("resolving %s: %w", abs, err)}
 	}
-
-	var errs []error
-
-	stacks, err := config.LoadStacks(root)
-	if err != nil {
-		return append(errs, err) // structural: nothing more can be judged
-	}
-	for _, b := range stacks.Broken {
-		errs = append(errs, fmt.Errorf("stack %q: %w", b.Name, b.Err))
-	}
-
-	for _, name := range stacks.Names() {
-		s := stacks.Healthy[name]
-		errs = append(errs, checkStack(root, stacks, s)...)
-	}
-	errs = append(errs, checkCycles(stacks)...)
-
-	nests, broken, err := nest.ListNests(root)
-	if err != nil {
-		return append(errs, err)
-	}
-	for _, b := range broken {
-		errs = append(errs, fmt.Errorf("nest %q: %w", b.Name, b.Err))
-	}
-	for _, n := range nests {
-		errs = append(errs, checkNest(root, stacks, n)...)
-	}
-	return errs
+	return resolved, nil
 }
 
 // checkStack judges one healthy stack: its parent reference, and every path

@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/lint"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -54,7 +53,7 @@ func Add(ctx context.Context, git worktree.Git, denHome, url, name string) (stri
 	if _, err := git.Run(ctx, Root(denHome), "clone", "--", url, dir); err != nil {
 		return "", err
 	}
-	if errs := lint.Run(dir); len(errs) > 0 {
+	if errs := Lint(dir); len(errs) > 0 {
 		// Best-effort removal: the refusal below matters more than the cleanup's
 		// own error, and a leftover directory is visible in `den source ls`.
 		os.RemoveAll(dir)
@@ -271,7 +270,7 @@ func Update(ctx context.Context, git worktree.Git, denHome, name string) error {
 		// Nothing was registered if `add` itself failed: no worktree to prune.
 		return err
 	}
-	lintErrs := lint.Run(probe)
+	lintErrs := Lint(probe)
 	// Remove the directory, THEN prune — in that order. `worktree prune`
 	// only drops a registration whose directory is already gone; pruning
 	// before clearing the directory is a no-op, and the deferred

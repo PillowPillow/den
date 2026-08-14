@@ -137,6 +137,14 @@ git commit -m "feat(init): support source-aware global config"
 
 ### Task 2: Add the strict source manifest contract
 
+> Divergence settled in Task 2: `internal/source` already imports `internal/lint`, so lint cannot
+> import the manifest loader. The manifest stays in `internal/source` (as planned) and lint gained
+> `lint.Catalogue` / `lint.RunCatalogue`; the single validator entry is now `source.Lint(root)`,
+> used by `den lint`, `source add`, `source update` and `source ls`. `lint.Run` keeps the legacy
+> directory scan unchanged. Export paths must be the canonical location (`stacks/<name>/stack.yaml`,
+> `nests/<name>.yaml`) because den loads both by name — a file exported elsewhere could never spawn.
+
+
 **Files:**
 - Create: `internal/source/manifest.go`
 - Create: `internal/source/manifest_test.go`
@@ -150,7 +158,7 @@ git commit -m "feat(init): support source-aware global config"
 - Consumes: `config.DecodeYAMLStrict`, `config.LoadStacks`, `nest.LoadNest`, and source-root confinement rules already used by `lint.Run`.
 - Produces: `source.LoadManifest(root string) (*Manifest, error)`, `source.ValidateManifest(root string, m *Manifest) []error`, `source.CheckCompatibility(m *Manifest, denVersion, sbxVersion string) error`, and `source.ManifestPath(root string) string`.
 
-- [ ] **Step 1: Write failing decode tests for snake_case and closed resource types**
+- [x] **Step 1: Write failing decode tests for snake_case and closed resource types**
 
 ```go
 func TestLoadManifestRejectsCamelCase(t *testing.T) {
@@ -174,13 +182,13 @@ func TestLoadManifestRejectsUnknownCredentialType(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the source tests and verify the loader is absent**
+- [x] **Step 2: Run the source tests and verify the loader is absent**
 
 Run: `go test ./internal/source -run TestLoadManifest`
 
 Expected: FAIL to compile because `LoadManifest` is undefined.
 
-- [ ] **Step 3: Define the manifest types and strict loader**
+- [x] **Step 3: Define the manifest types and strict loader**
 
 ```go
 type Manifest struct {
@@ -210,21 +218,21 @@ type CredentialResource struct {
 
 Define constants for schema `1` and the three supported credential types: `sbx_github`, `sbx_registry`, and `sbx_http_substitution`. Accept only `kind: source`, `scope: global`, and requirements written as `>=<valid SemVer>`. Use `golang.org/x/mod/semver` v0.38.0 behind source-owned `validVersion` and `compareVersion` helpers; prepend the package-required `v` internally while preserving the manifest's unprefixed values.
 
-- [ ] **Step 4: Add export and reference validation tests**
+- [x] **Step 4: Add export and reference validation tests**
 
 Cover duplicate names, absolute paths, `..` escape, symlink escape, missing files, filename/name mismatch, non-exported stack references, undeclared credential inputs, duplicate resource IDs, bad schema, bad functional version, and unmet Den/sbx floors. Each table row asserts the exact resource or export name in the error.
 
-- [ ] **Step 5: Implement validation and make lint manifest-aware**
+- [x] **Step 5: Implement validation and make lint manifest-aware**
 
 `lint.Run(root)` keeps its existing legacy scan when `den-source.yaml` does not exist. When the file exists, load the explicit stack and nest exports only, validate their decoded names against the export names, then run existing stack/nest shareability checks over that catalogue. Do not infer an export by scanning the directory.
 
-- [ ] **Step 6: Run lint and source tests**
+- [x] **Step 6: Run lint and source tests**
 
 Run: `go test ./internal/source ./internal/lint ./internal/cli -run 'Manifest|Lint'`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add go.mod go.sum internal/source/manifest.go internal/source/manifest_test.go internal/lint internal/cli/lint_test.go

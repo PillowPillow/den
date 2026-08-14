@@ -438,3 +438,54 @@ func TestRunAcceptsKeyReposInANest(t *testing.T) {
 		t.Errorf("a key-only nest is the shareable form and must lint clean, got: %v", errs)
 	}
 }
+
+// The catalogue, not the directory, is the judge for a manifested source
+// (spec 2026-08-14 §5.2). A stack that exists but is not exported is an
+// implementation detail: a nest may not reference it, and its own faults are
+// not the source's — nothing exported can reach it.
+func TestRunCatalogueJudgesOnlyExportedObjects(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml":   validStack,
+		"stacks/helper/stack.yaml": "image: helper:v1\nbase: claude\negres: []\n", // broken AND unexported
+		"nests/api.yaml":           "stack: devx\nrepos:\n  - { key: api }\n",
+		"nests/draft.yaml":         "stack: nowhere\n", // unexported: not judged
+	})
+	cat := Catalogue{Stacks: []string{"devx"}, Nests: []string{"api"}}
+	if errs := RunCatalogue(root, cat); len(errs) != 0 {
+		t.Fatalf("expected no findings over the exported catalogue, got: %v", errs)
+	}
+
+	// The same tree, with the nest now pointing at the unexported stack: the
+	// directory scan would resolve it, the catalogue must not.
+	root = writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml":   validStack,
+		"stacks/helper/stack.yaml": "image: helper:v1\nbase: claude\n",
+		"nests/api.yaml":           "stack: helper\nrepos:\n  - { key: api }\n",
+	})
+	if errs := Run(root); len(errs) != 0 {
+		t.Fatalf("the legacy scan resolves helper and must stay unchanged, got: %v", errs)
+	}
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}, Nests: []string{"api"}})
+	if len(errs) == 0 {
+		t.Fatal("expected a refusal: an exported nest must resolve its stack through the exported catalogue")
+	}
+	if !strings.Contains(errs[0].Error(), "helper") {
+		t.Errorf("errors = %v, expected the unexported stack to be named", errs)
+	}
+}
+
+// An exported object that does not load is the source's fault and must be
+// named — the catalogue promised it.
+func TestRunCatalogueReportsUnloadableExports(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml": "image: devx:v1\nbase: claude\negres: []\n",
+	})
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}, Nests: []string{"ghost"}})
+	if len(errs) != 2 {
+		t.Fatalf("expected the broken stack AND the missing nest, got: %v", errs)
+	}
+	joined := errs[0].Error() + " | " + errs[1].Error()
+	if !strings.Contains(joined, "egres") || !strings.Contains(joined, "ghost") {
+		t.Errorf("errors = %v, expected both the strict-YAML fault and the absent nest", errs)
+	}
+}
