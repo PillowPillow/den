@@ -2,6 +2,8 @@ package cli
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -839,3 +841,51 @@ type fakeExitError struct{ code int }
 
 func (fakeExitError) Error() string   { return "exit status 42" }
 func (e fakeExitError) ExitCode() int { return e.code }
+
+// #69, the `den exec` door: the command runs where the user typed it, not in
+// the first workspace the VM reports. Same judge as `den spawn`
+// (spawn.StartDir) — two doors, one rule.
+//
+// The fixture mounts the PARENT of the test process's own working directory:
+// the only directory a hermetic test can be sure both exists and contains its
+// cwd, with no chdir and no process.
+func TestExecStartsInTheDirectoryTheUserTypedFrom(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
+				filepath.Dir(cwd) + `"]}]}`)},
+	}}
+
+	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", cwd, "api", "bash", "-l") {
+		t.Errorf("-w must be the cwd, not the mount root; attaches: %v", f.Attaches)
+	}
+}
+
+// …and --workdir still wins over it, unchanged: rule 1 of the judge is "I know
+// better", and a cwd that matches a mount must not quietly overtake a path the
+// caller named.
+func TestExecWorkdirOverridesTheCwd(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
+				filepath.Dir(cwd) + `"]}]}`)},
+	}}
+
+	if _, err := executeCmdWithSbx(t, f, "exec", "api", "--workdir", "/custom"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasAttached("exec", "-it", "-w", "/custom", "api", "bash", "-l") {
+		t.Errorf("--workdir must win over the cwd; attaches: %v", f.Attaches)
+	}
+}

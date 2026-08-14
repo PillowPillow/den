@@ -686,7 +686,7 @@ func TestEnsureRefusesAWorktreeBelongingToAnotherRepo(t *testing.T) {
 	// form — on a perfectly intact repo. That is what samePath exists for,
 	// already used elsewhere in this package for the same comparison.
 	got := git(t, worktreePathA, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if !strings.HasPrefix(resolvePath(got), resolvePath(repoA)+string(filepath.Separator)) {
+	if !strings.HasPrefix(ResolvePath(got), ResolvePath(repoA)+string(filepath.Separator)) {
 		t.Errorf("A's worktree changed repo: %s (expected under %s)", got, repoA)
 	}
 }

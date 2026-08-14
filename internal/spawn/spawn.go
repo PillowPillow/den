@@ -652,15 +652,20 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// to chdir. os.Getwd is world access, like the os.Stat probes at step 2 —
 	// this side of the boundary is where it belongs.
 	//
-	// Read only when there IS a positional: a spawn with none must not fail
-	// because the process sits in a deleted directory.
-	cwd := ""
-	if len(o.Repos) > 0 {
-		if cwd, err = os.Getwd(); err != nil {
+	// Read ALWAYS, refused only when there IS a positional. Two consumers with
+	// two different stakes: nest.Resolve cannot turn `.` into a repo without
+	// it, so a failure there is fatal; StartDir (#69) only loses a comfort and
+	// falls back on the first workspace, exactly as den did before it existed.
+	// A spawn with no positional must not fail because the process sits in a
+	// deleted directory — that was true before StartDir and stays true.
+	cwd, cwdErr := os.Getwd()
+	if cwdErr != nil {
+		if len(o.Repos) > 0 {
 			return fmt.Errorf(
 				"reading the working directory, needed to resolve the repos given on "+
-					"the command line: %w", err)
+					"the command line: %w", cwdErr)
 		}
+		cwd = "" // os.Getwd may answer both a path and an error; StartDir skips "".
 	}
 	r, err := nest.Resolve(denHome, g, stacks, n, nest.Options{
 		Agent: o.Agent, Without: without, Only: o.Only, Repos: o.Repos, Cwd: cwd,
@@ -1063,9 +1068,18 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// record on that branch, and the image check (step 2quater) needs it before
 	// any worktree exists.
 
-	// The attach workdir: the config's on the create branch (the VM will
-	// mount exactly these workspaces), the VM's on the other.
-	workdir := first(workspaces)
+	// The mounts the start directory is judged against: the config's on the
+	// create branch (the VM will mount exactly these workspaces), the VM's own
+	// on the attach branch, reassigned below.
+	//
+	// The LIST, not just its head: StartDir needs every mount to find the
+	// deepest one containing the cwd, and `first(workspaces)` threw the rest
+	// away before #69.
+	startMounts := workspaces
+	// The attach workdir, through the one judge both doors call — the same
+	// rule `den exec` applies (internal/cli/exec.go), so "where does the shell
+	// open" cannot mean two things across two sibling commands.
+	workdir := StartDir("", cwd, startMounts)
 
 	if live != nil {
 		// A name held by a VM den knows nothing about is not
@@ -1081,7 +1095,13 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// nest's first repo moved since, the recomputed path wouldn't
 		// exist in the VM. Empty if the VM mounts nothing: Attach then
 		// omits -w rather than inventing a path.
-		workdir = live.Workdir()
+		//
+		// live.Workspaces, not live.Workdir(): the head alone is what the
+		// judge falls back on, and handing it that head would silently drop
+		// rule 2 on the branch where it matters most — an attach is the
+		// gesture the user repeats all day.
+		startMounts = live.Workspaces
+		workdir = StartDir("", cwd, startMounts)
 
 		// Configuration drift. NOTHING reapplies a mixin to a running
 		// VM: it keeps its create-time policy and env. We WARN without
@@ -1362,11 +1382,12 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// tty was computed at the top of Spawn, not recomputed here: it is the
 	// same verdict the Out/Err split above already used, and a second
 	// computation would be a second place for the two to drift apart.
-	dir := o.Workdir
-	if dir == "" {
-		dir = workdir
-	}
-	return Enter(ctx, d.Sbx, sandboxName, Command{Argv: o.Command, Workdir: dir, TTY: tty})
+	// Through StartDir again rather than `if o.Workdir == ""`: the override's
+	// precedence is rule 1 of the judge, and restating it here would be the
+	// second copy the judge exists to prevent. Same arguments as the call at
+	// step 6 above, so the two can only ever answer the same thing.
+	return Enter(ctx, d.Sbx, sandboxName,
+		Command{Argv: o.Command, Workdir: StartDir(o.Workdir, cwd, startMounts), TTY: tty})
 }
 
 // ResolveStack turns a LOADED nest's `stack:` field into a root to load
@@ -2009,8 +2030,26 @@ func reportUnmountedRepos(out io.Writer, sandboxName, workdir string, mounted, e
 	// filepath.Clean("") is ".", so cleaning first would turn "the VM mounts
 	// nothing" into "the VM starts in the current directory" and print a
 	// moved-start line about a directory nobody named.
-	movedStart := workdir != "" && len(expected) > 0 &&
-		filepath.Clean(workdir) != filepath.Clean(expected[0])
+	//
+	// CONTAINMENT, not equality — narrowed with #69, and the narrowing is the
+	// feature's other half rather than a cleanup. The workdir is now derived
+	// from the cwd the user typed from (spawn.StartDir), so `den spawn api`
+	// run from `<repo>/internal` lands in `<repo>/internal` while expected[0]
+	// is still `<repo>`. Equality fired there — on the HAPPY path — and
+	// printed a warning naming the directory the shell is already in: the same
+	// class of permanent lie this function's comment above documents from the
+	// trailing-slash case. The premise of the line ("you typed *I have come to
+	// work in b* and land in a, told nothing") is exactly what StartDir
+	// removes when the start directory is INSIDE the repo asked for.
+	//
+	// What survives is what the line was written for: a start directory that
+	// is not that repo at all — the subset/reorder case above, where the VM
+	// starts the shell in a workspace this invocation never named.
+	movedStart := false
+	if workdir != "" && len(expected) > 0 {
+		_, under := relUnder(filepath.Clean(expected[0]), filepath.Clean(workdir))
+		movedStart = !under
+	}
 	if len(missing) == 0 && !movedStart {
 		return // a permanent warning stops being read
 	}

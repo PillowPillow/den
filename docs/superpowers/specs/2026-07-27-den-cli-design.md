@@ -285,7 +285,14 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
    **Spawn-or-attach** : si le nom existe déjà → attache au lieu de recréer.
 7. **Policy + settle-loop** (cf. §7).
 8. **SSH** selon `ssh.mode` : `agent-forward` (défaut) / `mount ~/.ssh_sbx` / `none`.
-9. **Attache.** `sbx exec -it -w <workdir> <name> bash -l` → shell, sauf `--detach`. Les flags
+9. **Attache.** `sbx exec -it -w <workdir> <name> bash -l` → shell, sauf `--detach`.
+   `<workdir>` est tranché par **un seul juge**, `spawn.StartDir`, appelé par `den spawn` comme
+   par `den exec` (#69, 2026-08-14) : `--workdir` d'abord, sinon le **cwd** du processus qui a
+   tapé la commande dès qu'un workspace monté le contient (le plus profond gagne — A11 : le
+   chemin hôte EST le chemin in-VM, donc le cwd est un chemin valide dans la VM), sinon le
+   premier workspace, sinon rien (pas de `-w`). Aucun match ⇒ **silence** : lancer den depuis
+   ailleurs est ordinaire. Un `start_dir:` dans la cascade et un `--no-cwd` ont été rejetés —
+   `--workdir <chemin>` dit déjà les deux. Les flags
    restent **avant** le nom de sandbox : la signature est `sbx exec [flags] SANDBOX COMMAND
    [ARG...]`, donc un `-w` postposé serait lu comme un argument de la COMMAND et arriverait tel
    quel à `bash -l`. Pas
