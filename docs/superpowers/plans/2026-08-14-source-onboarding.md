@@ -407,6 +407,13 @@ git commit -m "feat(source): scope repo mappings per manifested source"
 
 ### Task 5: Decode answer files and collect the same typed answers interactively
 
+> Divergence settled in Task 5: `cli.resolveRepoChoices` is NOT here — it consumes
+> `converge.RepoMatch`, which Task 6 creates. Task 5 ships the answer file, the typed answers,
+> `ValidateAnswers`/`MissingCredentials`, `collectInitialAnswers` and `confirm`; the repo-choice
+> resolution moves into Task 6 beside the discovery that produces the matches. `Deps` also gained
+> `DenVersion` here (Task 10 lists it) since it belongs with the other injected readers.
+
+
 **Files:**
 - Create: `internal/converge/answers.go`
 - Create: `internal/converge/answers_test.go`
@@ -421,7 +428,7 @@ git commit -m "feat(source): scope repo mappings per manifested source"
 - Consumes: manifest credential input declarations and `config.ExpandPath`.
 - Produces: `converge.LoadAnswers(path string, getenv func(string) string) (Answers, error)`, `cli.collectInitialAnswers(...)`, and `cli.resolveRepoChoices(matches []converge.RepoMatch, answers *converge.Answers)`.
 
-- [ ] **Step 1: Write strict answer-file tests**
+- [x] **Step 1: Write strict answer-file tests**
 
 ```go
 func TestLoadAnswersResolvesCredentialEnvironmentWithoutPersistingIt(t *testing.T) {
@@ -440,7 +447,7 @@ repos:
 
 Also reject `repositoryRoots`, literal credential values, missing environment variables, undeclared credential names, and relative roots. Repository discovery validates that an explicit repo override is a Git worktree because that layer owns the injected Git adapter.
 
-- [ ] **Step 2: Define typed transient answers**
+- [x] **Step 2: Define typed transient answers**
 
 ```go
 type Answers struct {
@@ -457,15 +464,15 @@ type CredentialAnswer struct {
 
 The YAML wire struct remains private so `Value` cannot be decoded or marshaled accidentally.
 
-- [ ] **Step 3: Add interactive equivalence tests**
+- [x] **Step 3: Add interactive equivalence tests**
 
 Feed deterministic stdin for repository roots and missing credentials through `collectInitialAnswers`. Feed discovered name-only and ambiguous matches through `resolveRepoChoices`; this function writes confirmed choices into `Answers.Repos`. Compare the final `Answers` with the answer-file result field by field. Add a no-TTY test that refuses only when input or confirmation is required and prints `--answers` plus `--yes` as the remedy.
 
-- [ ] **Step 4: Implement CLI collection with injected terminal dependencies**
+- [x] **Step 4: Implement CLI collection with injected terminal dependencies**
 
 Extend `cli.Deps` with `Getenv func(string) string` and `ReadSecret func(prompt string) (string, error)`; keep `IsTTY`. `SystemDeps.ReadSecret` uses `term.ReadPassword(int(os.Stdin.Fd()))`, while tests inject a recording function. Use `cmd.InOrStdin()` and a buffered reader for non-secret answers. Never echo credential input. The answer-file path bypasses prompts but not validation. The CLI calls `Service.Plan` once for discovery, resolves any unconfirmed `RepoMatch`, then calls `Service.Plan` again with the enriched answers; both calls are read-only.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run: `go test ./internal/converge ./internal/cli -run 'Answers|Interactive'`
 
