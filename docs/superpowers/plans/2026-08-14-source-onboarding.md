@@ -618,13 +618,13 @@ git commit -m "feat(init): model deterministic convergence plans"
 
 - [ ] **Step 1: Capture and sanitize sbx inspection fixtures**
 
-Before Task 8 implementation, the human creates `prototype/sbx-inspection-contract`. In that branch, run `sbx secret ls -g` and `sbx policy ls --type network --source local --decision allow --json` on a working sbx profile. Capture only the header plus synthetic masked secret rows matching the observed format, and a sanitized successful policy JSON shape. Use [Docker's official credentials documentation](https://docs.docker.com/ai/sandboxes/security/credentials/) to confirm the columns `SCOPE TYPE NAME SECRET`. Do not commit real masked secret fragments, usernames, hosts, policy IDs, or keychain errors. Commit the sanitized fixtures, then bring that factual commit into the implementation branch before continuing this task.
+Before Task 8 implementation, bring in the factual commit from `prototype/sbx-inspection-contract`. That spike ran `sbx secret ls -g` and `sbx policy ls --type network --source local --decision allow --json` on a working sbx profile. Its fixtures contain only synthetic masked secret rows and a sanitized successful policy JSON shape. Docker's [official credentials documentation](https://docs.docker.com/ai/sandboxes/security/credentials/) confirms the public `SCOPE TYPE NAME SECRET` columns. Do not commit real masked secret fragments, usernames, hosts, policy IDs, or keychain errors.
 
-The currently observed `sbx v0.38.0` machine returns keychain error `-50`; add that stderr as an observer-failure test and classify the resource as `unknown`.
+Restricted execution that denies macOS Keychain access makes both observers fail with exit code 1 and keychain error `-50`; the same commands succeed outside that boundary. Add a synthetic non-zero observer-failure test and classify the resource as `unknown`. Do not classify an observer failure as an absent credential or policy.
 
 - [ ] **Step 2: Write parser and version tests**
 
-Assert `sbx version` parses `sbx version: v0.38.0 <commit>`. Assert the secret table distinguishes service `github`, registry host, and custom host/environment rows without reading the masked value. Assert policy JSON matches exact resources. Any unexpected format returns an observation error instead of guessing.
+Assert `sbx version` parses `sbx version: v0.38.0 <commit>`. Assert the first secret table distinguishes service `github` and registry host rows from `SCOPE TYPE NAME SECRET`; both `(stored)` and `(oauth configured)` mean that a service credential is present. Assert the optional `CUSTOM SECRETS` table matches custom credentials from `SCOPE TARGETS ENV PLACEHOLDER SECRET`. Never read the masked value or custom placeholder. Assert policy JSON matches exact strings in `rules[].resources`. Any unexpected format returns an observation error instead of guessing.
 
 - [ ] **Step 3: Define the driver lifecycle and fake it**
 
