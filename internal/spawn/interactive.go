@@ -12,49 +12,51 @@ import (
 	"github.com/PillowPillow/den/internal/nest"
 )
 
-// LooksInteractive reports whether den appears to have both a terminal to
-// read from and a terminal to write to.
+// LooksInteractive reports whether den has both a terminal to read from and a
+// terminal to write to.
 //
 // ONE LINE-ish, on purpose, and exported so the wiring site names it: this is
-// the only part of `-i` (and, since #den-exec, of the `-it` decision in `den
-// exec`/`den spawn -- <cmd>`) that no test can exercise — a test has no tty,
-// and a suite that acquired one would stop being hermetic. Everything around
-// it — the checklist, the toggles, the refusals — takes an io.Reader and is
-// tested. Growing this function is how that boundary gets lost.
+// the part of `-i` (and, since #60, of the `-it` decision in `den exec`/`den
+// spawn -- <cmd>`) that binds den to the process's actual descriptors.
+// Everything around it — the checklist, the toggles, the refusals — takes an
+// io.Reader and is tested. Growing this function is how that boundary gets
+// lost.
 //
-// Requires BOTH descriptors, not just stdin. `os.ModeCharDevice` alone
-// answers true for `/dev/null`, `/dev/zero` and friends — not only for a real
-// terminal — and a lone stdin check paid for that on `den exec`: measured
-// 2026-08-10, `./den exec <sb> -- echo hello < /dev/null` produced NO output
-// with rc=0, because `sbx exec -it` with no real terminal behind it silently
-// DISCARDS the command's output while still reporting success (spec §14.0).
-// `< /dev/null` is the canonical CI and cron stdin, so the single-descriptor
-// probe was a data-loss path with a clean exit code.
+// It says "reports whether", not "appears to": #66 replaced a heuristic with a
+// test. Until then this read `info.Mode()&os.ModeCharDevice != 0` on each
+// descriptor, and `os.ModeCharDevice` is true for EVERY character device —
+// `/dev/null`, `/dev/zero`, `/dev/random`. That mattered because `sbx exec -it`
+// with no real terminal behind it silently DISCARDS the command's output while
+// reporting rc=0 (spec §14.0, measured 2026-08-10): `< /dev/null` is the
+// canonical CI and cron stdin, so a false positive here was a data-loss path
+// with a clean exit code. #60 narrowed the probe to require BOTH descriptors,
+// which closed the redirected-stdout shape; the residual case — `/dev/null` on
+// stdin with a real terminal on stdout — needed the real test, and isTerminal
+// (isterminal_darwin.go, isterminal_linux.go) is it.
 //
-// Requiring stdout to be a char device too is a NARROWING chosen over a
-// rigorous `ioctl`-based terminal test — that test needs a syscall this
-// module deliberately does not depend on (stdlib + cobra + yaml.v3 only) and
-// is deferred to a follow-up issue. It is not exact: `den exec <sb> -- cmd </
-// dev/null` with stdout still attached to a real terminal passes this check
-// (both descriptors are char devices) and still allocates a tty, because
-// `/dev/null` alone cannot be told apart from a terminal by this test. The
-// residual false positive is accepted; the false positive this narrowing
-// removes (`/dev/null` stdin, redirected stdout) was the one silently losing
-// output.
+// The half of this that no test can exercise is now exactly one claim — that a
+// REAL terminal answers true — because a suite that acquired a tty would stop
+// being hermetic (CLAUDE.md). It was measured by hand instead, on darwin,
+// 2026-08-14. The other half, that a character device which is not a terminal
+// answers false, is the bug #66 closed and it IS tested: isterminal_test.go
+// pins `/dev/null`, a regular file and a closed file. The split into
+// `isTerminal(f)` plus this wrapper exists for that test — LooksInteractive
+// reads globals a test cannot replace.
 //
-// Consequence for `-i`: with stdout redirected, LooksInteractive now answers
-// false even when stdin is a real terminal, so the checklist takes its clean
-// refusal (interactiveWithout, below) instead of drawing a prompt nobody can
-// see. That is a behaviour change from the stdin-only probe, and it is
-// coherent on purpose — a checklist the user cannot see is worse than a
-// refusal that names the non-interactive equivalent.
+// It hands isTerminal the *os.File, not `os.Stdin.Fd()`. That is not a style
+// preference: the `!darwin && !linux` fallback needs a Stat, and a Stat from a
+// bare descriptor means `os.NewFile`, which takes ownership and whose finalizer
+// then closes den's own stdin and stdout (isterminal_other.go carries the
+// reproduction). Passing the file den already holds leaves exactly one owner.
+//
+// BOTH descriptors are still required, and that is #60's rule, not a
+// consequence of #66. With stdout redirected, LooksInteractive answers false
+// even when stdin is a real terminal, so the checklist takes its clean refusal
+// (interactiveWithout, below) instead of drawing a prompt nobody can see — a
+// checklist the user cannot see is worse than a refusal that names the
+// non-interactive equivalent.
 func LooksInteractive() bool {
-	in, err := os.Stdin.Stat()
-	if err != nil || in.Mode()&os.ModeCharDevice == 0 {
-		return false
-	}
-	out, err := os.Stdout.Stat()
-	return err == nil && out.Mode()&os.ModeCharDevice != 0
+	return isTerminal(os.Stdin) && isTerminal(os.Stdout)
 }
 
 // nonInteractiveEquivalents is repeated in every refusal of `-i` on purpose: a

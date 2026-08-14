@@ -596,15 +596,22 @@ func TestExecAcceptsAWorktreedSourceReference(t *testing.T) {
 // the shell is what happens when no command is given — not the reverse.
 //
 // Deviation from the brief: executeCmdWithSbx leaves IsTTY as the REAL probe
-// (spawn.LooksInteractive), which reports true for ANY pair of char devices
-// on stdin AND stdout — including /dev/null, not just an actual terminal — so
-// this test would flip verdict depending on what fd 0 and fd 1 happen to be
-// wherever it runs (measured: this sandbox's `go test` resolves stdin as a
-// char device and stdout as NOT one, which happens to still answer false, but
-// that is this machine's shell, not a guarantee `go test` carries anywhere
-// else it runs). Every other IsTTY-sensitive test in the repo
-// (interactive_test.go, spawn_test.go:352) injects a fixed probe instead of
-// trusting the real one; this test now does the same, through the same
+// (spawn.LooksInteractive), so this test's verdict would follow whatever fd 0
+// and fd 1 happen to be wherever it runs — a developer's terminal, a CI runner's
+// redirections, the pipes `go test` puts between itself and the test binary, a
+// `go test -c` binary exec'd by hand. Which of those applies is not the point
+// and must not become the point: it is a property of the harness, it differs by
+// invocation and by toolchain, and pinning a claim about it here is how this
+// comment went stale the last time. The rule is the one that holds regardless —
+// this test must depend on NO real descriptor of the process. The injection
+// below is what makes the verdict the test's own.
+//
+// The reason was sharper before #66, when the real probe answered true for ANY
+// pair of char devices including /dev/null; the probe is exact now
+// (spawn/isterminal_*.go) and the argument survives unchanged, because "exact"
+// still means "reads the machine it runs on". Every other IsTTY-sensitive test
+// in the repo (interactive_test.go, spawn_test.go:352) injects a fixed probe
+// instead of trusting the real one; this test does the same, through the same
 // Deps+NewRootCmdWith form the sibling tests below already use.
 func TestExecRunsTheCommandAfterTheDoubleDash(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{

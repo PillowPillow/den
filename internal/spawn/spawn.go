@@ -72,9 +72,14 @@ type Deps struct {
 	// Only `-i` reads it: every other path of Spawn leaves it untouched, which
 	// is why the dozens of hand-built Deps in this package can keep ignoring it.
 	In io.Reader
-	// IsTTY reports whether In is a terminal, and is the ONE thing about `-i`
-	// no test covers — isolated into a one-liner (LooksInteractive) precisely so
-	// that it, and not the selection logic, is what stays untested.
+	// IsTTY reports whether In is a terminal. It is isolated into a one-liner
+	// (LooksInteractive) precisely so that it, and not the selection logic, is
+	// what carries whatever stays untested.
+	//
+	// Since #66 that is one claim, not the whole probe: LooksInteractive asks
+	// the kernel through isTerminal, whose negative verdicts ARE tested
+	// (isterminal_test.go), and only "a real terminal answers true" remains
+	// unreachable — a suite that acquired a tty would stop being hermetic.
 	//
 	// Nil means NO terminal, deliberately: an unwired probe must take `-i`'s
 	// clean refusal — which names the flags that make the same selection

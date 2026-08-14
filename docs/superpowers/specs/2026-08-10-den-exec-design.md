@@ -132,6 +132,32 @@ un TTY est alloué par défaut, `-T` le coupe.
   stdin est un vrai terminal — un choix cohérent (une checklist que l'utilisateur ne voit pas vaut
   moins qu'un refus qui nomme l'équivalent non interactif), mais c'est un changement de comportement
   par rapport à la sonde stdin-seule.
+- **Fermeture du cas résiduel (2026-08-14, issue #66)** : le « ticket séparé » annoncé au paragraphe
+  précédent est clos, et le rétrécissement est devenu une sonde exacte. `LooksInteractive` délègue
+  maintenant à `isTerminal(fd)`, qui pose au noyau la seule question qui tranche — récupérer les
+  attributs termios du descripteur (`ioctl` `TIOCGETA` sur darwin, `TCGETS` sur linux) et regarder
+  s'il en a. Le cas résiduel nommé ci-dessus — `/dev/null` en stdin avec un vrai terminal en stdout —
+  répond donc faux désormais, et `-T` reste l'échappatoire dans l'autre sens.
+  - **Le prix, accepté explicitement** : trois premières fois dans ce dépôt — premiers fichiers
+    spécifiques à une plateforme (`internal/spawn/isterminal_{darwin,linux,other}.go`), premier
+    import de `unsafe`, premier appel système brut (`syscall` ne servait jusqu'ici qu'à des
+    constantes errno). Il n'existe pas de quatrième option : le module s'interdit toute dépendance
+    au-delà de la stdlib, cobra et yaml.v3, ce qui écarte `golang.org/x/term` et `golang.org/x/sys`,
+    et aucune route stdlib vers un vrai test de terminal n'évite l'`ioctl`.
+  - **Le repli `!darwin && !linux`** conserve l'ancienne heuristique `os.ModeCharDevice`, il ne
+    répond pas faux. den ne publie que darwin et linux (`.goreleaser.yml`) et pilote `sbx`, qui
+    n'existe sur aucune autre plateforme : ce fichier n'entre dans aucun binaire publié. Répondre
+    faux y rendrait la checklist `-i` et un spawn interactif impossibles sans recours — `-T` force
+    le tty à OFF, rien ne le force à ON.
+  - **Ce qui change pour l'utilisateur, en entier** : seuls les périphériques caractère qui ne sont
+    pas des terminaux basculent de vrai à faux. tty/tty, tty/pipe, pipe/tty et les esclaves de pty
+    répondent exactement comme avant.
+  - **Ce qui reste non testé** : une seule affirmation, « un vrai terminal répond vrai » — une suite
+    qui acquerrait un tty cesserait d'être hermétique. Elle a été mesurée à la main sur darwin dans
+    un vrai terminal le 2026-08-14 : stdin vrai, stdout vrai, `/dev/null` faux. Les verdicts négatifs,
+    eux, sont testés (`internal/spawn/isterminal_test.go`). La graphie linux (`TCGETS`) n'est
+    vérifiée que par compilation croisée, et `task typecheck` compile désormais les deux GOOS pour
+    qu'une divergence tombe sur une barrière plutôt que sur le spawn d'un utilisateur.
 
 ## Les quatre décisions
 

@@ -39,18 +39,83 @@ tasks:
       - go test -count=1 ./...
 
   typecheck:
-    desc: Compile every package
+    desc: Compile every package, for both platforms den ships
+    # BOTH GOOS, not just the runner's. `go build ./...` compiles only the files
+    # matching the host's GOOS, so since #66 — which introduced the first
+    # platform-specific files (internal/spawn/isterminal_darwin.go and
+    # isterminal_linux.go) — a typo in the linux probe would sail through a gate
+    # run on a mac and fail in the release build instead. `gofmt -l .` sees every
+    # file regardless, so formatting was already covered; type-checking was not.
+    #
+    # CGO_ENABLED=0 matches .goreleaser.yml: the shipped binaries are static and
+    # cross-compiled from one runner, and a gate that compiled with cgo would be
+    # checking a build nobody releases.
+    #
+    # The windows line is NOT dead weight, and it is not a claim that den runs
+    # there — it never will, it drives `sbx`. It is the only build that compiles
+    # internal/spawn/isterminal_other.go, the `!darwin && !linux` fallback. Add
+    # the two shipped platforms and stop, and that file becomes the one file in
+    # the repo no gate type-checks — the exact hole these lines exist to close,
+    # pointed at the fallback instead of at the linux probe. Deleting this line
+    # costs nothing on the day it is deleted, which is what makes it easy to
+    # delete.
     cmds:
-      - go build ./...
+      - GOOS=darwin CGO_ENABLED=0 go build ./...
+      - GOOS=linux CGO_ENABLED=0 go build ./...
+      - GOOS=windows CGO_ENABLED=0 go build ./...
 
   lint:
-    desc: go vet plus an enforced gofmt
-    # Two cmds rather than one `&&`: Task stops at the first failing command
-    # either way, but a red run then names which of the two gates went down
-    # instead of collapsing both into a single exit code. gofmt is enforced here,
+    desc: go vet for every GOOS den compiles, plus an enforced gofmt
+    # One cmd per gate rather than one `&&` chain: Task stops at the first
+    # failing command either way, but a red run then names which gate went down
+    # instead of collapsing them into a single exit code. gofmt is enforced here,
     # not advised.
+    #
+    # PER-GOOS, for the same reason `typecheck` is — `go vet` analyses only the
+    # files matching the host's GOOS, so a bare `go vet ./...` never saw
+    # internal/spawn/isterminal_darwin.go on the ubuntu CI runner, never saw
+    # isterminal_linux.go on a mac, and never saw isterminal_other.go anywhere.
+    # `unsafeptr` is the analyser those first two files need (they hold the
+    # repo's only `unsafe`), so a GOOS-specific unsafe.Pointer regression used to
+    # pass every gate. That is the hole `typecheck` closed for COMPILATION, left
+    # open beside it for ANALYSIS. Negative control, 2026-08-14 on a mac: a
+    # `(*syscall.Termios)(unsafe.Pointer(addr))` planted in isterminal_linux.go
+    # is INVISIBLE to `go vet ./...` on the host and red on the linux line —
+    # `internal/spawn/isterminal_linux.go:29:28: possible misuse of
+    # unsafe.Pointer`.
+    #
+    # What it does NOT cover, measured the same day: `unsafeptr` flags the
+    # uintptr→unsafe.Pointer direction only. Hoisting
+    # `uintptr(unsafe.Pointer(&t))` out of the Syscall6 call — the rule-4
+    # violation isterminal_darwin.go's comment spends a paragraph forbidding, and
+    # the one that actually corrupts memory — passes vet clean on every GOOS.
+    # That comment is still the only guard on it. Adding this gate does not
+    # retire it.
+    #
+    # The windows line is scoped to ./internal/spawn/ and the asymmetry with
+    # `typecheck`'s `./...` is not laziness. `go build` does not compile test
+    # files; `go vet` does, and the suite has unix-only ones — measured
+    # 2026-08-14, `GOOS=windows go vet ./...` dies on
+    # `internal/worktree/worktree_test.go:1160:22: undefined: syscall.Mkfifo`.
+    # internal/spawn is the only package the windows line exists to cover
+    # (isterminal_other.go, the `!darwin && !linux` fallback), and it passes.
+    # Widening this to `./...` turns the gate red; widen it only together with
+    # the test files that make it red.
+    #
+    # Naming GOOS explicitly does NOT drop the test files from the analysis, and
+    # that was worth checking before replacing a bare `go vet ./...` with these:
+    # losing every `*_test.go` from `printf`/`copylocks`/`tests` would have
+    # narrowed the gate more than the platform files widen it. Measured
+    # 2026-08-14 on a darwin host with a planted `t.Errorf("%d", "vet-bait")` —
+    # bare `go vet` and `GOOS=darwin go vet` report it identically. The windows
+    # line's `syscall.Mkfifo` failure above is the same fact from the other side.
+    #
+    # CGO_ENABLED=0 matches `typecheck` and .goreleaser.yaml: analysing a build
+    # nobody releases is analysing the wrong code.
     cmds:
-      - go vet ./...
+      - GOOS=darwin CGO_ENABLED=0 go vet ./...
+      - GOOS=linux CGO_ENABLED=0 go vet ./...
+      - GOOS=windows CGO_ENABLED=0 go vet ./internal/spawn/
       - test -z "$(gofmt -l .)"
 
   check:
