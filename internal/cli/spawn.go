@@ -83,6 +83,8 @@ func newSpawnCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&o.Worktree, "worktree", "w", "", "worktree to propagate across all repos")
+	cmd.Flags().StringVar(&o.Instance, "as", "",
+		"name this instance, to run several sandboxes of one nest side by side")
 	cmd.Flags().StringVar(&o.Agent, "agent", "", "agent to use (default: defaults.agent)")
 	cmd.Flags().StringSliceVar(&o.Without, "without", nil, "exclude these optional repos")
 	cmd.Flags().StringSliceVar(&o.Only, "only", nil, "keep only these optional repos")

@@ -40,6 +40,121 @@ repos:
 	return dir
 }
 
+// testDenHomePrompting adds the nest the new mode exists for: `select: prompt`,
+// with one required repo, one optional path and one optional `key:` this machine
+// does not map (the config.yaml above declares no `repos:` at all).
+//
+// The unmapped key is the point of the fixture, not decoration: on a prompting
+// nest it is a NORMAL state — the repo is one of thirty the session did not ask
+// for — and it is exactly the state that used to make `den nest show` refuse.
+func testDenHomePrompting(t *testing.T) string {
+	t.Helper()
+	dir := testDenHome(t)
+	writeUnder(t, dir, "nests/generic.yaml", `
+select: prompt
+stack: devx
+repos:
+  - { path: /dev/api }
+  - { path: /dev/front, optional: true }
+  - { key: crm, optional: true, url: git@github.com:acme/crm.git }
+`)
+	return dir
+}
+
+// `den nest show` is documented as the dry-run of `den spawn`, and a dry-run
+// that ACCEPTS a flag the run refuses is not one. `--without` on a `select:
+// prompt` nest is refused by internal/spawn at its step 0bis; this command never
+// goes through Spawn, so until the verdict moved into nest.CheckWithout it
+// printed a confident resolution of a command den would have rejected — one
+// flag, two answers.
+//
+// The message parts asserted here are the ones TestSpawnRefusesWithoutOnAPromptingNest
+// asserts on the spawn side: same nest, same flag, same sentence, on purpose.
+//
+// The `select: all` floor is TestNestShowRespectsSelectionFlags above — there
+// `--without front` still resolves and still drops the repo.
+func TestNestShowRefusesWithoutOnAPromptingNest(t *testing.T) {
+	dir := testDenHomePrompting(t)
+
+	out, err := run(t, "nest", "show", "generic", "--without", "front")
+	if err == nil {
+		t.Fatalf("--without on a nest with no default selection must be refused; got:\n%s", out)
+	}
+	for _, want := range []string{
+		"generic",
+		"--without",
+		"`--only repo,...`",
+		filepath.Join(dir, "nests", "generic.yaml"),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must carry %q; got: %v", want, err)
+		}
+	}
+	if strings.Contains(out, "stack:") {
+		t.Errorf("a refused command must not also print a resolution:\n%s", out)
+	}
+}
+
+// The dry-run of the new mode must RUN on the nests the mode exists for. Before
+// this, `den nest show generic` died on the first optional key this machine does
+// not map — the exact state a `select: prompt` nest is built to have, since it
+// declares a team's catalogue and a machine maps what it works on.
+//
+// Rendering AND annotating are one assertion here on purpose: a resolution that
+// merely stopped refusing would have dropped the repo silently, which is the
+// other way to get this wrong.
+func TestNestShowRendersAPromptingNestAndNamesItsUnmappedKeys(t *testing.T) {
+	dir := testDenHomePrompting(t)
+
+	out, err := run(t, "nest", "show", "generic")
+	if err != nil {
+		t.Fatalf("the dry-run of a prompting nest must resolve: %v", err)
+	}
+	// The nest is really rendered, not summarised: the mapped repos are there.
+	for _, want := range []string{"devx:v1", "/dev/api", "/dev/front"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output must still resolve the nest (%q missing):\n%s", want, out)
+		}
+	}
+	// And the unmapped key is named, with the fix and the clone URL — the same
+	// sentence a spawn would have refused with.
+	for _, want := range []string{"crm", filepath.Join(dir, "config.yaml"), "git@github.com:acme/crm.git"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the unmapped key must be reported with its remedy (%q missing):\n%s", want, out)
+		}
+	}
+	// It is NOT listed as a repo of the spawn: it has no path on this machine,
+	// and a listing of paths is what `repos:` promises.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "  - ") && strings.HasSuffix(line, "(optional)") &&
+			strings.Contains(line, "crm") {
+			t.Errorf("an unmapped key must not be listed as a mounted repo: %q", line)
+		}
+	}
+}
+
+// The floor: on a `select: all` nest the repo IS meant to be mounted, so an
+// unmapped key is a real fault and the dry-run must keep refusing it — den
+// drops nothing on its own (spec §2). Same nest file as the test above bar one
+// line, which is the only difference that may decide this.
+func TestNestShowStillRefusesAnUnmappedKeyOnAnOrdinaryNest(t *testing.T) {
+	dir := testDenHome(t)
+	writeUnder(t, dir, "nests/ordinary.yaml", `
+stack: devx
+repos:
+  - { path: /dev/api }
+  - { key: crm, optional: true, url: git@github.com:acme/crm.git }
+`)
+
+	out, err := run(t, "nest", "show", "ordinary")
+	if err == nil {
+		t.Fatalf("an unmapped key on a select: all nest must still refuse; got:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "crm") {
+		t.Errorf("the refusal must name the key; got: %v", err)
+	}
+}
+
 func TestNestLsListsNests(t *testing.T) {
 	testDenHome(t)
 	out, err := run(t, "nest", "ls")

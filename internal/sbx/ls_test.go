@@ -76,8 +76,8 @@ func TestLsAssignsNestAndWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if boxes[0].Nest() != "api" || boxes[0].Worktree() != "feat12" {
-		t.Errorf("nest/worktree = %q/%q", boxes[0].Nest(), boxes[0].Worktree())
+	if boxes[0].Nest() != "api" || boxes[0].Instance() != "feat12" {
+		t.Errorf("nest/instance = %q/%q", boxes[0].Nest(), boxes[0].Instance())
 	}
 }
 

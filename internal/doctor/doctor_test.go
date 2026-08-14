@@ -307,6 +307,90 @@ func TestRunKeyRepoUnmappedNamesTheCloneURL(t *testing.T) {
 	}
 }
 
+// writeNestFile replaces the den home's "api" nest, so a test states the nest
+// it is about instead of the fixture's default one.
+func writeNestFile(t *testing.T, dir, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "nests", "api.yaml"),
+		[]byte("stack: devx\n"+body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The nest the mode exists for: `select: prompt`, and two optional keys this
+// machine maps nowhere. That is a CORRECTLY configured machine — the nest
+// declares a team's catalogue, this session works on neither repo — and
+// `den doctor` used to exit 1 on it, one FAIL per key, drowning the real
+// problems in a nest that is not broken.
+//
+// allOK is the assertion the exit code follows: no check may be blocking, and
+// none may be a warning either, or `den doctor` ends on "review the [warn]
+// lines" for a machine with nothing to review.
+func TestRunAnUnmappedOptionalKeyIsNormalOnAPromptingNest(t *testing.T) {
+	dir := keyRepoDenHome(t, "crm", "") // no `repos:` mapping at all
+	writeNestFile(t, dir, "select: prompt\nrepos:\n"+
+		"  - { key: crm, optional: true, url: git@example.com:acme/crm.git }\n"+
+		"  - { key: dwh, optional: true }\n")
+
+	checks := Run(dir, okDeps())
+	if !allOK(checks) {
+		t.Errorf("a prompting nest whose optional keys are unmapped is healthy; checks: %+v", checks)
+	}
+	c, ok := findExactName(checks, "nest api")
+	if !ok {
+		t.Fatalf("the state must still be REPORTED, not merely tolerated; checks: %+v", checks)
+	}
+	// Every key by name, and the file that would map them: a count alone
+	// ("2 keys unmapped") tells a reader nothing they can act on.
+	for _, want := range []string{"crm", "dwh", "select: prompt", config.GlobalPath(dir)} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("detail = %q, must name %q", c.Detail, want)
+		}
+	}
+	// ONE line for the nest, not one per key: at thirty repos, twenty-six
+	// diagnostics are the noise this fix removes, whatever their level.
+	count := 0
+	for _, ch := range checks {
+		if ch.Name == "nest api" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected one aggregated line for the nest, got %d: %+v", count, checks)
+	}
+}
+
+// The regression floor, both halves of it. `select: prompt` governs the
+// OPTIONAL repos of a nest and nothing else: everywhere else an unmapped key is
+// the fault it always was, and doctor must still fail on it.
+func TestRunUnmappedKeyStaysAFailureOutsideTheOptionalPromptingCase(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		body string
+	}{
+		// The historical shape: no `select:` at all, so every optional repo IS
+		// meant to be mounted and an unmapped key breaks that spawn.
+		{"an optional key on a select: all nest", "repos:\n  - { key: crm, optional: true }\n"},
+		// A required repo is mounted by every spawn of the nest, prompting or
+		// not: no checklist can decline it.
+		{"a required key on a prompting nest", "select: prompt\nrepos:\n  - { key: crm }\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := keyRepoDenHome(t, "crm", "")
+			writeNestFile(t, dir, c.body)
+
+			checks := Run(dir, okDeps())
+			found, ok := find(checks, "crm")
+			if !ok {
+				t.Fatalf("the unmapped key must be reported; checks: %+v", checks)
+			}
+			if !found.Blocking() {
+				t.Errorf("this unmapped key is a real fault and must fail; got %+v", found)
+			}
+		})
+	}
+}
+
 // TestRunReportsABrokenNestWithoutHidingOthers locks down that a broken nest
 // must neither hide doctor's nests section nor prevent the REAL diagnosis of
 // the other nests. The "healthy" nest points at a missing repo, with a rigged

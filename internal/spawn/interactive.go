@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
 )
 
@@ -59,7 +60,22 @@ func LooksInteractive() bool {
 // nonInteractiveEquivalents is repeated in every refusal of `-i` on purpose: a
 // user who cannot use the checklist needs the way that works, in the same
 // breath, not a pointer to `--help`.
-const nonInteractiveEquivalents = "`--only repo,...` and `--without repo,...` make the same selection without a prompt"
+//
+// It became a function of the MODE the day `--without` stopped working on a
+// `select: prompt` nest (Spawn, step 0bis: such a nest declares no default
+// selection, so there is nothing for `--without` to subtract from). A constant
+// naming both flags would then name a refused command in the very message whose
+// job is to name one that works — the worst place for a stale sentence, since a
+// remedy is followed.
+//
+// `--only` is what both modes keep, and on a prompting nest it is the exact
+// spelling of what the checklist asks: the set, stated outright.
+func nonInteractiveEquivalents(prompts bool) string {
+	if prompts {
+		return "`--only repo,...` makes the same selection without a prompt"
+	}
+	return "`--only repo,...` and `--without repo,...` make the same selection without a prompt"
+}
 
 // interactiveWithout runs the `-i` checklist and returns its answer AS A
 // `--without` LIST.
@@ -70,7 +86,16 @@ const nonInteractiveEquivalents = "`--only repo,...` and `--without repo,...` ma
 // another way to fill its input. That is what makes "-i produces the same
 // sandbox as the equivalent --without" true by construction rather than by
 // coincidence — see TestInteractiveProducesTheSameArgvAsTheEquivalentWithout.
-func interactiveWithout(d Deps, n *nest.Nest) ([]string, error) {
+//
+// denHome is here for one line of output: the checklist's unmapped-key
+// annotation names the file to edit, and that file is <denHome>/config.yaml —
+// NOT the literal "config.yaml" it used to print. Under DEN_HOME (which is what
+// makes den's own suite hermetic, and what a user with two homes types every
+// day) the literal named a file that does not exist at the place the reader
+// would look for it. Threaded rather than derived here, because
+// config.GlobalPath is the sole definition of that path and unmappedNote is the
+// message site that must agree with every other one.
+func interactiveWithout(d Deps, denHome string, n *nest.Nest, mapping map[string]string) ([]string, error) {
 	// Nothing to ask comes FIRST, before the terminal check: a nest with no
 	// optional repo needs no answer, so it needs no terminal either — `den spawn
 	// api -i --detach` from a script keeps working, and says why it asked nothing
@@ -83,9 +108,18 @@ func interactiveWithout(d Deps, n *nest.Nest) ([]string, error) {
 	// take the clean refusal below, not hang the spawn on a read nobody
 	// answers.
 	if d.IsTTY == nil || !d.IsTTY() {
+		// The prefix follows the entry point: naming `-i` to someone who never
+		// typed it sends them looking for a flag they did not use. Both
+		// sentences name the same remedy, because there IS only one.
+		if n.PromptsForRepos() {
+			return nil, fmt.Errorf(
+				"nest %s selects its repos at spawn time and there is no terminal on den's input — "+
+					"the checklist has nobody to ask, and reading anyway would block a pipe or a CI "+
+					"job forever; %s", n.Name, nonInteractiveEquivalents(true))
+		}
 		return nil, fmt.Errorf(
 			"-i: no terminal on den's input — the checklist has nobody to ask, and reading anyway would "+
-				"block a pipe or a CI job forever; %s", nonInteractiveEquivalents)
+				"block a pipe or a CI job forever; %s", nonInteractiveEquivalents(false))
 	}
 	in := d.In
 	if in == nil {
@@ -94,7 +128,7 @@ func interactiveWithout(d Deps, n *nest.Nest) ([]string, error) {
 		// mid-sequence.
 		in = os.Stdin
 	}
-	return promptOptionalRepos(d.Out, in, n.Name, n.Repos)
+	return promptOptionalRepos(d.Out, in, denHome, n.Name, n.Repos, n.PromptsForRepos(), mapping)
 }
 
 // selectionFlagsInPlay names the repo-selection flag `-i` collides with, or ""
@@ -124,6 +158,39 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // the toggles until the user confirms. It returns the short names of the repos
 // left unchecked — a `--without` list.
 //
+// prompts is the nest's MODE — `select: prompt` — and it is the one thing this
+// function needs to know about it, because both of the things it decides follow
+// from it and neither may disagree with the other.
+//
+// It decides the initial state of every box, which is NOT cosmetic. `-i` starts
+// full, because confirming an -i checklist without touching it must produce
+// exactly what `den spawn` alone produces
+// (TestInteractiveProducesTheSameArgvAsTheEquivalentWithout). A `select: prompt`
+// nest starts EMPTY, because it has no default selection to propose by
+// definition — and thirty ticked boxes would turn an empty line into a
+// thirty-repo mount.
+//
+// It also decides which flags the footer names, and that is the same fact read
+// from the other end: a nest with no default selection is exactly the nest
+// `--without` is refused on. Passed as ONE parameter rather than as a
+// `startChecked` plus an equivalents string, because two parameters carrying one
+// fact are two things to keep in agreement — the drift the selectionOpen comment
+// in spawn.go records having already paid for once.
+//
+// mapping is the personal `repos:` of <denHome>/config.yaml, used to ANNOTATE
+// the keys it does not carry — denHome is beside it because the annotation names
+// that file, and the two must describe the same one (unmappedNote).
+// Annotation only: ticking an unmapped key stays possible,
+// and the refusal that follows is resolveRepoKeys', which names the key, the
+// file and the clone URL. Refusing the tick here would make this a second
+// judge of the mapping, whose single judge is that function.
+//
+// A nil mapping is NOT a special case, and unmappedNote treats it as none: a
+// path-typed repo renders unannotated either way, and every key-typed one
+// renders annotated. That is the correct reading — an unmapped key is unmapped
+// whether the personal `repos:` is empty or absent — and it is what a nest whose
+// keys nobody has mapped yet must show.
+//
 // Required repos are neither listed nor numbered (spec §6.2): they are always
 // mounted, and numbering them would make "1" designate different repos
 // depending on how many required ones happen to precede it.
@@ -133,7 +200,10 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // what this checklist needs — print a list, read a line, toggle — is a dozen
 // lines of stdlib. A TUI library would buy cursor movement and colours for the
 // price of the one property the project advertises.
-func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []nest.Repo) ([]string, error) {
+func promptOptionalRepos(out io.Writer, in io.Reader, denHome, nestName string, repos []nest.Repo,
+	prompts bool, mapping map[string]string) ([]string, error) {
+	startChecked := !prompts
+	equivalents := nonInteractiveEquivalents(prompts)
 	optional := make([]nest.Repo, 0, len(repos))
 	for _, r := range repos {
 		if r.Optional {
@@ -141,15 +211,17 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 		}
 	}
 
-	// Everything checked is the starting point: `-i` confirmed as-is must
-	// produce exactly what `den spawn` alone produces.
 	keep := make([]bool, len(optional))
 	for i := range keep {
-		keep[i] = true
+		keep[i] = startChecked
 	}
 
-	fmt.Fprintf(out, "nest %s: %d optional repo(s) — required repos are always mounted\n",
-		nestName, len(optional))
+	selected := "none selected"
+	if startChecked {
+		selected = "all selected"
+	}
+	fmt.Fprintf(out, "nest %s: %d optional repo(s), %s — required repos are always mounted\n",
+		nestName, len(optional), selected)
 
 	s := bufio.NewScanner(in)
 	for {
@@ -158,10 +230,10 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 			if keep[i] {
 				box = "x"
 			}
-			fmt.Fprintf(out, "  %d [%s] %s\n", i+1, box, r.Name())
+			fmt.Fprintf(out, "  %d [%s] %s%s\n", i+1, box, r.Name(), unmappedNote(r, mapping, denHome))
 		}
 		fmt.Fprintf(out, "toggle by number (space-separated), empty line to confirm — %s\n> ",
-			nonInteractiveEquivalents)
+			equivalents)
 
 		if !s.Scan() {
 			if err := s.Err(); err != nil {
@@ -172,7 +244,7 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 			// microVM with a set of repos nobody chose.
 			return nil, fmt.Errorf(
 				"-i: input ended before the selection was confirmed (a pipe, a closed terminal) — "+
-					"nothing was spawned; %s", nonInteractiveEquivalents)
+					"nothing was spawned; %s", equivalents)
 		}
 		line := strings.TrimSpace(s.Text())
 		if line == "" {
@@ -198,6 +270,27 @@ func promptOptionalRepos(out io.Writer, in io.Reader, nestName string, repos []n
 		}
 	}
 	return without, nil
+}
+
+// unmappedNote annotates a key-typed repo the personal mapping does not carry.
+// Empty for a path-typed repo, and empty for a mapped key: an annotation on
+// every line would annotate nothing.
+//
+// It names <denHome>/config.yaml, through config.GlobalPath — never the bare
+// "config.yaml" this line printed before. den has as many config.yaml as the
+// user has den homes (`--den-home`, `DEN_HOME`), and the one this checklist is
+// reading is the only one that can fix the annotation: the bare filename sent a
+// reader with two homes to edit the wrong file, or to look for a path den never
+// stated. Same rule as resolveRepoKeys' own refusal and `den doctor`'s, which is
+// what the reader will see next if they tick this box anyway.
+func unmappedNote(r nest.Repo, mapping map[string]string, denHome string) string {
+	if r.Key == "" {
+		return ""
+	}
+	if _, ok := mapping[r.Key]; ok {
+		return ""
+	}
+	return "      (not mapped in " + config.GlobalPath(denHome) + ")"
 }
 
 // parseToggles turns a line of numbers into zero-based indexes, or returns the

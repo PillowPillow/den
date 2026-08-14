@@ -183,15 +183,32 @@ Une valeur inconnue est une erreur de chargement, pas un silence : le décodage 
    dépend d'une clé de configuration est deux séquences de spawn à garder vraies, et §6 en décrit
    une seule.
 
+   **Ce que « inconditionnel » veut dire pour `-i`, écrit parce que ça a déjà dérivé une fois.**
+   `-i` est l'AUTRE porte d'entrée de la checklist. Fermer la checklist sur une sandbox vivante la
+   ferme donc aussi pour `-i` — et `-i` GAGNE en échange la reconstruction de la décision 12, pas
+   le silence. Les deux moitiés portent sur exactement les mêmes spawns : `selectionOpen`
+   (spawn.go) est l'expression unique qui les tient, et elle existe précisément parce que les deux
+   conditions, écrites deux fois, ont divergé une fois — la reconstruction avait d'abord été livrée
+   restreinte à `select: prompt`, ce qui transformait `-i` sur une sandbox vivante portant une clé
+   optionnelle non mappée en REFUS là où il y avait une invite.
+
 7. **Une invite ne peut pas être littéralement obligatoire.** `spawn` refuse déjà `-i` sans
    terminal, et `den exec` existe pour les pipes et la CI (v1.6.0). Un nest qui EXIGE une invite
    serait inutilisable en headless. `select: prompt` se lit donc : invite quand il y a un terminal
    et aucun drapeau de sélection ; refus nommant `--only` sinon.
 
    ```
-   error: nest digitaleo selects its repos at spawn time and there is no terminal —
-     use `--only php.baseo,php.flow` to make the same selection without a prompt
+   error: nest digitaleo selects its repos at spawn time and there is no terminal on den's
+     input — the checklist has nobody to ask, and reading anyway would block a pipe or a CI
+     job forever; `--only repo,...` and `--without repo,...` make the same selection without
+     a prompt
    ```
+
+   > **Correction 2026-08-11 (revue finale).** Cet échantillon épelait son propre remède
+   > (« use `--only php.baseo,php.flow` »). Le code ne l'épelle pas : il réutilise la constante
+   > `nonInteractiveEquivalents` (interactive.go), partagée avec le refus de `-i`. **C'est le code
+   > qui a raison**, sous la règle de la maison — une situation, une formulation — et l'échantillon
+   > ci-dessus est celui que den émet réellement. La spec est corrigée, pas le code.
 
    **`-i` sur un nest `select: prompt` est ACCEPTÉ et ne fait rien de plus.** Il demande la
    checklist que le nest ouvre déjà : c'est une redondance, pas une contradiction, et les deux
@@ -232,8 +249,14 @@ Une valeur inconnue est une erreur de chargement, pas un silence : le décodage 
    ```
    nest digitaleo: 30 optional repo(s), none selected — required repos are always mounted
      1 [ ] php.baseo
-     2 [ ] php.flow      (not mapped in ~/.den/config.yaml)
+     2 [ ] php.flow      (not mapped in config.yaml)
    ```
+
+   > **Correction 2026-08-11 (revue finale).** L'échantillon disait
+   > `(not mapped in ~/.den/config.yaml)`. Le code émet `(not mapped in config.yaml)`, et **c'est
+   > le code qui a raison** : sous `DEN_HOME` (ou `--den-home`) le fichier n'est pas dans `~/.den`,
+   > et un chemin en dur y désignerait un fichier que l'utilisateur ne lit pas. La spec est
+   > corrigée, pas le code.
 
    L'en-tête garde sa clause « required repos are always mounted », mot pour mot celle de
    `promptOptionalRepos` : un `select: prompt` n'interdit pas les repos requis, et « none
@@ -250,6 +273,40 @@ Une valeur inconnue est une erreur de chargement, pas un silence : le décodage 
    elle est INCHANGÉE — le label entre dans l'identité, les repos toujours pas. den ne détecte pas
    un label « mal réutilisé » ; `reportUnmountedRepos` (spawn.go:762), qui nomme déjà chaque chemin
    non monté sur une sandbox vivante, est le seul signal, et il suffit.
+
+12. **Sur la branche d'attache, la sélection est RECONSTRUITE depuis le manifeste.** La décision 6
+   ferme la question ; celle-ci dit ce qui y répond à la place. Quand la question de sélection est
+   ouverte (`selectionOpen` : `-i` ou `select: prompt`, et aucun drapeau de sélection) et que la
+   sandbox est vivante, `without` est dérivé de l'enregistrement : les repos OPTIONNELS du nest
+   absents de `manifest.Repos` (`recordedWithout`, spawn.go). Ce que den a monté est ENREGISTRÉ,
+   pas re-dérivé — c'est exactement ce pour quoi `internal/manifest` existe.
+
+   **La raison, parce qu'elle n'est pas évidente : re-dériver ne fait pas que bruiter, ça REFUSE.**
+   La configuration d'aujourd'hui n'a aucun moyen de savoir lesquels des quatre repos sur trente
+   cette VM a montés. Sans reconstruction, `without` reste vide, `selectRepos` sélectionne TOUT, et
+   `resolveRepoKeys` (nest/resolve.go) meurt sur la première clé non mappée sur cette machine —
+   un refus visant un repo que l'utilisateur avait justement décliné, sur une VM qui tourne. Un
+   nest `select: prompt` était inutilisable passé son premier spawn.
+
+   Deux précisions que le code porte à son site :
+
+   - **Repos DÉCLARÉS seulement.** Un positionnel et une clé déclarée peuvent porter le même nom
+     court (`manifest.Repo.Name` vaut `Repo.Name()`, soit le basename du chemin tapé pour une
+     entrée `command-line`), et un montage ad hoc ne répond à aucune question posée par la
+     checklist. Compté comme « sélectionné », il fait omettre la clé déclarée du `--without`
+     reconstruit, et le refus ci-dessus revient. `Origin` est la seule chose qui distingue les deux.
+   - **Optionnels seulement.** `selectRepos` refuse `--without` sur un repo requis, donc en nommer
+     un transformerait l'attache en ce même refus.
+
+   **Sans enregistrement — ou avec un enregistrement que den n'a pas su LIRE — den ne refuse pas.**
+   Il retombe sur la liste complète, tait `reportUnmountedRepos` (dont le côté « attendu » serait
+   une sélection que personne n'a faite), et le DIT (`reportUnrebuiltSelection`) : sans marqueur
+   pour un enregistrement absent, qui est ordinaire (sandbox antérieure aux enregistrements, ou
+   créée hors de den), avec `warning:` et le nom du fichier pour un enregistrement illisible, qui
+   est une panne. Les deux cas sont distincts parce que `manifest.Read` les distingue déjà, en
+   enveloppant `os.ErrNotExist` à travers `config.FileError` pour cette raison précise. den ne
+   refuse jamais sur un enregistrement qu'il n'a pas pu lire et n'en supprime jamais un : il peut
+   appartenir à un den plus récent (doctrine T13/T16).
 
 ## Modèle
 
@@ -347,10 +404,19 @@ README de la source (« den ≥ X.Y requis ») en est le seul remède préventif
    l'humain.
 
    **Et den n'a AUCUN chemin sûr en écriture à proposer pour deux instances sur une même
-   branche.** `-w` ne l'est pas : `worktree.Add` lance `git worktree add <path> <branch>`
-   (worktree.go:210), et git refuse une branche déjà sortie dans un autre worktree — le second
-   spawn meurt, il ne partage rien. Deux branches distinctes marchent, mais alors la branche
-   distingue déjà les deux sandboxes et `--as` n'y sert plus à rien.
+   branche.** `-w` ne l'est pas, mais pas pour la raison qu'on croirait : `worktree.Ensure`
+   (`worktree.go:162`) est idempotent sur le chemin qu'il calcule, et ce chemin ne dépend que du
+   dépôt et de la branche flattenée (`worktree.Path`, `worktree.go:131`) — jamais du nom de
+   sandbox. Le second spawn ne meurt donc pas : il retombe sur le `worktreePath` du premier, la
+   vérification d'ownership et de branche qu'`Ensure` fait sur un chemin déjà présent passe, et il
+   repart avec le même répertoire — les deux sandboxes MONTENT LE MÊME worktree, sans que
+   `git worktree add` ne soit même rappelé. Depuis que Task 1 a livré, `den rm` sur l'une des deux
+   sandboxes ne réclame plus ce répertoire tant que l'autre enregistrement le nomme encore
+   (`internal/cli/rm.go`, `mountGuard.holderOf`) : il laisse le worktree en place et le dit
+   (`worktree kept: <mount> is also mounted by sandbox <holder>`) — mais rien n'empêche les deux VMs
+   d'écrire dans ce répertoire pendant qu'elles sont vivantes toutes les deux. La seule échappatoire
+   au partage est donc deux branches distinctes : la branche distingue alors déjà les deux sandboxes,
+   et `--as` n'y sert plus à rien.
 
    Le domaine de `--as` est donc exactement celui que l'utilisateur a décrit : la concurrence
    **en lecture dominante** sur des dossiers partagés — deux analyses, deux agents qui explorent.
@@ -399,5 +465,16 @@ Hermétique intégralement : aucun socket, aucun process, aucune horloge (décis
   mot pour mot comme aujourd'hui.
 - **Attache** : sous `prompt`, une sandbox vivante n'ouvre aucune invite (l'entrée du test est un
   reader qui échoue si on le lit) et le message nomme `--as`.
+- **Reconstruction depuis le manifeste** (décision 12), trois tests :
+  `TestPromptModeAttachRebuildsTheSelectionFromTheRecord` — une sandbox `select: prompt` créée en
+  déclinant une clé non mappée se ré-attache sans refus ;
+  `TestInteractiveAttachRebuildsTheSelectionFromTheRecord` — le même, par la porte `-i` sur un nest
+  ORDINAIRE, contre la même fixture au `select: prompt` près : c'est ce test qui tient l'égalité des
+  deux moitiés de `selectionOpen` ;
+  `TestPromptModeAttachNamesARecordItCouldNotRead` — un enregistrement au schéma plus récent
+  n'empêche pas l'attache, est nommé à l'utilisateur avec son chemin, et n'est pas supprimé.
+  Plus `TestPromptModeAttachIgnoresAdHocMountsWhenRebuilding` pour le point « repos déclarés
+  seulement », et `TestPromptModeAttachWithoutARecordStillAttaches` pour le repli sans
+  enregistrement.
 - **`den ls`** : colonne INSTANCE ; WORKTREE vide quand un manifeste sans bloc `worktree:` est lu ;
   repli sur le composant 2 conservé quand il n'y a AUCUN manifeste.

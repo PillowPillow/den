@@ -54,7 +54,11 @@ partagée. Toute décision de design se tranche par « est-ce que ça perce la f
    env/policy natif sbx · **nest** = objet spawnable (repos+stack+egress+ports) · *sandbox* = la VM.
 4. **Multi-projet natif :** un nest liste des repos ; `-w <worktree>` crée le worktree sur **tous**
    les repos et les co-monte dans une seule VM. Repos **optionnels décochables** à l'interactif
-   (`-i`).
+   (`-i`), et la clé `select:` d'un nest choisit comment : `all` (défaut — la valeur vide compte
+   comme `all`, donc aucun nest existant ne change de comportement) monte tout sauf ce que
+   `--without`/`--only`/`-i` exclut ; `prompt` déclare un nest **sans sélection par défaut** — la
+   checklist s'ouvre sans `-i` et démarre vide devant un terminal, et den refuse en nommant
+   `--only`/`--without` sinon.
 5. **Worktrees configurables, défaut central** : `~/.den/worktrees/<wt>/<repo>/`
    (`worktree_layout: central|per-repo`).
 6. **Agents génériques** (registre dans `config.yaml`) : chaque agent = `config_dir` (monté RW,
@@ -70,9 +74,16 @@ partagée. Toute décision de design se tranche par « est-ce que ça perce la f
    `caps.network.allow` d'un **mixin généré** (auto-scopé à la sandbox, posé au create-time), +
    **settle-loop fail-closed** (`sbx policy check` en boucle avant d'attacher ; sinon n'attache pas).
 10. ~~**État sans DB par labels sbx**~~ — **FALSIFIÉE le 2026-07-28** : `sbx create` n'a aucun
-    `--label`. **L'identité d'une sandbox est son nom** `<nest>[.<worktree>]`, et c'est la seule
+    `--label`. **L'identité d'une sandbox est son nom** `<nest>[.<instance>]`, et c'est la seule
     poignée : `den ls`/`sh`/`rm`/`ports`, la policy scopée, le cache de mixins et la corbeille de
-    worktrees s'y accrochent tous. `sbx.SandboxName` / `sbx.SplitName` possèdent le format.
+    worktrees s'y accrochent tous. `sbx.SandboxName` / `sbx.SplitName` possèdent le format, inchangé
+    (le composant 2 est **réutilisé**, pas ajouté). Ce composant 2 est l'**instance** : `-w` le
+    remplit avec la branche aplatie, `--as <label>` l'écrase directement, et dans les deux cas le
+    répertoire de worktree reste nommé d'après la branche — un label ne renomme jamais un
+    répertoire, sous peine de faire collider deux nests spawnés `--as x` sur le même chemin. den
+    n'engendre jamais ce nom lui-même : faire tourner une seconde instance est un `-w` ou un `--as`
+    délibéré, jamais une déduction de den. `sbx.Sandbox.Instance()` a remplacé `Sandbox.Worktree()`
+    partout, le compilateur ayant listé les appelants.
 
 ### Décisions prises pendant l'exécution, spec amendé en conséquence
 
@@ -119,7 +130,11 @@ Ils sont écrits et justifiés dans `CLAUDE.md`, qui est chargé à chaque sessi
   par `ls`, `sh`, `ports` et spawn. Câbler une implémentation réelle en dur casse l'hermétisme.
 - **L'ordre de la séquence de spawn est délibéré** : tout ce qui est refusable depuis la seule
   config est refusé **avant le premier effet de bord**, pour qu'un refus ne laisse jamais un
-  worktree orphelin.
+  worktree orphelin. `sbx ls` est désormais lu **avant** `nest.Resolve` (étape « 1bis ») : le
+  verdict spawn-ou-attache doit fermer la checklist et reconstruire la sélection depuis le
+  manifeste avant que quoi que ce soit ne soit créé. La promesse ci-dessus y survit intacte —
+  elle porte sur les **effets de bord** (« un refus ne laisse jamais de worktree orphelin »), et
+  lister n'en crée aucun ; seul l'ordre des **diagnostics** a bougé, pas celui des créations.
 - **`internal/spawn` n'importe jamais `internal/ports`**, et `internal/cli` n'importe ni `net`, ni
   `hash/fnv`, ni `os/exec` : verrouillé par `internal/ports/hermeticity_test.go`.
 

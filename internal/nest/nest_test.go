@@ -545,3 +545,95 @@ func TestRepoNameFromKey(t *testing.T) {
 		t.Errorf("Name() = %q, want api", r.Name())
 	}
 }
+
+func TestSelectDefaultsToAll(t *testing.T) {
+	denHome := t.TempDir()
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: /dev/api }\n")
+
+	n, err := LoadNest(denHome, "api")
+	if err != nil {
+		t.Fatalf("loading: %v", err)
+	}
+	if n.Select != "" {
+		t.Errorf("Select = %q, want the zero value: an existing nest must not change meaning", n.Select)
+	}
+	if n.PromptsForRepos() {
+		t.Error("a nest with no `select:` must not prompt")
+	}
+}
+
+func TestSelectPromptIsRead(t *testing.T) {
+	denHome := t.TempDir()
+	writeNest(t, denHome, "api", "stack: devx\nselect: prompt\nrepos:\n  - { path: /dev/api }\n")
+
+	n, err := LoadNest(denHome, "api")
+	if err != nil {
+		t.Fatalf("loading: %v", err)
+	}
+	if !n.PromptsForRepos() {
+		t.Error("`select: prompt` must prompt")
+	}
+}
+
+// CheckWithout is the sentence `den spawn` and `den nest show` share, so its
+// three answers are asserted here, once, on the type that owns them: refused on
+// a prompting nest, silent on an ordinary one, silent when the flag is absent.
+//
+// The two commands assert the same refusal end to end
+// (TestSpawnRefusesWithoutOnAPromptingNest, TestNestShowRefusesWithoutOnAPromptingNest).
+// What THIS test adds is the middle row: a nest with a default selection, where
+// `--without` is exactly the flag's purpose and a refusal firing for everyone
+// would be caught here rather than three packages away.
+func TestCheckWithoutFollowsTheNestMode(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		mode        string
+		without     []string
+		wantRefusal bool
+	}{
+		{"prompting nest, --without given", SelectPrompt, []string{"docs"}, true},
+		{"prompting nest, no --without", SelectPrompt, nil, false},
+		{"ordinary nest, --without given", SelectAll, []string{"docs"}, false},
+		{"nest with no `select:` at all", "", []string{"docs"}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			n := &Nest{Name: "generic", Select: c.mode}
+			err := n.CheckWithout("/den", c.without)
+			if c.wantRefusal {
+				if err == nil {
+					t.Fatal("`--without` on a nest with no default selection must be refused")
+				}
+				// The nest FILE, not just the nest: the reader is being sent to
+				// edit `select:` or to change the command, and only one of the
+				// two is a path.
+				for _, want := range []string{"generic", "`--only repo,...`", FilePath("/den", "generic")} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("the refusal must carry %q; got: %v", want, err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected refusal: %v", err)
+			}
+		})
+	}
+}
+
+// den refuses rather than normalizing in silence (spec §2). An unknown value
+// is the `egres:` trap of §12 in another guise: taken as "all", a mistyped
+// `promt` would mount thirty repos without a word.
+func TestSelectRefusesAnUnknownValue(t *testing.T) {
+	denHome := t.TempDir()
+	writeNest(t, denHome, "api", "stack: devx\nselect: promt\nrepos:\n  - { path: /dev/api }\n")
+
+	_, err := LoadNest(denHome, "api")
+	if err == nil {
+		t.Fatal("an unknown `select:` value must be refused")
+	}
+	for _, want := range []string{"promt", "all", "prompt"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %q — got: %v", want, err)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package spawn
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -110,6 +111,29 @@ func createRepo(t *testing.T, path string) {
 	}
 }
 
+// branchExists asks git, rather than looking for a file under `refs/heads`: a
+// branch created by `git worktree add -b` may be packed, and a test that only
+// stats the loose ref would report "not created" for a branch that is right
+// there.
+func branchExists(t *testing.T, repo, branch string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "branch", "--list", branch)
+	cmd.Dir = repo
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list %s (in %s): %v\n%s", branch, repo, err, out)
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
+// jsonStrings renders paths as the `workspaces` array of a scripted `sbx ls
+// --json`. Hand-concatenated quotes stay readable for one path; past that, a
+// missing one reads as a den bug rather than as the typo it is.
+func jsonStrings(values []string) string {
+	encoded, _ := json.Marshal(values) // a []string cannot fail to marshal
+	return string(encoded)
+}
+
 // writeConfig (re)writes the den home's config.yaml. Split out of
 // denTestSSH so drift tests can REWRITE the cascade between two spawns — the
 // only way to reproduce a config that moved under a VM that didn't.
@@ -174,6 +198,28 @@ func instantFreshness() agent.GateOptions {
 // allowed".
 func fakeDeps() (*sbx.Fake, Deps) {
 	return fakeDepsWithVerdict(`{"allowed": true}`)
+}
+
+// createdNothing reports whether the only thing this spawn asked of sbx is the
+// liveness listing.
+//
+// It replaces `len(f.Calls) != 0` at every refusal site downstream of step
+// 1bis, where the listing now runs BEFORE nest.Resolve's config refusals so
+// that a live sandbox is never asked a repo question it cannot act on. The
+// property those assertions defend is unchanged and is the one spec §6 states:
+// a refusal creates NOTHING. `sbx ls` creates nothing.
+//
+// Written as "every call is the listing" rather than "create was not called":
+// a spawn that reached the policy loop or `template ls` before refusing has
+// still moved past the point these tests guard, and would go unnoticed under
+// the narrower form.
+func createdNothing(f *sbx.Fake) bool {
+	for _, call := range f.Calls {
+		if !slices.Equal(call, []string{"ls", "--json"}) {
+			return false
+		}
+	}
+	return len(f.Attaches) == 0
 }
 
 func fakeDepsWithVerdict(verdict string) (*sbx.Fake, Deps) {
@@ -1166,6 +1212,45 @@ func TestSpawnWithWorktree(t *testing.T) {
 	}
 }
 
+// The regression floor for the CREATE branch: everything step 3 stopped doing
+// on the attach branch, it must still do here — materialize the worktree, mount
+// it, and ANNOUNCE it.
+//
+// The announcement is the half no other test holds. It used to be asserted from
+// the attach side (TestPromptModeAttachResolvesOnlyTheRecordedRepos read the
+// `worktree <repo>: <path>` lines as a readout of the resolved repos); that line
+// is a creation announcement and no longer prints there, so without this test a
+// refactor could delete it from the one branch that still owes it. The user
+// needs it: it names the directory den just created in their filesystem, and it
+// is what the manifest.Write refusal at step 6 relies on having printed.
+func TestSpawnAnnouncesTheWorktreeItCreates(t *testing.T) {
+	denHome, repo := denTest(t)
+	_, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	worktreePath := filepath.Join(denHome, "worktrees", "feat12", "api")
+	want := "worktree api: " + worktreePath
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("the create branch must announce the worktree it creates (%q); output:\n%s",
+			want, out.String())
+	}
+	// The line must not be the only trace: it could print over a directory
+	// that was never created, which is exactly what the attach branch used to
+	// do in reverse.
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Errorf("the announced worktree must exist at %s: %v", worktreePath, err)
+	}
+	if !branchExists(t, repo, "feat12") {
+		t.Error("the create branch must create the git branch too")
+	}
+}
+
 // F1: a worktree mounted ALONE is a worktree where git is dead.
 //
 // A linked worktree's `.git` is not a directory but a file reading
@@ -1262,6 +1347,16 @@ func TestSpawnReportsAVMMissingGitDirs(t *testing.T) {
 	// user may have good reasons to return to it without git.
 	if !f.HasAttached("exec", "-it", "-w", wt, "api.feat12", "bash", "-l") {
 		t.Errorf("den must still attach; attaches: %v", f.Attaches)
+	}
+	// This fixture is also the NO-RECORD attach: a live sandbox this den home
+	// has no manifest for, spawned with `-w`. It is the one attach path that
+	// still derives its paths from the flags, so it is the one that most
+	// resembles the call that used to create them — and it silently did, until
+	// step 3 stopped calling worktree.Ensure on this branch. den computes `wt`
+	// here; it must not exist on disk.
+	if _, err := os.Stat(wt); err == nil {
+		t.Errorf("%s was created on the attach branch: no sandbox mounts it and no den "+
+			"command can reclaim it", wt)
 	}
 	if !strings.Contains(out.String(), "git") {
 		t.Errorf("den must report that git will be inoperative; output:\n%s", out.String())
@@ -1368,8 +1463,8 @@ func TestSpawnRefusesAMissingSSHDir(t *testing.T) {
 		t.Errorf("error = %q, expected the full path of the missing directory", err.Error())
 	}
 	// Refused BEFORE any side effect, like the missing repos.
-	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
-		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v, attaches: %v", f.Calls, f.Attaches)
 	}
 	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
 		t.Error("the agent profile must not have been created before the refusal")
@@ -1495,11 +1590,13 @@ func TestSpawnRefusalForAnSSHDirThatIsAFileStillNamesSSHDir(t *testing.T) {
 }
 
 // assertNoSideEffect is the T13/T16 assertion shared by the refusals that must
-// precede every side effect: no sbx call, no attach, no agent profile on disk.
+// precede every side effect: nothing CREATED on sbx (createdNothing permits the
+// liveness listing, which runs first and creates nothing), no attach, no agent
+// profile and no worktree on disk.
 func assertNoSideEffect(t *testing.T, f *sbx.Fake, denHome string) {
 	t.Helper()
-	if len(f.Calls) != 0 || len(f.Attaches) != 0 {
-		t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v", f.Calls, f.Attaches)
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v, attaches: %v", f.Calls, f.Attaches)
 	}
 	if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
 		t.Error("the agent profile must not have been created before the refusal")
@@ -1623,8 +1720,8 @@ func TestSpawnRefusesAMissingKit(t *testing.T) {
 				t.Errorf("error = %q, expected the offending stack named", err.Error())
 			}
 			// Refused BEFORE any side effect, like the repos and ssh.dir.
-			if len(f.Calls) != 0 || len(f.Attaches) != 0 {
-				t.Errorf("no sbx call should precede the refusal; calls: %v, attaches: %v",
+			if !createdNothing(f) {
+				t.Errorf("the refusal must create nothing; calls: %v, attaches: %v",
 					f.Calls, f.Attaches)
 			}
 			if _, err := os.Stat(filepath.Join(denHome, "agents", "claude")); err == nil {
@@ -1784,10 +1881,13 @@ func TestSpawnStopsBeforeCreateWhenARepoIsMissing(t *testing.T) {
 	} else if !strings.Contains(err.Error(), repo) {
 		t.Errorf("the message must name the missing repo; got: %v", err)
 	}
-	// No call at all, not just no create: the check must precede even the
-	// spawn-or-attach's `sbx ls`.
-	if len(f.Calls) != 0 {
-		t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
+	// Nothing created. This assertion used to read "no call at all, not even
+	// the spawn-or-attach's `sbx ls`" — the listing now runs FIRST (step 1bis),
+	// so that a live sandbox is never asked a repo question nothing can act on.
+	// What §11 buys is unchanged: a listing creates nothing, and this still
+	// fails on the first call that does.
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 	}
 	// And no disk side effect either. Spec §11 says "stop before any
 	// create", but the intent is "before any side effect": without both
@@ -1952,8 +2052,8 @@ func TestSpawnPropagatesCascadeOptions(t *testing.T) {
 			if !strings.Contains(err.Error(), c.expected) {
 				t.Errorf("%s doesn't reach the cascade (expected %q); got: %v", c.name, c.expected, err)
 			}
-			if len(f.Calls) != 0 {
-				t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
+			if !createdNothing(f) {
+				t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 			}
 		})
 	}
@@ -2002,8 +2102,8 @@ func TestSpawnRefusesARelativeDenHome(t *testing.T) {
 	if !strings.Contains(err.Error(), "not an absolute path") {
 		t.Errorf("the message must name the cause; got: %v", err)
 	}
-	if len(f.Calls) != 0 {
-		t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 	}
 }
 
@@ -3690,6 +3790,158 @@ func TestAttachSaysNothingWhenTheNestIsUnchanged(t *testing.T) {
 	}
 }
 
+// `-w` on a live sandbox with a record changes NOTHING: step 3 takes the
+// worktree from the record, because the VM's mounts are frozen at its creation.
+// den honoured that in silence — `den spawn api --as reco -w other` attached and
+// said not a word about the flag it dropped, which is the silence spec §2
+// forbids.
+//
+// The second half is the doctrine that decides the CONDITION: retyping the
+// command that created the sandbox is the ordinary re-attach, so a `-w` that
+// AGREES with the record must stay quiet. A line printed on every re-attach
+// stops being read — the same rule TestAttachSaysNothingWhenTheNestIsUnchanged
+// holds for the nest.
+func TestAttachSaysTheWorktreeFlagIsNotApplied(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+	log := &bytes.Buffer{}
+	d.Out = log
+
+	// api.reco, created with no worktree at all: the record carries no
+	// `worktree:` block, so this VM mounts the repos as they are.
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Instance: "reco", Detach: true}, d); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	log.Reset()
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Instance: "reco", Worktree: "other", Detach: true}, d); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	got := log.String()
+	for _, want := range []string{"-w other", "not applied", "--as"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the ignored flag must be named, with the remedy (%q missing);\n%s", want, got)
+		}
+	}
+	// The message is only worth having because the flag really did nothing: no
+	// worktree on disk either. A line saying "not applied" over a directory den
+	// had just created would be the worse defect of the two.
+	if _, err := os.Stat(filepath.Join(denHome, "worktrees", "other")); err == nil {
+		t.Errorf("`-w` created a worktree on the attach branch, where nothing is propagated")
+	}
+
+	// The silence half, on its own fixture: this sandbox WAS created with
+	// `-w other`, and the attach retypes the command that created it.
+	agreeHome, _ := denTest(t)
+	af, ad := fakeDeps()
+	agreeLog := &bytes.Buffer{}
+	ad.Out = agreeLog
+	if err := Spawn(context.Background(), agreeHome,
+		Options{Nest: "api", Instance: "reco", Worktree: "other", Detach: true}, ad); err != nil {
+		t.Fatalf("first spawn (agreeing): %v", err)
+	}
+	// The VM is scripted from the RECORD, so the fixture and den agree on the
+	// worktree paths without this test recomputing the layout — and the git dirs
+	// go in too, or reportMissingGitDirs writes into the output read below.
+	recorded, err := manifest.Read(agreeHome, "api.reco")
+	if err != nil {
+		t.Fatalf("reading the record the first spawn wrote: %v", err)
+	}
+	if recorded.Worktree == nil || recorded.Worktree.Name != "other" {
+		t.Fatalf("the fixture must record the worktree; got %+v", recorded.Worktree)
+	}
+	af.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":` +
+			jsonStrings(append([]string{recorded.Repos[0].Mount}, recorded.GitDirs...)) + `}]}`),
+	}
+	agreeLog.Reset()
+	if err := Spawn(context.Background(), agreeHome,
+		Options{Nest: "api", Instance: "reco", Worktree: "other", Detach: true}, ad); err != nil {
+		t.Fatalf("attach (agreeing): %v", err)
+	}
+	if strings.Contains(agreeLog.String(), "not applied") {
+		t.Errorf("a `-w` that matches the record is the ordinary re-attach, not a dropped flag;\n%s",
+			agreeLog.String())
+	}
+	// The same spawn is a PLAIN attach in every other respect — no `-i`, an
+	// ordinary nest — so the whole paragraph must be absent, remedy included. It
+	// is the direct guard on widening the explanation past `select: prompt`: an
+	// explanation printed on every attach stops being read, which is what the
+	// three conditions exist for.
+	if strings.Contains(agreeLog.String(), "--as") {
+		t.Errorf("a plain attach explains nothing: the paragraph fires only on a dropped request;\n%s",
+			agreeLog.String())
+	}
+}
+
+// The refusal step 2bis inherits — "`-w` propagates a worktree to every repo of
+// the spawn, and X is not a git repository" — became false on the attach branch
+// the day that branch stopped propagating anything: den refused to attach to a
+// healthy live VM over a consequence that cannot happen there, which is what
+// T13/T16 forbid.
+//
+// The probe is now scoped to the spawns that CONSUME its answer, and the two
+// halves below are the two sides of that scope: with a readable record den takes
+// the git dirs from it and never asks; without one it still derives them from
+// `-w`, and the refusal is exactly true again.
+//
+// The nest's repo is a plain directory, and the sandbox is created WITHOUT `-w`
+// — which is the only way this fixture can exist at all, since the create branch
+// refuses the pair, correctly and unchanged (the third half).
+func TestAttachUnderWorktreeDoesNotProbeARepoItWillNotTouch(t *testing.T) {
+	denHome, _ := denTest(t)
+	data := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { path: "+data+" }\n")
+
+	f, d := fakeDeps()
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Instance: "reco", Detach: true}, d); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["` + data + `"]}]}`),
+	}
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Instance: "reco", Worktree: "feat", Detach: true}, d); err != nil {
+		t.Fatalf("den refused to attach to a live sandbox over a worktree it does not propagate: %v", err)
+	}
+
+	// Without a readable record, `-w` IS what the git dirs are derived from, so
+	// the probe runs and its refusal says something true. Same command, a sandbox
+	// name den has no record for.
+	nf, nd := fakeDeps()
+	nf.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.legacy","status":"running","workspaces":["` + data + `"]}]}`),
+	}
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Instance: "legacy", Worktree: "feat", Detach: true}, nd); err == nil {
+		t.Error("with no record the git dirs come from `-w`: a non-git repo must still be refused")
+	}
+
+	// The create branch, where the refusal has always belonged: unchanged.
+	cf, cd := fakeDeps()
+	err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Instance: "fresh", Worktree: "feat", Detach: true}, cd)
+	if err == nil {
+		t.Fatal("creating under `-w` over a non-git repo must still be refused")
+	}
+	if !strings.Contains(err.Error(), data) || !strings.Contains(err.Error(), "-w") {
+		t.Errorf("the refusal must keep naming the flag and the path: %v", err)
+	}
+	if cf.HasCalled("create") {
+		t.Errorf("a sandbox was created despite the refusal; calls: %v", cf.Calls)
+	}
+}
+
 // mountWorkspace is the SINGLE spelling of a mount in the create argv. The
 // report of task 2 compares against it, so a second copy of `host + ":ro"`
 // would drift and make the warning fire on every attach with nothing changed.
@@ -4287,7 +4539,7 @@ func TestSpawnRunsTheGivenCommandInsteadOfAShell(t *testing.T) {
 }
 
 // Refused, and refused BEFORE anything is read — like `-i` with
-// `--only`/`--without`, the contradiction den already refuses at step 0.
+// `--only`/`--without`, the contradiction den already refuses at step 0bis.
 //
 // It is a contradiction and not a shortcut because `sbx exec -d` does NOT
 // detach: measured 2026-08-10 on v0.38.0, it blocks for the command's whole
