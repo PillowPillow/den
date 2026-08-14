@@ -728,6 +728,20 @@ git commit -m "feat(init): converge declared sbx resources"
 
 ### Task 9: Orchestrate inspect, plan, apply, verify, and final commit ordering
 
+> Settled in Task 9: `Service.Plan` returns `(*Plan, error)` where an OBSERVATION failure is a plan
+> with every declared resource `Known:false` and `Status: unknown` (never an error) — Task 12's
+> doctor needs something to render. `DriverFactory` from the plan sketch does not exist: `Drivers`
+> is built inside `Plan`/`Apply` from the Request, since `StackRoot` is only known after
+> acquisition and `Force` comes from comparing `Personal.Version` with the manifest version (never
+> from the mode — forcing on configure would rebuild every image on each resume).
+> `Plan.Warnings` carries an unreadable binary version (`den dev`) instead of refusing; a version
+> that is really too old still refuses. `writePersonal` MERGES into the existing mapping so a
+> hand-written `~/...` path survives. Candidates stage under `<denHome>/cache/sources/` — same
+> filesystem as `sources/` for an atomic rename, outside it so `den source ls` sees no phantom.
+> `normalizeRemote` moved to `source.NormalizeRemoteURL` (one definition for discovery AND
+> namespace arbitration); `converge` delegates.
+
+
 **Files:**
 - Create: `internal/converge/service.go`
 - Create: `internal/converge/service_test.go`
@@ -738,15 +752,15 @@ git commit -m "feat(init): converge declared sbx resources"
 - Consumes: all preceding source/converge APIs, `worktree.Git`, `sbx.Runner`, and a clock.
 - Produces: `converge.Service.Plan`, `converge.Service.Apply`, and `source.AcquireCandidate`.
 
-- [ ] **Step 1: Write a no-mutation planning test**
+- [x] **Step 1: Write a no-mutation planning test**
 
 Snapshot the temporary den home, source remote HEAD, fake sbx calls, and output before `Service.Plan`. Assert all remain unchanged except read-only Git/sbx inspection calls. Assert the plan contains every credential, policy, build, exported nest, and repo key. For ambiguous repositories, assert `UnconfirmedRepoMatches` returns them and a second plan with enriched `Answers.Repos` becomes fully confirmable.
 
-- [ ] **Step 2: Write application ordering and failure tests**
+- [x] **Step 2: Write application ordering and failure tests**
 
 Assert order: fresh global config when needed, applying receipt, credentials, policies, builds, repository discovery/readiness, source install/checkout, personal config, final receipt. Inject a failure at each managed resource. Assert the final personal version remains previous, an `applying` receipt records completed resources, and a second call skips resources whose `Verify` returns ready.
 
-- [ ] **Step 3: Define service requests and results**
+- [x] **Step 3: Define service requests and results**
 
 ```go
 type Request struct {
@@ -792,15 +806,15 @@ func (s Service) Apply(ctx context.Context, req Request, plan *Plan, out, errOut
 
 Modes are `init`, `add`, `configure`, and `update`. `configure` uses only the installed checkout. `init` and `add` may use a temporary clone. `update` uses a fetched detached candidate.
 
-- [ ] **Step 4: Implement temporary acquisition and namespace arbitration**
+- [x] **Step 4: Implement temporary acquisition and namespace arbitration**
 
 Normalize source URLs before comparing ownership. `--name` wins; otherwise use `metadata.name`. Reject a namespace owned by another URL. A fresh clone stays temporary until managed resources verify. Install by atomic directory rename where the filesystem permits it; otherwise clone into a sibling temporary directory so rename remains same-filesystem.
 
-- [ ] **Step 5: Implement final commit marker semantics**
+- [x] **Step 5: Implement final commit marker semantics**
 
 After confirmation, write the fresh minimal global config first when needed, then write the `applying` receipt before the first managed resource mutation. Compute `manifest_digest` as lowercase `sha256:<hex>` over the exact `den-source.yaml` bytes; obtain commit from Git and `applied_at` from `Service.Now`. After verification, install/advance the checkout, write the new personal configuration atomically, then write the final receipt last. Missing repos update only confirmed `Personal.Repos` entries and yield `partially_ready`.
 
-- [ ] **Step 6: Run convergence tests and commit**
+- [x] **Step 6: Run convergence tests and commit**
 
 Run: `go test ./internal/source ./internal/converge`
 

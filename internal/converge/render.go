@@ -24,6 +24,10 @@ func RenderPlan(w io.Writer, p *Plan) {
 		fmt.Fprintf(w, "\n%s\n", p.TrustBoundary)
 	}
 
+	for _, warning := range p.Warnings {
+		fmt.Fprintf(w, "\nwarning: %s\n", warning)
+	}
+
 	fmt.Fprintf(w, "\nRESOURCES\n")
 	if len(p.Resources) == 0 {
 		fmt.Fprintln(w, "(none declared)")

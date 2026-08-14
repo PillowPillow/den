@@ -1,0 +1,579 @@
+package converge
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"maps"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/source"
+	"github.com/PillowPillow/den/internal/worktree"
+)
+
+func testClock() time.Time { return time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC) }
+
+// sourceRemote turns a source tree into a git remote den can clone from.
+func sourceRemote(t *testing.T, tree string) string {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"add", "-A"},
+		{"-c", "user.email=t@example.test", "-c", "user.name=t", "commit", "-q", "-m", "source"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tree
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return tree
+}
+
+// machine is a MUTABLE sbx double: it answers the inspection commands from an
+// internal state that its own mutating commands change.
+//
+// A static double would make every Verify fail — den configures a credential
+// and then re-reads the machine to PROVE it, which is the property the applier
+// exists to have. Simulating the state is therefore not test convenience: it is
+// the only way to exercise the apply → verify loop at all.
+type machine struct {
+	calls      [][]string
+	services   map[string]bool
+	registries map[string]bool
+	customs    map[string]bool
+	allowed    map[string]bool
+	images     map[string]bool
+	// fail maps a joined argv to the error that command must return.
+	fail map[string]error
+}
+
+func newMachine() *machine {
+	return &machine{
+		services: map[string]bool{}, registries: map[string]bool{}, customs: map[string]bool{},
+		allowed: map[string]bool{}, images: map[string]bool{}, fail: map[string]error{},
+	}
+}
+
+func (m *machine) record(args []string) { m.calls = append(m.calls, slices.Clone(args)) }
+
+func (m *machine) Run(_ context.Context, args ...string) ([]byte, error) {
+	m.record(args)
+	joined := strings.Join(args, " ")
+	if err := m.fail[joined]; err != nil {
+		return nil, err
+	}
+	switch {
+	case joined == "version":
+		return []byte("sbx version: v0.38.0 abc\n"), nil
+	case joined == "secret ls -g":
+		return []byte(m.renderSecrets()), nil
+	case strings.HasPrefix(joined, "policy ls"):
+		return []byte(m.renderPolicies()), nil
+	case joined == "template ls --json":
+		return []byte(m.renderImages()), nil
+	case joined == "ls --json":
+		return []byte(`{"sandboxes":[]}`), nil
+	case joined == "secret set -g github":
+		m.services["github"] = true
+		return nil, nil
+	case len(args) == 4 && args[0] == "policy" && args[1] == "allow" && args[2] == "network":
+		m.allowed[args[3]] = true
+		return nil, nil
+	case len(args) == 4 && args[0] == "template" && args[1] == "save":
+		m.images[args[3]] = true
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func (m *machine) RunInput(_ context.Context, _ []byte, args ...string) ([]byte, error) {
+	m.record(args)
+	if err := m.fail[strings.Join(args, " ")]; err != nil {
+		return nil, err
+	}
+	// secret set -g --registry <host> --password-stdin
+	if len(args) >= 5 && args[3] == "--registry" {
+		m.registries[args[4]] = true
+	}
+	return nil, nil
+}
+
+func (m *machine) RunSensitive(_ context.Context, redacted []int, args ...string) ([]byte, error) {
+	safe := sbx.RedactArgs(args, redacted)
+	m.record(safe)
+	if err := m.fail[strings.Join(safe, " ")]; err != nil {
+		return nil, err
+	}
+	// secret set-custom -g --host <host> --env <env> --value <secret>
+	var host, env string
+	for i, a := range args {
+		switch a {
+		case "--host":
+			host = args[i+1]
+		case "--env":
+			env = args[i+1]
+		}
+	}
+	m.customs[customKey(host, env)] = true
+	return nil, nil
+}
+
+func (m *machine) Stream(_ context.Context, _ io.Writer, args ...string) error {
+	m.record(args)
+	return m.fail[strings.Join(args, " ")]
+}
+
+func (m *machine) Attach(_ context.Context, args ...string) error {
+	m.record(args)
+	return nil
+}
+
+func (m *machine) Pipe(_ context.Context, args ...string) error {
+	m.record(args)
+	return nil
+}
+
+func (m *machine) renderSecrets() string {
+	var b strings.Builder
+	b.WriteString("SCOPE      TYPE       NAME       SECRET\n")
+	for _, name := range slices.Sorted(maps.Keys(m.services)) {
+		fmt.Fprintf(&b, "(global)   service    %s   (stored)\n", name)
+	}
+	for _, host := range slices.Sorted(maps.Keys(m.registries)) {
+		fmt.Fprintf(&b, "(global)   registry   %s   token-***\n", host)
+	}
+	if len(m.customs) > 0 {
+		b.WriteString("\nCUSTOM SECRETS\nSCOPE      TARGETS   ENV   PLACEHOLDER   SECRET\n")
+		for _, key := range slices.Sorted(maps.Keys(m.customs)) {
+			targets, env, _ := strings.Cut(key, "\x00")
+			fmt.Fprintf(&b, "(global)   %s   %s   sbx-cs-x   token-***\n", targets, env)
+		}
+	}
+	return b.String()
+}
+
+func (m *machine) renderPolicies() string {
+	hosts := slices.Sorted(maps.Keys(m.allowed))
+	quoted := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		quoted = append(quoted, `"`+h+`"`)
+	}
+	return `{"rules":[{"resources":[` + strings.Join(quoted, ",") + `]}]}`
+}
+
+func (m *machine) renderImages() string {
+	var entries []string
+	for _, image := range slices.Sorted(maps.Keys(m.images)) {
+		repo, tag, _ := strings.Cut(image, ":")
+		entries = append(entries, `{"repository":"docker.io/library/`+repo+`","tag":"`+tag+`"}`)
+	}
+	return `{"images":[` + strings.Join(entries, ",") + `]}`
+}
+
+// serviceFixture prepares a den home, a source remote whose nests need one
+// repository, and that repository present on the machine.
+func serviceFixture(t *testing.T) (denHome, remote, repo string) {
+	t.Helper()
+	denHome = t.TempDir()
+	tree := validSourceTree(t)
+	// The exported nest declares a repo key so discovery and readiness have
+	// something real to answer.
+	writeFile(t, filepath.Join(tree, "nests", "leo.yaml"),
+		"stack: base\nrepos:\n  - { key: api, url: https://gitlab.example.test/team/api.git }\n")
+	remote = sourceRemote(t, tree)
+
+	root := t.TempDir()
+	repo = initRepoWithRemote(t, filepath.Join(root, "api"), "git@gitlab.example.test:team/api.git")
+	return denHome, remote, root
+}
+
+func planFor(t *testing.T, s Service, req Request) *Plan {
+	t.Helper()
+	p, err := s.Plan(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	return p
+}
+
+func requestFor(t *testing.T, denHome, remote, root string, f *machine) (Service, Request, func()) {
+	t.Helper()
+	s := Service{Git: worktree.NewGit(), Sbx: f, Secrets: f, Now: testClock}
+	c, err := source.AcquireCandidate(context.Background(), s.Git, denHome, remote)
+	if err != nil {
+		t.Fatalf("AcquireCandidate: %v", err)
+	}
+	req := Request{
+		Mode: ModeInit, DenHome: denHome, Name: "dg", Candidate: c,
+		DenVersion: "1.7.0",
+		Answers: Answers{
+			RepositoryRoots: []string{root},
+			Credentials:     map[string]CredentialAnswer{"gitlab_token": {Value: "sentinel-secret"}},
+		},
+	}
+	return s, req, func() { c.Close() }
+}
+
+// snapshot lists every path under dir, so a "nothing was written" assertion
+// catches a CREATED DIRECTORY too — WriteReceipt and WritePersonal both
+// MkdirAll on first use, and a planner that touched them would slip past a
+// file-content comparison.
+func snapshot(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		out = append(out, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// Planning is READ-ONLY. It is what a user confirms, and a plan that had
+// already changed the machine would make the confirmation a formality.
+func TestPlanMutatesNothing(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := newMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+
+	before := snapshot(t, denHome)
+	plan := planFor(t, s, req)
+	after := snapshot(t, denHome)
+
+	// The candidate's own staging directory is under cache/ and existed before
+	// the snapshot: nothing NEW may appear.
+	if len(before) != len(after) {
+		t.Fatalf("planning wrote to the den home:\nbefore %v\nafter  %v", before, after)
+	}
+	if _, err := os.Stat(source.Dir(denHome, "dg")); err == nil {
+		t.Error("planning installed the source")
+	}
+	if _, err := os.Stat(source.ReceiptPath(denHome, "dg")); err == nil {
+		t.Error("planning wrote a receipt")
+	}
+	for _, call := range f.calls {
+		switch call[0] {
+		case "secret", "policy":
+			if len(call) > 1 && call[1] != "ls" {
+				t.Errorf("planning ran a mutating sbx command: %v", call)
+			}
+		case "create", "exec", "template":
+			if call[0] == "template" && len(call) > 1 && call[1] == "ls" {
+				continue
+			}
+			t.Errorf("planning ran a mutating sbx command: %v", call)
+		}
+	}
+
+	// And the plan really covers the source: every credential, the policy
+	// group, the build, the repo key and every exported nest.
+	if len(plan.Resources) != 5 {
+		t.Errorf("resources = %+v, want three credentials, the policy group and the build", plan.Resources)
+	}
+	if len(plan.RepoMatches) != 1 || plan.RepoMatches[0].Requirement.Key != "api" {
+		t.Errorf("repo matches = %+v", plan.RepoMatches)
+	}
+	if len(plan.Nests) != 1 || plan.Nests[0].Name != "leo" {
+		t.Errorf("nests = %+v", plan.Nests)
+	}
+	if plan.Status != source.StatusReady {
+		t.Errorf("status = %q, want ready: the repository is on this machine", plan.Status)
+	}
+	if !strings.Contains(plan.TrustBoundary, "provision scripts") {
+		t.Errorf("trust boundary = %q", plan.TrustBoundary)
+	}
+}
+
+// An sbx that does not answer is `unknown`, and the plan still lists
+// everything the source declares: a plan that shrank would let a user confirm
+// an installation whose scope they cannot see.
+func TestPlanReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := newMachine()
+	f.fail["secret ls -g"] = errors.New("keychain error -50")
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+
+	plan := planFor(t, s, req)
+	if plan.Status != source.StatusUnknown {
+		t.Fatalf("status = %q, want unknown", plan.Status)
+	}
+	if Succeeds(plan.Status) {
+		t.Error("an unknown status must not let a command exit 0")
+	}
+	if len(plan.Resources) != 5 {
+		t.Errorf("resources = %+v, want every declared resource listed", plan.Resources)
+	}
+	for _, r := range plan.Resources {
+		if r.Known {
+			t.Errorf("resource %s claims to be known on an unobservable machine", r.ID)
+		}
+	}
+}
+
+// The application order of spec §9.2, and the final commit marker last.
+func TestApplyOrdersMutationsAndCommitsLast(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := newMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+	req.FreshGlobalConfig = []byte("agents: {}\n")
+
+	plan := planFor(t, s, req)
+	var out strings.Builder
+	result, err := s.Apply(context.Background(), req, plan, &out, &out)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Credentials, then the policy, then the build.
+	order := []string{}
+	for _, c := range f.calls {
+		switch {
+		case c[0] == "secret" && c[1] != "ls":
+			order = append(order, "secret")
+		case c[0] == "policy" && c[1] == "allow":
+			order = append(order, "policy")
+		case c[0] == "create":
+			order = append(order, "build")
+		}
+	}
+	if len(order) < 3 || order[0] != "secret" {
+		t.Fatalf("mutation order = %v, want credentials first", order)
+	}
+	lastSecret, firstPolicy := -1, -1
+	for i, kind := range order {
+		if kind == "secret" {
+			lastSecret = i
+		}
+		if kind == "policy" && firstPolicy < 0 {
+			firstPolicy = i
+		}
+	}
+	if firstPolicy < lastSecret {
+		t.Errorf("mutation order = %v, want every credential before the network policy", order)
+	}
+
+	// The source is installed, the personal configuration carries the
+	// discovered repository, and the receipt is final.
+	if _, err := os.Stat(filepath.Join(source.Dir(denHome, "dg"), source.ManifestFile)); err != nil {
+		t.Fatalf("the source was not installed: %v", err)
+	}
+	personal, err := source.LoadPersonal(denHome, "dg")
+	if err != nil {
+		t.Fatalf("LoadPersonal: %v", err)
+	}
+	if personal.Version != "1.0.0" || personal.Repos["api"] == "" {
+		t.Errorf("personal = %+v", personal)
+	}
+	receipt, err := source.LoadReceipt(denHome, "dg")
+	if err != nil {
+		t.Fatalf("LoadReceipt: %v", err)
+	}
+	if receipt.Status != source.StatusReady || receipt.Version != "1.0.0" {
+		t.Errorf("receipt = %+v", receipt)
+	}
+	if receipt.Commit == "" || !strings.HasPrefix(receipt.ManifestDigest, "sha256:") {
+		t.Errorf("receipt = %+v, want the commit and the manifest digest", receipt)
+	}
+	if !receipt.AppliedAt.Equal(testClock()) {
+		t.Errorf("applied_at = %v", receipt.AppliedAt)
+	}
+	if result.Status != source.StatusReady {
+		t.Errorf("result = %+v", result)
+	}
+	// The source is usable straight away: the three files agree.
+	if _, err := source.RequireUsable(denHome, "dg"); err != nil {
+		t.Errorf("the installed source is not usable: %v", err)
+	}
+	// Nothing printed carries the credential value.
+	if strings.Contains(out.String(), "sentinel-secret") {
+		t.Errorf("the applied value was printed:\n%s", out.String())
+	}
+}
+
+// A managed resource that fails stops the run, keeps the previous version
+// active, and leaves an `applying` receipt recording what did converge — which
+// is what makes `den source configure` a resume rather than a restart.
+func TestApplyLeavesAResumableStateOnFailure(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := newMachine()
+	f.fail["policy allow network api.example.test"] = errors.New("sbx refused")
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+
+	plan := planFor(t, s, req)
+	var out strings.Builder
+	if _, err := s.Apply(context.Background(), req, plan, &out, &out); err == nil {
+		t.Fatal("expected the policy failure to stop the run")
+	}
+
+	if _, err := source.LoadPersonal(denHome, "dg"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a failed installation must not configure a version: %v", err)
+	}
+	receipt, err := source.LoadReceipt(denHome, "dg")
+	if err != nil {
+		t.Fatalf("LoadReceipt: %v", err)
+	}
+	if receipt.Status != source.StatusApplying || receipt.TargetVersion != "1.0.0" {
+		t.Fatalf("receipt = %+v, want an applying marker naming the target", receipt)
+	}
+	if receipt.Resources.Credentials != source.ResourceReady {
+		t.Errorf("receipt = %+v, want the credentials that DID converge recorded", receipt.Resources)
+	}
+	if _, err := os.Stat(source.Dir(denHome, "dg")); err == nil {
+		t.Error("a source whose resources failed must not be installed")
+	}
+}
+
+// The resume: the same convergence run again skips what verifies and finishes
+// the rest. It also proves the skip is not blind — the run VERIFIES the
+// resources it does not reapply.
+func TestConfigureResumesWithoutReapplyingVerifiedResources(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := newMachine()
+	f.fail["policy allow network api.example.test"] = errors.New("sbx refused")
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+
+	plan := planFor(t, s, req)
+	var out strings.Builder
+	if _, err := s.Apply(context.Background(), req, plan, &out, &out); err == nil {
+		t.Fatal("expected the first run to fail")
+	}
+
+	// The credentials applied by the failed run are really on the machine
+	// (the double recorded them), and the policy command now works.
+	delete(f.fail, "policy allow network api.example.test")
+
+	before := len(f.calls)
+	second := planFor(t, s, req)
+	for _, r := range second.Resources {
+		if r.Kind == KindCredential && r.Action != ActionUnchanged {
+			t.Errorf("credential %s = %q, want unchanged on a resume", r.ID, r.Action)
+		}
+	}
+	if _, err := s.Apply(context.Background(), req, second, &out, &out); err != nil {
+		t.Fatalf("the resume must complete: %v", err)
+	}
+	for _, c := range f.calls[before:] {
+		if c[0] == "secret" && c[1] != "ls" {
+			t.Errorf("a verified credential was reapplied: %v", c)
+		}
+	}
+	receipt, err := source.LoadReceipt(denHome, "dg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != source.StatusReady {
+		t.Errorf("receipt = %+v, want the resume to finish the convergence", receipt)
+	}
+}
+
+// A repository this machine does not have is `partially_ready`: the
+// installation SUCCEEDS, the nest needing it is not_ready, and den never
+// clones (spec §7.2).
+func TestApplySucceedsPartiallyWhenARepositoryIsMissing(t *testing.T) {
+	denHome, remote, _ := serviceFixture(t)
+	f := newMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, t.TempDir(), f) // an empty root
+	defer cleanup()
+
+	plan := planFor(t, s, req)
+	if plan.Status != source.StatusPartiallyReady {
+		t.Fatalf("status = %q, want partially_ready", plan.Status)
+	}
+	var out strings.Builder
+	result, err := s.Apply(context.Background(), req, plan, &out, &out)
+	if err != nil {
+		t.Fatalf("a missing working repository must not fail the installation: %v", err)
+	}
+	if result.Status != source.StatusPartiallyReady || !Succeeds(result.Status) {
+		t.Errorf("result = %+v", result)
+	}
+	receipt, err := source.LoadReceipt(denHome, "dg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Nests["leo"].Status != source.NestNotReady {
+		t.Errorf("receipt nests = %+v", receipt.Nests)
+	}
+	if len(receipt.Nests["leo"].MissingRepos) != 1 || receipt.Nests["leo"].MissingRepos[0] != "api" {
+		t.Errorf("receipt leo = %+v, want the missing key named", receipt.Nests["leo"])
+	}
+}
+
+// An existing global configuration is preserved byte for byte: `den init
+// --source` on a working den configures a source, it does not rewrite the
+// user's settings (spec §8).
+func TestApplyNeverRewritesAnExistingGlobalConfig(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	existing := "agents:\n  claude:\n    update: \"claude update\"\n# a comment the user wrote\n"
+	writeFile(t, filepath.Join(denHome, "config.yaml"), existing)
+
+	f := newMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+	req.FreshGlobalConfig = []byte("agents: {}\n")
+
+	plan := planFor(t, s, req)
+	var out strings.Builder
+	if _, err := s.Apply(context.Background(), req, plan, &out, &out); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(denHome, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != existing {
+		t.Errorf("the global configuration was rewritten:\n%s", got)
+	}
+}
+
+// A repository the user already mapped by hand keeps the path they WROTE: a
+// configure that expanded "~/Development/api" into an absolute path would
+// rewrite a file the user owns.
+func TestApplyPreservesHandWrittenRepoPaths(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	if err := source.WritePersonal(denHome, "dg", source.Personal{
+		Version: "1.0.0",
+		Repos:   map[string]string{"other": "~/Development/other"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f := newMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+
+	plan := planFor(t, s, req)
+	var out strings.Builder
+	if _, err := s.Apply(context.Background(), req, plan, &out, &out); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	personal, err := source.LoadPersonal(denHome, "dg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personal.Repos["other"] != "~/Development/other" {
+		t.Errorf("repos = %#v, expected the hand-written entry untouched", personal.Repos)
+	}
+	if personal.Repos["api"] == "" {
+		t.Errorf("repos = %#v, expected the discovered mapping added", personal.Repos)
+	}
+}

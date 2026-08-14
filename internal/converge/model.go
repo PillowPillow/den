@@ -192,9 +192,14 @@ type Plan struct {
 	// that sentence would be uninformed.
 	TrustBoundary string
 	Resources     []ResourcePlan
-	RepoMatches   []RepoMatch
-	Nests         []NestReadiness
-	Status        Status
+	// Warnings are facts den could not verify but chose not to refuse on — an
+	// unreadable binary version, typically. Printed with the plan: a check den
+	// skipped is something the user must be told about, not something den
+	// silently decides is fine.
+	Warnings    []string
+	RepoMatches []RepoMatch
+	Nests       []NestReadiness
+	Status      Status
 }
 
 // UnconfirmedRepoMatches are the discovery results a human still has to

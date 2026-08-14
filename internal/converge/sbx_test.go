@@ -108,7 +108,11 @@ func digitaleoManifest(t *testing.T) *source.Manifest {
 func validSourceTree(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "stacks", "base", "stack.yaml"), "image: base:v1\n")
+	// A BUILDABLE stack: `resources.builds` names it, and den only builds a
+	// stack that declares what to run (config.Stack.Buildable).
+	writeFile(t, filepath.Join(root, "stacks", "base", "stack.yaml"),
+		"image: base:v1\nbase: claude\nprovision:\n  steps: [provision/base.sh]\n")
+	writeFile(t, filepath.Join(root, "stacks", "base", "provision", "base.sh"), "#!/bin/sh\ntrue\n")
 	writeFile(t, filepath.Join(root, "nests", "leo.yaml"), "stack: base\n")
 	writeFile(t, filepath.Join(root, "den-source.yaml"), `schema_version: 1
 kind: source
