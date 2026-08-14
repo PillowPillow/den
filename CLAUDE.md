@@ -82,11 +82,17 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   is the reason the untestable one-liners (`ports.ListenScanner`, `ports.OpenURL`,
   `spawn.LooksInteractive`) are isolated behind interfaces.
 - `spawn.LooksInteractive` is a HALF exception since #66: it delegates to `spawn.isTerminal`, whose
-  negative verdicts are tested against real descriptors (`internal/spawn/isterminal_test.go` —
-  `/dev/null`, a regular file, a closed fd). Only "a real terminal answers true" stays untested,
+  negative verdicts are tested against real files (`internal/spawn/isterminal_test.go` —
+  `/dev/null`, a regular file, a closed file). Only "a real terminal answers true" stays untested,
   and it stays that way on purpose. The test file is tagged `darwin || linux`: the
   `!darwin && !linux` build keeps the pre-#66 `os.ModeCharDevice` heuristic, under which
   `/dev/null` answers true.
+- `isTerminal` takes an `*os.File`, never a bare descriptor, and that signature is load-bearing —
+  the fallback needs a `Stat`, and a `Stat` from a descriptor means `os.NewFile`, whose finalizer
+  closes den's own stdin and stdout at the next GC (reproduced; `isterminal_other.go` carries the
+  story). That file is the one no gate TESTS — `isterminal_test.go` is tagged `darwin || linux`
+  and `task typecheck` only compiles it under `GOOS=windows`. Read its body; nothing will fail
+  for you.
 - Packages running real git (`cli`, `spawn`, `worktree`) call `worktree.NeutralizeGitEnvironment()`
   in `TestMain`. Without it the suite has actually committed into unrelated repos via an inherited
   `GIT_DIR`/`GIT_WORK_TREE`.

@@ -28,14 +28,32 @@ import "os"
 // GOOS=windows for this file and this file alone. Without that line it would be
 // the only file in the repo no gate compiles.
 //
-// os.NewFile does NOT take ownership of the descriptor for a Stat: the file is
-// never closed, so fd stays the caller's to manage — which matters, since every
-// caller passes os.Stdin or os.Stdout.
-func isTerminal(fd uintptr) bool {
-	f := os.NewFile(fd, "")
-	if f == nil {
-		return false
-	}
+// THIS FILE IS WHY isTerminal TAKES AN *os.File and not the bare descriptor #66
+// first passed it. The sentence that used to stand here — "os.NewFile does NOT
+// take ownership of the descriptor for a Stat: the file is never closed" — was
+// false, and it was load-bearing: `os.NewFile` ends in
+// `runtime.SetFinalizer(f.file, (*file).close)` (os/file_unix.go, go1.26.1), so
+// the *os.File this function built was unreachable the moment it returned and
+// SOME LATER GC closed the caller's descriptor. LooksInteractive calls twice, on
+// os.Stdin and os.Stdout, so one `den spawn -i` on such a platform destroyed the
+// process's stdin AND stdout at a nondeterministic later point. Reproduced on
+// 2026-08-14 with a copy of the old body: after two runtime.GC(), a write to
+// os.Stdout answered `bad file descriptor`.
+//
+// The fix is not a Close — `defer f.Close()` closes fd 0/1 immediately, which is
+// the same bug brought forward. It is to stop FABRICATING an os.File around a
+// descriptor this package never opened. Taking the caller's own file removes the
+// second owner entirely, and it is the caller's file that every Stat here reads.
+//
+// `syscall.Fstat(int(fd), ...)` was the other way to keep the uintptr, and it is
+// refused: syscall.Fstat does not exist on windows, and the GOOS=windows line in
+// `task typecheck` is the ONLY gate that compiles this file at all — the fix
+// would have broken the gate that guards it.
+//
+// No gate TESTS this file, which is how the false sentence survived review:
+// isterminal_test.go is tagged `darwin || linux`, and typecheck only compiles
+// GOOS=windows. Read what this body does; nothing here will fail for you.
+func isTerminal(f *os.File) bool {
 	info, err := f.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }

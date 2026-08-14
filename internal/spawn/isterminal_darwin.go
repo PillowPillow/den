@@ -1,11 +1,12 @@
 package spawn
 
 import (
+	"os"
 	"syscall"
 	"unsafe"
 )
 
-// isTerminal reports whether fd is a terminal, by asking the kernel the only
+// isTerminal reports whether f is a terminal, by asking the kernel the only
 // question that actually answers it: fetch the descriptor's terminal
 // attributes, and see whether it has any.
 //
@@ -38,14 +39,33 @@ import (
 // No file suffix redundancy: the `_darwin` in the name is the build constraint,
 // which is why there is no `//go:build` line above.
 //
+// It takes the *os.File and calls Fd() itself, rather than taking the bare
+// uintptr the first cut of #66 passed. This signature is the SHARED one — all
+// three platforms carry it — and it is the fallback that forces it, not this
+// file: `isterminal_other.go` needs a Stat, and reaching a Stat from a bare
+// descriptor means `os.NewFile`, which takes ownership and installs a close
+// finalizer. The whole story is written there, at the site that would otherwise
+// rebuild it. Here the parameter costs nothing: Fd() on a nil receiver answers
+// ^uintptr(0) and on a closed file answers the same (internal/poll sets Sysfd to
+// -1 on destroy), so both degrade to EBADF, which is already the "no terminal"
+// verdict below.
+//
+// Fd() is also free of the SetBlocking side effect its doc warns about, for the
+// two files den actually passes. `fd()` calls `pfd.SetBlocking()` only when
+// `f.nonblock` is set, and `os.Stdin`/`os.Stdout` are `NewFile` results, so
+// `newFile` sees `kind == kindNewFile`: `pollable` then reduces to the
+// already-non-blocking flag, and the only branch that sets `f.nonblock` under it
+// is guarded by `kind == kindSock`. Blocking or not, the flag stays false. Read
+// out of os/file_unix.go's `newFile` on go1.26.1, not assumed from Fd()'s doc.
+//
 // The `uintptr(unsafe.Pointer(&t))` conversion stays INLINE in the call
 // expression on purpose. That is the only form the unsafe.Pointer rules allow
 // (rule 4): hoisting it into a variable lets the garbage collector move `t`
 // between the conversion and the call, and the kernel then writes into freed
 // memory. It reads like a line begging to be extracted. It must not be.
-func isTerminal(fd uintptr) bool {
+func isTerminal(f *os.File) bool {
 	var t syscall.Termios
-	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd,
+	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, f.Fd(),
 		uintptr(syscall.TIOCGETA), uintptr(unsafe.Pointer(&t)), 0, 0, 0)
 	return errno == 0
 }

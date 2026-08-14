@@ -39,9 +39,15 @@ import (
 // being hermetic (CLAUDE.md). It was measured by hand instead, on darwin,
 // 2026-08-14. The other half, that a character device which is not a terminal
 // answers false, is the bug #66 closed and it IS tested: isterminal_test.go
-// pins `/dev/null`, a regular file and a closed descriptor. The split into
-// `isTerminal(fd)` plus this wrapper exists for that test — LooksInteractive
+// pins `/dev/null`, a regular file and a closed file. The split into
+// `isTerminal(f)` plus this wrapper exists for that test — LooksInteractive
 // reads globals a test cannot replace.
+//
+// It hands isTerminal the *os.File, not `os.Stdin.Fd()`. That is not a style
+// preference: the `!darwin && !linux` fallback needs a Stat, and a Stat from a
+// bare descriptor means `os.NewFile`, which takes ownership and whose finalizer
+// then closes den's own stdin and stdout (isterminal_other.go carries the
+// reproduction). Passing the file den already holds leaves exactly one owner.
 //
 // BOTH descriptors are still required, and that is #60's rule, not a
 // consequence of #66. With stdout redirected, LooksInteractive answers false
@@ -50,7 +56,7 @@ import (
 // checklist the user cannot see is worse than a refusal that names the
 // non-interactive equivalent.
 func LooksInteractive() bool {
-	return isTerminal(os.Stdin.Fd()) && isTerminal(os.Stdout.Fd())
+	return isTerminal(os.Stdin) && isTerminal(os.Stdout)
 }
 
 // nonInteractiveEquivalents is repeated in every refusal of `-i` on purpose: a

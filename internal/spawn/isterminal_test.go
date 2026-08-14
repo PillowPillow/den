@@ -30,8 +30,8 @@ import (
 //
 // This test could not exist before the split: LooksInteractive reads the
 // os.Stdin and os.Stdout globals, which a test cannot replace with a file
-// without reaching into package state. isTerminal takes the descriptor, so the
-// one verdict that CAN be pinned down without a tty now is.
+// without reaching into package state. isTerminal takes the file, so the one
+// verdict that CAN be pinned down without a tty now is.
 func TestIsTerminalRejectsDevNull(t *testing.T) {
 	f, err := os.Open(os.DevNull)
 	if err != nil {
@@ -39,7 +39,7 @@ func TestIsTerminalRejectsDevNull(t *testing.T) {
 	}
 	defer f.Close()
 
-	if isTerminal(f.Fd()) {
+	if isTerminal(f) {
 		t.Errorf("%s must not read as a terminal: it is a character device, and answering "+
 			"true for it is exactly the bug #66 closes", os.DevNull)
 	}
@@ -56,33 +56,32 @@ func TestIsTerminalRejectsARegularFile(t *testing.T) {
 	}
 	defer f.Close()
 
-	if isTerminal(f.Fd()) {
+	if isTerminal(f) {
 		t.Error("a regular file must not read as a terminal")
 	}
 }
 
-// TestIsTerminalRejectsAClosedDescriptor pins the error path: the ioctl fails
-// with EBADF and the probe must read that as "no terminal", never panic and
-// never answer true. den calls this on os.Stdin and os.Stdout, and a process
-// started with fd 0 closed is a real shape (`den spawn api <&-`).
+// TestIsTerminalRejectsAClosedFile pins the error path: the ioctl fails with
+// EBADF and the probe must read that as "no terminal", never panic and never
+// answer true. den calls this on os.Stdin and os.Stdout, and a process started
+// with fd 0 closed is a real shape (`den spawn api <&-`).
 //
-// The test asserts on a descriptor it no longer owns: the kernel is free to
-// hand that number to the next open, and the go test binary opens files. The
-// risk is accepted rather than hidden — a reused fd in a test binary lands on a
-// regular file or a pipe, and both answer false too, so the assertion holds
-// either way. Only a reuse that produced a TERMINAL could flip it, and nothing
-// in a hermetic suite opens one.
-func TestIsTerminalRejectsAClosedDescriptor(t *testing.T) {
+// It asserts on a CLOSED FILE, not on a stale descriptor number, and that is
+// what makes the assertion sound rather than probable. Closing an *os.File sets
+// its Sysfd to -1 (internal/poll's destroy), so Fd() answers ^uintptr(0) — a
+// number no open can be handed. The earlier form of this test kept the bare
+// uintptr and had to argue that a reused fd would land on a regular file or a
+// pipe and answer false anyway; the argument was correct and is now unnecessary.
+func TestIsTerminalRejectsAClosedFile(t *testing.T) {
 	f, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatalf("opening %s: %v", os.DevNull, err)
 	}
-	fd := f.Fd()
 	if err := f.Close(); err != nil {
 		t.Fatalf("closing: %v", err)
 	}
 
-	if isTerminal(fd) {
-		t.Error("a closed descriptor must not read as a terminal")
+	if isTerminal(f) {
+		t.Error("a closed file must not read as a terminal")
 	}
 }

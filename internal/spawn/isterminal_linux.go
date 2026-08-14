@@ -1,14 +1,16 @@
 package spawn
 
 import (
+	"os"
 	"syscall"
 	"unsafe"
 )
 
 // isTerminal is the linux twin of the darwin probe. The reasoning — why the
-// ioctl, why the three firsts it costs, why the conversion stays inline — is
-// written once, in isterminal_darwin.go, and is not repeated here: two copies of
-// one argument are two things to keep in agreement.
+// ioctl, why the three firsts it costs, why the parameter is an *os.File rather
+// than a descriptor, why the conversion stays inline — is written once, in
+// isterminal_darwin.go, and is not repeated here: two copies of one argument are
+// two things to keep in agreement.
 //
 // The ONE difference is the request constant. linux spells "get the termios
 // struct" TCGETS; darwin spells it TIOCGETA. Everything else is identical, and
@@ -21,9 +23,9 @@ import (
 // settles the positive case was made on darwin; nobody has run this file against
 // a live linux tty. `task typecheck` builds both platforms so a divergence here
 // fails a gate rather than a user's spawn.
-func isTerminal(fd uintptr) bool {
+func isTerminal(f *os.File) bool {
 	var t syscall.Termios
-	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd,
+	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, f.Fd(),
 		uintptr(syscall.TCGETS), uintptr(unsafe.Pointer(&t)), 0, 0, 0)
 	return errno == 0
 }
