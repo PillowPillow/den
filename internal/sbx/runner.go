@@ -453,3 +453,88 @@ func (e *Exec) Pipe(ctx context.Context, args ...string) error {
 	}
 	return nil
 }
+
+// SecretRunner is the secret-carrying half of den's contact with sbx. It is a
+// SEPARATE interface from Runner on purpose: only the source-onboarding
+// convergence needs it, and adding two methods to Runner would force every
+// test double in den — policy's, spawn's, agent's — to implement I/O they
+// never exercise.
+//
+// Both methods exist because a secret must never reach a place a human or a
+// log can read it:
+//
+//   - RunInput feeds the value on STDIN. It is the right shape whenever sbx
+//     offers a `--*-stdin` flag, and it is what den uses for a registry
+//     password: an argv is visible to every process on the machine through
+//     `ps`.
+//   - RunSensitive is the fallback for the commands that have no stdin form.
+//     sbx v0.38.0's `secret set-custom` requires `--value <secret>` (probed
+//     2026-08-14), so the value HAS to travel in argv. What den controls is
+//     everything after: the named argument indexes are redacted from the
+//     error message, so a failing command cannot print the secret into a
+//     terminal, a CI log or a bug report.
+type SecretRunner interface {
+	RunInput(ctx context.Context, input []byte, args ...string) ([]byte, error)
+	RunSensitive(ctx context.Context, redactedIndexes []int, args ...string) ([]byte, error)
+}
+
+// RedactedArg is what a redacted argument renders as, everywhere. Same string
+// as converge.Redacted, and deliberately duplicated rather than imported:
+// internal/sbx is a leaf package, and a redaction that depended on an upper
+// layer would be one an upper layer could remove.
+const RedactedArg = "<redacted>"
+
+// RunInput runs sbx with input on its standard input, capturing stdout.
+//
+// The input is NEVER recorded in the error: it is the secret itself.
+func (e *Exec) RunInput(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, e.Bin, args...)
+	cmd.Stdin = bytes.NewReader(input)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = effectiveDelay(e.DrainDelay)
+	if err := cmd.Run(); err != nil {
+		if drainCutShortOnSuccess(err, ctx.Err(), cmd.ProcessState) {
+			return stdout.Bytes(), nil
+		}
+		return stdout.Bytes(), &ExecError{
+			Bin:          e.Bin,
+			Args:         slices.Clone(args),
+			Stderr:       strings.TrimSpace(stderr.String()),
+			Err:          err,
+			Cancellation: ctx.Err(),
+		}
+	}
+	return stdout.Bytes(), nil
+}
+
+// RunSensitive runs sbx with a secret in argv, and keeps that secret out of
+// every error it can produce.
+//
+// The redaction happens on the COPY stored in ExecError, not on the argv
+// handed to the process: the command must still work. redactedIndexes are
+// positions in args; an index out of range is ignored rather than refused —
+// this must never be the reason a credential fails to apply.
+func (e *Exec) RunSensitive(ctx context.Context, redactedIndexes []int, args ...string) ([]byte, error) {
+	out, err := e.Run(ctx, args...)
+	var execErr *ExecError
+	if errors.As(err, &execErr) {
+		execErr.Args = RedactArgs(execErr.Args, redactedIndexes)
+	}
+	return out, err
+}
+
+// RedactArgs returns a copy of args with the named positions replaced. It is
+// exported so a test double redacts exactly as production does — the fake and
+// the real runner rendering a secret differently is how a suite proves a
+// redaction that does not exist.
+func RedactArgs(args []string, redactedIndexes []int) []string {
+	out := slices.Clone(args)
+	for _, i := range redactedIndexes {
+		if i >= 0 && i < len(out) {
+			out[i] = RedactedArg
+		}
+	}
+	return out
+}

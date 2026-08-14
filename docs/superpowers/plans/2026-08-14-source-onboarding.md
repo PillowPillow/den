@@ -643,6 +643,15 @@ git commit -m "feat(init): model deterministic convergence plans"
 
 ### Task 8: Implement typed sbx and build resource adapters
 
+> Settled in Task 8: the fixtures were already committed by the prototype (`8088340`), so Step 1 was
+> a read, not a capture. `SbxState` is read ONCE per plan and shared by every driver — three
+> credentials would otherwise fork `sbx secret ls` three times and could observe an inconsistent
+> machine. `sbx.Fake` gained `Inputs` (argv of piped calls, never the secret) and `Sensitive`
+> (already-redacted argv), and `sbx.RedactArgs` is shared by the real runner and the fake so a
+> redaction the suite sees is the one production performs. The `build_network` group is ONE driver,
+> matching the receipt granularity of spec §10.2.
+
+
 **Files:**
 - Create: `internal/converge/sbx.go`
 - Create: `internal/converge/sbx_test.go`
@@ -659,17 +668,17 @@ git commit -m "feat(init): model deterministic convergence plans"
 - Consumes: `sbx.Runner`, `build.Chain`, `build.Plan`, `build.Execute`, source resources, and transient answers.
 - Produces: `converge.ResourceDriver` implementations for credentials, build-network policies, and stack builds.
 
-- [ ] **Step 1: Capture and sanitize sbx inspection fixtures**
+- [x] **Step 1: Capture and sanitize sbx inspection fixtures**
 
 Before Task 8 implementation, bring in the factual commit from `prototype/sbx-inspection-contract`. That spike ran `sbx secret ls -g` and `sbx policy ls --type network --source local --decision allow --json` on a working sbx profile. Its fixtures contain only synthetic masked secret rows and a sanitized successful policy JSON shape. Docker's [official credentials documentation](https://docs.docker.com/ai/sandboxes/security/credentials/) confirms the public `SCOPE TYPE NAME SECRET` columns. Do not commit real masked secret fragments, usernames, hosts, policy IDs, or keychain errors.
 
 Restricted execution that denies macOS Keychain access makes both observers fail with exit code 1 and keychain error `-50`; the same commands succeed outside that boundary. Add a synthetic non-zero observer-failure test and classify the resource as `unknown`. Do not classify an observer failure as an absent credential or policy.
 
-- [ ] **Step 2: Write parser and version tests**
+- [x] **Step 2: Write parser and version tests**
 
 Assert `sbx version` parses `sbx version: v0.38.0 <commit>`. Assert the first secret table distinguishes service `github` and registry host rows from `SCOPE TYPE NAME SECRET`; both `(stored)` and `(oauth configured)` mean that a service credential is present. Assert the optional `CUSTOM SECRETS` table matches custom credentials from `SCOPE TARGETS ENV PLACEHOLDER SECRET`. Never read the masked value or custom placeholder. Assert policy JSON matches exact strings in `rules[].resources`. Any unexpected format returns an observation error instead of guessing.
 
-- [ ] **Step 3: Define the driver lifecycle and fake it**
+- [x] **Step 3: Define the driver lifecycle and fake it**
 
 ```go
 type ResourceDriver interface {
@@ -691,7 +700,7 @@ type SecretRunner interface {
 
 `*sbx.Exec` and `*sbx.Fake` implement it. Extend `sbx.Fake` to record stdin-safe invocations separately from displayed argv. Test helpers may store the sentinel secret internally, but failure formatting must redact it.
 
-- [ ] **Step 4: Implement credential and policy commands**
+- [x] **Step 4: Implement credential and policy commands**
 
 Use these established commands:
 
@@ -704,11 +713,11 @@ sbx policy allow network <host>
 
 Never place a registry password in argv; pipe it through `SecretRunner.RunInput`. The installed v0.38.0 CLI requires `set-custom --value`; call it through `RunSensitive` with the value argument index redacted from `ExecError.Error` and fake call displays. Verify after every mutation.
 
-- [ ] **Step 5: Wrap existing stack build behavior**
+- [x] **Step 5: Wrap existing stack build behavior**
 
 Resolve only manifest-exported stacks named by `resources.builds`. Reuse `build.Chain`, `build.Plan`, and `build.Execute`; do not shell out to `den build`. A first install and a greater functional source version rebuild each declared target even when its image exists. A configure of the already-finalized exact version is `unchanged`; an applying receipt may skip a completed build only after image verification succeeds. Apply declared builds in manifest order.
 
-- [ ] **Step 6: Run adapter tests and commit**
+- [x] **Step 6: Run adapter tests and commit**
 
 Run: `go test ./internal/sbx ./internal/converge -run 'Sbx|Credential|Policy|BuildDriver'`
 
