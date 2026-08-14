@@ -756,14 +756,23 @@ func TestExecRefusesALeadingDoubleDash(t *testing.T) {
 // longer consumes it (measured 2026-08-14), so it too would reach the VM.
 //
 // The set is CLOSED on purpose — `-T`, `--no-tty`, `--workdir`, `--workdir=…`,
-// `--` — so the refusal cannot swallow a legitimate command. `--help` is NOT in
-// it: it passes through to the sandbox, like compose (TestExecPassesHelpToTheSandbox).
+// `--den-home`, `--den-home=…`, `--` — so the refusal cannot swallow a
+// legitimate command. `--help` is NOT in it: it passes through to the sandbox,
+// like compose (TestExecPassesHelpToTheSandbox).
+//
+// `--den-home` joined the set on 2026-08-14, and it is the case that proves the
+// rule is about ORDER, not about ownership: it belongs to the root, but
+// SetInterspersed(false) stops reading it past the first positional exactly as
+// it stops reading `den exec`'s own flags. Left out, `den exec api --den-home
+// /tmp true` ran a program named `--den-home` inside the sandbox.
 func TestExecRefusesItsOwnFlagsAfterTheSandboxName(t *testing.T) {
 	for _, tc := range []struct{ name, arg, want string }{
 		{"-T", "-T", "before the sandbox name"},
 		{"--no-tty", "--no-tty", "before the sandbox name"},
 		{"--workdir", "--workdir", "before the sandbox name"},
 		{"--workdir=", "--workdir=/srv", "before the sandbox name"},
+		{"--den-home", "--den-home", "before the sandbox name"},
+		{"--den-home=", "--den-home=/tmp", "before the sandbox name"},
 		{"double dash", "--", "is not needed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -777,6 +786,133 @@ func TestExecRefusesItsOwnFlagsAfterTheSandboxName(t *testing.T) {
 			}
 			if len(f.Calls) != 0 {
 				t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
+			}
+		})
+	}
+}
+
+// validateArgs runs argv through the REAL command tree's argument validation,
+// and through nothing else: root.Find picks the command, ParseFlags fills the
+// flags, ValidateArgs is the very call cobra's Execute makes next. RunE never
+// runs, so no sbx and no den home are touched — which is what lets the test
+// below replay a remedy naming `--den-home /tmp` without reading /tmp.
+//
+// The real tree rather than a hand-built command: what is under test includes
+// SetInterspersed(false) and the root's persistent `--den-home`, and both are
+// properties of the assembled tree.
+func validateArgs(t *testing.T, argv ...string) error {
+	t.Helper()
+	cmd, flags, err := NewRootCmd().Find(argv)
+	if err != nil {
+		t.Fatalf("no command for %v: %v", argv, err)
+	}
+	if err := cmd.ParseFlags(flags); err != nil {
+		return err
+	}
+	return cmd.ValidateArgs(cmd.Flags().Args())
+}
+
+// remedyOf returns the command line a refusal proposes: the backticked span
+// right after "write ". Anchored on that word rather than on the first backtick
+// of the message, because a refusal quotes the token it objects to first
+// (“den exec: `--` is not needed — write `…` “). The "no command given"
+// wording carries a second remedy after this one — `den shell …` — and it is
+// not a `den exec` line, so it is not what this file replays.
+func remedyOf(t *testing.T, msg string) string {
+	t.Helper()
+	_, after, ok := strings.Cut(msg, "write `")
+	if !ok {
+		t.Fatalf("no remedy in %q", msg)
+	}
+	line, _, ok := strings.Cut(after, "`")
+	if !ok {
+		t.Fatalf("unterminated remedy in %q", msg)
+	}
+	return line
+}
+
+// Every refusal ends in "write `…`", and the line it writes must be one den
+// ACCEPTS. That is one property, not five, so it is tested as one: each case
+// asserts the remedy, then feeds the remedy back through the same validator and
+// requires nil.
+//
+// The 2026-08-14 review found the class, not an instance. Each message used to
+// re-join the raw tail on its own, so a line carrying two defects lost only one
+// of them per round trip: `den exec api -- -T go build` proposed `den exec api
+// -T go build`, refused in turn for the flag order — two refusals to reach a
+// legal line. Degenerate tails were worse: `den exec api --` proposed
+// `den exec api`, itself refused for having no command, and `den exec --`
+// proposed `den exec ` with a trailing space and no sandbox at all.
+//
+// The last three cases are the ones a reviewer of the PR named on 2026-08-14:
+// a flag's VALUE must travel with it (`--workdir /srv` lifted as a pair, or the
+// proposal reads `--workdir api /srv true` and makes `api` the workdir), and
+// `--den-home` must be in the closed set at all.
+func TestExecRemediesAreThemselvesLegal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{"a separator and a flag after the name",
+			[]string{"exec", "api", "--", "-T", "go", "build"}, "den exec -T api go build"},
+		{"a separator and nothing after it",
+			[]string{"exec", "api", "--"}, "den exec api go test"},
+		{"a leading separator",
+			[]string{"exec", "--", "api", "go", "build"}, "den exec api go build"},
+		// The one case where the remedy DROPS something the user typed, and it
+		// is accepted: cobra parsed `-T` before pflag ate the separator, so the
+		// flag is already in effect and is not among the arguments this
+		// validator sees. The proposal stays legal, which is the property under
+		// test; the row exists so the omission stays a decision.
+		{"a flag before a leading separator",
+			[]string{"exec", "-T", "--", "api", "go", "build"}, "den exec api go build"},
+		{"a flag and no command",
+			[]string{"exec", "api", "-T"}, "den exec -T api go test"},
+		{"a workdir after the name",
+			[]string{"exec", "api", "--workdir", "/srv", "true"}, "den exec --workdir /srv api true"},
+		{"a workdir spelled with =",
+			[]string{"exec", "api", "--workdir=/srv", "true"}, "den exec --workdir=/srv api true"},
+		{"the root's own den home after the name",
+			[]string{"exec", "api", "--den-home", "/tmp", "true"}, "den exec --den-home /tmp api true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateArgs(t, tc.argv...)
+			if err == nil {
+				t.Fatalf("%v must be refused", tc.argv)
+			}
+			got := remedyOf(t, err.Error())
+			if got != tc.want {
+				t.Errorf("remedy = %q, want %q (full message: %q)", got, tc.want, err.Error())
+			}
+			// The property, and the reason this test exists: replay it.
+			replay := strings.Fields(got)[1:] // drop "den"
+			if err := validateArgs(t, replay...); err != nil {
+				t.Errorf("the remedy %q is refused in turn: %v", got, err)
+			}
+		})
+	}
+}
+
+// With no sandbox name there is no line to propose, so these two refuse on the
+// usage instead of writing a remedy. `den exec --` is the shape that used to
+// produce “write `den exec ` “ — a trailing space, no name, nothing to run.
+// The third case is a sandbox named by an unset shell variable — `den exec
+// "$SANDBOX" -T go build` in a CI script. den must not go looking further down
+// the line for something that looks like a name: `go` would fit, and the remedy
+// would then propose running `build` in a sandbox the user never mentioned.
+func TestExecRefusesWithNoSandboxNameByNamingTheUsage(t *testing.T) {
+	for _, argv := range [][]string{{"exec"}, {"exec", "--"}, {"exec", "", "-T", "go", "build"}} {
+		t.Run(strings.Join(argv, " "), func(t *testing.T) {
+			err := validateArgs(t, argv...)
+			if err == nil {
+				t.Fatalf("%v must be refused", argv)
+			}
+			if strings.Contains(err.Error(), "write `") {
+				t.Errorf("a refusal naming no sandbox must not write a remedy; got %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), "usage: den exec <name> <cmd> [args...]") {
+				t.Errorf("the refusal must name the usage line; got %q", err.Error())
 			}
 		})
 	}

@@ -261,9 +261,15 @@ func TestASpawnFlagOnTheRootIsRefused(t *testing.T) {
 }
 
 // TestWrongArgumentCountNamesTheUsageLine locks argsBetween's wording across
-// every one of the package's eight call sites: it is the only way to notice
-// that one site was missed, a wrong count on seven sites out of eight being
-// indistinguishable from a finished job.
+// the package's call sites: it is the only way to notice that one site was
+// missed, a wrong count everywhere but one place being indistinguishable from
+// a finished job.
+//
+// A command with a bounded Args and no row here is the hole, not a gap in
+// coverage: `den shell` shipped on 2026-08-14 with cobra.ExactArgs(1) — the one
+// validator root.go says den never uses — and carried "accepts 1 arg(s),
+// received 0" through a full review because no case named it. Add the row with
+// the command.
 //
 // The root itself is not one of these sites: its Args is unknownCommand, which
 // refuses on identity, not on count. `den spawn` is the site that exercises
@@ -327,6 +333,21 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 			[]string{"exec", "b"},
 			"den exec: no command given — write `den exec b go test`, " +
 				"or `den shell b` for a shell",
+		},
+		// `den shell` was born on 2026-08-14 with cobra.ExactArgs(1) and no row
+		// here, which is exactly how it escaped: the wording this table locks is
+		// den's, and a command that never appears in it can carry cobra's
+		// "accepts 1 arg(s), received 0" through a whole review. Both directions,
+		// because ExactArgs was wrong on both.
+		{
+			"shell, missing argument",
+			[]string{"shell"},
+			"den shell: one argument expected, none received — usage: den shell <name> [flags]",
+		},
+		{
+			"shell, two arguments",
+			[]string{"shell", "a", "b"},
+			`den shell: exactly one argument expected, 2 received, starting with "b" — usage: den shell <name> [flags]`,
 		},
 		{
 			"rm, missing argument",

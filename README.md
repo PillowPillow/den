@@ -153,6 +153,11 @@ own flags included — `den exec -T api go test -v` passes `-v` to `go test`. Th
 `docker compose exec`'s rule, and it is why no `--` is needed. `den exec api --help` asks the
 program in the sandbox for its help, not den.
 
+`--den-home` obeys the same order, although it belongs to `den` itself: `den exec --den-home ~/alt
+api go build`. Past the sandbox name den stops reading its own flags entirely, so the other
+spelling would send a program named `--den-home` into the VM. den refuses it by name rather than
+letting the sandbox answer `bash: --den-home: command not found`.
+
 ### Mounting a repo on the fly
 
 A nest file is still required — what becomes optional is its `repos:` block. A repo does not need

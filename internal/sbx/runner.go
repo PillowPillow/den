@@ -32,7 +32,7 @@ import (
 //     interactive shell (`exec -it ... bash -l`); there's nothing to capture,
 //     and capturing would break interactivity.
 //   - Pipe wires the current process's three descriptors through UNMERGED and
-//     stays killable: it is `den exec -T -- <cmd>`, the non-interactive door.
+//     stays killable: it is `den exec -T <sandbox> <cmd>`, the non-interactive door.
 //     Against Attach, whose `cmd.Cancel = nil` is right for a shell, a Ctrl-C
 //     on a three-minute `go test` must actually kill it. Against Stream, which
 //     hands the child ONE descriptor on purpose, sbx keeps stdout and stderr
@@ -425,7 +425,7 @@ func (e *Exec) Attach(ctx context.Context, args ...string) error {
 //   - the three descriptors are assigned SEPARATELY, never through one shared
 //     sink. Stream's streamSink deliberately makes stdout and stderr one
 //     descriptor to interleave them; that would put stderr into the pipe of
-//     `den exec -T -- go build | tee log`.
+//     `den exec -T api go build | tee log`.
 //   - Cancellation IS filled, unlike Attach, for the same reason as Run and
 //     Stream: a killed process's own error hides the context's, so ctx.Err()
 //     is read here, where the two are known to be concurrent.

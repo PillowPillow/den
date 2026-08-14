@@ -119,8 +119,28 @@ den exec: `--` is not needed — write `den exec api go test`
 Un seul contrôle, deux messages. Sans lui, den passe `-T` à la VM et l'utilisateur lit
 `bash: -T: command not found` venu de l'intérieur du sandbox — un échec qui ne nomme rien de ce
 qu'il faut corriger. Le contrôle porte sur un ensemble FERMÉ : `-T`, `--no-tty`, `--workdir`,
-`--workdir=…`, `--`. Aucun programme réel ne porte ces noms, donc le refus ne peut pas avaler une
-commande légitime. `den exec api --help` n'en fait PAS partie et passe à la VM (mesure 3).
+`--workdir=…`, `--den-home`, `--den-home=…`, `--`. Aucun programme réel ne porte ces noms, donc le
+refus ne peut pas avaler une commande légitime. `den exec api --help` n'en fait PAS partie et passe
+à la VM (mesure 3).
+
+> **Ajout du 2026-08-14, après revue.** `--den-home` ne figurait pas dans l'ensemble : c'est la
+> persistante du ROOT, pas un drapeau de `den exec`. Or `SetInterspersed(false)` arrête le parseur
+> au premier positionnel, et la fusion des persistantes se fait dans le même FlagSet (mesure 1) —
+> donc `--den-home` cesse d'être lu là où les autres cessent de l'être. `den exec api --den-home
+> /tmp true` envoyait dans le sandbox un programme littéralement nommé `--den-home`. La règle porte
+> sur l'ORDRE, pas sur la propriété du drapeau : tout ce que den possède passe à gauche du nom de
+> sandbox, persistante comprise.
+
+**Le remède proposé doit être ACCEPTÉ par den.** Chaque refus finit par « write `…` », et cette
+ligne est reconstruite depuis une forme normalisée (`execShape` / `execRewrite`), jamais recollée
+depuis la queue brute. Écrit naïvement, un remède ne corrige qu'un défaut à la fois :
+`den exec api -- -T go build` proposait `den exec api -T go build`, refusé à son tour pour l'ordre
+des drapeaux ; `den exec api --` proposait `den exec api`, refusé faute de commande ; et
+`den exec --` proposait `den exec ` — espace final, aucun nom. La valeur d'un drapeau voyage avec
+lui (`--workdir /srv` déplacé en bloc, sinon la proposition fait de `api` le workdir). La propriété
+est tenue par un test qui rejoue chaque remède dans le validateur et exige `nil`
+(`TestExecRemediesAreThemselvesLegal`). Quand aucun nom de sandbox n'est lisible, den ne propose
+rien et nomme la ligne d'usage.
 
 ## `den shell`, et pourquoi ce n'est pas une seconde porte
 
@@ -143,11 +163,29 @@ nomme toutes les commandes, `shell` comprise.
 
 **Où est passé l'invariant « `-T` sans commande ».** `2026-08-10-den-exec-design.md` (l. 113-119)
 grave que ce refus est identique OCTET POUR OCTET sur `den exec` et `den spawn`, en citant le §2 :
-une contradiction ne doit pas se lire comme deux règles. L'invariant SURVIT, mais sa paire change.
-Sur `den exec`, « pas de commande » est désormais sa propre erreur, et `-T` n'y contredit plus rien.
-La paire devient **`den shell` ↔ `den spawn`** : les deux commandes qui peuvent attacher un shell,
-avec le même message. Un lecteur de l'ancienne spec cherchera l'invariant sur `den exec` ; il est
-ici, déplacé, pas dissous.
+une contradiction ne doit pas se lire comme deux règles. Le REFUS survit des deux côtés ; l'identité
+du message, non.
+
+> **Correction du 2026-08-14, après revue.** Cette section disait d'abord que la paire devenait
+> `den shell` ↔ `den spawn`, avec le même message. C'est faux, et le message livré le prouvait :
+> « donne une commande après `--` » était copié tel quel sur `den shell`, alors que `den exec` —
+> la seule commande où une commande peut aller — refuse désormais `--`. Le remède était mort à
+> l'arrivée.
+
+Il n'y a plus une contradiction mais DEUX, et elles ne se soignent pas pareil :
+
+- **`den spawn -T` sans commande** : `-T` contredit l'argv PAR DÉFAUT. Le remède est une commande
+  après `--`, que `den spawn` prend toujours. Message inchangé.
+- **`den shell -T`** : `-T` contredit LA COMMANDE ELLE-MÊME. `den shell` n'a aucune forme
+  « avec commande » à remplir, donc le remède est de retirer `-T`, ou de passer à
+  `den exec -T <sandbox> <cmd>`.
+
+Le §2 demande qu'une contradiction ne se lise pas comme deux règles. Il ne demande pas à deux
+contradictions distinctes de partager un remède qu'aucune ne peut honorer. Ce qui reste invariant
+est le REFUS : `-T` n'est jamais silencieusement ignoré, sur aucune des deux commandes. Les deux
+tests assertent leur message ENTIER (`TestShellRefusesNoTTY`, `TestSpawnRefusesNoTTYWithNoCommand`)
+— c'est la moitié « remède » qui avait pourri sans qu'un `strings.Contains(err, "-T")` s'en
+aperçoive.
 
 ## Portée
 

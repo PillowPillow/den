@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 
 	"github.com/PillowPillow/den/internal/agent"
@@ -14,16 +13,128 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// execFlagNames is the CLOSED set of tokens den refuses in first-command
-// position. Closed rather than "anything starting with -", because a command's
-// own flags MUST pass through: `den exec api go test -v` is the whole point of
+// execFlags is the CLOSED set of tokens den refuses in first-command position.
+// Closed rather than "anything starting with -", because a command's own flags
+// MUST pass through: `den exec api go test -v` is the whole point of
 // SetInterspersed(false), and a prefix rule would eat it.
+//
+// `--den-home` is in the set although it belongs to the ROOT, not to `den exec`.
+// SetInterspersed(false) stops the flag parser at the first positional, and a
+// persistent flag is merged into the same FlagSet — so it stops being read there
+// too. Left out of this set, `den exec api --den-home /tmp true` sent a program
+// literally named `--den-home` into the sandbox. One contract for one order:
+// every flag den owns goes left of the sandbox name, persistent or not.
 //
 // `--help` and `-h` are deliberately absent. Cobra does not intercept them past
 // the first positional (measured 2026-08-14 in den's real command tree), so
 // `den exec api mytool --help` asks mytool for its help, inside the sandbox —
 // which is what `docker compose exec` does too.
-var execFlagNames = []string{"-T", "--no-tty", "--workdir"}
+//
+// placeholder is what the flag's VALUE is called when den has to invent one for
+// a remedy — empty on a boolean flag, which takes none. It is only ever reached
+// by a line that ends on the flag itself (`den exec api --workdir`): everywhere
+// else the value is the token the user actually typed.
+type execFlag struct{ name, placeholder string }
+
+var execFlags = []execFlag{
+	{name: "-T"},
+	{name: "--no-tty"},
+	{name: "--workdir", placeholder: "<dir>"},
+	{name: "--den-home", placeholder: "<path>"},
+}
+
+// execShape is the LEGAL command line den reads out of a refused one: the
+// sandbox name, den's own flags lifted to where they belong, and the command.
+//
+// It exists because every refusal below ends in "write `…`", and a remedy that
+// is itself refused costs the user a second round trip. Before 2026-08-14 each
+// message re-joined the raw tail on its own — so `den exec api -- -T go build`
+// proposed `den exec api -T go build`, which the very next check refuses, and
+// `den exec api --` proposed `den exec api`, refused for having no command.
+// Building the shape ONCE and phrasing the refusal from it is what makes the
+// proposal answerable: TestExecRemediesAreThemselvesLegal feeds every remedy
+// back through execArgs and requires nil.
+type execShape struct {
+	flags   []string // den's own, value included, in the order they were typed
+	name    string   // the sandbox; "" when the line names none, or names an empty one
+	command []string // what runs inside the sandbox; empty when none was given
+	sawDash bool     // a `--` was dropped from the line
+	// haveName separates "no name yet" from "the name IS the empty string", and
+	// the string's own emptiness cannot: `den exec "$SANDBOX" -T go build` with
+	// the variable unset hands over an empty first token, and a scan that kept
+	// looking would have taken `go` for the sandbox and proposed
+	// `den exec -T go build` — a legal line naming a sandbox the user never
+	// typed, which is worse than no proposal. It ends up in the branch that
+	// proposes nothing.
+	haveName bool
+}
+
+// execRewrite reads the positionals cobra handed over and returns that shape.
+//
+// One left-to-right pass, and the same rule on both sides of the sandbox name:
+// a `--` is dropped, a den flag is lifted (with its value), and the FIRST token
+// that is neither ends the scan — everything from there is the command,
+// verbatim, its own flags included. Both sides, because the sandbox name is not
+// always first: pflag eats a LEADING `--` before its interspersed check
+// (measured 2026-08-14, cobra v1.10.2), so `den exec -- -T api go build`
+// arrives here as ["-T","api","go","build"].
+//
+// A `=` in the token means the value is already inside it (`--workdir=/srv`),
+// and the next token must NOT be consumed — doing so would eat the command and
+// turn "no command given" into a lie about a line that had one.
+func execRewrite(args []string) execShape {
+	var s execShape
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		if tok == "--" {
+			s.sawDash = true
+			continue
+		}
+		if f, ok := execFlagOf(tok); ok {
+			s.flags = append(s.flags, tok)
+			if f.placeholder != "" && !strings.Contains(tok, "=") {
+				if i+1 < len(args) {
+					i++
+					s.flags = append(s.flags, args[i])
+				} else {
+					s.flags = append(s.flags, f.placeholder)
+				}
+			}
+			continue
+		}
+		if !s.haveName {
+			s.name, s.haveName = tok, true
+			continue
+		}
+		s.command = args[i:]
+		return s
+	}
+	return s
+}
+
+// execFlagOf answers whether a token is one of den's own flags, `--flag=value`
+// included: pflag accepts both spellings, so a set that knew only the bare name
+// would let `--workdir=/srv` through to the VM.
+func execFlagOf(tok string) (execFlag, bool) {
+	name, _, _ := strings.Cut(tok, "=")
+	for _, f := range execFlags {
+		if f.name == name {
+			return f, true
+		}
+	}
+	return execFlag{}, false
+}
+
+// execLine spells a shape back as a command line, for the "write `…`" half of
+// every refusal. den's flags first, then the sandbox name, then the command —
+// the order the contract requires, which is the whole point of proposing it.
+func execLine(path string, s execShape, command []string) string {
+	parts := make([]string, 0, len(s.flags)+len(command)+2)
+	parts = append(parts, path)
+	parts = append(parts, s.flags...)
+	parts = append(parts, s.name)
+	return strings.Join(append(parts, command...), " ")
+}
 
 // execArgs accepts a sandbox name followed by a command. The command needs no
 // `--`, and that separator is now refused rather than tolerated.
@@ -49,31 +160,54 @@ var execFlagNames = []string{"-T", "--no-tty", "--workdir"}
 // a LEADING `--` still eats the separator and answers 0 — `den exec -- a b`
 // arrives here as args == ["a","b"], which would run `b` in a sandbox named
 // `a`. Past the first positional the flag parser has already stopped, so `--`
-// arrives as an ordinary argument and dash is -1; that shape is the exact
-// string comparison below, not a heuristic.
+// arrives as an ordinary argument and dash is -1; execRewrite sees it there by
+// exact string comparison, not by a heuristic.
+//
+// The refusals are phrased from execRewrite's shape rather than from the raw
+// tail, and that is the 2026-08-14 review's finding: a remedy re-joined from
+// what the user typed can propose a line the NEXT check refuses. Read execShape
+// for the cases; the property is pinned by TestExecRemediesAreThemselvesLegal,
+// which feeds every remedy back through this function.
 func execArgs(cmd *cobra.Command, args []string) error {
-	if cmd.ArgsLenAtDash() == 0 {
-		return fmt.Errorf("%s: `--` is not needed, and a sandbox name must come first — write `%s %s`",
-			cmd.CommandPath(), cmd.CommandPath(), strings.Join(args, " "))
-	}
-	if len(args) == 0 {
+	s := execRewrite(args)
+	path := cmd.CommandPath()
+	// FIRST-DEFECT-WINS, and the order is the order the user can act on. What is
+	// MISSING outranks what is misplaced: `den exec api --` has both a stray
+	// separator and no command, and telling it to drop the `--` would only earn
+	// it the second refusal. The remedy quoted is the same rewritten shape in
+	// every branch, so whichever message fires, the line proposed is legal.
+	switch {
+	case s.name == "":
+		// Nothing to name in a remedy: with no sandbox there is no line to
+		// propose, so the usage is the useful half of the diagnosis. Covers
+		// `den exec`, `den exec --`, and the sandbox named by an unset shell
+		// variable — see execShape.haveName for why that last one lands here
+		// rather than borrowing a name from the command.
 		return fmt.Errorf("%s: a sandbox name and a command expected, none received — usage: %s",
-			cmd.CommandPath(), cmd.UseLine())
-	}
-	if len(args) == 1 {
-		return fmt.Errorf(
-			"%s: no command given — write `%s %s go test`, or `den shell %s` for a shell",
-			cmd.CommandPath(), cmd.CommandPath(), args[0], args[0])
-	}
-	if args[1] == "--" {
-		return fmt.Errorf("%s: `--` is not needed — write `%s %s %s`",
-			cmd.CommandPath(), cmd.CommandPath(), args[0], strings.Join(args[2:], " "))
-	}
-	name, _, _ := strings.Cut(args[1], "=")
-	if slices.Contains(execFlagNames, name) {
-		return fmt.Errorf(
-			"%s: den's flags go before the sandbox name — write `%s %s %s %s`",
-			cmd.CommandPath(), cmd.CommandPath(), args[1], args[0], strings.Join(args[2:], " "))
+			path, cmd.UseLine())
+	case len(s.command) == 0:
+		// The example command is den's, not the user's — they gave none. It
+		// carries their flags anyway: someone who typed `den exec api -T` gets
+		// `den exec -T api go test`, which is their intent, spelled legally.
+		return fmt.Errorf("%s: no command given — write `%s`, or `den shell %s` for a shell",
+			path, execLine(path, s, []string{"go", "test"}), s.name)
+	case cmd.ArgsLenAtDash() == 0:
+		// The one shape SetInterspersed(false) does not neutralize, and the only
+		// reason this validator consults ArgsLenAtDash at all: pflag ate the
+		// separator, so `--` is not in args and s.sawDash cannot see it.
+		//
+		// A den flag typed before that leading `--` was ALSO eaten, by the flag
+		// parser this time, and is already in effect — so it is absent from the
+		// line proposed here. Accepted, and not a defect of the same kind: the
+		// proposal stays legal, and the flag it omits is one cobra has honoured.
+		return fmt.Errorf("%s: `--` is not needed, and a sandbox name must come first — write `%s`",
+			path, execLine(path, s, s.command))
+	case s.sawDash:
+		return fmt.Errorf("%s: `--` is not needed — write `%s`",
+			path, execLine(path, s, s.command))
+	case len(s.flags) > 0:
+		return fmt.Errorf("%s: den's flags go before the sandbox name — write `%s`",
+			path, execLine(path, s, s.command))
 	}
 	return nil
 }
@@ -95,13 +229,17 @@ func spawnArgs(cmd *cobra.Command, args []string) error {
 // spellings of one door is the failure mode, and after 2026-08-14 there really
 // ARE two commands — so the shared body is what keeps that from being true of
 // the behaviour as well as the name.
+// The terminal PROBE is not in here, and its absence is load-bearing: the tty
+// is a PARAMETER of enterSandbox (see below), and a probe sitting beside it in
+// the options would be a second source for one verdict. It was a field until
+// 2026-08-14, written by both callers and read by nobody — dead state whose
+// only possible future is the divergence this struct exists to prevent.
 type enterOptions struct {
 	denHome   *string
 	runner    sbx.Runner
 	sshAgent  func() sshagent.Result
 	goos      string
 	freshness agent.GateOptions
-	isTTY     func() bool
 }
 
 // enterSandbox is the body `den exec` and `den shell` share: find the sandbox,
@@ -271,17 +409,20 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 			// report success.
 			//
 			// The "-T asks for no terminal and no command asks for a shell"
-			// refusal used to live here. It moved to `den shell` on 2026-08-14,
-			// unchanged: `den exec` now requires a command, so -T contradicts
-			// nothing on this command. The spec 2026-08-10 pinned that message
-			// as identical byte for byte between two commands; the pair is now
-			// `den shell` ↔ `den spawn`, not `den exec` ↔ `den spawn`. Change
-			// one and you must change the other (spec §2: one contradiction,
-			// one rule).
+			// refusal used to live here. It moved to `den shell` on 2026-08-14:
+			// `den exec` now requires a command, so -T contradicts nothing on
+			// this command.
+			//
+			// The spec 2026-08-10 pinned that message as identical byte for byte
+			// between two commands, and the 2026-08-14 spec said the pair simply
+			// became `den shell` ↔ `den spawn`. It did not: the two remedies
+			// diverged with the contract — `den spawn` still points at a command
+			// after `--`, `den shell` points at `den exec`, which refuses `--`.
+			// newShellCmd's comment (shell.go) holds the argument.
 			tty := !noTTY && isTTY != nil && isTTY()
 			return enterSandbox(cmd, args[0], command, tty, workdir, enterOptions{
 				denHome: denHome, runner: runner, sshAgent: sshAgent,
-				goos: goos, freshness: freshness, isTTY: isTTY,
+				goos: goos, freshness: freshness,
 			})
 		},
 	}
