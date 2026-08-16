@@ -76,6 +76,84 @@ func TestRequireUsableAcceptsALegacySource(t *testing.T) {
 	}
 }
 
+// The receipt's manifest digest is what a MANUAL `git pull` in sources/<name>/
+// can move without touching metadata.version: den never sees the new commit
+// (spec §11.3 covers only version disagreement), so RequireUsable must
+// compare content, not just the version string, to catch it.
+func TestRequireUsableAcceptsAMatchingManifestDigest(t *testing.T) {
+	home := t.TempDir()
+	root := installSource(t, home, "dg", "1.0.0")
+	digest, err := ManifestDigest(root)
+	if err != nil {
+		t.Fatalf("ManifestDigest: %v", err)
+	}
+	if err := WriteReceipt(home, "dg", Receipt{
+		Status:         StatusReady,
+		Version:        "1.0.0",
+		Commit:         "0123456789abcdef",
+		ManifestDigest: digest,
+		Nests:          map[string]ReceiptNest{"leo": {Status: NestReady}},
+	}); err != nil {
+		t.Fatalf("WriteReceipt: %v", err)
+	}
+
+	if _, err := RequireUsable(home, "dg"); err != nil {
+		t.Fatalf("RequireUsable: %v", err)
+	}
+}
+
+// A manual `git pull` that keeps metadata.version identical while changing
+// the manifest's content (different egress hosts, different images) is
+// exactly the drift the version-string checks above cannot see: refusing on
+// digest mismatch is the only thing that stops a spawn from proceeding
+// against resources den never applied.
+func TestRequireUsableRefusesADriftedManifest(t *testing.T) {
+	home := t.TempDir()
+	installSource(t, home, "dg", "1.0.0")
+	if err := WriteReceipt(home, "dg", Receipt{
+		Status:         StatusReady,
+		Version:        "1.0.0",
+		Commit:         "0123456789abcdef",
+		ManifestDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		Nests:          map[string]ReceiptNest{"leo": {Status: NestReady}},
+	}); err != nil {
+		t.Fatalf("WriteReceipt: %v", err)
+	}
+
+	_, err := RequireUsable(home, "dg")
+	if err == nil {
+		t.Fatal("expected a refusal on a drifted manifest")
+	}
+	for _, want := range []string{"manifest", "changed", "den source configure dg"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected a mention of %q", err.Error(), want)
+		}
+	}
+	// There IS no version disagreement here — both sides say 1.0.0 — so the
+	// message must not borrow the version-mismatch wording above, which
+	// would send the reader chasing a cause that does not exist.
+	if strings.Contains(err.Error(), "while this machine is configured for") {
+		t.Errorf("error = %q, wrongly claims a version disagreement", err.Error())
+	}
+}
+
+// A receipt written by an older den carries no ManifestDigest at all. That is
+// NOT a mismatch — it is the absence of a fact to compare — so the check must
+// skip silently rather than refuse every installation on its first upgrade.
+func TestRequireUsableAcceptsAnEmptyReceiptDigest(t *testing.T) {
+	home := t.TempDir()
+	root := installSource(t, home, "dg", "1.0.0")
+	// installSource's receipt already carries no ManifestDigest. Change the
+	// manifest's bytes (same version, same decoded content) so a real digest
+	// mismatch exists underneath — proving the empty-digest receipt is
+	// skipped, not accidentally matching.
+	rewriteManifest(t, root, validManifestYAML+"# drifted after the receipt's den\n")
+
+	if _, err := RequireUsable(home, "dg"); err != nil {
+		t.Fatalf("RequireUsable: %v, expected an empty receipt digest to be skipped", err)
+	}
+}
+
 func TestRequireUsableRefusesAnUninstalledSource(t *testing.T) {
 	_, err := RequireUsable(t.TempDir(), "dg")
 	if err == nil || !strings.Contains(err.Error(), "den source add") {

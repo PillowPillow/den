@@ -121,6 +121,31 @@ func RequireUsable(denHome, name string) (*Active, error) {
 				"den cannot tell which one the applied resources belong to; %s",
 			name, receipt.Version, personal.Version, resume)
 	}
+	// Sources are plain git clones: a manual `git pull` in sources/<name>/ can
+	// advance the checkout while keeping metadata.version identical (spec
+	// §11.3 only requires bumping it on a real contract change). Every check
+	// above compares version STRINGS and is blind to that drift, so a spawn
+	// would proceed against resources den never applied. The digest catches
+	// it because it is exactly what Apply converged from (converge/service.go)
+	// — a commit-level check would also fire on a harmless local edit under
+	// sources/, which this must not do.
+	//
+	// An empty receipt digest is a receipt an older den wrote, before this
+	// field existed. That is an absent fact, not a mismatch: refusing on it
+	// would break every existing installation on its first upgrade.
+	if receipt.ManifestDigest != "" {
+		digest, err := ManifestDigest(root)
+		if err != nil {
+			return nil, fmt.Errorf("source %q: %w", name, err)
+		}
+		if digest != receipt.ManifestDigest {
+			return nil, fmt.Errorf(
+				"source %q: the checkout's manifest changed since this machine converged — "+
+					"version %s did not change, but den-source.yaml did, so the applied resources "+
+					"may no longer match what's on disk; %s",
+				name, personal.Version, resume)
+		}
+	}
 	repos, err := personal.ExpandedRepos()
 	if err != nil {
 		return nil, fmt.Errorf("source %q: %s: %w", name, PersonalPath(denHome, name), err)
