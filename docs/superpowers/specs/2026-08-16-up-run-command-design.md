@@ -89,7 +89,15 @@ Quatre conséquences, toutes portantes :
    l'ordre est réelle, sa portée est celle-là.
 2. **`StringArray` ne coupe PAS sur la virgule, `StringSlice` si.** `--repo` doit être un
    `StringArrayVar` : un chemin peut contenir une virgule. `--only` / `--without` restent des
-   `StringSliceVar` — ils adressent des *basenames* de repo, où la virgule n'a pas cours.
+   `StringSliceVar`, et cette tranche ne les change pas.
+   *Précision, contre une première rédaction qui écrivait « ils adressent des basenames de repo, où
+   la virgule n'a pas cours » :* c'était une affirmation, pas une mesure, et elle est fausse. Le nom
+   de sélection est la clé si elle existe, sinon `filepath.Base` du chemin (`internal/nest/nest.go`,
+   `Repo.Name`), et **rien ne valide l'absence de virgule** — un dépôt nommé `a,b` est légal et
+   serait coupé en deux par le parseur CSV de `StringSlice`. C'est une limite PRÉEXISTANTE, ni
+   causée ni aggravée par cette tranche : `--repo` l'évite pour les chemins, `--only` / `--without`
+   la gardent. La refermer demanderait une validation ou un échappement sur `Repo.Name`, et c'est un
+   sujet à soi (§10).
 3. **La persistante `--den-home` reste lue** à gauche de la sous-commande, comme en tranche 1.
 4. **Un `--repo` tapé APRÈS le nom du nest n'est pas analysé** : il part dans la VM comme un jeton
    de la commande. C'est la panne que la tranche 1 a fermée par un ensemble fermé de refus, et
@@ -231,7 +239,7 @@ différences portantes disent le contraire, et aucune n'était écrite nulle par
 
 **1. Elles ne lisent pas la même chose, donc elles ne tombent pas en panne ensemble.** `den up`
 traverse toute la cascade avant d'atteindre la VM : `config.LoadGlobal`
-(`internal/spawn/spawn.go:261`), `source.Locate` (`:269`), `nest.LoadNest` (`:272`). `den shell` ne
+(`internal/spawn/spawn.go:261`), `source.Locate` (`:269`), `nest.LoadNest` (`:273`). `den shell` ne
 lit AUCUN fichier de nest — `enterSandbox` l'écrit (`internal/cli/exec.go:267-269` : « it reads no
 nest file ») — et son unique lecture du den home est consultative, avalée en cas d'échec
 (`warnEmptyAgentOnReentry`, `internal/cli/exec.go:455-458` : « a broken den home never stands
@@ -327,8 +335,9 @@ sœurs, et la fin du `--`. Ce qu'elle coûte est écrit ici, et ce n'est pas un 
 
 Aucun raccourci d'une lettre pour `--repo`. compose épelle `-v`, que den ne peut pas reprendre sans
 mentir (`-v` n'est pas un volume ici, et `-w` est déjà la worktree) ; inventer `-r` pour un drapeau
-tapé rarement rouvrirait la collision de lettres que le §« `--workdir` reste épelé long » de la
-tranche 1 refuse.
+dont la fréquence n'est pas mesurée rouvrirait la collision de lettres que le §« `--workdir` reste
+épelé long » de la tranche 1 refuse. (La collision suffit à elle seule : elle ne dépend d'aucune
+hypothèse de fréquence, et c'est pour ça que l'argument tient malgré le §4.)
 
 ## 5. Matrice des drapeaux, et les refus
 
@@ -363,8 +372,10 @@ est la mémoire des doigts :
 $ den up api ~/dev/hotfix
 ```
 
-Sous `exactlyOneArg`, l'utilisateur lit « exactly one argument expected: 2 received — usage: … »
-(`argsBetween`, `root.go:278-296`), qui ne nomme ni `--repo`, ni ce qui a changé. `den up` porte donc
+Sous `exactlyOneArg`, l'utilisateur lit « exactly one argument expected, 2 received, starting with
+"~/dev/hotfix" — usage: … » (`argsBetween`, `root.go:278-314` — le message est assemblé en 313-314,
+et une première rédaction le citait avec un deux-points au lieu de la virgule), qui ne nomme ni
+`--repo`, ni ce qui a changé. `den up` porte donc
 son propre validateur.
 
 **Ce validateur a quatre branches, et leur ORDRE est le fond du sujet.** Une première rédaction n'en
@@ -399,17 +410,37 @@ Les branches, dans l'ordre :
      ``den up: den up takes no command — write `den run api go test` ``
    - queue vide (`up -- api`, `up api --`) → le séparateur est seulement inutile :
      ``den up: `--` is not needed — write `den up api` ``
-3. **`Changed("repo")` ET plus d'un positionnel** → un motif shell a été développé. `--repo` ne peut
-   pas recevoir de glob : le shell développe avant que den ne voie quoi que ce soit, `--repo` se lie
-   au premier appariement et le reste arrive en positionnels. Mesuré :
+3. **`Changed("repo")` ET plus d'un positionnel** → den ne peut plus dire QUEL positionnel est le
+   nest, et il le dit au lieu de deviner.
+
+   La cause la plus probable est un motif shell : `--repo` ne peut pas recevoir de glob, le shell
+   développe avant que den ne voie quoi que ce soit, `--repo` se lie au premier appariement et le
+   reste arrive en positionnels. Mesuré :
    `up --repo /dev/proj-a /dev/proj-b /dev/proj-c scratch` donne `repo=["/dev/proj-a"]` et
    `args=["/dev/proj-b" "/dev/proj-c" "scratch"]` — la branche 4 y prendrait `/dev/proj-b` pour le
    nest et proposerait ``den up --repo /dev/proj-c --repo scratch /dev/proj-b``, où le vrai nest
-   devient un repo. den nomme donc le développement au lieu de construire un remède :
-   ``den up: --repo takes one path and got a pattern that expanded to several — quote it, or repeat --repo once per path (the extra arguments were /dev/proj-b, /dev/proj-c, scratch)``
-   **Aucun `os.Stat` ici** : `Changed("repo")` plus des positionnels en trop suffit, et c'est un fait
-   sur la ligne de commande, pas une hypothèse sur le disque. La distinction avec le §« l'avertissement
-   de `den run` » plus bas est exactement celle-là.
+   devient un repo.
+
+   **Mais `Changed("repo")` ne prouve PAS qu'un glob s'est développé** — seulement qu'un `--repo` a
+   été tapé. `den up --repo /a api /b` remplit la condition sans le moindre motif : l'utilisateur a
+   donné un repo au drapeau et en a laissé un second en positionnel. Une première rédaction
+   annonçait « a pattern expanded to several » dans les deux cas ; c'était une cause inventée, et
+   sur cette ligne-là elle est fausse.
+
+   Le message énonce donc le FAIT — den ne sait pas lequel est le nest — et nomme les deux sorties,
+   sans construire de remède depuis les positionnels :
+
+   ```
+   den up: --repo was given and 3 arguments remain, so den cannot tell which one is the nest
+     — if a shell pattern expanded, quote it or repeat --repo once per path
+     — if these are ad-hoc repos, repeat --repo once per path
+     (the arguments were /dev/proj-b, /dev/proj-c, scratch)
+   ```
+
+   **Aucun `os.Stat` ici** : le déclencheur est un fait sur la ligne de commande, pas une hypothèse
+   sur le disque, et la formulation ne prétend plus connaître la cause. La distinction avec le
+   §« l'avertissement de `den run` » plus bas est exactement celle-là — là-bas den REGARDE le disque,
+   et ne conclut rien d'autre qu'un avis.
 4. **`len(args) > 1`, sans `--`** → la mémoire des doigts, le cas pour lequel ce validateur existe :
 
 ```
@@ -456,6 +487,10 @@ existe — même feature, même famille de commandes (l. 196) :
 > qui marchait hier ; recréer détruirait un travail en cours), et même forme que
 > `reportMissingGitDirs` (`internal/spawn/spawn.go:451`), pas un second mécanisme.
 
+*(Citation reproduite telle qu'écrite le 2026-08-04. Son `spawn.go:451` a dérivé depuis :
+`reportMissingGitDirs` est aujourd'hui en `spawn.go:1949`, son commentaire en 1940. La doctrine
+citée ne bouge pas ; seul le repère a vieilli.)*
+
 `reportUnmountedRepos` est la forme livrée de cette doctrine (`internal/spawn/spawn.go:1997` :
 « Warn, never refuse, and never recreate: the same doctrine as reportDrift »), et c'est la sienne
 que cet avertissement reprend : le préfixe `!`, une ligne, aucune conséquence sur ce qui s'exécute.
@@ -494,8 +529,9 @@ illégale coûte le même aller-retour qu'un refus qui en propose une.
 validateur `Args`. Deux raisons.
 
 1. Après le validateur, `args[1]` EST le premier jeton de la commande par construction — la ligne
-   sur laquelle `den exec` s'appuie déjà (`internal/cli/exec.go:398` : « execArgs has refused every
-   other shape, so args[1:] is a real command »). Le `RunE` n'a besoin d'aucune machinerie de forme.
+   sur laquelle `den exec` s'appuie déjà (commentaire en `internal/cli/exec.go:394`, la ligne
+   `command := args[1:]` en `:398` : « execArgs has refused every other shape, so args[1:] is a real
+   command »). Le `RunE` n'a besoin d'aucune machinerie de forme.
 2. Aucun validateur de ce dépôt n'écrit sur un flux, et il ne faut pas commencer : le §5 est
    « premier défaut gagnant », donc un `Args` qui imprime collerait un conseil sous une ligne déjà
    refusée pour autre chose. C'est le raisonnement d'`enterOptions` par l'autre bord (« a probe
@@ -795,7 +831,7 @@ exacte que la tranche 1 a corrigée après revue (`den shell` proposait « donne
 
 **Les deux refus restent atteignables tôt**, et c'est vérifié plutôt que supposé : ils sont à
 l'étape 0 de `Spawn`, les `if` aux lignes 231 et 254 et les chaînes aux lignes 233 et 257 (le §7
-cite les secondes, ce sont les mêmes refus), tandis que `config.LoadGlobal` est ligne 260 et
+cite les secondes, ce sont les mêmes refus), tandis que `config.LoadGlobal` est ligne 261 et
 `source.Locate` juste après. `den up api -T` refuse donc sur `-T` sans lire une seule ligne de
 configuration — un nest cassé ou une source absente ne peut pas voler le message.
 
@@ -835,7 +871,7 @@ Plus large que la tranche 1, qui tenait dans `internal/cli`.
 | `internal/config/stack.go` | l. 192, refus « no `image:` » : « `den spawn` looks for it there » → « `den up` ». **Manquée par la première rédaction** : c'est la SECONDE sortie de production, pas un commentaire |
 | `internal/spawn/spawn.go` | deux chaînes de remède (§6, l. 233 et 257). Aucun changement de logique |
 | `internal/spawn/interactive.go` | commentaire coupé l. 19-20, qui nomme `` `den spawn -- <cmd>` `` — forme supprimée |
-| `internal/nest/resolve.go` | l. 19-22, doc de `Options.Repos` : « given as positionals on the command line » devient faux. Le champ reste `[]string`, donc `StringArrayVar` s'y lie sans changement de type |
+| `internal/nest/resolve.go` | l. 18-22, doc de `Options.Repos` : « given as positionals on the command line » devient faux. Le champ reste `[]string`, donc `StringArrayVar` s'y lie sans changement de type |
 | `internal/cli/testdata/unknown-command.golden` | à la main (il n'y a pas de `-update`) : ligne `spawn` (l. 17) retirée, `run` et `up` insérées dans l'ordre alphabétique, ligne de migration (l. 20) réécrite |
 | `internal/cli/spawn_test.go` | scindé en `up_test.go` / `run_test.go`. 17 jetons argv `"spawn"`, l'aide `run(t, …)` l. 72 et 447 qui préfixe `"spawn"` à tout, et deux tests qui tapent `"--", "true"` (l. 384, 409) |
 | `internal/cli/root_deps_test.go` | 4 argv `"spawn"` (l. 96, 127, 164, 223) + 2 `t.Fatalf` citant `den spawn api --detach` (l. 165, 225). Mécanique : aucun n'a de commande, tous vont sur `up` |
@@ -843,7 +879,7 @@ Plus large que la tranche 1, qui tenait dans `internal/cli`.
 | `internal/cli/root_test.go` | l. 206 et 246 (texte, mécanique) ; l. 287-288, la ligne de table qui gèle l'usage ENTIER, se scinde en `up` (arité) et `run` (« no command given ») ; l. 416, `strings.Contains(got, "`den spawn <nest>`")` — à réécrire ET à élargir, c'est le motif que le §8 condamne |
 | `internal/cli/nest_test.go` | `TestNestShowResolvesCommandLineRepos` (l. 567) et `TestNestShowResolvesRelativeCommandLineRepos` (l. 591) : positionnel → `--repo`. Commentaires l. 64 et 395 |
 | `internal/spawn/spawn_test.go` | **commentaires seuls, plus l. 4608** (message d'échec). Les tests construisent `Options{Repos: …}` directement : le champ ne bouge pas, ils survivent intacts |
-| `README.md` | 13 lignes : tableau (l. 81, 89), « Options of `den spawn` » (l. 98), `-w` (l. 115), instances (l. 129-130, 134), le bloc repos à la volée (l. 164-165, 168-172, 174), `den nest show` (l. 214), reprise après arrêt (l. 221), `image:` (l. 397), build (l. 463, 474), sources (l. 492, 494, 542) |
+| `README.md` | **17** lignes (compte P1, revérifié — une première rédaction disait 13) : tableau (l. 81, 89), « Options of `den spawn` » (l. 98), `-w` (l. 115), instances (l. 129-130, 134), le bloc repos à la volée (l. 164-165, 168-172, 174), `den nest show` (l. 214), reprise après arrêt (l. 221), `image:` (l. 397), build (l. 463, 474), sources (l. 492, 494, 542) |
 | `CHANGELOG.md` | une entrée sous `Changed`, rupture assumée, sans fenêtre de dépréciation. Les 9 occurrences existantes sont dans des entrées **publiées** : historiques, ne pas réécrire |
 | `CLAUDE.md` | l. 136-137, la note « `den <nest>` → `den spawn <nest>` le 2026-08-05 » gagne le troisième palier |
 | spec `2026-07-27-den-cli-design.md` | §2 (l. 61), §4.2 (l. 176), §5 (l. 218, 220, 234, 241), §6 (l. 248, 289, 343), §9.2 (l. 750, 752), §10 (l. 817), §11 (l. 926, 938), §12 (l. 984). **§14 / §14.1 ne sont PAS réécrits** : ce sont des relevés datés contre un `sbx` réel, et changer la commande citée falsifierait une mesure |
@@ -904,7 +940,7 @@ Les 411 de P1 se répartissent ainsi, et les seaux ferment :
 
 | Seau | Compte | Réécrit ? |
 |---|---|---|
-| docs datés sous `docs/superpowers/` (plans, handoffs, décisions, specs datées) | 202 | **non** — historiques par convention (CLAUDE.md) |
+| docs sous `docs/superpowers/` hors spec vivante (plans, handoffs, décisions, specs datées) | 202 | **non** — historiques par convention (CLAUDE.md) |
 | spec `2026-07-27-den-cli-design.md`, vivante | 25 | oui, sauf §14/§14.1 (relevés datés contre un `sbx` réel) |
 | Go production (hors `_test.go`) | 78 | commentaires, sauf les sorties listées plus bas |
 | Go tests | 77 | |
@@ -913,6 +949,11 @@ Les 411 de P1 se répartissent ainsi, et les seaux ferment :
 
 **L'ensemble à relire est donc de 209** (411 − 202), dont **11 sites de sortie utilisateur** — pas
 un.
+
+Une exception dans le seau des 202, à ne pas rater : `docs/superpowers/handoffs/HANDOFF.md` n'est
+PAS daté. CLAUDE.md le dit vivant et réécrit — les handoffs datés à côté de lui sont les
+historiques. Sa ligne se relit donc, ce qui porte l'ensemble à 210 et le seau historique à 201.
+Compter par répertoire aurait manqué cette ligne-là.
 
 Ces 11 sites sont ceux qui livreraient un conseil mort. Quatre échappent à P1 : `Use:` et `Short:`
 de `spawn.go` (rendus dans `den help`, dans `cmd.UseLine()` à l'intérieur de l'erreur d'arité que
@@ -1035,6 +1076,11 @@ qu'un `strings.Contains(err, "-T")` ne regardait pas la moitié qui avait pourri
   tout ``write `…` `` nommant un répertoire comme nest ;
 - `TestUpNamesTheRepoFlagOnASecondPositional` — `den up api ~/dev/hotfix` sans `--repo` : la branche
   du glob ne doit pas avaler le cas pour lequel ce validateur existe ;
+- `TestUpDoesNotClaimAGlobWhenRepoWasSimplyGivenTwice` — `den up --repo /a api /b` : la branche 3
+  tire, et le message ne doit PAS annoncer un motif développé. C'est le contre-exemple qui a fait
+  réécrire ce message ;
+- `TestDownSuggestsRm` — `den down api` imprime « did you mean `den rm`? » (le `SuggestFor` du
+  §9.7), et `den dwon` n'en propose toujours aucun : le champ ne doit rien élargir d'autre ;
 - `TestUpKeepsInterspersedFlags` — `den up api -T` atteint le refus nommé, pas l'erreur d'arité.
 
 **Nouveaux — le constructeur de remèdes (F, G)** :
@@ -1119,7 +1165,8 @@ processus, `sbx.Fake` suffit, et `worktree.NeutralizeGitEnvironment()` reste app
    worktree de den, et le sens compose (workdir) ne peut pas l'avoir.
 2. **`den run` n'est pas éphémère** (§4). compose jette son conteneur, den garde sa sandbox.
 3. **Pas de `-v` pour `--repo`.** compose épelle `-v` un volume ; den monte des repos, et un
-   raccourci d'une lettre coûterait une collision pour un drapeau rare.
+   raccourci d'une lettre coûterait une collision de lettres. La fréquence qui aurait pu la
+   justifier n'a jamais été mesurée, dans un sens ni dans l'autre (§4) : la collision seule décide.
 4. **`--only` / `--without` n'adressent toujours QUE les repos déclarés.** Le §6 de
    `2026-08-04-adhoc-repos-design.md` le décidait pour des positionnels (« un repo à la volée se
    retire en ne le tapant pas ») ; l'argument ne dépend pas de l'orthographe et vaut mot pour mot
