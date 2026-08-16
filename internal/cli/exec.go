@@ -73,8 +73,8 @@ func execArgs(cmd *cobra.Command, args []string) error {
 		// separator, so `--` is not in args and s.sawDash cannot see it.
 		//
 		// A den flag typed before that leading `--` was ALSO eaten, by the flag
-		// parser this time — so it used to be absent from the line proposed
-		// here. The omission was written down as a decision — "the flag is one
+		// parser this time. It used to be absent from the line proposed here,
+		// and the omission was written down as a decision — "the flag is one
 		// cobra has honoured". False in its own terms: cobra honoured it on an
 		// invocation that is REFUSED and never runs, so the user retypes a line
 		// missing their --workdir and lands somewhere else in silence. Since

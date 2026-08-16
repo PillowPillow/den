@@ -919,6 +919,31 @@ func TestExecRemediesCarryFlagsTypedBeforeTheSeparator(t *testing.T) {
 	}
 }
 
+// readBackFlags's SCALAR DUPLICATES rule: `den exec --workdir /a api --workdir
+// /b go test` reads `--workdir /a` back off the FlagSet AND lifts `--workdir
+// /b` out of the tail — one flag, two origins, and only one can survive the
+// remedy. The LIFTED value wins (`/b`, not `/a`): it is the last one the user
+// typed, and the one den is teaching them to move to the front of the line.
+// SetInterspersed(false) is what makes this reachable through `exec` alone —
+// the flag typed after the name stays a positional until execRewrite lifts it,
+// so both origins are populated on the very same call.
+//
+// This is a dedicated test rather than a TestExecRemediesAreThemselvesLegal
+// row on purpose: that suite only asserts the remedy REPLAYS, which a remedy
+// naming either `/a` or `/b` would do equally. The property here is which
+// value SURVIVES, and only a fixed expectation can catch a silent swap.
+func TestExecRemediesKeepTheLastTypedScalarFlag(t *testing.T) {
+	err := validateArgs(t, "exec", "--workdir", "/a", "api", "--workdir", "/b", "go", "test")
+	if err == nil {
+		t.Fatal("den's flags after the sandbox name must be refused")
+	}
+	const want = "den exec: den's flags go before the sandbox name — " +
+		"write `den exec --workdir /b api go test`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
 // With no sandbox name there is no line to propose, so these two refuse on the
 // usage instead of writing a remedy. `den exec --` is the shape that used to
 // produce “write `den exec ` “ — a trailing space, no name, nothing to run.
