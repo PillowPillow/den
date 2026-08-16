@@ -532,11 +532,16 @@ In `internal/cli/exec_test.go`, `TestExecRemediesAreThemselvesLegal`, replace th
 		// an accepted omission. The remedy is a line the user RETYPES, so a
 		// dropped flag is a silently different run — and with --repo it would be
 		// a dropped mount.
+		//
+		// `--no-tty=true`, not `-T`: readBackFlags spells a read-back boolean
+		// canonically with its value, and it has no shorthand path — it emits
+		// "--" + f.Name. The bare form stays what the USER types.
+		//
+		// The replay holds: pflag parses `--no-tty=true` left of the first
+		// positional, so s.flags is empty and enterArgs returns nil.
 		{"a flag before a leading separator",
-			[]string{"exec", "-T", "--", "api", "go", "build"}, "den exec -T=true api go build"},
+			[]string{"exec", "-T", "--", "api", "go", "build"}, "den exec --no-tty=true api go build"},
 ```
-
-Note the canonical boolean spelling: `-T` is read back from the FlagSet, and a read-back boolean is written with its value. `--no-tty=true` is the long name, so the emitted token is `--no-tty=true`, not `-T=true`. **Verify which one the implementation produces and write that**, then confirm the replay accepts it.
 
 - [ ] **Step 7: Run the suite**
 
@@ -672,10 +677,10 @@ func TestShellSplitUndoesTheQuotingRule(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run it to see it fail**
+- [ ] **Step 2: Run it to verify the helper is correct**
 
 Run: `go test ./internal/cli/ -run TestShellSplitUndoesTheQuotingRule -count=1 -v`
-Expected: PASS. (`shellSplit` is written in the same step as its test because it is a test helper with no production counterpart yet — this step verifies the helper is right before anything depends on it. If it fails, fix the helper here, not later.)
+Expected: **PASS**, and that is not a broken red-green step. `shellSplit` is a test helper with no production counterpart, written in the same step as its test precisely because everything downstream depends on it being right: a wrong splitter makes every replay assertion in this package vacuous. If it fails, fix the helper here, before any production code exists to blame.
 
 - [ ] **Step 3: Write the failing production test**
 
@@ -1364,8 +1369,21 @@ func TestRunRefusesDetach(t *testing.T) {
 
 - [ ] **Step 9: Fix the three mechanical test files**
 
-- `internal/cli/hostile_test.go`: 5 `"spawn"` argv tokens (lines 67, 104, 150, 225, 248) → `"up"`. None carries a command.
+- `internal/cli/hostile_test.go`: 5 `"spawn"` argv tokens (lines 67, 104, 150, 225, 248) → `"up"`.
 - `internal/cli/root_deps_test.go`: 4 `"spawn"` argv tokens (lines 96, 127, 164, 223) → `"up"`; and two `t.Fatalf` strings quoting `den spawn api --detach` (lines 165, 225) → `den up api --detach`.
+
+  All nine go to `up`, and that is checked rather than assumed (2026-08-16):
+
+  ```bash
+  grep -n -A3 -F '"spawn"' internal/cli/hostile_test.go internal/cli/root_deps_test.go \
+    | grep -E '"--"|"-T"|"--detach"'
+  ```
+
+  answers three lines, all `root_deps_test.go`, all typing `"--detach"` with no
+  command after it — legal on `up`, refused on `run`. **No `"--"` anywhere**, so
+  none of the nine is a `run`. Re-run that grep before editing: a line typing
+  `"--"` could only go to `run`, and renaming it to `"up"` would leave a test
+  that passes while covering nothing.
 - `internal/cli/root_test.go`:
   - lines 206 and 246: text, mechanical.
   - line 287-288: the table row freezing the whole usage line splits in two:
@@ -1382,6 +1400,8 @@ func TestRunRefusesDetach(t *testing.T) {
 			"den run: no command given — write `den run api go test`, or `den up api` for a shell",
 		},
 ```
+
+  The spec §8 calls this split `TestSpawnWithoutANestNamesTheUsageLine`. **No function by that name exists** (checked 2026-08-16, `grep -rn` over `internal/`): it is this table ROW, and the two halves above are the whole split. Do not go looking for a test to move.
 
   Update the comment above `TestWrongArgumentCountNamesTheUsageLine` (lines 280-283): `den spawn` was the site exercising the unbounded-maximum wording; with `atLeastOneArg` gone, no site does, and the sentence must say so instead of naming a deleted command.
   - line 416: `strings.Contains(got, "`den spawn <nest>`")` — rewrite AND widen to the whole migration line, which is the pattern §8 condemns:
@@ -2018,7 +2038,7 @@ Call it from `newRunCmd`'s `RunE`, before `spawnNest`:
 
 Add `fmt`, `os`, `path/filepath` and `internal/config` to `run.go`'s imports.
 
-**Note on `remedyLine` and `s.command`:** `execRewrite` fills `s.command` from the tail, but `remedyLine` renders the `command` PARAMETER, not `s.command` — verify that is still true after Task 2 and, if `remedyLine` reads `s.command` anywhere, pass the tail explicitly as it does for every other caller.
+**Note on `remedyLine` and `s.command`:** `execRewrite` fills `s.command` from the tail, and `remedyLine` never reads it — it appends the `command` PARAMETER (Task 2, step 4). So passing `tail` here replaces the command, which is the second gesture the inter-command remedies need. Do not "fix" the builder to read `s.command`; every caller in this plan passes the tail explicitly.
 
 - [ ] **Step 4: Run them to verify they pass**
 
