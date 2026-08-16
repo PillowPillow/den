@@ -1308,7 +1308,7 @@ git commit -m "feat: publish declarative den source"
 - Consumes: both completed repositories.
 - Produces: reviewable commits with no uncommitted feature changes and evidence for the complete first-time flow.
 
-- [ ] **Step 1: Verify Den from a clean process**
+- [x] **Step 1: Verify Den from a clean process**
 
 Run in Den:
 
@@ -1322,7 +1322,7 @@ git status --short
 
 Expected: tests and vet PASS; diff check is empty; status contains no uncommitted feature file.
 
-- [ ] **Step 2: Verify the Digitaleo source**
+- [x] **Step 2: Verify the Digitaleo source**
 
 Run in `digitaleo-den-env`:
 
@@ -1334,10 +1334,32 @@ git status --short
 
 Expected: lint exits 0; diff check is empty; status contains no uncommitted feature file.
 
-- [ ] **Step 3: Exercise a temporary end-to-end home**
+- [x] **Step 3: Exercise a temporary end-to-end home**
 
 Run `DIGITALEO_DEN_ENV=/Users/polochon/Development/Digitaleo/digitaleo-den-env go test ./internal/converge -run TestDigitaleoManifestAcceptance -v`. The harness uses a temporary `--den-home`, a file URL to a temporary source clone, and fake sbx adapters. Never point this verification at the real `~/.den` or mutate live sbx credentials/policies. Assert `source status`, source config, receipt, and missing-repo remedies from command output.
 
 - [ ] **Step 4: Request code review**
 
 Invoke `superpowers:requesting-code-review`. Review the Den commits against `docs/superpowers/specs/2026-08-14-source-onboarding-design.md`, then review the separate Digitaleo commit against the finalized Den schema. Resolve findings with focused tests and separate fix commits.
+
+> Verification run on 2026-08-16, from the branch tips `0ae1f51` (den) and `bc31766` (Digitaleo):
+>
+> - den: `go test ./...`, `go vet ./...`, `go test -race ./...` all PASS; `git diff --check` and
+>   `git status --short` both empty.
+> - Digitaleo: `den lint .` exits 0; `git diff --check` and `git status --short` both empty.
+> - `DIGITALEO_DEN_ENV=... go test ./internal/cli -run TestRealSourceAcceptance` PASSES against the
+>   real source, on a temporary den home with the sbx double.
+> - Plan-only run of the REAL binary (`-X ...cli.Version=1.7.0`) against a copy of the Digitaleo
+>   source, temporary `--den-home`, no `--yes`, so nothing was applied and `~/.den` was never read:
+>   the three sbx credentials come out `unchanged` (this machine already has them), `build_network`
+>   reports `0 of 2 hosts allowed`, the `base` build is `update`, 15 of 17 repo keys map by remote,
+>   and the aggregate is `partially_ready`.
+>
+> Two findings from that real run, neither a defect of this delivery:
+> - `go-dgdev` is AMBIGUOUS on this machine (`go.dgdev` and `go.dgdev.multi-claude` both carry the
+>   remote), so `dg:go-dgdev` comes out `not_ready` until the user settles it — `repos:` in the
+>   answer file, or the interactive prompt. The shipped fixture leaves it unanswered on purpose.
+> - `php.baseo` is ambiguous too, and one of its two candidates is the `js.agentic-bank` checkout:
+>   that directory carries a SECOND remote pointing at php.baseo. Discovery reads every remote by
+>   design, and refusing to guess between them is the intended behavior.
+
