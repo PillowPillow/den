@@ -308,6 +308,13 @@ func (s Service) drivers(req Request, m *source.Manifest, state *SbxState) []Res
 func (s Service) forceRebuild(req Request, m *source.Manifest) bool {
 	personal, err := source.LoadPersonal(req.DenHome, req.Name)
 	if err != nil {
+		// Deliberately not split on errors.Is(err, os.ErrNotExist) the way the
+		// LoadPersonal call sites in updateSource and writePersonal are: EVERY
+		// LoadPersonal error — absent, corrupt, unreadable — lands here on the
+		// SAME conservative branch, because both outcomes mean the same thing
+		// to a build: nothing readable says the existing image still matches
+		// this version, so rebuild it. There is no wrong-direction failure
+		// mode to guard against, unlike the other two sites.
 		return true // never configured here: nothing says the image matches
 	}
 	return personal.Version != m.Metadata.Version
@@ -574,8 +581,26 @@ func (s Service) fastForward(ctx context.Context, req Request) error {
 // ExpandedRepos is a separate view.
 func (s Service) writePersonal(req Request, plan *Plan) (*source.Personal, error) {
 	personal := source.Personal{Version: plan.Version, Repos: map[string]string{}}
-	if existing, err := source.LoadPersonal(req.DenHome, req.Name); err == nil {
+	switch existing, err := source.LoadPersonal(req.DenHome, req.Name); {
+	case err == nil:
 		maps.Copy(personal.Repos, existing.Repos)
+	case errors.Is(err, os.ErrNotExist):
+		// First convergence of this source on this machine — nothing existed
+		// to merge.
+	default:
+		// A corrupt or unreadable personal file must NOT be read as "nothing
+		// existed before": the merge above exists precisely so a hand-written
+		// repository path (TestApplyPreservesHandWrittenRepoPaths) survives a
+		// reconverge. Falling through here would write a fresh file holding
+		// only THIS run's confirmed repositories, silently dropping every
+		// mapping the file already held — on the strength of a decode error
+		// that has nothing to do with those mappings. Refuse before the
+		// write, so the existing file — whatever it holds — survives.
+		return nil, fmt.Errorf(
+			"source %q: cannot read the existing personal configuration at %s (%w) — den will "+
+				"not overwrite it with only this run's confirmed repositories, which would drop "+
+				"every mapping already there; fix or restore the file by hand, then retry",
+			req.Name, source.PersonalPath(req.DenHome, req.Name), err)
 	}
 	maps.Copy(personal.Repos, plan.ConfirmedRepos())
 	if len(personal.Repos) == 0 {

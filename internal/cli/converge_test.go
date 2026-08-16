@@ -566,6 +566,51 @@ func TestSourceUpdateRefusesADowngrade(t *testing.T) {
 	}
 }
 
+// A LoadPersonal error that is not "the file does not exist" must not be read
+// as "never configured here": DecideUpdate's first check is `configured ==
+// ""`, and it returns UpdateConverge on that check before the downgrade
+// refusal (c < 0) further down is ever reached. A machine configured for
+// 1.0.0 whose personal file went corrupt would then accept a team publish of
+// an OLDER version as a legitimate first install — exactly the defect this
+// locks: the refusal must fire before DecideUpdate is ever called with an
+// empty `configured`, not after it.
+func TestSourceUpdateRefusesWhenThePersonalFileIsUnreadable(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	url := installFixture(t, d, home, work)
+
+	personalPath := filepath.Join(home, "source-config", "dg.yaml")
+	before := readFile(t, personalPath)
+	// An unknown key a strict decode refuses — the corruption a hand edit or a
+	// half-written file can leave behind.
+	corrupt := before + "bogus_field: true\n"
+	if err := os.WriteFile(personalPath, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	publishFixture(t, url, "0.9.0")
+	_, err := runCLI(t, d, "source", "update", "dg", "--yes", "--den-home", home)
+	if err == nil {
+		t.Fatal("expected a refusal: den cannot tell whether 0.9.0 is a downgrade with the " +
+			"personal file unreadable")
+	}
+	if strings.Contains(err.Error(), "den converges forward only") {
+		t.Errorf("the refusal reached DecideUpdate's downgrade wording instead of stopping at "+
+			"the unreadable file: %v", err)
+	}
+	if !strings.Contains(err.Error(), personalPath) {
+		t.Errorf("the refusal does not name the unreadable file: %v", err)
+	}
+	if got := readFile(t, personalPath); got != corrupt {
+		t.Errorf("a refused update touched the personal configuration:\n%s", got)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(home, "sources", "dg", "den-source.yaml")), "1.0.0") {
+		t.Error("a refused update moved the checkout")
+	}
+}
+
 // `den source status` reports without asking anything, and its exit code
 // carries the verdict: only blocked and unknown are failures (spec §12.1).
 func TestSourceStatusExitsNonZeroOnlyWhenDenCannotUseTheSource(t *testing.T) {

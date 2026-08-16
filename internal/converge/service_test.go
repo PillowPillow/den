@@ -696,6 +696,59 @@ func TestApplyPreservesHandWrittenRepoPaths(t *testing.T) {
 	}
 }
 
+// The same guarantee TestApplyPreservesHandWrittenRepoPaths locks, from the
+// other side: writePersonal MERGES into the existing personal configuration
+// precisely so a hand-written repository path survives a reconverge, and an
+// unreadable file must not be read as "nothing existed before". Before the
+// fix, `if existing, err := source.LoadPersonal(...); err == nil` skipped the
+// merge on ANY error — not just absence — and wrote a fresh file holding only
+// this run's confirmed repositories, silently dropping "other". The refusal
+// this test expects must land BEFORE any write, so the corrupt file's own
+// bytes — whatever the user typed into it — survive untouched.
+func TestApplyRefusesRatherThanDroppingRepoMappingsWhenPersonalIsUnreadable(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	if err := source.WritePersonal(denHome, "dg", source.Personal{
+		Version: "1.0.0",
+		Repos:   map[string]string{"other": "~/Development/other"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	personalPath := source.PersonalPath(denHome, "dg")
+	valid, err := os.ReadFile(personalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An unknown key a strict decode refuses — the corruption a hand edit or a
+	// half-written file can leave behind.
+	corrupt := append(append([]byte{}, valid...), []byte("bogus_field: true\n")...)
+	if err := os.WriteFile(personalPath, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := sbx.NewMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+
+	plan := planFor(t, s, req)
+	var out strings.Builder
+	_, err = s.Apply(context.Background(), req, plan, &out, &out)
+	if err == nil {
+		t.Fatal("expected the unreadable personal file to refuse the install")
+	}
+	if !strings.Contains(err.Error(), personalPath) {
+		t.Errorf("error does not name the personal file: %v", err)
+	}
+
+	after, err := os.ReadFile(personalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(corrupt) {
+		t.Errorf("writePersonal rewrote the unreadable file instead of refusing:\n"+
+			"before:\n%s\nafter:\n%s", corrupt, after)
+	}
+}
+
 // publishVersion rewrites the remote's manifest at a new version, adding one
 // host to the egress the source's builds need — so an update really has a
 // resource to converge, the way a real version bump does.

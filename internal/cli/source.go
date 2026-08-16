@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"text/tabwriter"
 
@@ -259,8 +261,27 @@ func updateSource(cmd *cobra.Command, d Deps, home, name string, flags convergen
 	}
 
 	configured := ""
-	if personal, err := source.LoadPersonal(home, name); err == nil {
+	switch personal, loadErr := source.LoadPersonal(home, name); {
+	case loadErr == nil:
 		configured = personal.Version
+	case errors.Is(loadErr, os.ErrNotExist):
+		// Installed but never configured here — configured stays "", which
+		// DecideUpdate reads as a first install (spec §11.2).
+	default:
+		// Any OTHER LoadPersonal error — a strict-decode rejection, a bad
+		// schema_version, a permission fault — must NOT fall through to the
+		// "never configured" case above: DecideUpdate's FIRST check is
+		// `configured == ""`, and it returns UpdateConverge on that check
+		// before the downgrade refusal (c < 0) further down is ever reached.
+		// A machine configured for 2.0.0 whose personal file went corrupt
+		// would then accept a team publish of 1.0.0 as a legitimate first
+		// install — den converges forward only, and this file is the only
+		// record of what "forward" means here. Refuse instead of guessing.
+		return fmt.Errorf(
+			"source %q: cannot read the personal configuration at %s (%w) — den will not decide "+
+				"whether the fetched update is a downgrade with that file unreadable; fix or "+
+				"restore it by hand, then retry",
+			name, source.PersonalPath(home, name), loadErr)
 	}
 	head, err := d.Git.Run(cmd.Context(), source.Dir(home, name), "rev-parse", "HEAD")
 	if err != nil {
