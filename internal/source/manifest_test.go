@@ -195,6 +195,10 @@ func TestLoadManifestRefusesDocumentFaults(t *testing.T) {
 		// mangled string deep inside Apply (spec §2).
 		{"empty egress host", "- cdn.example.test\n", "- \"\"\n", "resources.build_network.allow"},
 		{"whitespace-only egress host", "- cdn.example.test\n", "- \"   \"\n", "resources.build_network.allow"},
+		// Padding is refused, not silently trimmed: sbx stores the string
+		// verbatim, so a padded entry that slipped through would compare
+		// unequal to what sbx actually holds.
+		{"padded egress host", "- cdn.example.test\n", "- \"  cdn.example.test  \"\n", "resources.build_network.allow"},
 		{"egress host with a scheme", "- cdn.example.test\n", "- https://cdn.example.test\n", "resources.build_network.allow"},
 		{"egress host with a path", "- cdn.example.test\n", "- cdn.example.test/v1\n", "resources.build_network.allow"},
 		// A CIDR is caught by the same path check: sbx's rule is a bare host

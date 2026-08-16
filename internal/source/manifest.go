@@ -377,6 +377,15 @@ func checkEgressHost(p, host string) error {
 			"%s: resources.build_network.allow: an entry is empty — name the host (or `host:port`) "+
 				"to allow", p)
 	}
+	if trimmed != host {
+		// Refused, not silently trimmed: den compares this string against what
+		// sbx stores verbatim (sbx.NormalizeNetworkResource never trims), so a
+		// padded entry that slipped through here would produce a rule den can
+		// never match back against what it just applied.
+		return fmt.Errorf(
+			"%s: resources.build_network.allow: %q carries leading or trailing whitespace — write "+
+				"%q", p, host, trimmed)
+	}
 	if strings.Contains(trimmed, "://") {
 		return fmt.Errorf(
 			"%s: resources.build_network.allow: %q carries a scheme — sbx's egress rule is a bare "+
