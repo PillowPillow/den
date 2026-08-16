@@ -20,7 +20,7 @@ func TestExecAttachesInTheWorkdir(t *testing.T) {
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
+	if _, err := executeCmdWithSbx(t, f, "exec", "api", "true"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -36,32 +36,8 @@ func TestExecAttachesInTheWorkdir(t *testing.T) {
 	if !slices.Contains(attach, "-w") || !slices.Contains(attach, "/w/api") {
 		t.Errorf("the attach must set the workdir to the first workspace; got: %v", attach)
 	}
-	if !slices.Contains(attach, "bash") {
-		t.Errorf("the attach must launch a shell; got: %v", attach)
-	}
-}
-
-// The fixture's `:ro` suffix is not decorative: it separates b.Workdir()
-// (which strips it) from b.Workspaces[0] (which would keep it). Without it,
-// both implementations pass — measured by review, on this exact file.
-//
-// Necessary complement to the test above, which scans f.Calls: Calls CONFLATES
-// Run and Attach (see sbx/fake.go), so a `Run("exec", ...)` — a mute shell,
-// no tty — satisfies it just as much as a real attach. Only f.Attaches tells
-// the two apart. This test also locks the `-it` flag and the FULL argv, in
-// order: `sbx exec [flags] SANDBOX COMMAND` — a postponed `-w` would land as-is
-// on `bash -l` instead of setting the working directory.
-func TestExecAttachesWithATtyNotARun(t *testing.T) {
-	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]}`)},
-	}}
-
-	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
-		t.Errorf("the attach must be an Attach, with the full ordered argv; attaches: %v", f.Attaches)
+	if !slices.Contains(attach, "true") {
+		t.Errorf("the attach must carry the command; got: %v", attach)
 	}
 }
 
@@ -76,7 +52,7 @@ func TestExecNeverUsesSbxRun(t *testing.T) {
 		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
+	if _, err := executeCmdWithSbx(t, f, "exec", "api", "true"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.HasCalled("run") {
@@ -91,7 +67,7 @@ func TestExecUnknownName(t *testing.T) {
 		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api"},{"name":"web"}]}`)},
 	}}
 
-	_, err := executeCmdWithSbx(t, f, "exec", "missing")
+	_, err := executeCmdWithSbx(t, f, "exec", "missing", "true")
 	if err == nil {
 		t.Fatal("an unknown sandbox name must produce an error")
 	}
@@ -109,17 +85,23 @@ func TestExecUnknownName(t *testing.T) {
 // `den spawn`. Proven HERE and not only in internal/spawn — nothing at the
 // level of sbx.CheckAttachable guarantees newExecCmd calls it, and a policy
 // widened on only one side would reopen the defect on the other.
+//
+// The probe is INJECTED, as on every test below that asserts an argv: with a
+// command present the tty is the probe's verdict, so which method carries the
+// call — Attach or Pipe — would otherwise be a property of the harness the
+// suite runs under. False, hence Pipe.
 func TestExecResumesAStoppedSandbox(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
 	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
-	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "true"); err != nil {
 		t.Fatalf("a stopped sandbox must be resumed: %v", err)
 	}
-	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
-		t.Errorf("resuming must attach in the VM's workdir; attaches: %v", f.Attaches)
+	if !f.HasPiped("exec", "-w", "/w/api", "api", "true") {
+		t.Errorf("resuming must run the command in the VM's workdir; pipes: %v", f.Pipes)
 	}
 }
 
@@ -135,7 +117,7 @@ func TestExecRefusesASandboxThatIsNotRunning(t *testing.T) {
 					`{"sandboxes":[{"name":"api","status":"` + status + `","workspaces":["/w/api"]}]}`)},
 			}}
 
-			_, err := executeCmdWithSbx(t, f, "exec", "api")
+			_, err := executeCmdWithSbx(t, f, "exec", "api", "true")
 			if err == nil {
 				t.Fatalf("status %q must not lead to an attach", status)
 			}
@@ -199,7 +181,7 @@ func TestExecRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
 		execGateRead("api"): {Output: execGateLog("api", "fail")},
 	}}
 
-	_, err := executeCmdWithSbx(t, f, "exec", "api")
+	_, err := executeCmdWithSbx(t, f, "exec", "api", "true")
 	if err == nil {
 		t.Fatal("a failed §9.1 gate must not lead to a shell")
 	}
@@ -232,7 +214,7 @@ func TestExecWaitsForTheGateWhenItStartsAStoppedSandbox(t *testing.T) {
 		execGateRead("api"): {Output: log},
 	}}
 
-	_, err := executeCmdWithSbx(t, f, "exec", "api")
+	_, err := executeCmdWithSbx(t, f, "exec", "api", "true")
 	if err == nil {
 		t.Fatal("starting a stopped sandbox whose gate failed must not lead to a shell")
 	}
@@ -259,7 +241,10 @@ func TestExecWaitsForTheGateWhenItStartsAStoppedSandbox(t *testing.T) {
 // wait — more than one read, announced, and a budget that runs out is a note
 // rather than a refusal.
 //
-// The clock is the injected one (sbxDeps), so the rounds happen instantly.
+// The clock is the injected one (fakeGateOptions), so the rounds happen
+// instantly. The announcement is read on STDERR: den's own chatter follows the
+// tty (exec.go), and this test injects a probe answering false, so the line
+// lands where a piping caller can still see it.
 func TestExecPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
@@ -267,8 +252,9 @@ func TestExecPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox(t *testing.T) {
 		// A run that has begun and reported nothing: GatePending, forever.
 		execGateRead("api"): {Output: []byte("=== dispatcher run 2026-08-03T10:00:00Z ===\n")},
 	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
-	stdout, err := executeCmdWithSbx(t, f, "exec", "api")
+	_, stderr, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "true")
 	if err != nil {
 		t.Fatalf("a budget that runs out is a note, never a refusal: %v", err)
 	}
@@ -281,47 +267,57 @@ func TestExecPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox(t *testing.T) {
 	if reads < 2 {
 		t.Errorf("the stopped branch must POLL the journal; %d read(s), calls: %v", reads, f.Calls)
 	}
-	if !strings.Contains(stdout, "waiting for agent freshness") {
-		t.Errorf("a wait den actually performs must be announced; got: %q", stdout)
+	if !strings.Contains(stderr, "waiting for agent freshness") {
+		t.Errorf("a wait den actually performs must be announced; got: %q", stderr)
 	}
-	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
-		t.Errorf("an exhausted budget must still open the shell; attaches: %v", f.Attaches)
+	if !f.HasPiped("exec", "-w", "/w/api", "api", "true") {
+		t.Errorf("an exhausted budget must still run the command; pipes: %v", f.Pipes)
 	}
 }
 
 // The other half: a gate that PASSED costs the user nothing — no line, and the
-// shell they asked for. Asserted together with the refusal above, because a
+// command they asked for. Asserted together with the refusal above, because a
 // `den exec` that refused everything would satisfy that test alone.
-func TestExecAttachesAndStaysSilentWhenTheFreshnessGatePassed(t *testing.T) {
+//
+// Both streams are checked for silence, not stdout alone: den's chatter follows
+// the tty, so a line the injected no-tty probe moves to stderr would slip past
+// an assertion that only reads stdout.
+func TestExecRunsAndStaysSilentWhenTheFreshnessGatePassed(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
 		execGateRead("api"): {Output: execGateLog("api", "ok")},
 	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
-	stdout, err := executeCmdWithSbx(t, f, "exec", "api")
+	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "true")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
-		t.Errorf("a passing gate must not cost the shell; attaches: %v", f.Attaches)
+	if !f.HasPiped("exec", "-w", "/w/api", "api", "true") {
+		t.Errorf("a passing gate must not cost the command; pipes: %v", f.Pipes)
 	}
-	if strings.Contains(stdout, "freshness") {
-		t.Errorf("a passing gate is the ordinary outcome and says nothing; got: %q", stdout)
+	if strings.Contains(stdout+stderr, "freshness") {
+		t.Errorf("a passing gate is the ordinary outcome and says nothing; got: %q / %q", stdout, stderr)
 	}
 }
 
 // The gate is read BEFORE the attach, not alongside it. Read after, its refusal
 // would arrive behind a shell that already owns the terminal — which is the
 // exact defect the ordering of warnEmptyAgentOnReentry already avoids.
+//
+// The attach is found by the COMMAND it carries, not by `-it`: with a command
+// and an injected no-tty probe there is no `-it` in any argv, and the old
+// discriminator would report "no attach at all" rather than a wrong order.
 func TestExecReadsTheFreshnessGateBeforeAttaching(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
 		execGateRead("api"): {Output: execGateLog("api", "ok")},
 	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
-	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "true"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	read, attach := -1, -1
@@ -329,7 +325,7 @@ func TestExecReadsTheFreshnessGateBeforeAttaching(t *testing.T) {
 		if strings.Join(c, " ") == execGateRead("api") {
 			read = i
 		}
-		if slices.Contains(c, "-it") {
+		if slices.Contains(c, "true") {
 			attach = i
 		}
 	}
@@ -398,12 +394,12 @@ func TestExecWarnsWhenTheForwardedAgentIsEmpty(t *testing.T) {
 
 	stdout, stderr, err := runExecWithAgent(t, execDenHome(t, ""), f,
 		func() sshagent.Result { return sshagent.Result{State: sshagent.StateEmpty} },
-		"exec", "api")
+		"exec", "api", "true")
 	if err != nil {
 		t.Fatalf("an empty agent must warn, not block: %v", err)
 	}
-	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
-		t.Fatalf("the shell must still open; attaches: %v", f.Attaches)
+	if !f.HasPiped("exec", "-w", "/w/api", "api", "true") {
+		t.Fatalf("the command must still run; pipes: %v", f.Pipes)
 	}
 	for _, want := range []string{"warning", "no identity", "publickey", "ssh-add"} {
 		if !strings.Contains(stderr, want) {
@@ -426,46 +422,12 @@ func TestExecDoesNotWarnWhenTheForwardedAgentHasKeys(t *testing.T) {
 
 	_, stderr, err := runExecWithAgent(t, execDenHome(t, ""), f,
 		func() sshagent.Result { return sshagent.Result{State: sshagent.StateKeys, Identities: 2} },
-		"exec", "api")
+		"exec", "api", "true")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if strings.Contains(stderr, "warning") {
 		t.Errorf("an agent with keys must be silent; stderr: %q", stderr)
-	}
-}
-
-// THE constraint that makes the warning acceptable on this command at all:
-// `den exec` reads the den home only to learn ssh.mode, and a den home it cannot
-// read costs the user NOTHING — no error, no missing shell. The whole point of
-// the command is that a broken ~/.den never stands between the user and a live
-// sandbox; the warning is advisory, so it is what gives way, silently.
-//
-// The empty temp dir is exactly that state: no config.yaml at all.
-func TestExecOpensTheShellWhenTheDenHomeCannotBeRead(t *testing.T) {
-	execSocket(t)
-	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
-	}}
-	probed := false
-
-	_, stderr, err := runExecWithAgent(t, t.TempDir(), f, func() sshagent.Result {
-		probed = true
-		return sshagent.Result{State: sshagent.StateEmpty}
-	}, "exec", "api")
-	if err != nil {
-		t.Fatalf("an unreadable den home must not cost the user their shell: %v", err)
-	}
-	if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
-		t.Fatalf("the shell must open regardless; attaches: %v", f.Attaches)
-	}
-	if probed {
-		t.Error("with no readable ssh.mode, den cannot know the agent is even forwarded: " +
-			"probing it decides on a mode it never read")
-	}
-	if strings.Contains(stderr, "warning") {
-		t.Errorf("stderr = %q, a den home den could not read must produce no verdict", stderr)
 	}
 }
 
@@ -485,7 +447,7 @@ func TestExecDoesNotProbeTheAgentOutsideAgentForward(t *testing.T) {
 			_, stderr, err := runExecWithAgent(t, execDenHome(t, sshBlock), f, func() sshagent.Result {
 				probed = true
 				return sshagent.Result{State: sshagent.StateEmpty}
-			}, "exec", "api")
+			}, "exec", "api", "true")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -496,10 +458,10 @@ func TestExecDoesNotProbeTheAgentOutsideAgentForward(t *testing.T) {
 				t.Errorf("stderr = %q, no SSH warning expected outside agent-forward", stderr)
 			}
 			// Without this, "no probe" would also be satisfied by a `den exec` that
-			// gave up before reaching it: the attach is what makes the silence a
+			// gave up before reaching it: the run is what makes the silence a
 			// decision about the mode.
-			if !f.HasAttached("exec", "-it", "-w", "/w/api", "api", "bash", "-l") {
-				t.Errorf("the shell must have opened; attaches: %v", f.Attaches)
+			if !f.HasPiped("exec", "-w", "/w/api", "api", "true") {
+				t.Errorf("the command must have run; pipes: %v", f.Pipes)
 			}
 		})
 	}
@@ -525,7 +487,7 @@ func TestExecDoesNotWarnWhenTheSSHSocketIsAbsent(t *testing.T) {
 	_, stderr, err := runExecWithAgent(t, execDenHome(t, ""), f, func() sshagent.Result {
 		probed = true
 		return sshagent.Result{State: sshagent.StateUnreachable}
-	}, "exec", "api")
+	}, "exec", "api", "true")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -544,7 +506,7 @@ func TestExecWithNoSandboxAtAll(t *testing.T) {
 		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
 	}}
 
-	_, err := executeCmdWithSbx(t, f, "exec", "missing")
+	_, err := executeCmdWithSbx(t, f, "exec", "missing", "true")
 	if err == nil {
 		t.Fatal("an unknown sandbox name must produce an error")
 	}
@@ -565,11 +527,12 @@ func TestExecAcceptsASourceReference(t *testing.T) {
 			`{"sandboxes":[{"name":"corp-api","status":"running","workspaces":["/w"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "exec", "corp:api"); err != nil {
-		t.Fatalf("den exec corp:api: %v", err)
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "corp:api", "true"); err != nil {
+		t.Fatalf("den exec corp:api true: %v", err)
 	}
-	if !f.HasAttached("exec", "-it", "-w", "/w", "corp-api", "bash", "-l") {
-		t.Errorf("the attach must target the flattened sandbox corp-api; attaches: %v", f.Attaches)
+	if !f.HasPiped("exec", "-w", "/w", "corp-api", "true") {
+		t.Errorf("the call must target the flattened sandbox corp-api; pipes: %v", f.Pipes)
 	}
 }
 
@@ -584,16 +547,20 @@ func TestExecAcceptsAWorktreedSourceReference(t *testing.T) {
 			`{"sandboxes":[{"name":"corp-api.feat12","status":"running","workspaces":["/w"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "exec", "corp:api.feat12"); err != nil {
-		t.Fatalf("den exec corp:api.feat12: %v", err)
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "corp:api.feat12", "true"); err != nil {
+		t.Fatalf("den exec corp:api.feat12 true: %v", err)
 	}
-	if !f.HasAttached("exec", "-it", "-w", "/w", "corp-api.feat12", "bash", "-l") {
-		t.Errorf("the attach must target corp-api.feat12; attaches: %v", f.Attaches)
+	if !f.HasPiped("exec", "-w", "/w", "corp-api.feat12", "true") {
+		t.Errorf("the call must target corp-api.feat12; pipes: %v", f.Pipes)
 	}
 }
 
-// The contract of #60: `den exec api -- go test ./...` runs the command, and
-// the shell is what happens when no command is given — not the reverse.
+// A command needs no separator. `den exec api go test` had two readings in the
+// old comment here — a sandbox `api` running `go test`, or three sandbox names
+// — but the second was never reachable: execArgs refused anything but exactly
+// one name before `--`. The real ambiguity was FLAGS, and
+// Flags().SetInterspersed(false) closes it the way docker compose does.
 //
 // Deviation from the brief: executeCmdWithSbx leaves IsTTY as the REAL probe
 // (spawn.LooksInteractive), so this test's verdict would follow whatever fd 0
@@ -613,7 +580,7 @@ func TestExecAcceptsAWorktreedSourceReference(t *testing.T) {
 // in the repo (interactive_test.go, spawn_test.go:352) injects a fixed probe
 // instead of trusting the real one; this test does the same, through the same
 // Deps+NewRootCmdWith form the sibling tests below already use.
-func TestExecRunsTheCommandAfterTheDoubleDash(t *testing.T) {
+func TestExecRunsACommandWithoutTheDoubleDash(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
@@ -621,7 +588,7 @@ func TestExecRunsTheCommandAfterTheDoubleDash(t *testing.T) {
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
 	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
-		"exec", "api", "--", "go", "test", "./..."); err != nil {
+		"exec", "api", "go", "test", "./..."); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !f.HasPiped("exec", "-w", "/w/api", "api", "go", "test", "./...") {
@@ -652,7 +619,7 @@ func TestExecAllocatesATtyOnlyWhenDenHasOne(t *testing.T) {
 			}}
 			deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: tc.isTTY}
 			if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
-				"exec", "api", "--", "true"); err != nil {
+				"exec", "api", "true"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			gotTTY := f.HasAttached("exec", "-it")
@@ -665,18 +632,31 @@ func TestExecAllocatesATtyOnlyWhenDenHasOne(t *testing.T) {
 
 // -T is the docker compose spelling, and it wins over a real terminal: it
 // exists so a caller in a terminal can still pipe cleanly.
+//
+// Both spellings are exercised. They are one flag, but only the long one is
+// wired through cobra's `--name` path, and `den exec` has no other test left
+// that reaches --no-tty at all: the deleted TestExecRefusesNoTTYWithNoCommand
+// carried it as a subtest, and TestExecRefusesItsOwnFlagsAfterTheSandboxName
+// only proves the long form is refused on the WRONG side of the name.
 func TestExecMinusTSuppressesTheTtyEvenOnATerminal(t *testing.T) {
-	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
-	}}
-	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: func() bool { return true }}
-	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
-		"exec", "api", "-T", "--", "true"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(f.Attaches) != 0 {
-		t.Errorf("-T must forbid the tty; attaches = %v", f.Attaches)
+	for _, flag := range []string{"-T", "--no-tty"} {
+		t.Run(flag, func(t *testing.T) {
+			f := &sbx.Fake{Responses: map[string]sbx.Response{
+				"ls --json": {Output: []byte(
+					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			}}
+			deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: func() bool { return true }}
+			if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+				"exec", flag, "api", "true"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(f.Attaches) != 0 {
+				t.Errorf("%s must forbid the tty; attaches = %v", flag, f.Attaches)
+			}
+			if !f.HasPiped("exec", "-w", "/w/api", "api", "true") {
+				t.Errorf("the command must still run, without a terminal; pipes = %v", f.Pipes)
+			}
+		})
 	}
 }
 
@@ -684,7 +664,10 @@ func TestExecMinusTSuppressesTheTtyEvenOnATerminal(t *testing.T) {
 // it a second meaning on a sibling command is the collision den refuses
 // elsewhere. The flag overrides the workspace the VM reported.
 //
-// Same deviation as TestExecRunsTheCommandAfterTheDoubleDash above: the probe
+// It sits LEFT of the sandbox name since 2026-08-14: den's own flags all do,
+// because SetInterspersed(false) hands everything past that name to the VM.
+//
+// Same deviation as TestExecRunsACommandWithoutTheDoubleDash above: the probe
 // is injected rather than left as the real stdin check, for the same reason.
 func TestExecWorkdirOverridesTheReportedWorkspace(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
@@ -694,7 +677,7 @@ func TestExecWorkdirOverridesTheReportedWorkspace(t *testing.T) {
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
 	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
-		"exec", "api", "--workdir", "/srv", "--", "true"); err != nil {
+		"exec", "--workdir", "/srv", "api", "true"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !f.HasPiped("exec", "-w", "/srv", "api", "true") {
@@ -707,59 +690,99 @@ func TestExecWorkdirOverridesTheReportedWorkspace(t *testing.T) {
 // sibling commands mean different things by one letter.
 func TestExecRefusesTheShortWorkdirFlag(t *testing.T) {
 	f := &sbx.Fake{}
-	if _, err := executeCmdWithSbx(t, f, "exec", "api", "-w", "/srv", "--", "true"); err == nil {
+	if _, err := executeCmdWithSbx(t, f, "exec", "-w", "/srv", "api", "true"); err == nil {
 		t.Error("-w must not be a workdir on den exec")
 	}
 }
 
-// A command not separated by `--` is refused rather than guessed: `den exec api
-// ls` could be a sandbox named api running ls, or two sandbox names. den
-// refuses and names the form (spec §2).
-func TestExecRefusesACommandWithoutTheDoubleDash(t *testing.T) {
+// Zero positionals after the sandbox name has no reading left: the login shell
+// moved to `den shell` on 2026-08-14. The message is the only place a user
+// learns that, short of mistyping a command name, so the test pins it.
+func TestExecRefusesASandboxWithNoCommand(t *testing.T) {
 	f := &sbx.Fake{}
-	_, err := executeCmdWithSbx(t, f, "exec", "api", "go", "test")
+	_, err := executeCmdWithSbx(t, f, "exec", "api")
 	if err == nil {
-		t.Fatal("a command without `--` must be refused")
+		t.Fatal("den exec with no command must be refused")
 	}
-	if !strings.Contains(err.Error(), "--") {
-		t.Errorf("the refusal must name the form to use; got %q", err.Error())
+	if !strings.Contains(err.Error(), "den shell api") {
+		t.Errorf("the refusal must name `den shell api`; got %q", err.Error())
 	}
 	if len(f.Calls) != 0 {
 		t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
 	}
 }
 
-// execArgs' `dash != 1` branch, uncovered until now: `den exec` takes exactly
-// one sandbox name before `--`, and zero is as wrong as two. Exercised
-// separately from TestExecRefusesACommandWithoutTheDoubleDash, which never
-// reaches this branch (its args have no `--` at all, so ArgsLenAtDash is -1).
-func TestExecRefusesZeroPositionalsBeforeTheDoubleDash(t *testing.T) {
+// With no sandbox name at all there is nothing to name in a remedy, so the
+// refusal names the usage line instead.
+func TestExecRefusesWithNoArgumentAtAll(t *testing.T) {
 	f := &sbx.Fake{}
-	_, err := executeCmdWithSbx(t, f, "exec", "--", "a", "b")
+	_, err := executeCmdWithSbx(t, f, "exec")
 	if err == nil {
-		t.Fatal("`--` with no sandbox name before it must be refused")
-	}
-	if !strings.Contains(err.Error(), "sandbox name") {
-		t.Errorf("the refusal must name what is missing; got %q", err.Error())
+		t.Fatal("den exec with no argument must be refused")
 	}
 	if len(f.Calls) != 0 {
 		t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
 	}
 }
 
-// The design spec requires this refusal to be identical, "dans les mêmes mots,
-// octet pour octet", to den spawn's (TestNoTTYReachesSpawnOptions,
-// spawn_test.go) — an identity that was pinned on one side only until now.
-func TestExecRefusesNoTTYWithNoCommand(t *testing.T) {
+// A LEADING `--` is the one shape SetInterspersed(false) does not neutralize,
+// and it is why execArgs consults ArgsLenAtDash at all. Measured 2026-08-14 on
+// cobra v1.10.2, in den's real command tree: pflag handles the `--` terminator
+// BEFORE the interspersed check, so `den exec -- a b` reaches Args with
+// ArgsLenAtDash()==0 and args==["a","b"] — the separator already eaten. Left
+// unrefused, that runs `b` in a sandbox named `a`, which is precisely the
+// silent normalization spec §2 forbids.
+//
+// The `--`-AFTER-the-name shape is a different branch (an ordinary argument,
+// dash==-1) and lives in TestExecRefusesItsOwnFlagsAfterTheSandboxName.
+func TestExecRefusesALeadingDoubleDash(t *testing.T) {
 	f := &sbx.Fake{}
-	for _, name := range []string{"-T", "--no-tty"} {
-		t.Run(name, func(t *testing.T) {
-			_, err := executeCmdWithSbx(t, f, "exec", "api", name)
+	_, err := executeCmdWithSbx(t, f, "exec", "--", "api", "go", "test")
+	if err == nil {
+		t.Fatal("`--` before the sandbox name must be refused")
+	}
+	if !strings.Contains(err.Error(), "is not needed") {
+		t.Errorf("the refusal must say the separator is not needed; got %q", err.Error())
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
+	}
+}
+
+// den's own flags belong LEFT of the sandbox name — SetInterspersed(false)
+// stops parsing at the first positional, so `-T` after it would reach the VM
+// as a program named `-T` and fail with `bash: -T: command not found`, an error
+// that names nothing the user can fix. `--` is in the same closed set: cobra no
+// longer consumes it (measured 2026-08-14), so it too would reach the VM.
+//
+// The set is CLOSED on purpose — `-T`, `--no-tty`, `--workdir`, `--workdir=…`,
+// `--den-home`, `--den-home=…`, `--` — so the refusal cannot swallow a
+// legitimate command. `--help` is NOT in it: it passes through to the sandbox,
+// like compose (TestExecPassesHelpToTheSandbox).
+//
+// `--den-home` joined the set on 2026-08-14, and it is the case that proves the
+// rule is about ORDER, not about ownership: it belongs to the root, but
+// SetInterspersed(false) stops reading it past the first positional exactly as
+// it stops reading `den exec`'s own flags. Left out, `den exec api --den-home
+// /tmp true` ran a program named `--den-home` inside the sandbox.
+func TestExecRefusesItsOwnFlagsAfterTheSandboxName(t *testing.T) {
+	for _, tc := range []struct{ name, arg, want string }{
+		{"-T", "-T", "before the sandbox name"},
+		{"--no-tty", "--no-tty", "before the sandbox name"},
+		{"--workdir", "--workdir", "before the sandbox name"},
+		{"--workdir=", "--workdir=/srv", "before the sandbox name"},
+		{"--den-home", "--den-home", "before the sandbox name"},
+		{"--den-home=", "--den-home=/tmp", "before the sandbox name"},
+		{"double dash", "--", "is not needed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &sbx.Fake{}
+			_, err := executeCmdWithSbx(t, f, "exec", "api", tc.arg, "go", "build")
 			if err == nil {
-				t.Fatal("-T with no command must be refused")
+				t.Fatalf("%q in first command position must be refused", tc.arg)
 			}
-			if !strings.Contains(err.Error(), "-T") {
-				t.Errorf("the refusal must name the flag in play: %v", err)
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal must say %q; got %q", tc.want, err.Error())
 			}
 			if len(f.Calls) != 0 {
 				t.Errorf("the refusal must land before anything is asked of sbx; calls = %v", f.Calls)
@@ -768,8 +791,202 @@ func TestExecRefusesNoTTYWithNoCommand(t *testing.T) {
 	}
 }
 
-// den's own lines belong on stderr when the caller is a pipe: `den exec api -T
-// -- go build | tee log` must carry the child's stdout and nothing else.
+// validateArgs runs argv through the REAL command tree's argument validation,
+// and through nothing else: root.Find picks the command, ParseFlags fills the
+// flags, ValidateArgs is the very call cobra's Execute makes next. RunE never
+// runs, so no sbx and no den home are touched — which is what lets the test
+// below replay a remedy naming `--den-home /tmp` without reading /tmp.
+//
+// The real tree rather than a hand-built command: what is under test includes
+// SetInterspersed(false) and the root's persistent `--den-home`, and both are
+// properties of the assembled tree.
+func validateArgs(t *testing.T, argv ...string) error {
+	t.Helper()
+	cmd, flags, err := NewRootCmd().Find(argv)
+	if err != nil {
+		t.Fatalf("no command for %v: %v", argv, err)
+	}
+	if err := cmd.ParseFlags(flags); err != nil {
+		return err
+	}
+	return cmd.ValidateArgs(cmd.Flags().Args())
+}
+
+// remedyOf returns the command line a refusal proposes: the backticked span
+// right after "write ". Anchored on that word rather than on the first backtick
+// of the message, because a refusal quotes the token it objects to first
+// (“den exec: `--` is not needed — write `…` “). The "no command given"
+// wording carries a second remedy after this one — `den shell …` — and it is
+// not a `den exec` line, so it is not what this file replays.
+func remedyOf(t *testing.T, msg string) string {
+	t.Helper()
+	_, after, ok := strings.Cut(msg, "write `")
+	if !ok {
+		t.Fatalf("no remedy in %q", msg)
+	}
+	line, _, ok := strings.Cut(after, "`")
+	if !ok {
+		t.Fatalf("unterminated remedy in %q", msg)
+	}
+	return line
+}
+
+// Every refusal ends in "write `…`", and the line it writes must be one den
+// ACCEPTS. That is one property, not five, so it is tested as one: each case
+// asserts the remedy, then feeds the remedy back through the same validator and
+// requires nil.
+//
+// The 2026-08-14 review found the class, not an instance. Each message used to
+// re-join the raw tail on its own, so a line carrying two defects lost only one
+// of them per round trip: `den exec api -- -T go build` proposed `den exec api
+// -T go build`, refused in turn for the flag order — two refusals to reach a
+// legal line. Degenerate tails were worse: `den exec api --` proposed
+// `den exec api`, itself refused for having no command, and `den exec --`
+// proposed `den exec ` with a trailing space and no sandbox at all.
+//
+// The last three cases are the ones a reviewer of the PR named on 2026-08-14:
+// a flag's VALUE must travel with it (`--workdir /srv` lifted as a pair, or the
+// proposal reads `--workdir api /srv true` and makes `api` the workdir), and
+// `--den-home` must be in the closed set at all.
+func TestExecRemediesAreThemselvesLegal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{"a separator and a flag after the name",
+			[]string{"exec", "api", "--", "-T", "go", "build"}, "den exec -T api go build"},
+		{"a separator and nothing after it",
+			[]string{"exec", "api", "--"}, "den exec api go test"},
+		{"a leading separator",
+			[]string{"exec", "--", "api", "go", "build"}, "den exec api go build"},
+		// The one case where the remedy DROPS something the user typed, and it
+		// is accepted: cobra parsed `-T` before pflag ate the separator, so the
+		// flag is already in effect and is not among the arguments this
+		// validator sees. The proposal stays legal, which is the property under
+		// test; the row exists so the omission stays a decision.
+		{"a flag before a leading separator",
+			[]string{"exec", "-T", "--", "api", "go", "build"}, "den exec api go build"},
+		{"a flag and no command",
+			[]string{"exec", "api", "-T"}, "den exec -T api go test"},
+		{"a workdir after the name",
+			[]string{"exec", "api", "--workdir", "/srv", "true"}, "den exec --workdir /srv api true"},
+		{"a workdir spelled with =",
+			[]string{"exec", "api", "--workdir=/srv", "true"}, "den exec --workdir=/srv api true"},
+		{"the root's own den home after the name",
+			[]string{"exec", "api", "--den-home", "/tmp", "true"}, "den exec --den-home /tmp api true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateArgs(t, tc.argv...)
+			if err == nil {
+				t.Fatalf("%v must be refused", tc.argv)
+			}
+			got := remedyOf(t, err.Error())
+			if got != tc.want {
+				t.Errorf("remedy = %q, want %q (full message: %q)", got, tc.want, err.Error())
+			}
+			// The property, and the reason this test exists: replay it.
+			replay := strings.Fields(got)[1:] // drop "den"
+			if err := validateArgs(t, replay...); err != nil {
+				t.Errorf("the remedy %q is refused in turn: %v", got, err)
+			}
+		})
+	}
+}
+
+// With no sandbox name there is no line to propose, so these two refuse on the
+// usage instead of writing a remedy. `den exec --` is the shape that used to
+// produce “write `den exec ` “ — a trailing space, no name, nothing to run.
+// The third case is a sandbox named by an unset shell variable — `den exec
+// "$SANDBOX" -T go build` in a CI script. den must not go looking further down
+// the line for something that looks like a name: `go` would fit, and the remedy
+// would then propose running `build` in a sandbox the user never mentioned.
+func TestExecRefusesWithNoSandboxNameByNamingTheUsage(t *testing.T) {
+	for _, argv := range [][]string{{"exec"}, {"exec", "--"}, {"exec", "", "-T", "go", "build"}} {
+		t.Run(strings.Join(argv, " "), func(t *testing.T) {
+			err := validateArgs(t, argv...)
+			if err == nil {
+				t.Fatalf("%v must be refused", argv)
+			}
+			if strings.Contains(err.Error(), "write `") {
+				t.Errorf("a refusal naming no sandbox must not write a remedy; got %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), "usage: den exec <name> <cmd> [args...]") {
+				t.Errorf("the refusal must name the usage line; got %q", err.Error())
+			}
+		})
+	}
+}
+
+// The command's OWN flags pass through untouched. This is what
+// SetInterspersed(false) buys, and it is the reason `--` could be dropped at
+// all — measured on cobra in den's real command tree, 2026-08-14.
+func TestExecPassesTheCommandsOwnFlagsThrough(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"exec", "api", "go", "test", "-v", "-run", "TestX"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasPiped("exec", "-w", "/w/api", "api", "go", "test", "-v", "-run", "TestX") {
+		t.Errorf("pipes = %v", f.Pipes)
+	}
+}
+
+// `den exec api --help` runs `--help` IN the sandbox: cobra does NOT intercept
+// it past the first positional under SetInterspersed(false) (measured
+// 2026-08-14), and compose behaves the same. The easiest behaviour here to
+// lose by accident, hence a test of its own.
+func TestExecPassesHelpToTheSandbox(t *testing.T) {
+	for _, flag := range []string{"--help", "-h"} {
+		t.Run(flag, func(t *testing.T) {
+			f := &sbx.Fake{Responses: map[string]sbx.Response{
+				"ls --json": {Output: []byte(
+					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			}}
+			deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+
+			if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+				"exec", "api", "mytool", flag); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !f.HasPiped("exec", "-w", "/w/api", "api", "mytool", flag) {
+				t.Errorf("pipes = %v", f.Pipes)
+			}
+		})
+	}
+}
+
+// SetInterspersed(false) is set on the command's own FlagSet, which cobra
+// merges the root's persistent flags INTO before parsing. The merge must not
+// re-arm interspersing: --den-home has to keep parsing from the left.
+//
+// The assertion is POSITIVE — that the sbx lookup was reached — and not merely
+// "the error is not about an unknown flag". A negative assertion here passes
+// whatever happens: the fake answers nothing, so the command fails on the
+// lookup either way, and a re-armed FlagSet would go unnoticed.
+func TestExecStillReadsDenHomeBeforeTheSubcommand(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+	}}
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"--den-home", t.TempDir(), "exec", "api", "true"); err != nil {
+		t.Fatalf("--den-home must still parse before the subcommand: %v", err)
+	}
+	if !f.HasPiped("exec", "-w", "/w/api", "api", "true") {
+		t.Errorf("the command must have run, which proves parsing got past --den-home; pipes = %v", f.Pipes)
+	}
+}
+
+// den's own lines belong on stderr when the caller is a pipe: `den exec -T api
+// go build | tee log` must carry the child's stdout and nothing else.
 //
 // Deviation from the brief: Freshness is added to Deps. The fixture is
 // "stopped", so this reaches spawn.CheckFreshnessOnReentry on the STARTING
@@ -785,7 +1002,7 @@ func TestExecPutsItsOwnChatterOnStderrWithoutATty(t *testing.T) {
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
-		"exec", "api", "--", "true")
+		"exec", "api", "true")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -802,16 +1019,16 @@ func TestExecPutsItsOwnChatterOnStderrWithoutATty(t *testing.T) {
 //
 // Same deviation as TestExecPutsItsOwnChatterOnStderrWithoutATty above:
 // Freshness added, for the same "stopped" fixture / starting-branch reason.
-// This case also covers the no-command + tty path: len(command) == 0 forces
-// tty unconditionally in the RunE, so IsTTY: true here is confirming the
-// login-shell branch, not exercising the -T refusal (noTTY is false).
+// The tty comes from the INJECTED probe and nothing else since 2026-08-14: a
+// command is mandatory now, so there is no branch left that forces one. -T
+// would flip this verdict, which is why the argv carries none.
 func TestExecKeepsItsChatterOnStdoutWithATty(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
 			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return true }}
-	stdout, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api")
+	stdout, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "true")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -823,7 +1040,7 @@ func TestExecKeepsItsChatterOnStdoutWithATty(t *testing.T) {
 // The status of the command becomes the status of den — the reason #60 calls
 // exit-code propagation part of the issue rather than a follow-up.
 //
-// Same deviation as TestExecRunsTheCommandAfterTheDoubleDash above: PipeErr is
+// Same deviation as TestExecRunsACommandWithoutTheDoubleDash above: PipeErr is
 // only consulted on the non-tty branch, so a real IsTTY probe reporting true
 // (as this sandbox's does) would route this through Attach instead and never
 // see the error at all — the injected probe is what makes this test exercise
@@ -837,7 +1054,7 @@ func TestExecPropagatesTheCommandStatus(t *testing.T) {
 		PipeErr: &sbx.ExecError{Bin: "sbx", Err: fakeExitError{code: 42}},
 	}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
-	_, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "--", "false")
+	_, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "false")
 	var child *sbx.ChildExit
 	if !errors.As(err, &child) || child.Code != 42 {
 		t.Fatalf("err = %v, want a *sbx.ChildExit carrying 42", err)
@@ -867,11 +1084,12 @@ func TestExecStartsInTheDirectoryTheUserTypedFrom(t *testing.T) {
 				filepath.Dir(cwd) + `"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "exec", "api"); err != nil {
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "true"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.HasAttached("exec", "-it", "-w", cwd, "api", "bash", "-l") {
-		t.Errorf("-w must be the cwd, not the mount root; attaches: %v", f.Attaches)
+	if !f.HasPiped("exec", "-w", cwd, "api", "true") {
+		t.Errorf("-w must be the cwd, not the mount root; pipes: %v", f.Pipes)
 	}
 }
 
@@ -889,10 +1107,12 @@ func TestExecWorkdirOverridesTheCwd(t *testing.T) {
 				filepath.Dir(cwd) + `"]}]}`)},
 	}}
 
-	if _, err := executeCmdWithSbx(t, f, "exec", "api", "--workdir", "/custom"); err != nil {
+	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
+	if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
+		"exec", "--workdir", "/custom", "api", "true"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.HasAttached("exec", "-it", "-w", "/custom", "api", "bash", "-l") {
-		t.Errorf("--workdir must win over the cwd; attaches: %v", f.Attaches)
+	if !f.HasPiped("exec", "-w", "/custom", "api", "true") {
+		t.Errorf("--workdir must win over the cwd; pipes: %v", f.Pipes)
 	}
 }
