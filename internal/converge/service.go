@@ -374,7 +374,13 @@ func (s Service) Apply(ctx context.Context, req Request, plan *Plan, out, errOut
 
 	state, err := ReadSbxState(ctx, s.Sbx)
 	if err != nil {
-		return nil, err
+		// This read lands INSIDE the recoverable window the `applying` receipt
+		// above marks — on ModeUpdate the checkout was just fast-forwarded onto
+		// the target version, with none of its resources applied yet — but a
+		// bare ReadSbxState error names neither fact. Spec §12.3 requires both:
+		// what remains applied (nothing of this version, yet) and the command
+		// that resumes.
+		return nil, s.stateUnreadable(req, applying, err)
 	}
 	drivers := s.drivers(req, req.Candidate.Manifest, state)
 	applied := make([]ResourcePlan, 0, len(drivers))
@@ -389,8 +395,31 @@ func (s Service) Apply(ctx context.Context, req Request, plan *Plan, out, errOut
 		// PROVE that the resource it is skipping is really there, not trust a
 		// plan computed before an interruption.
 		o, err := d.Verify(ctx)
-		if err != nil || !o.Present {
+		if err != nil {
 			return nil, s.failed(req, applying, applied, planned, err)
+		}
+		if !o.Present {
+			// err == nil here: Verify itself did not fail, it read the resource
+			// back absent. planned.Observed is the PRE-apply state Plan
+			// captured, which would make the error repeat a stale "before"
+			// observation as if verification had never run; o.Detail is what
+			// verification actually saw.
+			//
+			// The cause wording is NOT the same for both branches above: when
+			// planned.Action != ActionUnchanged this iteration really did call
+			// d.Apply and it reported success, so the resource was applied and
+			// then read back absent. When it stayed ActionUnchanged, Apply was
+			// skipped on purpose (this is the resume path the comment above
+			// documents) and nothing happened THIS run — saying "applied" there
+			// would be a false claim in a user-facing error, which den's error
+			// doctrine forbids.
+			readBackAbsent := planned
+			readBackAbsent.Observed = o.Detail
+			cause := fmt.Errorf("applied, then read back absent by the verification that follows every apply")
+			if planned.Action == ActionUnchanged {
+				cause = fmt.Errorf("read back absent by verification, though the plan observed it present")
+			}
+			return nil, s.failed(req, applying, applied, readBackAbsent, cause)
 		}
 		verified := planned
 		verified.Action, verified.Known, verified.Observed = ActionUnchanged, true, o.Detail
@@ -448,6 +477,34 @@ func (s Service) failed(req Request, applying source.Receipt, applied []Resource
 	}
 }
 
+// stateUnreadable reports Apply's OTHER observation failure: not while
+// applying one resource (s.failed owns that), but the read that must succeed
+// before the driver loop can even start. It always lands after the `applying`
+// receipt is written, so the machine is already in the window that receipt
+// marks — den must say what state that window holds, or the error reads as
+// an ordinary I/O fault instead of "you are mid-convergence, and here is how
+// to finish it."
+//
+// The window's content depends on the mode: ModeUpdate has just
+// fast-forwarded the installed checkout onto the target version (the merge
+// immediately above), so the checkout and the applying resources have
+// already diverged. ModeInit/ModeAdd install nothing until every resource
+// verifies (see Apply's own ordering comment), so nothing is on disk under
+// sources/<name>/ yet — resumeCommand already draws exactly this line for
+// every other failure in Apply, and this message must not contradict it.
+func (s Service) stateUnreadable(req Request, applying source.Receipt, cause error) error {
+	if req.Mode == ModeInit || req.Mode == ModeAdd {
+		return fmt.Errorf(
+			"source %q: cannot read sbx state to apply version %s (%w) — nothing is installed yet, "+
+				"and the resources that did converge are recorded; %s",
+			req.Name, applying.TargetVersion, cause, s.resumeCommand(req))
+	}
+	return fmt.Errorf(
+		"source %q: cannot read sbx state to apply version %s (%w) — the checkout under "+
+			"sources/%s/ is already at that version while its resources are not yet applied; %s",
+		req.Name, applying.TargetVersion, cause, req.Name, s.resumeCommand(req))
+}
+
 // resumeCommand names the command that picks this convergence back up.
 //
 // It depends on the MODE, and getting it wrong costs the user a hop: on a first
@@ -475,14 +532,32 @@ func (s Service) resumeCommand(req Request) string {
 //
 // `--ff-only`, so a rewritten history is a refusal instead of a merge commit
 // den would then have to explain — same contract as the legacy
-// `den source update` (internal/source/mutate.go).
+// `den source update` (internal/source/mutate.go), and the refusal below
+// names the same working remedy that one does.
+//
+// The remedy matters because a retry cannot fix this on its own: the fetch
+// that produced req.Candidate already happened (FetchCandidate, before Apply
+// was even called), so `merge --ff-only` fails identically every time
+// `den source configure` retries it — the applying marker would never clear.
+// den must say the checkout needs a re-clone or the remote needs its history
+// fixed, not just repeat the command that cannot succeed.
 func (s Service) fastForward(ctx context.Context, req Request) error {
 	dir := source.Dir(req.DenHome, req.Name)
 	if _, err := s.Git.Run(ctx, dir, "merge", "--ff-only", req.Candidate.Commit); err != nil {
+		url := source.InstalledURL(ctx, s.Git, req.DenHome, req.Name)
+		if url == "" {
+			url = "<url>"
+		}
 		return fmt.Errorf(
 			"source %q: cannot fast-forward %s onto the confirmed commit %s — the team repo "+
-				"rewrote its history since the fetch; nothing of version %s was applied (%w)",
-			req.Name, dir, req.Candidate.Commit, req.Candidate.Manifest.Metadata.Version, err)
+				"rewrote its history since the fetch; nothing of version %s was applied, and "+
+				"`den source configure %s` will fail the same way on every retry. The fetch may "+
+				"also have orphaned local commits only reachable via the old history, so "+
+				"`den source rm %s` may itself refuse naming them — `den source rm --force %s` "+
+				"then `den source add %s --name %s` re-clones it if you have nothing there worth "+
+				"keeping (%w)",
+			req.Name, dir, req.Candidate.Commit, req.Candidate.Manifest.Metadata.Version, req.Name,
+			req.Name, req.Name, url, req.Name, err)
 	}
 	return nil
 }

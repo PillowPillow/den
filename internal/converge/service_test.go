@@ -332,6 +332,189 @@ func TestApplyNamesTheRightResumeCommandForEachMode(t *testing.T) {
 	}
 }
 
+// Verify can succeed (err == nil) while still reporting a resource ABSENT —
+// here, a network rule the plan observed allowed vanishes between Plan and
+// Apply, so the driver's Action stays ActionUnchanged and Apply never calls
+// d.Apply at all. Verify runs regardless (den's own comment: "a resumed
+// convergence must PROVE that the resource it is skipping is really there,
+// not trust a plan computed before an interruption") and correctly reports it
+// missing. Before the fix, s.failed(req, applying, applied, planned, nil)
+// synthesized a ResourceError from `planned`, whose Observed field is the
+// PRE-apply "2 of 2 hosts allowed" the plan already printed — the error never
+// proved verification is what failed, and never showed what verification
+// actually saw.
+func TestApplyReportsVerificationFailureWhenAResourceReadsBackAbsent(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	// Both declared hosts already allowed, stored the way sbx itself stores
+	// them (sbx.NormalizeNetworkResource) — the network resource plans
+	// ActionUnchanged, the same shape a resumed `den source configure` sees.
+	f.Allowed[sbx.NormalizeNetworkResource("api.example.test")] = true
+	f.Allowed[sbx.NormalizeNetworkResource("cdn.example.test")] = true
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+
+	plan := planFor(t, s, req)
+	var network ResourcePlan
+	for _, r := range plan.Resources {
+		if r.Kind == KindBuildNetwork {
+			network = r
+		}
+	}
+	if network.Action != ActionUnchanged || network.Observed != "2 of 2 hosts allowed" {
+		t.Fatalf("network plan = %+v, want unchanged with both hosts already allowed", network)
+	}
+
+	// The rule drops between the plan and the apply.
+	delete(f.Allowed, sbx.NormalizeNetworkResource("cdn.example.test"))
+
+	var out strings.Builder
+	_, err := s.Apply(context.Background(), req, plan, &out, &out)
+	if err == nil {
+		t.Fatal("expected the vanished rule to fail the apply")
+	}
+	var resErr *ResourceError
+	if !errors.As(err, &resErr) {
+		t.Fatalf("error = %v, want a *ResourceError", err)
+	}
+	if resErr.Resource != KindBuildNetwork {
+		t.Errorf("Resource = %q, want %q", resErr.Resource, KindBuildNetwork)
+	}
+	// The POST-verify read, not the plan's stale "both allowed": this is the
+	// field the fix must change.
+	if resErr.Observed != "1 of 2 hosts allowed" {
+		t.Errorf("Observed = %q, want the post-verify read (not the plan's %q)",
+			resErr.Observed, network.Observed)
+	}
+	if resErr.Expected != network.Expected {
+		t.Errorf("Expected = %q, want the plan's %q", resErr.Expected, network.Expected)
+	}
+	if resErr.Remaining == "" {
+		t.Error("Remaining is empty, want what was already applied recorded")
+	}
+	if !strings.Contains(resErr.Resume, "den source add") || !strings.Contains(resErr.Resume, remote) {
+		t.Errorf("Resume = %q, want the first-install resume command", resErr.Resume)
+	}
+}
+
+// The other observation failure in Apply: not while applying one resource
+// (TestApplyReportsVerificationFailureWhenAResourceReadsBackAbsent, above),
+// but the read that must succeed before the driver loop can even start. On
+// ModeUpdate it fires AFTER fastForward has moved the installed checkout onto
+// the target version — the machine is inside the recoverable window the
+// `applying` receipt marks, but a bare error names neither fact.
+func TestApplyNamesTheResumeCommandWhenSbxStateIsUnreadable(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
+		&strings.Builder{}, &strings.Builder{}); err != nil {
+		t.Fatalf("installing 1.0.0: %v", err)
+	}
+	cleanup()
+	installed := source.Dir(denHome, "dg")
+	before := gitOutput(t, installed, "rev-parse", "HEAD")
+
+	publishVersion(t, remote, "2.0.0", "new.example.test")
+	c, err := source.FetchCandidate(context.Background(), s.Git, denHome, "dg")
+	if err != nil {
+		t.Fatalf("FetchCandidate: %v", err)
+	}
+	defer c.Close()
+	update := req
+	update.Mode, update.Candidate = ModeUpdate, c
+	plan := planFor(t, s, update)
+
+	// The read fails only INSIDE Apply, after the fast-forward: Plan above
+	// already read the state successfully with the same double.
+	f.Fail["secret ls -g"] = errors.New("keychain error -50")
+
+	var out strings.Builder
+	_, err = s.Apply(context.Background(), update, plan, &out, &out)
+	if err == nil {
+		t.Fatal("expected the unreadable sbx state to fail the update")
+	}
+	if !strings.Contains(err.Error(), "den source configure dg") {
+		t.Errorf("error does not name the resume command: %v", err)
+	}
+	if !strings.Contains(err.Error(), "2.0.0") {
+		t.Errorf("error does not name the target version: %v", err)
+	}
+	// And the claim is true: the checkout really IS at the target version.
+	if got := gitOutput(t, installed, "rev-parse", "HEAD"); got == before || got != c.Commit {
+		t.Errorf("HEAD = %s, want the fast-forwarded commit %s", got, c.Commit)
+	}
+}
+
+// A failed fast-forward must name the rewritten-history case and the remedy
+// that actually works: the fetch that produced req.Candidate already
+// happened, so `den source configure` retries the SAME impossible merge every
+// time — only a re-clone or a fixed remote clears it.
+func TestApplyNamesTheRemedyWhenFastForwardIsImpossible(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	f.Fail["policy allow network new.example.test"] = errors.New("sbx refused")
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
+		&strings.Builder{}, &strings.Builder{}); err != nil {
+		t.Fatalf("installing 1.0.0: %v", err)
+	}
+	cleanup()
+
+	publishVersion(t, remote, "2.0.0", "new.example.test")
+	c1, err := source.FetchCandidate(context.Background(), s.Git, denHome, "dg")
+	if err != nil {
+		t.Fatalf("FetchCandidate: %v", err)
+	}
+	update := req
+	update.Mode, update.Candidate = ModeUpdate, c1
+	// This attempt fast-forwards the installed checkout onto 2.0.0 and THEN
+	// fails on the policy — leaving the checkout at 2.0.0, exactly the setup
+	// TestUpdateActivatesTheNewVersionOnlyAfterEveryResourceVerifies exercises.
+	if _, err := s.Apply(context.Background(), update, planFor(t, s, update), &strings.Builder{}, &strings.Builder{}); err == nil {
+		t.Fatal("expected the failing policy to stop the first attempt")
+	}
+	c1.Close()
+	delete(f.Fail, "policy allow network new.example.test")
+
+	// The team rewrites the SAME 2.0.0 commit (a force-push after review
+	// feedback, say). A fresh fetch now sees a sibling of the commit the
+	// installed checkout was already fast-forwarded onto — not a descendant
+	// of it — so `--ff-only` cannot reach it from here.
+	gitCmd(t, remote, "commit", "--amend", "-m", "rewritten 2.0.0")
+
+	c2, err := source.FetchCandidate(context.Background(), s.Git, denHome, "dg")
+	if err != nil {
+		t.Fatalf("FetchCandidate: %v", err)
+	}
+	defer c2.Close()
+	retry := req
+	retry.Mode, retry.Candidate = ModeUpdate, c2
+
+	var out strings.Builder
+	_, err = s.Apply(context.Background(), retry, planFor(t, s, retry), &out, &out)
+	if err == nil {
+		t.Fatal("expected the impossible fast-forward to fail the retry")
+	}
+	if !strings.Contains(err.Error(), "rewrote its history") {
+		t.Errorf("error does not name the rewritten-history case: %v", err)
+	}
+	if !strings.Contains(err.Error(), "re-clones") && !strings.Contains(err.Error(), "rm --force") {
+		t.Errorf("error does not say the checkout must be re-cloned: %v", err)
+	}
+}
+
+// gitCmd runs git for TEST SETUP — mutating the remote — never for an
+// assertion (gitOutput, above, owns that).
+func gitCmd(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-c", "user.email=t@example.test", "-c", "user.name=t"}, args...)...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
 // The resume: the same convergence run again skips what verifies and finishes
 // the rest. It also proves the skip is not blind — the run VERIFIES the
 // resources it does not reapply.
