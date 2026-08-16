@@ -65,6 +65,17 @@ type Fake struct {
 	// still recorded in Calls even if it fails.
 	AttachErr error
 
+	// Inputs records ONLY the calls to RunInput, in order — the argv, never
+	// the piped secret. A test asserting that a password travelled on stdin
+	// reads this list and checks the value is absent from the argv.
+	Inputs [][]string
+
+	// Sensitive records ONLY the calls to RunSensitive, in order, ALREADY
+	// redacted. Same reason as Inputs, opposite direction: here the value does
+	// reach argv (sbx v0.38.0 leaves no choice for `secret set-custom`), so
+	// what a test can see must be the redacted form.
+	Sensitive [][]string
+
 	// PipeErr is returned by Pipe. The call is still recorded when it fails —
 	// a test asserting "den ran the command AND propagated its failure" needs
 	// both halves.
@@ -175,3 +186,38 @@ func (f *Fake) HasPiped(prefix ...string) bool {
 // must surface at `go build ./...`, not at the first `go test` of some
 // downstream package that consumes Fake.
 var _ Runner = (*Fake)(nil)
+
+// RunInput records the ARGV and drops the input: the input is the secret, and
+// a double that stored it would put a live credential in a test's memory and,
+// on failure, in its output. A test asserting "den piped the password rather
+// than passing it in argv" checks the argv it does record — the absence of the
+// value there is the property.
+func (f *Fake) RunInput(_ context.Context, _ []byte, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	f.Calls = append(f.Calls, slices.Clone(args))
+	f.Inputs = append(f.Inputs, slices.Clone(args))
+	f.mu.Unlock()
+	if r, ok := f.Responses[strings.Join(args, " ")]; ok {
+		return slices.Clone(r.Output), r.Err
+	}
+	return slices.Clone(f.Default.Output), f.Default.Err
+}
+
+// RunSensitive records the argv WITH the named positions redacted, and looks
+// its response up under the redacted key too.
+//
+// Recording the redacted form is the point: `Fake.Calls` is what tests print
+// on failure, and a golden or a t.Errorf that dumped the real argv would leak
+// the value the production redaction exists to hide. The response lookup uses
+// the same key so a test scripts the call it can actually see.
+func (f *Fake) RunSensitive(_ context.Context, redactedIndexes []int, args ...string) ([]byte, error) {
+	safe := RedactArgs(args, redactedIndexes)
+	f.mu.Lock()
+	f.Calls = append(f.Calls, safe)
+	f.Sensitive = append(f.Sensitive, safe)
+	f.mu.Unlock()
+	if r, ok := f.Responses[strings.Join(safe, " ")]; ok {
+		return slices.Clone(r.Output), r.Err
+	}
+	return slices.Clone(f.Default.Output), f.Default.Err
+}

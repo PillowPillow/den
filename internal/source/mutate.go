@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/lint"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -54,18 +53,18 @@ func Add(ctx context.Context, git worktree.Git, denHome, url, name string) (stri
 	if _, err := git.Run(ctx, Root(denHome), "clone", "--", url, dir); err != nil {
 		return "", err
 	}
-	if errs := lint.Run(dir); len(errs) > 0 {
+	if errs := Lint(dir); len(errs) > 0 {
 		// Best-effort removal: the refusal below matters more than the cleanup's
 		// own error, and a leftover directory is visible in `den source ls`.
 		os.RemoveAll(dir)
-		return "", lintRefusal(name, url, errs)
+		return "", LintRefusal(name, url, errs)
 	}
 	return name, nil
 }
 
-// lintRefusal assembles lint findings into one refusal, ConfigError-shaped:
+// LintRefusal assembles lint findings into one refusal, ConfigError-shaped:
 // all faults at once, so the team repo gets one report instead of one per push.
-func lintRefusal(name, where string, errs []error) error {
+func LintRefusal(name, where string, errs []error) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "source %q: %s is not a valid source:", name, where)
 	for _, e := range errs {
@@ -271,7 +270,7 @@ func Update(ctx context.Context, git worktree.Git, denHome, name string) error {
 		// Nothing was registered if `add` itself failed: no worktree to prune.
 		return err
 	}
-	lintErrs := lint.Run(probe)
+	lintErrs := Lint(probe)
 	// Remove the directory, THEN prune — in that order. `worktree prune`
 	// only drops a registration whose directory is already gone; pruning
 	// before clearing the directory is a no-op, and the deferred
@@ -286,7 +285,7 @@ func Update(ctx context.Context, git worktree.Git, denHome, name string) error {
 	}
 	if len(lintErrs) > 0 {
 		return fmt.Errorf("%w\nthe local clone stays on its last valid state — nothing changed",
-			lintRefusal(name, "the fetched update", lintErrs))
+			LintRefusal(name, "the fetched update", lintErrs))
 	}
 	if _, err := git.Run(ctx, dir, "merge", "--ff-only", "@{u}"); err != nil {
 		return fmt.Errorf(

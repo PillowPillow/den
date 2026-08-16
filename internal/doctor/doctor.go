@@ -13,6 +13,7 @@ import (
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/nest"
+	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/sshagent"
 )
 
@@ -402,16 +403,29 @@ func Run(denHome string, d Deps) []Check {
 		add("nest "+c.Name, false, "unreadable: %v", c.Err)
 	}
 	for _, n := range nests {
-		stackName := n.Stack
+		stackName := strings.TrimSpace(n.Stack)
 		if stackName == "" {
-			stackName = g.Defaults.Stack
+			stackName = strings.TrimSpace(g.Defaults.Stack)
 		}
-		// Get: the nest must learn whether ITS stack is unreadable or
-		// missing — two different fixes. A membership test would say
-		// "not found" for both, which is what made doctor lie whenever
-		// some other stack broke the whole load.
-		if _, err := stacks.Get(stackName); err != nil {
-			add("nest "+n.Name, false, "%v", err)
+		switch {
+		case stackName == "":
+			// The SAME judgment nest.Resolve makes, in the same words. Since
+			// `defaults.stack` became optional (a source-aware home declares
+			// none), an empty name reaches here on a stackless local nest —
+			// and stacks.Get("") answered `stack "" not found`, which sends the
+			// user looking for a stack nobody named instead of at the two files
+			// that could name one.
+			add("nest "+n.Name, false,
+				"no stack is configured — add `stack:` to %s, or set `defaults.stack` in %s",
+				nest.FilePath(denHome, n.Name), config.GlobalPath(denHome))
+		default:
+			// Get: the nest must learn whether ITS stack is unreadable or
+			// missing — two different fixes. A membership test would say
+			// "not found" for both, which is what made doctor lie whenever
+			// some other stack broke the whole load.
+			if _, err := stacks.Get(stackName); err != nil {
+				add("nest "+n.Name, false, "%v", err)
+			}
 		}
 		// The optional keys a `select: prompt` nest declares and this machine
 		// maps nowhere, collected instead of failed — see the branch below.
@@ -589,4 +603,33 @@ func OrphanCheck(live LiveSandboxes, manifests []manifest.Manifest) Check {
 		"%s: recorded by den but no live sandbox — the worktrees are still on disk; "+
 			"reclaim them with `den doctor --fix` (add --force if one carries uncommitted changes)",
 		strings.Join(parts, ", "))}
+}
+
+// SourceCheck maps a manifested source's convergence status onto a diagnostic
+// level. It is the ONE place that mapping lives, so `den doctor` and
+// `den source status` can never disagree on what counts as broken.
+//
+// The observation itself is NOT made here: reading the machine means running
+// sbx, and this package promises no side effects and no network in its first
+// line (the same boundary OrphanCheck's live list respects). internal/cli owns
+// the runner and calls converge.Service.Status; doctor owns the verdict.
+//
+// `unknown` FAILS. That is the judgment the prototype forced: a restricted
+// environment denied Keychain access, both inspection commands exited 1, and a
+// den that mapped "could not look" to OK would have reported a healthy machine
+// while every spawn was about to fail. A diagnosis den cannot make is a
+// diagnosis the user must make.
+func SourceCheck(name string, status source.SourceStatus, detail string) Check {
+	c := Check{Name: "source " + name, Detail: detail}
+	switch status {
+	case source.StatusReady:
+		c.Level = LevelOK
+	case source.StatusPartiallyReady:
+		// A working repository this machine does not have: den never clones, so
+		// this is a normal state of a correctly installed source.
+		c.Level = LevelWarning
+	default:
+		c.Level = LevelFail
+	}
+	return c
 }

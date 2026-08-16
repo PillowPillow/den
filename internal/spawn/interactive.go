@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
 )
 
@@ -89,15 +88,18 @@ func nonInteractiveEquivalents(prompts bool) string {
 // sandbox as the equivalent --without" true by construction rather than by
 // coincidence — see TestInteractiveProducesTheSameArgvAsTheEquivalentWithout.
 //
-// denHome is here for one line of output: the checklist's unmapped-key
-// annotation names the file to edit, and that file is <denHome>/config.yaml —
-// NOT the literal "config.yaml" it used to print. Under DEN_HOME (which is what
-// makes den's own suite hermetic, and what a user with two homes types every
-// day) the literal named a file that does not exist at the place the reader
-// would look for it. Threaded rather than derived here, because
-// config.GlobalPath is the sole definition of that path and unmappedNote is the
-// message site that must agree with every other one.
-func interactiveWithout(d Deps, denHome string, n *nest.Nest, mapping map[string]string) ([]string, error) {
+// mappingPath is here for one line of output: the checklist's unmapped-key
+// annotation names the file to edit — NOT the literal "config.yaml" it used to
+// print. Under DEN_HOME (which is what makes den's own suite hermetic, and what
+// a user with two homes types every day) the literal named a file that does not
+// exist at the place the reader would look for it.
+//
+// mapping and mappingPath travel TOGETHER, and neither is derived here: a
+// manifested source resolves its keys through its own source-config file
+// (spec §6), so a checklist that consulted the global mapping would offer a
+// repo nest.Resolve then refuses, or mark as unmapped one it resolves. The
+// caller selected both; this layer only displays them.
+func interactiveWithout(d Deps, mappingPath string, n *nest.Nest, mapping map[string]string) ([]string, error) {
 	// Nothing to ask comes FIRST, before the terminal check: a nest with no
 	// optional repo needs no answer, so it needs no terminal either — `den spawn
 	// api -i --detach` from a script keeps working, and says why it asked nothing
@@ -130,7 +132,7 @@ func interactiveWithout(d Deps, denHome string, n *nest.Nest, mapping map[string
 		// mid-sequence.
 		in = os.Stdin
 	}
-	return promptOptionalRepos(d.Out, in, denHome, n.Name, n.Repos, n.PromptsForRepos(), mapping)
+	return promptOptionalRepos(d.Out, in, mappingPath, n.Name, n.Repos, n.PromptsForRepos(), mapping)
 }
 
 // selectionFlagsInPlay names the repo-selection flag `-i` collides with, or ""
@@ -202,7 +204,7 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // what this checklist needs — print a list, read a line, toggle — is a dozen
 // lines of stdlib. A TUI library would buy cursor movement and colours for the
 // price of the one property the project advertises.
-func promptOptionalRepos(out io.Writer, in io.Reader, denHome, nestName string, repos []nest.Repo,
+func promptOptionalRepos(out io.Writer, in io.Reader, mappingPath, nestName string, repos []nest.Repo,
 	prompts bool, mapping map[string]string) ([]string, error) {
 	startChecked := !prompts
 	equivalents := nonInteractiveEquivalents(prompts)
@@ -232,7 +234,7 @@ func promptOptionalRepos(out io.Writer, in io.Reader, denHome, nestName string, 
 			if keep[i] {
 				box = "x"
 			}
-			fmt.Fprintf(out, "  %d [%s] %s%s\n", i+1, box, r.Name(), unmappedNote(r, mapping, denHome))
+			fmt.Fprintf(out, "  %d [%s] %s%s\n", i+1, box, r.Name(), unmappedNote(r, mapping, mappingPath))
 		}
 		fmt.Fprintf(out, "toggle by number (space-separated), empty line to confirm — %s\n> ",
 			equivalents)
@@ -285,14 +287,14 @@ func promptOptionalRepos(out io.Writer, in io.Reader, denHome, nestName string, 
 // reader with two homes to edit the wrong file, or to look for a path den never
 // stated. Same rule as resolveRepoKeys' own refusal and `den doctor`'s, which is
 // what the reader will see next if they tick this box anyway.
-func unmappedNote(r nest.Repo, mapping map[string]string, denHome string) string {
+func unmappedNote(r nest.Repo, mapping map[string]string, mappingPath string) string {
 	if r.Key == "" {
 		return ""
 	}
 	if _, ok := mapping[r.Key]; ok {
 		return ""
 	}
-	return "      (not mapped in " + config.GlobalPath(denHome) + ")"
+	return "      (not mapped in " + mappingPath + ")"
 }
 
 // parseToggles turns a line of numbers into zero-based indexes, or returns the

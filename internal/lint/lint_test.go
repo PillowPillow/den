@@ -438,3 +438,204 @@ func TestRunAcceptsKeyReposInANest(t *testing.T) {
 		t.Errorf("a key-only nest is the shareable form and must lint clean, got: %v", errs)
 	}
 }
+
+// The catalogue, not the directory, is the judge for a manifested source
+// (spec 2026-08-14 §5.2). A stack that exists but is not exported is an
+// implementation detail: a nest may not reference it, and its own faults are
+// not the source's — UNLESS an exported stack's `parent:` ancestry reaches
+// it (Task 7 review fix, 2026-08-16; see RunCatalogue's doc). This test's
+// `helper` stays outside every export's ancestry (nothing here declares a
+// `parent:`), so "nothing exported can reach it" still holds for it — the
+// refinement is exercised by TestRunCatalogueResolvesParentOutsideCatalogue
+// and its siblings below, not by this test.
+func TestRunCatalogueJudgesOnlyExportedObjects(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml":   validStack,
+		"stacks/helper/stack.yaml": "image: helper:v1\nbase: claude\negres: []\n", // broken AND unexported
+		"nests/api.yaml":           "stack: devx\nrepos:\n  - { key: api }\n",
+		"nests/draft.yaml":         "stack: nowhere\n", // unexported: not judged
+	})
+	cat := Catalogue{Stacks: []string{"devx"}, Nests: []string{"api"}}
+	if errs := RunCatalogue(root, cat); len(errs) != 0 {
+		t.Fatalf("expected no findings over the exported catalogue, got: %v", errs)
+	}
+
+	// The same tree, with the nest now pointing at the unexported stack: the
+	// directory scan would resolve it, the catalogue must not.
+	root = writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml":   validStack,
+		"stacks/helper/stack.yaml": "image: helper:v1\nbase: claude\n",
+		"nests/api.yaml":           "stack: helper\nrepos:\n  - { key: api }\n",
+	})
+	if errs := Run(root); len(errs) != 0 {
+		t.Fatalf("the legacy scan resolves helper and must stay unchanged, got: %v", errs)
+	}
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}, Nests: []string{"api"}})
+	if len(errs) == 0 {
+		t.Fatal("expected a refusal: an exported nest must resolve its stack through the exported catalogue")
+	}
+	if !strings.Contains(errs[0].Error(), "helper") {
+		t.Errorf("errors = %v, expected the unexported stack to be named", errs)
+	}
+}
+
+// I1 (final whole-branch review, 2026-08-16): a `stacks/<name>` that is a
+// SYMLINK to a directory is a HEALTHY stack to config.LoadStack (it reads
+// stack.yaml straight through the link) but invisible to config.LoadStacks —
+// os.ReadDir's DirEntry.IsDir() is lstat-based, so a symlink entry never
+// answers true and LoadStacks skips it (internal/config/stack.go: "a
+// directory without a stack.yaml is ignored", and a symlink entry is never
+// even statted for one). RunCatalogue still loads devx by NAME through
+// LoadStack, so the export exists in `stacks` — but before this fix, `judge`
+// only ever ran checkStack over `parents.Healthy`, the LoadStacks copy where
+// devx never landed, so its confinement faults went unchecked. Reproduced
+// against 8baec66: this exact tree returned zero findings.
+func TestRunCatalogueJudgesASymlinkedExportedStack(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, ".devx-real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The absolute path is the confinement fault: written absolute in
+	// stack.yaml, refused unconditionally by checkDeclaredPath regardless of
+	// where it happens to point (see that function's doc, refusal #1).
+	absStep := filepath.Join(realDir, "outside.sh")
+	if err := os.WriteFile(absStep, []byte("true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stackYAML := "image: devx:v1\nbase: claude\nprovision:\n  steps: [" + absStep + "]\n"
+	if err := os.WriteFile(filepath.Join(realDir, "stack.yaml"), []byte(stackYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "stacks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(root, "stacks", "devx")); err != nil {
+		t.Fatal(err)
+	}
+
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}})
+	joined := errsString(errs)
+	if !strings.Contains(joined, "absolute") || !strings.Contains(joined, "devx") {
+		t.Fatalf("expected the exported stack's absolute-path fault to be caught even though its directory is a symlink, got: %v", errs)
+	}
+}
+
+// An exported object that does not load is the source's fault and must be
+// named — the catalogue promised it.
+func TestRunCatalogueReportsUnloadableExports(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml": "image: devx:v1\nbase: claude\negres: []\n",
+	})
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}, Nests: []string{"ghost"}})
+	if len(errs) != 2 {
+		t.Fatalf("expected the broken stack AND the missing nest, got: %v", errs)
+	}
+	joined := errs[0].Error() + " | " + errs[1].Error()
+	if !strings.Contains(joined, "egres") || !strings.Contains(joined, "ghost") {
+		t.Errorf("errors = %v, expected both the strict-YAML fault and the absent nest", errs)
+	}
+}
+
+// Task 7 review fix (2026-08-16): a stack's `parent:` is internal
+// composition, resolved against the FULL checkout scan, not the export
+// catalogue — den itself BUILDS a layered stack like this one
+// (buildDriver.Apply → build.Chain, both over a full config.LoadStacks
+// scan), so a catalogue-scoped lint refusing it would refuse a source
+// `den source add` (and `den build`) accept, on a message naming the
+// checkout's own stacks/ directory, where `base` visibly exists.
+func TestRunCatalogueResolvesParentOutsideCatalogue(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/base/stack.yaml":     "image: base:v1\nbase: claude\n",
+		"stacks/devx/stack.yaml":     "image: devx:v1\nparent: base\nprovision:\n  steps: [./provision/x.sh]\n",
+		"stacks/devx/provision/x.sh": "true\n",
+	})
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}})
+	if len(errs) != 0 {
+		t.Fatalf("a layered source (exported stack, unexported parent) must lint clean, got: %v", errs)
+	}
+}
+
+// A `parent:` naming a stack absent from the checkout ENTIRELY is still an
+// error — the full-scan widening (above) only stops refusing parents that
+// DO exist unexported; it must keep refusing ones that don't exist at all,
+// and the message must still name the stacks/ directory to create them in.
+func TestRunCatalogueRefusesParentAbsentFromCheckout(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml":     "image: devx:v1\nparent: nowhere\nprovision:\n  steps: [./provision/x.sh]\n",
+		"stacks/devx/provision/x.sh": "true\n",
+	})
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}})
+	if len(errs) == 0 {
+		t.Fatal("expected a refusal: `parent: nowhere` names nothing in the checkout")
+	}
+	joined := errsString(errs)
+	for _, want := range []string{"nowhere", "not found", filepath.Join(root, "stacks")} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("errors = %v, missing %q", errs, want)
+		}
+	}
+}
+
+// The full-scan widening resolves the WHOLE ancestry, not just the immediate
+// parent — devx's parent (mid) is fine, but mid's OWN parent (base) is
+// broken. build.Chain (internal/build/graph.go) walks the identical chain
+// for `den build devx` and would refuse on base too: lint must catch it
+// here, at `den source add`, not let the clone through to fail later.
+func TestRunCatalogueResolvesWholeParentChainNotJustImmediateParent(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/base/stack.yaml":     "image: base:v1\nbase: claude\negres: []\n", // strict-decode fault
+		"stacks/mid/stack.yaml":      "image: mid:v1\nparent: base\nprovision:\n  steps: [./provision/x.sh]\n",
+		"stacks/mid/provision/x.sh":  "true\n",
+		"stacks/devx/stack.yaml":     "image: devx:v1\nparent: mid\nprovision:\n  steps: [./provision/x.sh]\n",
+		"stacks/devx/provision/x.sh": "true\n",
+	})
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}})
+	joined := errsString(errs)
+	for _, want := range []string{`"mid"`, `"base"`, "unreadable", "egres"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("errors = %v, missing %q — the broken ancestor two hops up must be named", errs, want)
+		}
+	}
+}
+
+// A `parent:` cycle that closes through an UNEXPORTED stack must still be
+// refused: build.Chain refuses it identically for `den build devx`
+// regardless of who exports what, so a catalogue-scoped cycle check would
+// accept a chain build refuses — the direction task 7's dispatch calls out
+// by name.
+func TestRunCatalogueRefusesCycleThroughUnexportedStack(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml":     "image: devx:v1\nparent: base\nprovision:\n  steps: [./provision/x.sh]\n",
+		"stacks/devx/provision/x.sh": "true\n",
+		"stacks/base/stack.yaml":     "image: base:v1\nparent: devx\nprovision:\n  steps: [./provision/x.sh]\n",
+		"stacks/base/provision/x.sh": "true\n",
+	})
+	// base is deliberately NOT in the catalogue.
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}})
+	if len(errs) == 0 || !strings.Contains(errsString(errs), "cycle") {
+		t.Fatalf("expected a cycle refusal even though one member is unexported, got: %v", errs)
+	}
+}
+
+// An orphan pair — a cycle entirely among unexported stacks that no export's
+// `parent:` ancestry ever reaches — must stay silent. This is what pins the
+// ruling in RunCatalogue's doc: "nothing published can reach it" still
+// governs anything OUTSIDE the ancestor closure, cycle or not. Widening
+// `parent:` resolution and cycle detection to the full scan must not also
+// widen judgment to every draft sitting in stacks/ — that would turn the
+// false-refusal fix into a NEW false refusal, and `den source add` deletes
+// the clone it refuses.
+func TestRunCatalogueIgnoresOrphanCycleOutsideAncestry(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/devx/stack.yaml":        validStack, // exported, no parent: not on anyone's chain
+		"stacks/orphanA/stack.yaml":     "image: a:v1\nparent: orphanB\nprovision:\n  steps: [./provision/x.sh]\n",
+		"stacks/orphanA/provision/x.sh": "true\n",
+		"stacks/orphanB/stack.yaml":     "image: b:v1\nparent: orphanA\nprovision:\n  steps: [./provision/x.sh]\n",
+		"stacks/orphanB/provision/x.sh": "true\n",
+	})
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}})
+	if len(errs) != 0 {
+		t.Fatalf("an orphan cycle nobody exports reaches must not be a finding, got: %v", errs)
+	}
+}

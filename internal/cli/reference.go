@@ -76,7 +76,14 @@ func sandboxNameOf(ref string) (string, error) {
 //
 // Either way the worktree suffix is split off first, for sandboxNameOf's
 // reason in reverse: it is not part of what a source prefixes.
-func nestOfSandbox(denHome, ref, sandboxName string) (*nest.Nest, error) {
+//
+// It returns the SOURCE the nest came from alongside it — empty for a local
+// nest. Returned rather than re-derived by the caller because both branches
+// already know it, and a caller that decoded a second time could disagree with
+// this one: `den rm` resolves that nest's repo keys through the source's own
+// personal mapping, and looking them up in the wrong scope moves the wrong
+// directory.
+func nestOfSandbox(denHome, ref, sandboxName string) (*nest.Nest, string, error) {
 	if src, _ := config.SplitSourceRef(ref); src != "" {
 		nestRef, _ := sbx.SplitName(ref)
 		// LOCATE FIRST, THE COLLISION CHECK AFTER, and that order is exactly
@@ -87,7 +94,7 @@ func nestOfSandbox(denHome, ref, sandboxName string) (*nest.Nest, error) {
 		// a "source nest" no clone contains.
 		root, _, bare, err := source.Locate(denHome, nestRef)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		// LOADED BEFORE THE COLLISION IS DECLARED: a refusal that names "the
 		// source nest <path>" must not name a file that is not there. An
@@ -95,7 +102,7 @@ func nestOfSandbox(denHome, ref, sandboxName string) (*nest.Nest, error) {
 		// branch has always reported it as the ordinary nest-not-found it is.
 		n, err := nest.LoadNest(root, bare)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		// A TYPED PREFIX SAYS WHICH NEST THE USER MEANS, NOT WHICH NEST THE
 		// SANDBOX CAME FROM, and only the second question is being asked here.
@@ -116,14 +123,18 @@ func nestOfSandbox(denHome, ref, sandboxName string) (*nest.Nest, error) {
 		if _, statErr := os.Stat(local); statErr == nil {
 			// nestRef, not the raw argument: the source-side spelling the
 			// message prints is the NEST's, and ref may carry a worktree.
-			return nil, source.LocalCollisionError(component, local, nest.FilePath(root, bare), nestRef)
+			return nil, "", source.LocalCollisionError(component, local, nest.FilePath(root, bare), nestRef)
 		}
-		return n, nil
+		return n, src, nil
 	}
 	component, _ := sbx.SplitName(sandboxName)
 	sn, err := source.DecodeSandboxNest(denHome, component)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return nest.LoadNest(sn.Root, sn.Name)
+	n, err := nest.LoadNest(sn.Root, sn.Name)
+	if err != nil {
+		return nil, "", err
+	}
+	return n, sn.Source, nil
 }

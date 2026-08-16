@@ -21,8 +21,11 @@ package ports
 // unevaluated `//go:build` tag), and `go/parser` reads only the import
 // declarations of those files, never the whole call graph — enough to answer
 // "what does this file import" without the extra dependency
-// (golang.org/x/tools/go/packages) this project does not allow (stdlib +
-// cobra + yaml.v3 only).
+// (golang.org/x/tools/go/packages) this project does not allow. The dependency
+// list is deliberately short — stdlib, cobra, yaml.v3, and since the source
+// onboarding work golang.org/x/mod (semver comparison) and golang.org/x/term
+// (reading a secret without echoing it) — and this guard exists so it stays
+// that way by accident as little as possible.
 //
 // Documented limit: build.ImportDir applies THIS machine's GOOS/GOARCH, so a
 // platform-restricted file (an internal/cli/ports_linux.go importing `net`,

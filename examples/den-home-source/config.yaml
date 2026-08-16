@@ -1,0 +1,21 @@
+# This is the den home `den init --source <url>` writes: the agent, SSH and
+# worktree settings below are personal, everything else comes from the team
+# source it installs. There is deliberately no `defaults.stack`, no `repos:`,
+# no nests/ and no stacks/ — a source nest declares its own stack, and its
+# repository paths live in ~/.den/source-config/<source>.yaml.
+agents:
+  claude:
+    env: { CLAUDE_CONFIG_DIR: "{config_dir}" }
+    # IN-VM paths added to PATH before the update command.
+    bin_dirs: ["$HOME/.local/bin", "$HOME/.claude/local"]
+    update: "claude update"
+defaults:
+  agent: claude
+ssh:
+  mode: agent-forward
+  dir: ~/.ssh_sbx
+worktree_layout: central
+egress:
+  - api.anthropic.com
+  - github.com
+  - registry.npmjs.org

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/PillowPillow/den/internal/lint"
+	"github.com/PillowPillow/den/internal/source"
 	"github.com/spf13/cobra"
 )
 
@@ -19,12 +19,12 @@ func newLintCmd() *cobra.Command {
 		Short: "Validate a source checkout (stacks, nests, references, confinement)",
 		Args:  exactlyOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			errs := lint.Run(args[0])
+			errs := source.Lint(args[0])
 			if len(errs) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "ok")
 				return nil
 			}
-			// lint.Run resolves its root through EvalSymlinks, so error messages
+			// lint resolves its root through EvalSymlinks, so error messages
 			// cite the resolved path. We display the user's original arg in our
 			// frame for context, but the errors' paths come from lint — the most
 			// truthful representation for a checkout that may sit behind symlinks.
