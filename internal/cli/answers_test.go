@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,6 +220,41 @@ func TestCollectInitialAnswersRefusesAnAbsentGithubCredentialNamingTheTerminal(t
 	}
 	if strings.Contains(err.Error(), "credentials.github") {
 		t.Errorf("error = %q: github takes no answer-file key (manifest.go refuses value_from for it)",
+			err.Error())
+	}
+}
+
+// M1 (final whole-branch review, 2026-08-16): when ReadSbxState itself FAILS
+// (not "github absent", but "den could not read sbx at all"),
+// stillMissingCredentials' safe fallback still refuses — that verdict is
+// right, and TestCollectInitialAnswersRefusesAnAbsentGithubCredentialNamingTheTerminal
+// already locks it — but before this fix the message named the wrong cause:
+// "cannot be configured without a terminal" sends the user to find a
+// terminal they do not need, when the real fault is the failed read. The
+// message must now name the read failure instead.
+func TestCollectInitialAnswersNamesTheReadFailureWhenSbxIsUnreadable(t *testing.T) {
+	readErr := errors.New("sbx: connection refused")
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"secret ls -g": {Err: readErr},
+	}}
+
+	cmd, _ := answersCmd("")
+	_, err := collectInitialAnswers(cmd, Deps{Sbx: f}, credentialManifest(), "", true)
+	if err == nil {
+		t.Fatal("expected a refusal: sbx could not be read, so github must be assumed absent")
+	}
+	if !strings.Contains(err.Error(), readErr.Error()) {
+		t.Errorf("error = %q, expected it to name the read failure %q", err.Error(), readErr.Error())
+	}
+	// Both must hold at once: naming the read failure is only the fix if it
+	// REPLACES the misleading sentence for the same credential — a message
+	// that dropped "github" entirely (rather than swapping its wording)
+	// would pass a check for the read error alone.
+	if !strings.Contains(err.Error(), `"github"`) {
+		t.Errorf("error = %q, expected the github credential still named", err.Error())
+	}
+	if strings.Contains(err.Error(), "cannot be configured without a terminal") {
+		t.Errorf("error = %q: the read failed, not github specifically — the old wording is misleading here",
 			err.Error())
 	}
 }

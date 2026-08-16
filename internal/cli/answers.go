@@ -90,7 +90,7 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 		// (converge.CredentialPresent), so this refusal and the plan the user
 		// would see next can never disagree about what is present. A credential
 		// still absent stays refused; one already configured drops out.
-		stillMissing, needsTerminal := stillMissingCredentials(cmd.Context(), d, m, missing)
+		stillMissing, needsTerminal, obsErr := stillMissingCredentials(cmd.Context(), d, m, missing)
 		if !yes {
 			// Nothing would apply on this run even if den asked for confirmation
 			// (confirm() only ever returns true here on `yes`, since there is no
@@ -102,7 +102,7 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 		if len(stillMissing) == 0 && len(needsTerminal) == 0 && !needsRoots {
 			return a, nil
 		}
-		return converge.Answers{}, noTerminalRefusal(stillMissing, needsTerminal, needsRoots)
+		return converge.Answers{}, noTerminalRefusal(stillMissing, needsTerminal, needsRoots, obsErr)
 	}
 
 	in := bufio.NewReader(cmd.InOrStdin())
@@ -165,12 +165,26 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 // That is the safe direction: the reverse could let a resume skip a
 // credential nobody actually configured, on the strength of a read that
 // never happened.
+//
+// obsErr carries WHY state stayed nil, when the reason is a real observation
+// failure — ReadSbxState returning an error — rather than the test-only
+// wiring gap. M1 (final whole-branch review, 2026-08-16): before this
+// return value existed, a ReadSbxState failure with a manifest declaring
+// sbx_github produced "the credential "github" cannot be configured without
+// a terminal", sending the user to find a terminal they do not need — the
+// VERDICT was right (fail-closed) but the REASON named was wrong. obsErr
+// lets noTerminalRefusal name the actual cause instead. Nil when d.Sbx is
+// unset (nothing was attempted, so there is no error to report) or when the
+// read succeeded.
 func stillMissingCredentials(ctx context.Context, d Deps, m *source.Manifest, missing []string) (
-	stillMissing, needsTerminal []string) {
+	stillMissing, needsTerminal []string, obsErr error) {
 
 	var state *converge.SbxState
 	if d.Sbx != nil {
-		if s, err := converge.ReadSbxState(ctx, d.Sbx); err == nil {
+		s, err := converge.ReadSbxState(ctx, d.Sbx)
+		if err != nil {
+			obsErr = err
+		} else {
 			state = s
 		}
 	}
@@ -200,7 +214,7 @@ func stillMissingCredentials(ctx context.Context, d Deps, m *source.Manifest, mi
 			stillMissing = append(stillMissing, name)
 		}
 	}
-	return stillMissing, needsTerminal
+	return stillMissing, needsTerminal, obsErr
 }
 
 // noTerminalRefusal explains, term by term, what den still needs and how to
@@ -211,7 +225,15 @@ func stillMissingCredentials(ctx context.Context, d Deps, m *source.Manifest, mi
 // `credentials.<name>.from_env` line exists to point at instead — pointing at
 // one anyway would send the user to fix an answer file that could never have
 // worked.
-func noTerminalRefusal(missing, needsTerminal []string, needsRoots bool) error {
+//
+// obsErr, when non-nil, is stillMissingCredentials' own ReadSbxState
+// failure: the reason needsTerminal was populated by the safe fallback
+// rather than a genuine "absent on the machine" read. M1 review fix — den
+// still refuses (the verdict does not change: a credential it could not
+// observe is treated as absent), but the sentence now names the read
+// failure instead of sending the user to find a terminal that would not
+// have helped.
+func noTerminalRefusal(missing, needsTerminal []string, needsRoots bool, obsErr error) error {
 	var need []string
 	if needsRoots {
 		need = append(need,
@@ -228,6 +250,14 @@ func noTerminalRefusal(missing, needsTerminal []string, needsRoots bool) error {
 			"and `--yes` to apply the printed plan", strings.Join(need, "; "))
 	}
 	for _, id := range needsTerminal {
+		if obsErr != nil {
+			msg += fmt.Sprintf(
+				"; den could not read sbx (%v), so it must assume the credential %q is absent — "+
+					"fix the read (e.g. `den doctor`), then run this command again from a terminal so "+
+					"sbx can collect it interactively (e.g. `sbx secret set -g github`)",
+				obsErr, id)
+			continue
+		}
 		msg += fmt.Sprintf(
 			"; the credential %q cannot be configured without a terminal — sbx collects it "+
 				"interactively (e.g. `sbx secret set -g github`); run this command again from one",
