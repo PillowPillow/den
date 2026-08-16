@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -380,6 +381,27 @@ func TestRunRemediesAreThemselvesLegal(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("the advisory line", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+		if err := os.Mkdir(filepath.Join(dir, "hotfix"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		home := denHomeSpawnable(t)
+		_, d := fakeSpawnDeps()
+		root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+		root.AddCommand(newRunCmd(&home, d))
+		_, stderr, err := executeCmdSeparateStreams(t, root, "run", "api", "hotfix", "go", "test")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := remedyOf(t, stderr)
+		replay := shellSplit(t, got)[1:] // drop "den"
+		if err := validateArgs(t, replay...); err != nil {
+			t.Errorf("the advisory line %q is refused in turn: %v", got, err)
+		}
+	})
 }
 
 // The `den up` half of the same property, and it lives here because the builder
@@ -456,5 +478,83 @@ func TestDownSuggestsRm(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "did you mean") {
 		t.Errorf("SuggestFor must widen nothing else; got %q", err.Error())
+	}
+}
+
+// The warning goes through a real Execute(): it comes out of RunE, not out of
+// the validator — no validator in this repo writes to a stream, and one that did
+// would staple advice under a line already refused for something else.
+//
+// The directory is a t.TempDir() and the test chdirs into it, because the
+// normalization joins a relative path to the cwd.
+func TestRunWarnsWhenTheFirstCommandTokenIsADirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Mkdir(filepath.Join(dir, "hotfix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	_, stderr, err := executeCmdSeparateStreams(t, root, "run", "api", "hotfix", "go", "test")
+	if err != nil {
+		t.Fatalf("the line must RUN, not be refused: %v", err)
+	}
+	const want = "! hotfix is a directory on this host, and den is passing it to the sandbox as the " +
+		"first word of the command — ad-hoc repos go behind `--repo` now — " +
+		"write `den run --repo hotfix api go test`\n"
+	if !strings.Contains(stderr, want) {
+		t.Errorf("stderr must carry %q; got %q", want, stderr)
+	}
+}
+
+// With no other command on the line, the remedy must name `den up`:
+// `den run --repo hotfix api` would be refused in turn for "no command given".
+// That is the dead-on-arrival remedy slice 1 paid for once.
+func TestRunWarningNamesUpWhenTheLineCarriesNoOtherCommand(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Mkdir(filepath.Join(dir, "hotfix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	_, stderr, err := executeCmdSeparateStreams(t, root, "run", "api", "hotfix")
+	if err != nil {
+		t.Fatalf("the line must RUN, not be refused: %v", err)
+	}
+	if !strings.Contains(stderr, "write `den up --repo hotfix api`") {
+		t.Errorf("the remedy must name `den up`; got %q", stderr)
+	}
+}
+
+// A file is not a directory: `den run api ./build.sh` is a legitimate command.
+// And the false positive, priced honestly: a command whose first word is also
+// the name of a directory in the cwd. In a repo carrying build/, `den run api
+// build` prints one advisory line too many — argv, exit status and output
+// unchanged. That is the whole cost.
+func TestRunDoesNotWarnOnAFileOrAPlainWord(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "build.sh"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	for _, tok := range []string{"./build.sh", "go"} {
+		t.Run(tok, func(t *testing.T) {
+			_, stderr, err := executeCmdSeparateStreams(t, root, "run", "api", tok, "test")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if strings.Contains(stderr, "is a directory on this host") {
+				t.Errorf("no warning is owed for %q; got %q", tok, stderr)
+			}
+		})
 	}
 }
