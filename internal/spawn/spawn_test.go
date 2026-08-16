@@ -4565,16 +4565,24 @@ func TestSpawnRunsTheGivenCommandInsteadOfAShell(t *testing.T) {
 // duration, streams its stdout and returns its status (spec §14.0). "Prepare,
 // then run detached" would mean den backgrounding the process itself — a fifth
 // Runner method, orphan and log handling, and no status to return.
+//
+// The message is asserted WHOLE since 2026-08-16. It used to be checked with
+// `Contains(err, "--detach")` and `Contains(err, "--")`, and the second row
+// pinned nothing at all — "--" is a substring of "--detach", so any message
+// naming the flag satisfied it, separator or no separator. The remedy half was
+// therefore free to go stale, which is exactly what happened when `--` left the
+// family: the string still promised "a command after `--`".
 func TestSpawnRefusesDetachWithACommand(t *testing.T) {
+	const want = "--detach and a command contradict each other — drop one: --detach spawns " +
+		"without entering the sandbox, and `den run` runs a command inside it — " +
+		"use `den up --detach <nest>`"
 	o := Options{Nest: "api", Detach: true, Command: []string{"go", "test"}}
 	err := Spawn(context.Background(), t.TempDir(), o, Deps{})
 	if err == nil {
 		t.Fatal("--detach and a command must be refused")
 	}
-	for _, want := range []string{"--detach", "--"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal must name %q; got %q", want, err.Error())
-		}
+	if err.Error() != want {
+		t.Errorf("the spawn's refusal, byte for byte:\n got  %q\n want %q", err.Error(), want)
 	}
 }
 
@@ -4585,12 +4593,13 @@ func TestSpawnRefusesDetachWithACommand(t *testing.T) {
 // `den exec` before, which now requires a command and so contradicts nothing).
 // Refused at step 0, before anything is read, like its two neighbours above.
 //
-// The message is asserted WHOLE, and it is `den spawn`'s OWN — it is no longer
-// the same literal as TestShellRefusesNoTTY's. The identity broke on the
-// remedy, not on the contradiction: `den spawn` still takes a command after
-// `--`, so "give a command after `--`" is true HERE and only here, while
-// `den shell` has no command form and must name `den exec`, which refuses `--`.
-// newShellCmd's comment (internal/cli/shell.go) holds the argument.
+// The message is asserted WHOLE, and it is the SPAWN PATH's own — it is no
+// longer the same literal as TestShellRefusesNoTTY's. The identity broke on the
+// remedy, not on the contradiction, and since 2026-08-16 the rule is that each
+// command names the remedy that exists ON it: the spawn path is entered by
+// `den up`, whose command form is the sibling `den run`, while `den shell` has
+// no command form and must name `den exec`. newShellCmd's comment
+// (internal/cli/shell.go) holds the argument.
 //
 // Asserted whole rather than with strings.Contains, which is what both sides
 // did until 2026-08-14: `Contains(err, "-T")` passes on any message naming the
@@ -4598,7 +4607,7 @@ func TestSpawnRefusesDetachWithACommand(t *testing.T) {
 // the other side.
 func TestSpawnRefusesNoTTYWithNoCommand(t *testing.T) {
 	const want = "-T asks for no terminal and no command asks for a shell, which needs one — " +
-		"give a command after `--`, or drop -T"
+		"give a command with `den run -T <nest> <cmd>`, or drop -T"
 	o := Options{Nest: "api", NoTTY: true}
 	err := Spawn(context.Background(), t.TempDir(), o, Deps{})
 	if err == nil {

@@ -125,7 +125,7 @@ func (d Deps) goos() string {
 // that cli.Deps enforces between `den ls` and spawn. Deps stays a plain
 // struct with exported fields; the caller wires it explicitly.
 
-// Options carries the flags of `den spawn`.
+// Options carries the flags of `den up` and `den run`.
 type Options struct {
 	Nest     string
 	Worktree string
@@ -149,14 +149,15 @@ type Options struct {
 	// Interactive is `-i`: pick the nest's optional repos from a checklist
 	// instead of naming them on the command line.
 	Interactive bool
-	// Repos are the repositories given as positionals: `den spawn <nest> ~/dev/a`.
+	// Repos are the ad-hoc repositories, `den up --repo ~/dev/a <nest>` (they
+	// were positionals until 2026-08-16, hence the plural read out of one flag).
 	// Raw — tilde unexpanded, possibly relative; nest.Resolve normalizes them.
 	// Additive to the nest's `repos:`, and placed AHEAD of them, so the first
 	// one becomes the directory the attached shell starts in.
 	Repos []string
-	// Command is what to run in the sandbox instead of a login shell,
-	// everything the CLI found after `--`. Empty ⇒ attach a shell, which is
-	// what a spawn has always done.
+	// Command is what to run in the sandbox instead of a login shell: what
+	// `den run` found past the nest name. Empty ⇒ attach a shell, which is what
+	// `den up` always does.
 	Command []string
 	// Workdir overrides the directory the command runs in. Empty ⇒ the first
 	// workspace the VM reports, the same rule the shell follows.
@@ -230,8 +231,9 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// return, which is precisely what #60 exists to deliver.
 	if o.Detach && len(o.Command) > 0 {
 		return fmt.Errorf(
-			"--detach and a command after `--` contradict each other — drop one: " +
-				"--detach spawns without entering the sandbox, a command has to run inside it")
+			"--detach and a command contradict each other — drop one: --detach spawns " +
+				"without entering the sandbox, and `den run` runs a command inside it — " +
+				"use `den up --detach <nest>`")
 	}
 
 	// The third contradiction, refused for the same reason and in the same
@@ -246,15 +248,15 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// The two messages are no longer identical, and that is deliberate since
 	// 2026-08-14. This comment used to promise `den exec` an identical string;
 	// `den exec` requires a command now and contradicts nothing, and the
-	// remedies of the two surviving refusals genuinely differ: here the way out
-	// is a command after `--`, which `den spawn` still takes, while `den shell`
-	// has no command form at all and must send the user to `den exec`. Copying
-	// this sentence there would hand a `--` to the one command that refuses it.
+	// remedies of the two surviving refusals genuinely differ. The rule that
+	// settles them since 2026-08-16: the remedy each command names is the one
+	// that exists ON it — `den up` sends the user to `den run`, `den shell`
+	// sends them to `den exec`, and neither mentions a separator den refuses.
 	// Keep the refusal on both; keep each remedy true of its own command.
 	if o.NoTTY && len(o.Command) == 0 {
 		return fmt.Errorf(
 			"-T asks for no terminal and no command asks for a shell, which needs one — " +
-				"give a command after `--`, or drop -T")
+				"give a command with `den run -T <nest> <cmd>`, or drop -T")
 	}
 
 	// 1. Resolve the cascade.

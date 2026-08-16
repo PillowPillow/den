@@ -12,8 +12,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// execArgs accepts a sandbox name followed by a command. The command needs no
-// `--`, and that separator is now refused rather than tolerated.
+// enterArgs validates `<name> <cmd> [args...]` — `den exec`'s shape and
+// `den run`'s, from ONE function.
+//
+// noun is what the first positional is called ("sandbox" for exec, which takes
+// the full sandbox name `den ls` prints; "nest" for run, which takes a nest
+// reference and has no name until -w and --as have spoken). shellCmd is the
+// sibling that opens a shell without a command: `den shell` for exec, `den up`
+// for run.
+//
+// One function rather than two, because these are the two commands this slice
+// exists to reconcile: `den exec api go test` and `den run api go test` must
+// read identically, and a second copy is where they would drift apart.
+//
+// It accepts a name followed by a command. The command needs no `--`, and that
+// separator is refused rather than tolerated.
 //
 // This reverses the 2026-08-10 contract, on purpose, and the old comment here
 // argued for it with a reading that never existed: "`den exec api go test` has
@@ -44,7 +57,7 @@ import (
 // what the user typed can propose a line the NEXT check refuses. Read execShape
 // for the cases; the property is pinned by TestExecRemediesAreThemselvesLegal,
 // which feeds every remedy back through this function.
-func execArgs(cmd *cobra.Command, args []string) error {
+func enterArgs(cmd *cobra.Command, args []string, noun, shellCmd string) error {
 	s := execRewrite(cmd, args)
 	path := cmd.CommandPath()
 	// FIRST-DEFECT-WINS, and the order is the order the user can act on. What is
@@ -59,14 +72,14 @@ func execArgs(cmd *cobra.Command, args []string) error {
 		// `den exec`, `den exec --`, and the sandbox named by an unset shell
 		// variable — see execShape.haveName for why that last one lands here
 		// rather than borrowing a name from the command.
-		return fmt.Errorf("%s: a sandbox name and a command expected, none received — usage: %s",
-			path, cmd.UseLine())
+		return fmt.Errorf("%s: a %s name and a command expected, none received — usage: %s",
+			path, noun, cmd.UseLine())
 	case len(s.command) == 0:
 		// The example command is den's, not the user's — they gave none. It
 		// carries their flags anyway: someone who typed `den exec api -T` gets
 		// `den exec -T api go test`, which is their intent, spelled legally.
-		return fmt.Errorf("%s: no command given — write `%s`, or `den shell %s` for a shell",
-			path, remedyLine(cmd, path, s, []string{"go", "test"}), s.name)
+		return fmt.Errorf("%s: no command given — write `%s`, or `%s %s` for a shell",
+			path, remedyLine(cmd, path, s, []string{"go", "test"}), shellCmd, s.name)
 	case cmd.ArgsLenAtDash() == 0:
 		// The one shape SetInterspersed(false) does not neutralize, and the only
 		// reason this validator consults ArgsLenAtDash at all: pflag ate the
@@ -79,28 +92,16 @@ func execArgs(cmd *cobra.Command, args []string) error {
 		// invocation that is REFUSED and never runs, so the user retypes a line
 		// missing their --workdir and lands somewhere else in silence. Since
 		// 2026-08-16 remedyLine reads those flags back off the FlagSet.
-		return fmt.Errorf("%s: `--` is not needed, and a sandbox name must come first — write `%s`",
-			path, remedyLine(cmd, path, s, s.command))
+		return fmt.Errorf("%s: `--` is not needed, and a %s name must come first — write `%s`",
+			path, noun, remedyLine(cmd, path, s, s.command))
 	case s.sawDash:
 		return fmt.Errorf("%s: `--` is not needed — write `%s`",
 			path, remedyLine(cmd, path, s, s.command))
 	case len(s.flags) > 0:
-		return fmt.Errorf("%s: den's flags go before the sandbox name — write `%s`",
-			path, remedyLine(cmd, path, s, s.command))
+		return fmt.Errorf("%s: den's flags go before the %s name — write `%s`",
+			path, noun, remedyLine(cmd, path, s, s.command))
 	}
 	return nil
-}
-
-// spawnArgs is atLeastOneArg, aware of `--`: the nest must still be there when
-// every positional sits after the separator (`den spawn -- go test` names no
-// nest).
-func spawnArgs(cmd *cobra.Command, args []string) error {
-	dash := cmd.ArgsLenAtDash()
-	if dash == 0 {
-		return fmt.Errorf("%s: a nest must be named before `--` — usage: %s",
-			cmd.CommandPath(), cmd.UseLine())
-	}
-	return atLeastOneArg(cmd, args)
 }
 
 // enterOptions carries what every door into a live sandbox needs. It exists so
@@ -268,12 +269,14 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 	cmd := &cobra.Command{
 		Use:   "exec <name> <cmd> [args...]",
 		Short: "Run a command in an existing sandbox",
-		Args:  execArgs,
+		Args: func(cmd *cobra.Command, args []string) error {
+			return enterArgs(cmd, args, "sandbox", "den shell")
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// execArgs has refused every other shape, so args[1:] is a real
+			// enterArgs has refused every other shape, so args[1:] is a real
 			// command. No ArgsLenAtDash: under SetInterspersed(false) it is
 			// always -1 past the sandbox name, and a leading `--` — the one
-			// shape where it is not — execArgs already refused.
+			// shape where it is not — enterArgs already refused.
 			command := args[1:]
 			// A nil probe is "no terminal", never "assume one" — the same rule
 			// spawn.interactive applies to `-i`, and the reason the wiring
@@ -295,8 +298,9 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 			// The spec 2026-08-10 pinned that message as identical byte for byte
 			// between two commands, and the 2026-08-14 spec said the pair simply
 			// became `den shell` ↔ `den spawn`. It did not: the two remedies
-			// diverged with the contract — `den spawn` still points at a command
-			// after `--`, `den shell` points at `den exec`, which refuses `--`.
+			// diverged with the contract, and each names the sibling that
+			// exists ON it — `den up` sends the user to `den run`, `den shell`
+			// to `den exec`, and neither mentions a separator den refuses.
 			// newShellCmd's comment (shell.go) holds the argument.
 			tty := !noTTY && isTTY != nil && isTTY()
 			return enterSandbox(cmd, args[0], command, tty, workdir, enterOptions{
@@ -310,8 +314,8 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 		"working directory for the command (default: the directory you ran den from, when the sandbox mounts it; otherwise the first workspace it reports)")
 	// Long name `--no-tty` because cobra requires one; -T is the spelling that
 	// matters, and it is docker compose's. `-w` is NOT taken here: it is `den
-	// spawn`'s worktree, and one letter meaning two things across sibling
-	// commands is the collision den refuses elsewhere.
+	// up` / `den run`'s worktree, and one letter meaning two things across
+	// sibling commands is the collision den refuses elsewhere.
 	cmd.Flags().BoolVarP(&noTTY, "no-tty", "T", false,
 		"do not allocate a terminal (for pipes and CI)")
 	// The mechanism that removes `--`, and the same one docker compose uses:

@@ -22,19 +22,19 @@ import (
 // It is NOT a second door. The body is enterSandbox, shared with `den exec`
 // byte for byte, and `bash -l` itself is not spelled here at all — an empty
 // spawn.Command.Argv means it (internal/spawn/enter.go:85), one layer down,
-// where `den spawn` reads the same default.
+// where `den up` and `den run` read the same default.
 //
 // -T is REGISTERED and always refused, rather than left unknown. A named
 // refusal beats cobra's `unknown flag: -T`, which is the argument #60 already
 // made for this flag; do not "simplify" it away.
 //
-// Its message is NOT `den spawn`'s (internal/spawn/spawn.go), and the spec's
+// Its message is NOT the spawn path's (internal/spawn/spawn.go), and the spec's
 // claim that the byte-for-byte pair merely moved from `den exec` to `den shell`
 // is what this corrects. The two refusals stopped being one contradiction the
 // day `den exec` required a command:
 //
-//   - `den spawn -T` with no command: -T contradicts the DEFAULT argv, and the
-//     way out is to give a command — after `--`, which `den spawn` still takes.
+//   - `den up -T` with no command: -T contradicts the DEFAULT argv, and the
+//     way out is to give a command, which is the sibling `den run`.
 //   - `den shell -T`: -T contradicts the COMMAND ITSELF. `den shell` has no
 //     command form to fill in, so "give a command after `--`" — the words this
 //     message carried until 2026-08-14 — named a shape `den exec` now refuses

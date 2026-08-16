@@ -52,14 +52,13 @@ func TestShellAttachesWithATtyNotARun(t *testing.T) {
 	}
 }
 
-// noTTYRefusal is `den shell`'s message, and ONLY its own. `den spawn` refuses
-// -T too (TestSpawnRefusesNoTTYWithNoCommand, internal/spawn/spawn_test.go),
-// and the two strings deliberately differ — the remedies do. `den spawn` takes
-// a command after `--`; `den shell` takes no command at all and has to send the
-// user to `den exec`, which refuses `--`. The byte-for-byte identity the spec
-// promised (`den shell` ↔ `den spawn`, replacing `den exec` ↔ `den spawn`) had
-// the shell repeating a `--` its sibling command rejects. newShellCmd's comment
-// holds the argument; keep the refusal on both sides, keep the wordings apart.
+// noTTYRefusal is `den shell`'s message, and ONLY its own. `den up` refuses -T
+// too (TestUpRefusesNoTTY, up_test.go), and the two strings deliberately differ
+// — the remedies do. Each command names the command form that exists ON it:
+// `den up` sends the user to `den run`, `den shell` to `den exec`. The
+// byte-for-byte identity the spec promised had one command repeating advice its
+// sibling rejects. newShellCmd's comment holds the argument; keep the refusal on
+// both sides, keep the wordings apart.
 //
 // Spelled out in full rather than asserted with strings.Contains, which is what
 // both sides did until 2026-08-14: `Contains(err, "-T")` passes on any message

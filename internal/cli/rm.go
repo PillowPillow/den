@@ -34,7 +34,26 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 	cmd := &cobra.Command{
 		Use:   "rm <name>",
 		Short: "Destroy a sandbox (the agent profile persists)",
-		Args:  exactlyOneArg,
+		// A compose-shaped surface trains the fingers to type `den down`, and
+		// cobra catches nothing on its own: `down` is edit distance 3 from `run`
+		// and 4 from everything else, above SuggestionsMinimumDistance, and it
+		// prefixes no command name — the other route into SuggestionsFor.
+		// Verified 2026-08-16 on the real tree: `den down` printed the command
+		// list with no "did you mean" at all.
+		//
+		// A field on `rm`, not a line in the migration message: that message
+		// carries what den REMOVED (`den <nest>`, `den spawn <nest>`), and a verb
+		// den never had is not part of it. Measured on cobra v1.10.2 with den's
+		// tree: SuggestionsFor("down") returns [rm], and SuggestionsFor("dwon")
+		// still returns [] — the field widens nothing else.
+		//
+		// The cost, named: `den rm` destroys without confirming (`sbx rm
+		// --force`), so den suggests a destruction to someone who mistyped a
+		// verb. It only SUGGESTS — the line runs nothing — and rm's Short
+		// ("Destroy a sandbox (the agent profile persists)") prints a few lines
+		// below in the same listing.
+		SuggestFor: []string{"down"},
+		Args:       exactlyOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The SANDBOX name is the flattened reference: ":" is not in
 			// sbx's `--name` charset, so a nest loaded from a source never

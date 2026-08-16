@@ -32,7 +32,7 @@ func executeCmd(t *testing.T, cmd *cobra.Command, args ...string) (string, error
 //
 // Separate function rather than a signature change to executeCmd: the latter
 // has a dozen existing callers in this package, including root_deps_test.go
-// and spawn_test.go whose assertions must not change — touching all of them
+// and up_test.go whose assertions must not change — touching all of them
 // for a need only a few tests have (rm_test.go, ls_test.go) would be the
 // wrong trade-off.
 func executeCmdSeparateStreams(t *testing.T, cmd *cobra.Command, args ...string) (stdout, stderr string, err error) {
@@ -58,8 +58,8 @@ func run(t *testing.T, args ...string) (string, error) {
 // git — it is main_test.go's TestMain that makes this hermetic to the machine
 // running the suite, not this helper.
 //
-// No caller of THIS helper goes through newSpawnCmd's RunE (`den ls` never
-// calls it). runFullRoot (spawn_test.go) does exercise it: it builds its
+// No caller of THIS helper goes through newUpCmd's RunE (`den ls` never
+// calls it). runFullRoot (up_test.go) does exercise it: it builds its
 // accesses the same way, and explains on the spot why that is safe there — a
 // den home without `egress:` (no 60s settle-loop) and without a git repo (no
 // git call).
@@ -195,6 +195,14 @@ func TestDenHomeIsScopedPerInstance(t *testing.T) {
 // A golden rather than a handful of Contains: the point is that den answers
 // with EVERYTHING it can do. A test that checked three lines would go green on
 // a listing that had silently lost the other eleven.
+//
+// The golden carries a "did you mean `den up`?" since 2026-08-16, and it is
+// cobra's own arithmetic, not a decision: "api" → "up" is edit distance 2, and
+// root.SuggestionsMinimumDistance is 2. The fixture argument is the nest name
+// this suite uses everywhere, so the suggestion is what a user typing a nest
+// named `api` bare really sees. It is recorded rather than suppressed —
+// suppressing it means moving the distance, which would cost `den doctr` its
+// own suggestion (TestUnknownFirstArgumentSuggestsTheCloseCommand).
 func TestUnknownFirstArgumentListsTheCommands(t *testing.T) {
 	// DEN_HOME is pinned even though this path never reads it: if the refusal
 	// ever regressed into a spawn, the test would otherwise run against the
@@ -243,7 +251,7 @@ func TestASpawnFlagOnTheRootIsRefused(t *testing.T) {
 	for _, flag := range []string{"--detach", "-w", "--only"} {
 		t.Run(flag, func(t *testing.T) {
 			if _, err := run(t, flag); err == nil {
-				t.Errorf("`den %s` must be refused: that flag belongs to `den spawn`", flag)
+				t.Errorf("`den %s` must be refused: that flag belongs to `den up`", flag)
 			} else if !strings.Contains(err.Error(), "unknown flag") &&
 				!strings.Contains(err.Error(), "unknown shorthand flag") {
 				// `-w` and `--only` take a value: a future PersistentFlags on
@@ -272,10 +280,12 @@ func TestASpawnFlagOnTheRootIsRefused(t *testing.T) {
 // the command.
 //
 // The root itself is not one of these sites: its Args is unknownCommand, which
-// refuses on identity, not on count. `den spawn` is the site that exercises
+// refuses on identity, not on count. `den nest show` is the site that exercises
 // the "one argument expected" wording with an unbounded maximum — every
-// argument past the first is a repo, and nothing caps how many a spawn may
-// mount, so its "too many" branch is unreachable by design.
+// argument past the first is a repo, and nothing caps how many a nest may
+// declare, so its "too many" branch is unreachable by design. It was `den
+// spawn`'s too until 2026-08-16; that command is gone, and `den up` validates
+// with upArgs, whose messages are its own.
 func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -283,9 +293,14 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 		expected string
 	}{
 		{
-			"spawn, missing argument",
-			[]string{"spawn"},
-			"den spawn: one argument expected, none received — usage: den spawn <nest> [repo...] [-- <cmd> [args...]] [flags]",
+			"up, missing argument",
+			[]string{"up"},
+			"den up: a nest expected — usage: den up <nest> [flags]",
+		},
+		{
+			"run, no command",
+			[]string{"run", "api"},
+			"den run: no command given — write `den run api go test`, or `den up api` for a shell",
 		},
 		{
 			"build, too many arguments",
@@ -413,8 +428,14 @@ func TestUnknownCommandErrorNamesTheArgumentAndTheCommands(t *testing.T) {
 	if !strings.Contains(got, "  ls          List live sandboxes") {
 		t.Errorf("every command must come with its Short, cobra-padded; got:\n%s", got)
 	}
-	if !strings.Contains(got, "`den spawn <nest>`") {
-		t.Errorf("the refusal must carry the migration line; got:\n%s", got)
+	// The WHOLE line, not the fragment `den spawn <nest>` this assertion checked
+	// until 2026-08-16: a Contains on one backticked span is the pattern §8
+	// condemns — it went on passing while the half naming the replacement
+	// command rotted beside it.
+	const migration = "`den <nest>` and `den spawn <nest>` no longer spawn: " +
+		"use `den up <nest>`, or `den run <nest> <cmd>`."
+	if !strings.Contains(got, migration) {
+		t.Errorf("the listing must carry the whole migration line; got %q", got)
 	}
 	// No `den: ` prefix: cmd/den/main.go already prints one, and a second
 	// would read as a doubled program name.

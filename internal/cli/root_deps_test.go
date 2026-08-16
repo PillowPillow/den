@@ -93,7 +93,7 @@ func TestNewRootCmdWithPropagatesGit(t *testing.T) {
 	root := NewRootCmdWith(deps)
 
 	// -w triggers worktree.Ensure, the spawn's only point that consults Git.
-	_, err := executeCmd(t, root, "--den-home", home, "spawn", "api", "-w", "feat")
+	_, err := executeCmd(t, root, "--den-home", home, "up", "api", "-w", "feat")
 	if err == nil {
 		t.Fatal("expected an error: the fake Git refuses systematically")
 	}
@@ -124,7 +124,7 @@ func TestNewRootCmdWithPropagatesPolicy(t *testing.T) {
 	}
 	root := NewRootCmdWith(deps)
 
-	_, err := executeCmd(t, root, "--den-home", home, "spawn", "api", "--detach")
+	_, err := executeCmd(t, root, "--den-home", home, "up", "api", "--detach")
 	if err == nil {
 		t.Fatal("expected an error: deliberately invalid Policy")
 	}
@@ -137,7 +137,7 @@ func TestNewRootCmdWithPropagatesPolicy(t *testing.T) {
 // spawn can never talk to two different sbx.Runner instances.
 //
 // The double is shared (same *sbx.Fake) between two command trees built from
-// THE SAME Deps.Sbx: if newSpawnCmd received a different Runner than
+// THE SAME Deps.Sbx: if newUpCmd received a different Runner than
 // deps.Sbx (a hardcoded sbx.NewExec(""), say), the second call would never
 // reach this Fake, and its call counter would not grow — or worse, it would
 // try to reach the real `sbx`, absent from this machine.
@@ -161,8 +161,8 @@ func TestNewRootCmdWithSharesOneSbxBetweenLsAndSpawn(t *testing.T) {
 		t.Fatal("den ls made no call to the Fake: nothing to compare")
 	}
 
-	if _, err := executeCmd(t, NewRootCmdWith(deps), "--den-home", home, "spawn", "api", "--detach"); err != nil {
-		t.Fatalf("den spawn api --detach: unexpected error: %v", err)
+	if _, err := executeCmd(t, NewRootCmdWith(deps), "--den-home", home, "up", "api", "--detach"); err != nil {
+		t.Fatalf("den up api --detach: unexpected error: %v", err)
 	}
 	if len(f.Calls) <= callsAfterLs {
 		t.Errorf("the spawn made no new call to the SAME Fake as `den ls` "+
@@ -220,9 +220,9 @@ func TestNewRootCmdWithPropagatesTheSSHAgentProbe(t *testing.T) {
 	}
 
 	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
-		"--den-home", home, "spawn", "api", "--detach")
+		"--den-home", home, "up", "api", "--detach")
 	if err != nil {
-		t.Fatalf("den spawn api --detach: unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+		t.Fatalf("den up api --detach: unexpected error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
 	}
 	if probes == 0 {
 		t.Fatal("deps.SSHAgent received no call: the probe does not reach the spawn")
