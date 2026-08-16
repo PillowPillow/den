@@ -7,6 +7,65 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.7.0 — 2026-08-16
+
+### Added
+- Declarative sources. A team source carrying `den-source.yaml` at its root declares what it needs
+  from a machine — credentials, build egress, stack builds, repositories — and `den init --source
+  <url>` converges all of it in one command. den prints the plan and applies nothing before you
+  confirm it; `--yes` is the answer of someone who has read one before, and with no terminal and no
+  `--yes` den prints the plan, applies nothing and exits zero. The resource vocabulary is closed
+  (`sbx_github`, `sbx_registry`, `sbx_http_substitution`): a manifest names no shell command, no
+  hook and no plugin, and an unknown type is refused rather than ignored. A source without
+  `den-source.yaml` behaves exactly as before.
+- `den source configure <name>` reconverges an installed declarative source without contacting its
+  remote — it maps a repo cloned since, or finishes an interrupted run. `den source status [name]`
+  reports what the source needs against what this machine has, and exits non-zero on `blocked` and
+  `unknown` only. `den doctor` reports every declarative source with the same verdict.
+- `--answers <file>` supplies the answers of one run — where to look for working repos, credentials
+  by environment variable **name**, explicit repo mappings — so onboarding runs with no terminal.
+  den stores none of it, and a literal credential value in that file is refused. A repository is
+  mapped only on a fact: you named the directory, or exactly one directory under the roots carries
+  the declared remote. den never clones.
+- `den shell <name>` opens the login shell in a live sandbox. `-T` is refused on it by name, since
+  a login shell needs a terminal.
+- `--as <label>` names the instance, so several sandboxes of one nest run side by side:
+  `den spawn api --as analyse-a`. It renames the sandbox only — a worktree directory keeps the name
+  `-w` gave it, or two nests spawned `--as x` would collide on it.
+- `select: prompt` on a nest declares no default selection: its repos are chosen at spawn time from
+  a checklist that opens without `-i` and starts empty. `--only` states the set outright from a
+  script or CI, `--without` is refused for want of a default to subtract from, and an unmapped
+  **optional** key costs nothing — `den doctor` stays green and `den nest show` lists the key with
+  the `repos:` line to add. What you decline is recorded, so re-attaching does not reopen the
+  checklist.
+
+### Changed
+- **`den exec` takes the compose shape, and this breaks the old spelling.** It now requires a
+  command and no longer accepts `--`: write `den exec api go build`, not
+  `den exec api -- go build`. den's own flags — `-T`, `--workdir`, `--den-home` — go **before** the
+  sandbox name; everything after it is the command, verbatim, its own flags included, so
+  `den exec api --help` asks the program inside the sandbox rather than den. The login shell that
+  `den exec <name>` opened with no command is now `den shell <name>`. Every refusal proposes a line
+  den itself accepts.
+- `den source add` and `den source update` converge a **declarative** source, where they used to
+  clone and fast-forward only. `add` on an existing den home now runs the same plan-and-confirm as
+  `den init --source`; `update` converges to the version the source *publishes* — a greater
+  `metadata.version` gets a full plan and a confirmation, the same version on a new commit is
+  reported and applied to nothing, and a lower version is refused with the checkout untouched. A
+  source without `den-source.yaml` is unaffected on both commands.
+- The shell and the command start in the directory you ran `den` from, when the sandbox mounts it;
+  the first workspace stays the fallback. `den spawn api` from `~/dev/api/internal/spawn` opened
+  `~/dev/api` and you typed `cd` back every time.
+- `den ls` gains an INSTANCE column, and its WORKTREE column reads the sandbox's creation record
+  instead of deriving a branch from the sandbox name — under `--as` that name component is a label,
+  not a branch, and guessing printed one that never existed.
+
+### Fixed
+- den allocates a terminal only when there is a real terminal. The probe accepted any character
+  device, so `den exec < /dev/null` with a terminal on stdout still asked for a pty; the sandbox
+  then discarded the command's output while reporting success. den now asks the kernel for the
+  descriptor's termios attributes.
+
 ## v1.6.0 — 2026-08-11
 
 ### Added
