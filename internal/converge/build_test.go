@@ -83,6 +83,37 @@ func TestBuildDriverPlansAMissingImage(t *testing.T) {
 	}
 }
 
+// A missing image must not be reported as built on the very line that tells
+// the user den will build it: confirming that line is confirming that the
+// source's provision scripts run (RenderPlan's trust-boundary comment). This
+// mirrors credentialDriver.Plan, which sets Observed only under `if
+// o.Present` — the same asymmetry buildDriver's Detail was missing.
+func TestBuildDriverPlanForAMissingImageDoesNotClaimItIsBuilt(t *testing.T) {
+	f := buildFake("")
+	d := buildDriverFor(t, f, false)
+
+	o, err := d.Inspect(context.Background())
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if o.Present {
+		t.Fatalf("observation = %+v, want the image absent", o)
+	}
+	if o.Detail != "" {
+		t.Errorf("Detail = %q, want empty for an absent image (observedText renders \"absent\" for that)", o.Detail)
+	}
+
+	p := d.Plan(o)
+	var out strings.Builder
+	RenderPlan(&out, &Plan{Source: "dg", Version: "1.0.0", Resources: []ResourcePlan{p}})
+	if strings.Contains(out.String(), "is built") {
+		t.Errorf("plan claims a missing image is built:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "observed: absent") {
+		t.Errorf("plan does not say the image is absent:\n%s", out.String())
+	}
+}
+
 // An inventory den cannot read is an observation failure, not "no image": the
 // service turns that into `unknown`, and a plan built on a wrong "absent"
 // would rebuild every image on a machine that has them all.

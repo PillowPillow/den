@@ -52,7 +52,16 @@ func (d *buildDriver) Inspect(ctx context.Context) (Observation, error) {
 	if err != nil {
 		return Observation{}, fmt.Errorf("reading the sbx image inventory: %w", err)
 	}
-	return Observation{Present: has, Detail: "image " + stack.Image + " is built"}, nil
+	// Detail is set only when the image was actually found — the same
+	// asymmetry credentialDriver.Plan already carries (Observed set only
+	// under `if o.Present`). Setting it unconditionally made an ABSENT image
+	// print "is built" on the plan line that tells the user den will build
+	// it, right where they confirm running the source's provision scripts.
+	// observedText renders an empty Detail as "absent" on its own.
+	if !has {
+		return Observation{}, nil
+	}
+	return Observation{Present: true, Detail: "image " + stack.Image + " is built"}, nil
 }
 
 func (d *buildDriver) Plan(o Observation) ResourcePlan {
