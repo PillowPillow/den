@@ -790,12 +790,19 @@ Plus large que la tranche 1, qui tenait dans `internal/cli`.
 ### Le balayage, reproductible — et pourquoi une seule grep ne suffit pas
 
 La première rédaction annonçait « 49 occurrences … une seule est une sortie ». Les deux moitiés
-étaient fausses. Le compte réel est **430**, et surtout **une grep de ligne ne peut structurellement
-pas voir trois classes d'occurrence** dans ce dépôt. Quatre motifs, à relancer plutôt qu'à croire :
+étaient fausses. Le compte réel est **411**, et surtout **une grep de ligne ne peut structurellement
+pas voir trois classes d'occurrence** dans ce dépôt. Quatre motifs, à relancer plutôt qu'à croire.
+
+**P1 exclut CETTE spec**, et ce n'est pas de la coquetterie : le motif s'attrape lui-même, cette spec
+en porte 35, et un chiffre qui bouge à chaque édition du document qui l'imprime est un chiffre qu'un
+lecteur cesse de vérifier. La première rédaction de ce paragraphe annonçait 430 sans l'exclusion,
+et le commit suivant l'avait déjà démentie.
 
 ```bash
-# P1 — la forme écrite, sur une ligne
-grep -rn --exclude-dir=.git --exclude-dir=worktrees -E 'den spawn|den <nest>' .
+SPEC=docs/superpowers/specs/2026-08-16-up-run-command-design.md
+
+# P1 — la forme écrite, sur une ligne, cette spec exclue
+grep -rn --exclude-dir=.git --exclude-dir=worktrees -E 'den spawn|den <nest>' . | grep -v "$SPEC"
 
 # P2 — occurrences COUPÉES par un retour à la ligne de commentaire
 grep -rn --exclude-dir=.git --exclude-dir=worktrees --include='*.go' -A1 -E '`den$' . \
@@ -809,13 +816,22 @@ grep -rn --exclude-dir=.git --exclude-dir=worktrees --include='*.go' \
   -E 'newSpawnCmd|spawnArgs|"spawn <nest>|Spawn or attach' .
 ```
 
-Au 2026-08-16 : **P1 = 430**, P2 = 3 en Go vivant, **P3 = 17** — les seuls qui cassent `task test`,
+Au 2026-08-16 : **P1 = 411**, P2 = 3 en Go vivant, **P3 = 17** — les seuls qui cassent `task test`,
 et qu'aucune recherche de « den spawn » ne trouve — P4 = 18.
 
-Sur les 430 de P1, **203 sont dans les plans, handoffs et décisions datés** sous
-`docs/superpowers/`, historiques par convention (CLAUDE.md) et jamais réécrits, et 19 dans la
-présente spec. **L'ensemble à relire est donc de 208**, dont 144 commentaires, 25 assertions ou argv
-de test, et **11 sites de sortie utilisateur** — pas un.
+Les 411 de P1 se répartissent ainsi, et les seaux ferment :
+
+| Seau | Compte | Réécrit ? |
+|---|---|---|
+| docs datés sous `docs/superpowers/` (plans, handoffs, décisions, specs datées) | 202 | **non** — historiques par convention (CLAUDE.md) |
+| spec `2026-07-27-den-cli-design.md`, vivante | 25 | oui, sauf §14/§14.1 (relevés datés contre un `sbx` réel) |
+| Go production (hors `_test.go`) | 78 | commentaires, sauf les sorties listées plus bas |
+| Go tests | 77 | |
+| `README.md`, `CHANGELOG.md`, `CLAUDE.md` | 28 | oui, sauf les entrées publiées du CHANGELOG |
+| `internal/cli/testdata/unknown-command.golden` | 1 | à la main |
+
+**L'ensemble à relire est donc de 209** (411 − 202), dont **11 sites de sortie utilisateur** — pas
+un.
 
 Ces 11 sites sont ceux qui livreraient un conseil mort. Quatre échappent à P1 : `Use:` et `Short:`
 de `spawn.go` (rendus dans `den help`, dans `cmd.UseLine()` à l'intérieur de l'erreur d'arité que
