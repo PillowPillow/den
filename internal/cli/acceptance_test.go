@@ -132,7 +132,9 @@ func TestAcceptanceFreshHomeConvergesEverythingTheSourceDeclares(t *testing.T) {
 	if !m.Services["github"] || !m.Registries["registry.example.test:443"] {
 		t.Errorf("credentials = %v / %v", m.Services, m.Registries)
 	}
-	if !m.Allowed["registry.example.test"] {
+	// The STORED form, with the port sbx appends to a portless host — that is
+	// what a later inspection compares against (sbx.NormalizeNetworkResource).
+	if !m.Allowed["registry.example.test:443"] {
 		t.Errorf("allowed hosts = %v", m.Allowed)
 	}
 	if !m.Images["base:v1"] {
@@ -290,7 +292,7 @@ func TestAcceptanceUpdateRefusedThenInterruptedThenResumed(t *testing.T) {
 	if !strings.Contains(readFile(t, personalPath), "version: 1.0.0") {
 		t.Error("a refused update changed the active version")
 	}
-	if m.Allowed["new.example.test"] {
+	if m.Allowed["new.example.test:443"] {
 		t.Error("a refused update configured the machine")
 	}
 
@@ -322,7 +324,7 @@ func TestAcceptanceUpdateRefusedThenInterruptedThenResumed(t *testing.T) {
 	if !strings.Contains(readFile(t, personalPath), "version: 1.1.0") {
 		t.Error("the resume did not activate the new version")
 	}
-	if !m.Allowed["new.example.test"] {
+	if !m.Allowed["new.example.test:443"] {
 		t.Error("the resume did not apply the resource that had failed")
 	}
 	if _, err := runCLI(t, d, "nest", "show", "dg:api", "--den-home", home); err != nil {

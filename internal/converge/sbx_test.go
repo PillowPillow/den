@@ -3,6 +3,7 @@ package converge
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -343,5 +344,52 @@ func TestGithubCredentialIsKeyedByTypeNotByItsDeclaredID(t *testing.T) {
 	}
 	if d.Plan(o).Action != ActionUnchanged {
 		t.Errorf("action = %q, want unchanged on a machine that already has it", d.Plan(o).Action)
+	}
+}
+
+// den must recognize a host it allowed itself.
+//
+// The defect this locks was real and would have hit the first `den init
+// --source` against a manifest declaring a portless host: `sbx policy allow
+// network cdn.playwright.dev` is stored by sbx as "cdn.playwright.dev:443",
+// den compared the declared bare string, never matched, and the resource it
+// had just applied failed to VERIFY — a source blocked permanently, on a
+// machine that was correctly configured. Measured against real sbx on
+// 2026-08-16.
+func TestNetworkDriverRecognizesTheHostSbxStoredWithItsDefaultPort(t *testing.T) {
+	m := sbx.NewMachine()
+	d := &networkDriver{
+		allow:  []string{"cdn.playwright.dev", "registry.example.test:4567"},
+		runner: m, source: "dg",
+	}
+
+	// Nothing allowed yet: both are missing, and the plan says so.
+	state, err := ReadSbxState(context.Background(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.state = state
+	if o, _ := d.Inspect(context.Background()); o.Present {
+		t.Fatal("an empty machine cannot already allow the declared hosts")
+	}
+
+	if err := d.Apply(context.Background(), Answers{}, io.Discard); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	// The double stores what sbx stores — the bare host gained its port.
+	if !m.Allowed["cdn.playwright.dev:443"] {
+		t.Fatalf("the double did not normalize like sbx: %v", m.Allowed)
+	}
+
+	o, err := d.Verify(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.Present {
+		t.Errorf("den does not recognize the rule it just created: %q", o.Detail)
+	}
+	// An explicit port is still compared exactly: it is what the source meant.
+	if !m.Allowed["registry.example.test:4567"] {
+		t.Errorf("an explicit port was rewritten: %v", m.Allowed)
 	}
 }

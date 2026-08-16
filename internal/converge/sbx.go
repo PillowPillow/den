@@ -363,10 +363,19 @@ type networkDriver struct {
 	source string
 }
 
+// missing lists the declared hosts this machine does not already allow.
+//
+// It accepts BOTH spellings of a rule, and that is not laxity: sbx stores a
+// portless host with :443 (sbx.NormalizeNetworkResource holds the measurement),
+// so an exact comparison against the declared string reported every bare host
+// as missing — den re-applied it on every run and then failed to VERIFY the
+// resource it had just applied, blocking the source permanently. Comparing
+// both forms can only turn a false "absent" into a true "present": a source
+// that means another port declares it, and that spelling is compared exactly.
 func (d *networkDriver) missing() []string {
 	var out []string
 	for _, host := range d.allow {
-		if !d.state.AllowedHosts[host] {
+		if !d.state.AllowedHosts[host] && !d.state.AllowedHosts[sbx.NormalizeNetworkResource(host)] {
 			out = append(out, host)
 		}
 	}

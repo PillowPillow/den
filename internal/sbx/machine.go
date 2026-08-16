@@ -116,7 +116,15 @@ func (m *Machine) Run(_ context.Context, args ...string) ([]byte, error) {
 		m.Services["github"] = true
 		return nil, nil
 	case len(args) == 4 && args[0] == "policy" && args[1] == "allow" && args[2] == "network":
-		m.Allowed[args[3]] = true
+		// sbx NORMALIZES a portless host to :443 when it stores the rule.
+		// Measured on this machine, 2026-08-16: `sbx policy allow network
+		// cdn.playwright.dev` (the spelling digitaleo-den-env's README tells a
+		// human to type) comes back out of `sbx policy ls --json` as
+		// "cdn.playwright.dev:443". A double that stored the argv verbatim
+		// hid a real defect — den compared the declared bare host against the
+		// stored one, never matched, and a resource it had just applied failed
+		// to verify.
+		m.Allowed[NormalizeNetworkResource(args[3])] = true
 		return nil, nil
 	case len(args) == 4 && args[0] == "template" && args[1] == "save":
 		m.Images[args[3]] = true
@@ -238,3 +246,40 @@ var (
 	_ Runner       = (*Machine)(nil)
 	_ SecretRunner = (*Machine)(nil)
 )
+
+// NormalizeNetworkResource applies sbx's own normalization of a network
+// resource: a host with no port is stored with :443.
+//
+// Measured on 2026-08-16, on a machine where a human had run
+// `sbx policy allow network cdn.playwright.dev` (no port, the spelling
+// digitaleo-den-env's README tells them to type): the rule comes back out of
+// `sbx policy ls --type network --source local --decision allow --json` as
+// "cdn.playwright.dev:443".
+//
+// It lives HERE, in the package that owns what sbx says, and is the SOLE
+// definition: internal/converge compares a manifest's declared host against
+// those stored strings, and Machine simulates the storing. Two copies of this
+// rule would drift, and the drift would be invisible — den would report a host
+// it had just allowed as still missing, and a resource it had just applied
+// would fail to verify.
+//
+// The IPv6 guard is not decoration — "::1" and "[::1]:443" both contain
+// colons, and treating the first as already-ported would make den disagree
+// with sbx on the one shape nobody would think to test.
+func NormalizeNetworkResource(host string) string {
+	if strings.HasPrefix(host, "[") {
+		if i := strings.LastIndex(host, "]"); i >= 0 {
+			if strings.Contains(host[i:], ":") {
+				return host
+			}
+			return host + ":443"
+		}
+	}
+	if strings.Count(host, ":") == 1 {
+		return host
+	}
+	if strings.Contains(host, ":") {
+		return host // bare IPv6, or a shape this double will not second-guess
+	}
+	return host + ":443"
+}
