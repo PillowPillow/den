@@ -382,26 +382,45 @@ func TestRunRemediesAreThemselvesLegal(t *testing.T) {
 		})
 	}
 
-	t.Run("the advisory line", func(t *testing.T) {
-		dir := t.TempDir()
-		t.Chdir(dir)
-		if err := os.Mkdir(filepath.Join(dir, "hotfix"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		home := denHomeSpawnable(t)
-		_, d := fakeSpawnDeps()
-		root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
-		root.AddCommand(newRunCmd(&home, d))
-		_, stderr, err := executeCmdSeparateStreams(t, root, "run", "api", "hotfix", "go", "test")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		got := remedyOf(t, stderr)
-		replay := shellSplit(t, got)[1:] // drop "den"
-		if err := validateArgs(t, replay...); err != nil {
-			t.Errorf("the advisory line %q is refused in turn: %v", got, err)
-		}
-	})
+	// The advisory line comes in TWO shapes, one per target, and both need the
+	// replay: `warnFirstCommandTokenIsADirectory` builds each with the same
+	// shared builder, and `target` is the only thing that differs between them
+	// — exactly the kind of difference a builder can get wrong for one target
+	// and not the other. `up -- --repo /a api` proposing `den run --repo /a api
+	// /a api` (fixed 2026-08-16, see the comment above TestUpRemediesAreThemselvesLegal)
+	// was that exact class of bug: syntactically legal, semantically false, and
+	// invisible to a replay that only ever tried one target. So both rows here
+	// run through executeCmdSeparateStreams, pull the line out of stderr and
+	// replay it — the "with a tail" row for the `den run` target, the "with no
+	// tail" row for `den up`.
+	for _, tc := range []struct {
+		name string
+		argv []string
+	}{
+		{"with a tail (targets den run)", []string{"run", "api", "hotfix", "go", "test"}},
+		{"with no tail (targets den up)", []string{"run", "api", "hotfix"}},
+	} {
+		t.Run("the advisory line "+tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			if err := os.Mkdir(filepath.Join(dir, "hotfix"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			home := denHomeSpawnable(t)
+			_, d := fakeSpawnDeps()
+			root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+			root.AddCommand(newRunCmd(&home, d))
+			_, stderr, err := executeCmdSeparateStreams(t, root, tc.argv...)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := remedyOf(t, stderr)
+			replay := shellSplit(t, got)[1:] // drop "den"
+			if err := validateArgs(t, replay...); err != nil {
+				t.Errorf("the advisory line %q is refused in turn: %v", got, err)
+			}
+		})
+	}
 }
 
 // The `den up` half of the same property, and it lives here because the builder
