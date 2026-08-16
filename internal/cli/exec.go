@@ -66,24 +66,27 @@ func execArgs(cmd *cobra.Command, args []string) error {
 		// carries their flags anyway: someone who typed `den exec api -T` gets
 		// `den exec -T api go test`, which is their intent, spelled legally.
 		return fmt.Errorf("%s: no command given — write `%s`, or `den shell %s` for a shell",
-			path, execLine(path, s, []string{"go", "test"}), s.name)
+			path, remedyLine(cmd, path, s, []string{"go", "test"}), s.name)
 	case cmd.ArgsLenAtDash() == 0:
 		// The one shape SetInterspersed(false) does not neutralize, and the only
 		// reason this validator consults ArgsLenAtDash at all: pflag ate the
 		// separator, so `--` is not in args and s.sawDash cannot see it.
 		//
 		// A den flag typed before that leading `--` was ALSO eaten, by the flag
-		// parser this time, and is already in effect — so it is absent from the
-		// line proposed here. Accepted, and not a defect of the same kind: the
-		// proposal stays legal, and the flag it omits is one cobra has honoured.
+		// parser this time — so it used to be absent from the line proposed
+		// here. The omission was written down as a decision — "the flag is one
+		// cobra has honoured". False in its own terms: cobra honoured it on an
+		// invocation that is REFUSED and never runs, so the user retypes a line
+		// missing their --workdir and lands somewhere else in silence. Since
+		// 2026-08-16 remedyLine reads those flags back off the FlagSet.
 		return fmt.Errorf("%s: `--` is not needed, and a sandbox name must come first — write `%s`",
-			path, execLine(path, s, s.command))
+			path, remedyLine(cmd, path, s, s.command))
 	case s.sawDash:
 		return fmt.Errorf("%s: `--` is not needed — write `%s`",
-			path, execLine(path, s, s.command))
+			path, remedyLine(cmd, path, s, s.command))
 	case len(s.flags) > 0:
 		return fmt.Errorf("%s: den's flags go before the sandbox name — write `%s`",
-			path, execLine(path, s, s.command))
+			path, remedyLine(cmd, path, s, s.command))
 	}
 	return nil
 }

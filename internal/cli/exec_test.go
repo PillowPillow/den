@@ -860,13 +860,20 @@ func TestExecRemediesAreThemselvesLegal(t *testing.T) {
 			[]string{"exec", "api", "--"}, "den exec api go test"},
 		{"a leading separator",
 			[]string{"exec", "--", "api", "go", "build"}, "den exec api go build"},
-		// The one case where the remedy DROPS something the user typed, and it
-		// is accepted: cobra parsed `-T` before pflag ate the separator, so the
-		// flag is already in effect and is not among the arguments this
-		// validator sees. The proposal stays legal, which is the property under
-		// test; the row exists so the omission stays a decision.
+		// This row was inverted on 2026-08-16. It used to expect
+		// `den exec api go build` and carried a comment calling the dropped `-T`
+		// an accepted omission. The remedy is a line the user RETYPES, so a
+		// dropped flag is a silently different run — and with --repo it would be
+		// a dropped mount.
+		//
+		// `--no-tty=true`, not `-T`: readBackFlags spells a read-back boolean
+		// canonically with its value, and it has no shorthand path — it emits
+		// "--" + f.Name. The bare form stays what the USER types.
+		//
+		// The replay holds: pflag parses `--no-tty=true` left of the first
+		// positional, so s.flags is empty and enterArgs returns nil.
 		{"a flag before a leading separator",
-			[]string{"exec", "-T", "--", "api", "go", "build"}, "den exec api go build"},
+			[]string{"exec", "-T", "--", "api", "go", "build"}, "den exec --no-tty=true api go build"},
 		{"a flag and no command",
 			[]string{"exec", "api", "-T"}, "den exec -T api go test"},
 		{"a workdir after the name",
@@ -891,6 +898,24 @@ func TestExecRemediesAreThemselvesLegal(t *testing.T) {
 				t.Errorf("the remedy %q is refused in turn: %v", got, err)
 			}
 		})
+	}
+}
+
+// The remedy must carry a flag pflag consumed before the validator ran.
+// Measured on the 2026-08-16 binary, the proposal dropped `--workdir /srv`
+// entirely: a line the user retypes, silently landing them in another
+// directory. exec.go called the omission a decision on the grounds that "cobra
+// has honoured the flag" — it honoured it on an invocation that is REFUSED and
+// never runs.
+func TestExecRemediesCarryFlagsTypedBeforeTheSeparator(t *testing.T) {
+	err := validateArgs(t, "exec", "--workdir", "/srv", "--", "api", "go", "build")
+	if err == nil {
+		t.Fatal("a leading separator must be refused")
+	}
+	const want = "den exec: `--` is not needed, and a sandbox name must come first — " +
+		"write `den exec --workdir /srv api go build`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
 	}
 }
 

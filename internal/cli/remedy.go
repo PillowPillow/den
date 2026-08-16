@@ -204,13 +204,83 @@ func execRewrite(cmd *cobra.Command, args []string) execShape {
 	return s
 }
 
-// execLine spells a shape back as a command line, for the "write `…`" half of
+// readBackFlags spells back the den flags cobra ALREADY CONSUMED, so a remedy
+// never drops one. It is the second source of the builder; execRewrite's lift
+// out of the positional tail is the first.
+//
+// Four rules, written down because they will otherwise be guessed:
+//
+//   - ORDER: read-back flags first, in VisitAll's order — which is LEXICAL,
+//     SortFlags defaulting to true (measured) — then the flags lifted from the
+//     tail, in typing order. Order between DISTINCT flags is indifferent to
+//     pflag; inside --repo, the slice's order IS the typing order, and
+//     2026-08-04 depends on it (the repo order decides sbx's argv, hence
+//     mounts[0], hence StartDir's rule 3).
+//   - SCALAR DUPLICATES (`den run --workdir /a api --workdir /b go test`): the
+//     LIFTED one wins and the read-back one is dropped. It is the last one
+//     typed, and the one den is teaching the user to move. On `up`, where
+//     interspersing is on, nothing is ever lifted and the conflict cannot arise.
+//   - SLICE DUPLICATES: --repo, --only and --without are all SliceValue, and
+//     the scalar rule does NOT apply to them. Both origins are emitted —
+//     read-back first (necessarily typed left of the name), then lifted — one
+//     `--<name> <value>` pair per element. Value.String() is FORBIDDEN here:
+//     measured, a stringArray holding "/a" and "/tmp/hot fix" renders
+//     "[/a,/tmp/hot fix]", which reparses as one bogus path named exactly that
+//     — a syntactically legal remedy that is semantically false, so the replay
+//     test cannot catch it.
+//   - BOOLEANS: Changed says a boolean was TYPED, never how. A read-back
+//     boolean is therefore written CANONICALLY with its value — `--detach=false`
+//     — and never bare: emitting `--detach` for a `--detach=false` would flip
+//     the value, and the remedy could then trigger a contradiction the original
+//     line did not (`--detach=true` wakes spawn.go's refusal). The bare form
+//     stays what the USER types; it is not what den PROPOSES.
+//
+// NoOptDefVal != "" is the boolean test rather than a type assertion on
+// *pflag.boolValue, which is unexported. den owns no flag with an optional
+// value, so the two are the same set here; a flag with one would need its own
+// branch.
+func readBackFlags(cmd *cobra.Command, lifted map[string]bool) []string {
+	var out []string
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if f.Name == "help" || !f.Changed {
+			return
+		}
+		if sv, ok := f.Value.(pflag.SliceValue); ok {
+			for _, v := range sv.GetSlice() {
+				out = append(out, "--"+f.Name, v)
+			}
+			return
+		}
+		if lifted[f.Name] {
+			return
+		}
+		if f.NoOptDefVal != "" {
+			out = append(out, "--"+f.Name+"="+f.Value.String())
+			return
+		}
+		out = append(out, "--"+f.Name, f.Value.String())
+	})
+	return out
+}
+
+// remedyLine spells a shape back as a command line, for the "write `…`" half of
 // every refusal. den's flags first, then the name, then the command — the order
 // the contract requires, which is the whole point of proposing it.
-func execLine(path string, s execShape, command []string) string {
-	parts := make([]string, 0, len(s.flags)+len(command)+2)
-	parts = append(parts, path)
+//
+// TWO commands, not one, and that is what the inter-command remedies need:
+// `den run api ~/dev/hotfix` proposes a `den up …` line, and `den up api -- go
+// test` proposes a `den run …` line. source is the command that PARSED the
+// line — it owns the derived table and the Changed values — and target is the
+// path the proposal names. A builder taking only cmd.CommandPath() cannot write
+// those lines; one taking only a target path has no FlagSet to read back from.
+func remedyLine(source *cobra.Command, target string, s execShape, command []string) string {
+	parts := make([]string, 0, len(s.flags)+len(command)+4)
+	parts = append(parts, readBackFlags(source, s.lifted)...)
 	parts = append(parts, s.flags...)
 	parts = append(parts, s.name)
-	return strings.Join(append(parts, command...), " ")
+	parts = append(parts, command...)
+	// target is NOT one of the parts: it carries a space ("den nest show"), and
+	// Task 3's quoting would wrap it in quotes. It is den's own prefix, never a
+	// shell word the user supplies.
+	return target + " " + strings.Join(parts, " ")
 }
