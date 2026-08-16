@@ -355,20 +355,35 @@ func TestCollectInitialAnswersRefusesAnUndeclaredCredential(t *testing.T) {
 }
 
 // Confirmation: `--yes` applies, a typed "n" does not, and no terminal means
-// the plan is printed and nothing happens — never a default yes.
+// the plan is printed and nothing happens — never a default yes. changes
+// defaults to true in every row but the two that test Plan.Changes() itself:
+// a plan with nothing to create or update needs no confirmation, but — the
+// case that matters most — it must NOT relax the no-terminal refusal, which
+// stays strict regardless of changes (collectInitialAnswers reasons about
+// that refusal being unconditional).
 func TestConfirm(t *testing.T) {
 	cases := []struct {
-		name  string
-		yes   bool
-		tty   bool
-		stdin string
-		want  bool
+		name    string
+		yes     bool
+		tty     bool
+		stdin   string
+		changes bool
+		want    bool
 	}{
-		{"--yes", true, false, "", true},
-		{"typed yes", false, true, "y\n", true},
-		{"typed no", false, true, "n\n", false},
-		{"empty line", false, true, "\n", false},
-		{"no terminal", false, false, "", false},
+		{"--yes", true, false, "", true, true},
+		{"typed yes", false, true, "y\n", true, true},
+		{"typed no", false, true, "n\n", true, false},
+		{"empty line", false, true, "\n", true, false},
+		{"no terminal", false, false, "", true, false},
+		// A plan that changes nothing skips the question entirely: no stdin is
+		// read (an empty reader would otherwise make ReadString fail), and the
+		// prompt text never appears.
+		{"no changes, terminal", false, true, "", false, true},
+		// The no-terminal refusal is NOT relaxed by changes==false: without a
+		// terminal den still has nobody to tell it `--yes` was intended, and
+		// collectInitialAnswers' own reasoning about this branch depends on
+		// that staying true unconditionally.
+		{"no changes, no terminal", false, false, "", false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -377,7 +392,7 @@ func TestConfirm(t *testing.T) {
 			if c.tty {
 				d.IsTTY = func() bool { return true }
 			}
-			got, err := confirm(cmd, d, c.yes)
+			got, err := confirm(cmd, d, c.yes, c.changes)
 			if err != nil {
 				t.Fatalf("confirm: %v", err)
 			}
@@ -386,6 +401,9 @@ func TestConfirm(t *testing.T) {
 			}
 			if !got && !strings.Contains(out.String(), "nothing was applied") {
 				t.Errorf("a refused plan must say nothing happened:\n%s", out.String())
+			}
+			if !c.changes && c.tty && strings.Contains(out.String(), "apply this plan?") {
+				t.Errorf("a plan with nothing to change must not ask:\n%s", out.String())
 			}
 		})
 	}

@@ -112,7 +112,7 @@ func runConvergence(cmd *cobra.Command, d Deps, mode converge.Mode, home, name s
 	converge.RenderPlan(out, plan)
 	printRepoMigration(out, home, name, plan)
 
-	confirmed, err := confirm(cmd, d, f.Yes)
+	confirmed, err := confirm(cmd, d, f.Yes, plan.Changes())
 	if err != nil || !confirmed {
 		return err
 	}

@@ -262,7 +262,20 @@ func askRepositoryRoots(out io.Writer, in *bufio.Reader) ([]string, error) {
 // someone who has read a plan before (a CI, a scripted install); without a
 // terminal and without `--yes`, den prints the plan and applies nothing —
 // never a default "yes" (spec §7.1).
-func confirm(cmd *cobra.Command, d Deps, yes bool) (bool, error) {
+//
+// changes is Plan.Changes(): a plan with nothing to create or update needs no
+// human decision, so the interactive question is skipped and confirm answers
+// true on its own. It is checked only INSIDE the terminal branch, never
+// before it: the no-terminal refusal above stays exactly as strict as before
+// — a run without `--yes` and without a terminal still refuses regardless of
+// changes, which is what keeps the two sentences in collectInitialAnswers's
+// godoc ("confirm() itself refuses without a terminal and without `--yes`";
+// "confirm() only ever returns true here on `yes`") true for every caller
+// that reasons about them. Apply itself is UNCHANGED by this: a resource plan
+// with nothing to create or update is not "nothing left to do" — ModeInit and
+// ModeAdd still install the candidate, and every resource still gets
+// verified — so skipping Apply here, not only the prompt, would be wrong.
+func confirm(cmd *cobra.Command, d Deps, yes, changes bool) (bool, error) {
 	if yes {
 		return true, nil
 	}
@@ -271,6 +284,9 @@ func confirm(cmd *cobra.Command, d Deps, yes bool) (bool, error) {
 			"\nnothing was applied: den has no terminal to confirm on — rerun with `--yes` to apply "+
 				"the plan above")
 		return false, nil
+	}
+	if !changes {
+		return true, nil
 	}
 	fmt.Fprint(cmd.OutOrStdout(), "\napply this plan? [y/N] ")
 	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
