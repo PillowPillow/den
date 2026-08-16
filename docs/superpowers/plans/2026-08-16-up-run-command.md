@@ -1614,8 +1614,13 @@ func TestRunTreatsAnEqualsInsideAClusterAsTheValue(t *testing.T) {
 			"den run: den's flags go before the nest name — write `den run -iT=true api go test`"},
 		{[]string{"run", "api", "-Ti=false", "go", "test"},
 			"den run: den's flags go before the nest name — write `den run -Ti=false api go test`"},
+		// `-wi api feat go test`, NOT `-wi feat api go test`: `-wi` carries its
+		// value INSIDE the token (worktree="i"), so classifyToken returns
+		// consumes=false and `feat` is never lifted — it stays the first word of
+		// the command. Corrected 2026-08-16 during implementation; the row as
+		// first written contradicted this very test's own comment.
 		{[]string{"run", "api", "-wi", "feat", "go", "test"},
-			"den run: den's flags go before the nest name — write `den run -wi feat api go test`"},
+			"den run: den's flags go before the nest name — write `den run -wi api feat go test`"},
 	} {
 		t.Run(tc.argv[2], func(t *testing.T) {
 			err := validateArgs(t, tc.argv...)
