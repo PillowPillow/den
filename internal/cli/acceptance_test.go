@@ -385,6 +385,15 @@ func TestRealSourceAcceptance(t *testing.T) {
 	remote := copyToRemote(t, checkout)
 	home := filepath.Join(t.TempDir(), "den")
 	m := sbx.NewMachine()
+	// github pre-configured: see TestAcceptanceFreshHomeConvergesEverythingTheSourceDeclares's
+	// comment — this run has no terminal either, and Task 5 (internal/cli/answers.go)
+	// refuses before applying anything when a declared sbx_github credential is
+	// genuinely absent and there is none. Unlike the other four acceptance
+	// tests, what THIS manifest declares is not known here — it travels with
+	// whatever checkout DIGITALEO_DEN_ENV names — so the seed is unconditional:
+	// harmless if the real source declares no github credential, load-bearing
+	// if it does.
+	m.Services["github"] = true
 
 	// Every declared input answered from the environment, with a sentinel this
 	// test then hunts for across the whole den home.
