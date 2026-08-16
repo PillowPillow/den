@@ -15,10 +15,10 @@ type Options struct {
 	Agent   string   // --agent
 	Without []string // --without
 	Only    []string // --only
-	// Repos are the repositories given as positionals on the command line, raw:
-	// tilde unexpanded, possibly relative. They are additive to the nest's
-	// `repos:`, and they are NOT addressable by --without/--only — a repo typed
-	// by hand is removed by not typing it.
+	// Repos are the repositories given behind --repo, raw: tilde unexpanded,
+	// possibly relative. They are additive to the nest's `repos:`, and they are
+	// NOT addressable by --without/--only — a repo typed by hand is removed by
+	// not typing it.
 	Repos []string
 	// Cwd resolves the relative entries of Repos. A parameter, not an
 	// os.Getwd() inside this package: the resolution stays pure, so `den

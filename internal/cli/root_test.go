@@ -280,12 +280,18 @@ func TestASpawnFlagOnTheRootIsRefused(t *testing.T) {
 // the command.
 //
 // The root itself is not one of these sites: its Args is unknownCommand, which
-// refuses on identity, not on count. `den nest show` is the site that exercises
-// the "one argument expected" wording with an unbounded maximum — every
-// argument past the first is a repo, and nothing caps how many a nest may
-// declare, so its "too many" branch is unreachable by design. It was `den
-// spawn`'s too until 2026-08-16; that command is gone, and `den up` validates
-// with upArgs, whose messages are its own.
+// refuses on identity, not on count. No site exercises argsBetween's "one
+// argument expected" wording with an unbounded maximum any longer: `den spawn`
+// carried it until 2026-08-16, and `den nest show` carried it after that, until
+// this table's own migration moved it to upArgs too — atLeastOneArg was
+// deleted with its last caller.
+//
+// The "up" and "nest show" rows below both lock upArgs's wording, one row
+// each, same as the four noArgs sites (version/doctor/ls/nest ls) above them:
+// this table's unit of coverage is the COMMAND, not the validator function, so
+// a shared validator does not collapse its callers into one row — that is
+// exactly the hole `den shell` fell into, and it is why `den nest show` keeps
+// its own row instead of relying on `den up`'s.
 func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -330,7 +336,7 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 		{
 			"nest show, missing argument",
 			[]string{"nest", "show"},
-			"den nest show: one argument expected, none received — usage: den nest show <nest> [repo...] [flags]",
+			"den nest show: a nest expected — usage: den nest show <nest> [flags]",
 		},
 		{
 			"exec, missing argument",
