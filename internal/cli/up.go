@@ -84,10 +84,12 @@ func (s execShape) addFlag(name, value string) execShape {
 // reads "exactly one argument expected, 2 received, starting with
 // "~/dev/hotfix" — usage: …", which names neither --repo nor what changed.
 //
-// FOUR branches, and their ORDER is the subject. The command tail is args[1:]
-// once the nest is identified, NEVER args[dash:]: on `up -- api`, dash is 0
-// while `api` is the nest, so indexing by dash would swap the two.
-// ArgsLenAtDash() says WHETHER a `--` was typed, it does not cut.
+// FOUR branches, and their ORDER is the subject. The command tail is
+// execRewrite's s.command, NEVER a slice of args cut by hand: neither
+// args[dash:] (on `up -- api`, dash is 0 while `api` is the nest, so indexing by
+// dash swaps the two) nor args[1:] (which assumes args[0] is the nest, false as
+// soon as pflag ate a leading `--` — see branch 2). ArgsLenAtDash() says WHETHER
+// a `--` was typed, it does not cut, and it is the only thing it is asked here.
 //
 // pflag terminates its parse on `--` whatever SetInterspersed says, and `--`
 // NEVER appears in args — only ArgsLenAtDash reveals it (measured 2026-08-16:
@@ -111,7 +113,27 @@ func upArgs(cmd *cobra.Command, args []string) error {
 	// That reading beats the repo one.
 	if cmd.ArgsLenAtDash() >= 0 {
 		s := execRewrite(cmd, args)
-		if len(args) > 1 {
+		// The discriminant is the SHAPE's command, not the positional count, and
+		// that distinction is the whole branch (fixed 2026-08-16, found on the
+		// built binary). `len(args) > 1` reads args[0] as the nest and args[1:]
+		// as the command, which holds for `up api -- go test` and is FALSE the
+		// moment pflag ate a LEADING `--`: everything after it arrives
+		// positional, den flags included, so args[0] is a flag. `up -- --repo /a
+		// api` then proposed `den run --repo /a api /a api` — the nest emitted
+		// twice, once as the name and once as the first word of a command the
+		// user never typed, which would run a program named `/a` inside the VM.
+		// Syntactically legal, semantically false: validateArgs accepts it, so
+		// the replay property cannot see it.
+		//
+		// execRewrite already answers the question correctly — it walks both
+		// sides of the name and puts `--repo /a` in s.flags, `api` in s.name and
+		// NOTHING in s.command. Reading its verdict rather than re-reading the
+		// raw slice is also what makes this function agree with enterArgs
+		// (exec.go), which quotes s.command for the identical shape and is
+		// pinned on `run` by TestRunRemediesAreThemselvesLegal's leading-
+		// separator row. Two answers to one question is what a shared builder
+		// exists to prevent.
+		if len(s.command) > 0 {
 			// A `run` typed `up`. The remedy names `den run`, NOT --repo:
 			// `go test` is a command, and proposing to mount it as two
 			// directories is the absurdity this branch exists to prevent.
@@ -123,12 +145,15 @@ func upArgs(cmd *cobra.Command, args []string) error {
 			// `den nest show api` instead would drop `foo` in silence, which is
 			// the normalization §2 refuses.
 			return fmt.Errorf("%s: %s takes no command — write `%s`",
-				path, path, remedyLine(cmd, "den run", s, args[1:]))
+				path, path, remedyLine(cmd, "den run", s, s.command))
 		}
-		// The separator is merely useless: `up -- api`, `up api --`. The remedy
-		// still carries every flag pflag consumed — `up --repo /a -- api` must
-		// come back as `den up --repo /a api`, not `den up api`, or the mount
-		// vanishes in silence.
+		// The separator is merely useless: `up -- api`, `up api --`, and — since
+		// the discriminant above became the shape — `up -- --repo /a api`, where
+		// the separator only cost pflag the flags behind it. The remedy still
+		// carries every one of them, whether pflag consumed it (`up --repo /a --
+		// api`) or execRewrite lifted it back out of the tail: either way the
+		// line must come back as `den up --repo /a api`, not `den up api`, or the
+		// mount vanishes in silence.
 		return fmt.Errorf("%s: `--` is not needed — write `%s`",
 			path, remedyLine(cmd, path, s, nil))
 	}

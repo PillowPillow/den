@@ -122,8 +122,9 @@ func TestShellWorkdirOverridesTheReportedWorkspace(t *testing.T) {
 	}
 }
 
-// `-w` must NOT be accepted: it is den spawn's worktree, and one letter meaning
-// two things across sibling commands is the collision den refuses elsewhere.
+// `-w` must NOT be accepted: it is `den up` / `den run`'s worktree, and one
+// letter meaning two things across sibling commands is the collision den refuses
+// elsewhere.
 func TestShellRefusesTheShortWorkdirFlag(t *testing.T) {
 	f := &sbx.Fake{}
 	if _, err := executeCmdWithSbx(t, f, "shell", "-w", "/srv", "api"); err == nil {

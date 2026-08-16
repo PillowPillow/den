@@ -385,6 +385,20 @@ func TestRunRemediesAreThemselvesLegal(t *testing.T) {
 // The `den up` half of the same property, and it lives here because the builder
 // is shared: `den up` proposes `den run` lines, so a remedy of its own that the
 // other command refused would be invisible to the loop above.
+//
+// Every row pins its expected string, and the last two are why. The replay half
+// CANNOT see the defect they cover: `up -- --repo /a api` proposed `den run
+// --repo /a api /a api` until 2026-08-16 — the nest emitted twice, once as the
+// name and once as the first word of a command the user never typed — and
+// validateArgs accepts that line, so a loop that only replayed would have gone
+// green over it. Syntactically legal, semantically false. The `want` is the
+// whole assertion here; the replay is the second half, not the first.
+//
+// Named, so nobody reads more into the last row than it says: `den up -T api` is
+// legal to the VALIDATOR and refused one layer down, in spawn.Spawn's step 0.
+// That is the deferred always-refused-flag remedy class (ledger ruling 3),
+// parked for the whole-branch review; this row asserts the SHAPE of the line,
+// not that it runs.
 func TestUpRemediesAreThemselvesLegal(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -398,6 +412,13 @@ func TestUpRemediesAreThemselvesLegal(t *testing.T) {
 		{"a second positional", []string{"up", "api", "/dev/hotfix"},
 			"den up --repo /dev/hotfix api"},
 		{"a command", []string{"up", "api", "--", "go", "test"}, "den run api go test"},
+		// pflag eats a LEADING `--` before its interspersed check, so these two
+		// arrive with den's own flags as POSITIONALS and args[0] is a flag, not
+		// the nest. The remedy must lift the flag and name the nest ONCE.
+		{"a leading separator before a flag", []string{"up", "--", "--repo", "/a", "api"},
+			"den up --repo /a api"},
+		{"a leading separator before a shorthand", []string{"up", "--", "-T", "api"},
+			"den up -T api"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateArgs(t, tc.argv...)

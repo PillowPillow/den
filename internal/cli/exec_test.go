@@ -660,9 +660,9 @@ func TestExecMinusTSuppressesTheTtyEvenOnATerminal(t *testing.T) {
 	}
 }
 
-// --workdir is spelled LONG on purpose: -w is den spawn's worktree, and giving
-// it a second meaning on a sibling command is the collision den refuses
-// elsewhere. The flag overrides the workspace the VM reported.
+// --workdir is spelled LONG on purpose: -w is `den up` / `den run`'s worktree,
+// and giving it a second meaning on a sibling command is the collision den
+// refuses elsewhere. The flag overrides the workspace the VM reported.
 //
 // It sits LEFT of the sandbox name since 2026-08-14: den's own flags all do,
 // because SetInterspersed(false) hands everything past that name to the VM.
@@ -685,9 +685,9 @@ func TestExecWorkdirOverridesTheReportedWorkspace(t *testing.T) {
 	}
 }
 
-// `-w` must NOT be accepted here: silently taking den spawn's worktree
-// shorthand as a workdir is exactly the kind of collision that makes two
-// sibling commands mean different things by one letter.
+// `-w` must NOT be accepted here: silently taking `den up` / `den run`'s
+// worktree shorthand as a workdir is exactly the kind of collision that makes
+// two sibling commands mean different things by one letter.
 func TestExecRefusesTheShortWorkdirFlag(t *testing.T) {
 	f := &sbx.Fake{}
 	if _, err := executeCmdWithSbx(t, f, "exec", "-w", "/srv", "api", "true"); err == nil {
