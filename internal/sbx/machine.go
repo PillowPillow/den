@@ -44,6 +44,13 @@ type Machine struct {
 	// value the production redaction exists to hide.
 	Calls [][]string
 
+	// Attaches records ONLY the calls to Attach, in order — same reason as
+	// Fake.Attaches (fake.go, and Runner's own doc): Calls conflates every
+	// method, and a test proving the github credential went through a real
+	// terminal, not a Run whose stdin is nil, needs a log only Attach feeds.
+	// Attach feeds both Calls and Attaches; Run feeds only Calls.
+	Attaches [][]string
+
 	Services   map[string]bool
 	Registries map[string]bool
 	Customs    map[CustomSecret]bool
@@ -74,6 +81,21 @@ func (m *Machine) HasCalled(prefix ...string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, a := range m.Calls {
+		if len(a) >= len(prefix) && slices.Equal(a[:len(prefix)], prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAttached reports whether an ATTACH (never a Run) started with this
+// prefix — same contract as Fake.HasAttached: it is what lets a test decide
+// that the github credential went through the terminal Attach hands over,
+// not a buffered Run whose prompt sbx would read as EOF.
+func (m *Machine) HasAttached(prefix ...string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range m.Attaches {
 		if len(a) >= len(prefix) && slices.Equal(a[:len(prefix)], prefix) {
 			return true
 		}
@@ -113,8 +135,14 @@ func (m *Machine) Run(_ context.Context, args ...string) ([]byte, error) {
 	case joined == "ls --json":
 		return []byte(`{"sandboxes":[]}`), nil
 	case joined == "secret set -g github":
-		m.Services["github"] = true
-		return nil, nil
+		// github is interactive on sbx's side (measured 2026-08-16, `sbx secret
+		// set --help` on v0.38.0): sbx reads the value from a prompt. Exec.Run
+		// leaves cmd.Stdin nil, so the real command's prompt would read EOF and
+		// fail — a Run reaching this case must fail the same way, or this
+		// double keeps lying about the one command that made den permanently
+		// unable to configure the credential (internal/converge/sbx.go). Only
+		// Attach, below, hands over a real terminal and may complete it.
+		return nil, fmt.Errorf("sbx: reading github credential: EOF (stdin is not a terminal)")
 	case len(args) == 4 && args[0] == "policy" && args[1] == "allow" && args[2] == "network":
 		// sbx NORMALIZES a portless host to :443 when it stores the rule.
 		// Measured on this machine, 2026-08-16: `sbx policy allow network
@@ -183,7 +211,24 @@ func (m *Machine) Stream(_ context.Context, _ io.Writer, args ...string) error {
 
 func (m *Machine) Attach(_ context.Context, args ...string) error {
 	m.record(args)
-	return m.failure(args)
+	m.mu.Lock()
+	m.Attaches = append(m.Attaches, slices.Clone(args))
+	m.mu.Unlock()
+	if err := m.failure(args); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// secret set -g github is the interactive credential
+	// (internal/converge/sbx.go's credentialDriver.Apply) hands to Attach and
+	// nowhere else: Attach is the one method that wires a real terminal
+	// (runner.go's own doc), so it is the only method allowed to complete this
+	// the way a human at the keyboard would. Run's matching case, above,
+	// fails on purpose — that asymmetry is what a test can tell apart.
+	if joined := strings.Join(args, " "); joined == "secret set -g github" {
+		m.Services["github"] = true
+	}
+	return nil
 }
 
 func (m *Machine) Pipe(_ context.Context, args ...string) error {

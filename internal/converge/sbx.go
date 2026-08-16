@@ -281,8 +281,14 @@ func (d *credentialDriver) expected() string {
 // Apply configures the credential. Which command, and how the value travels,
 // is decided per type — and the value never travels in an argv den can avoid:
 //
-//   - github is interactive on sbx's side: den runs the command and lets sbx
-//     own the flow.
+//   - github is interactive on sbx's side (measured 2026-08-16, `sbx secret
+//     set --help` on v0.38.0): sbx reads it from its own prompt, and Run's
+//     stdin is nil, so the prompt would read EOF and fail. Apply hands the
+//     call to Attach instead — Runner's own doc reserves it for exactly this,
+//     "an interactive shell … there's nothing to capture, and capturing
+//     would break interactivity" — which wires the real terminal the prompt
+//     needs. The value still never reaches den: it goes straight from the
+//     user's keyboard to sbx.
 //   - a registry password is piped on stdin (`--password-stdin`), because an
 //     argv is readable by every process on the machine.
 //   - a custom secret has no stdin form on v0.38.0 (probed 2026-08-14): the
@@ -292,8 +298,7 @@ func (d *credentialDriver) Apply(ctx context.Context, answers Answers, out io.Wr
 	switch d.res.Type {
 	case source.CredentialGitHub:
 		fmt.Fprintf(out, "configuring the sbx github credential (sbx will ask for it)\n")
-		_, err := d.runner.Run(ctx, "secret", "set", "-g", githubService)
-		return err
+		return d.runner.Attach(ctx, "secret", "set", "-g", githubService)
 
 	case source.CredentialRegistry:
 		value, err := d.value(answers)

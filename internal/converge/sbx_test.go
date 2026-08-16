@@ -222,6 +222,12 @@ func TestCredentialApplyKeepsTheValueOutOfArgv(t *testing.T) {
 	if !f.HasCalled("secret", "set", "-g", "github") {
 		t.Errorf("expected the github command; calls: %v", f.Calls)
 	}
+	// Through Attach specifically, never Run: Run leaves stdin nil, so on the
+	// real sbx the github prompt would read EOF and fail (Machine.Run
+	// simulates exactly that). Only Attach hands over a real terminal.
+	if !f.HasAttached("secret", "set", "-g", "github") {
+		t.Errorf("expected the github credential to go through Attach, not Run; attaches: %v", f.Attaches)
+	}
 	if !f.HasCalled("secret", "set", "-g", "--registry", "registry.example.test:443", "--password-stdin") {
 		t.Errorf("expected the registry password to travel on stdin; calls: %v", f.Calls)
 	}
