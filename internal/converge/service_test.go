@@ -1000,6 +1000,38 @@ func TestStatusReportsADivergenceAsBlocked(t *testing.T) {
 	}
 }
 
+// `den source status` must not print `blocked` with no reason: `den doctor`
+// (sourceDetail, internal/cli/doctor.go) reads plan.Warnings[0] for the same
+// source, and the two commands disagreeing about WHY a source is blocked is
+// worse than either one staying silent.
+func TestRenderStatusNamesTheReasonForABlockedSource(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
+		&strings.Builder{}, &strings.Builder{}); err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	cleanup()
+	if err := source.WritePersonal(denHome, "dg", source.Personal{Version: "0.9.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := s.Status(context.Background(), denHome, "dg")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Status != source.StatusBlocked || len(status.Warnings) == 0 {
+		t.Fatalf("status = %+v, want blocked with a warning naming the divergence", status)
+	}
+
+	var out strings.Builder
+	RenderStatus(&out, status)
+	if !strings.Contains(out.String(), status.Warnings[0]) {
+		t.Errorf("status does not name the reason %q it is blocked:\n%s", status.Warnings[0], out.String())
+	}
+}
+
 // A machine den cannot observe is `unknown`, never "nothing is configured":
 // the two have different remedies and a user acts on the word (spec §12.2).
 func TestStatusReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {

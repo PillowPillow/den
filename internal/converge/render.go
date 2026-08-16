@@ -68,7 +68,21 @@ func RenderPlan(w io.Writer, p *Plan) {
 // The same model as the plan, minus the actions: a status describes, a plan
 // proposes.
 func RenderStatus(w io.Writer, p *Plan) {
-	fmt.Fprintf(w, "source: %s  version: %s  status: %s\n", p.Source, p.Version, p.Status)
+	fmt.Fprintf(w, "source: %s  version: %s  status: %s", p.Source, p.Version, p.Status)
+	// The verdict's reason, in the same voice `den doctor` uses (sourceDetail,
+	// internal/cli/doctor.go: "<summary> — <first warning>"). Service.Status
+	// appends the RequireUsable refusal to Warnings before setting the status
+	// to blocked — that warning IS the explanation, and doctor already prints
+	// it for this source. Without this line `den source status` said only
+	// "blocked" while `den doctor` named the reason for the same source: two
+	// commands disagreeing about why. Narrowed to non-ready: a ready source
+	// has nothing to explain, and printing every warning regardless of status
+	// would repeat information the RESOURCES/NESTS sections below already
+	// carry per-item.
+	if p.Status != source.StatusReady && len(p.Warnings) > 0 {
+		fmt.Fprintf(w, " — %s", p.Warnings[0])
+	}
+	fmt.Fprintln(w)
 
 	fmt.Fprintf(w, "\nRESOURCES\n")
 	for _, r := range p.Resources {
