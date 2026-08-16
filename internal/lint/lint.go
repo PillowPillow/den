@@ -147,15 +147,38 @@ func judge(root string, stacks, parents config.Stacks, nests []*nest.Nest) []err
 	for _, b := range stacks.Broken {
 		errs = append(errs, fmt.Errorf("stack %q: %w", b.Name, b.Err))
 	}
+	// Every JUDGED root is checked against ITS OWN loaded copy — stacks,
+	// never parents (final whole-branch review, I1, 2026-08-16). The two
+	// copies can disagree: config.LoadStacks (which builds parents) skips a
+	// `stacks/<name>` directory entry whose os.ReadDir DirEntry.IsDir() lies
+	// — lstat-based, so a SYMLINK to a directory answers false — while
+	// config.LoadStack (which RunCatalogue uses to build stacks, by name,
+	// from the catalogue) reads straight through the symlink and loads it
+	// fine. Before this loop existed, a root absent from parents.Healthy was
+	// silently absent from the closure below too (parentClosure's walk keys
+	// on parents.Healthy), so checkStack never ran on it at all: an exported
+	// stack behind a symlink could declare an absolute path or an escaping
+	// one and lint clean. Iterating stacks.Names() first, unconditionally,
+	// is what `judge`'s own doc already promised — "stacks decides what is
+	// JUDGED" — and this is the only loop that can make good on it, because
+	// only `stacks` is guaranteed to hold every root's real load.
+	for _, name := range stacks.Names() {
+		errs = append(errs, checkStack(root, parents, stacks.Healthy[name])...)
+	}
 	// The ancestor closure of the JUDGED stacks, resolved through `parents`:
 	// for Run, stacks == parents == the full scan, so every healthy stack is
-	// already its own root and the closure is exactly stacks.Names() —
-	// unchanged from before this function took two arguments. For
-	// RunCatalogue it is strictly the exported stacks plus every unexported
-	// stack their `parent:` chain actually reaches; see parentClosure's doc
-	// for why an orphan stays out of it.
+	// already its own root, already checked above, and this loop adds
+	// nothing new — unchanged from before this function took two arguments.
+	// For RunCatalogue it is strictly the exported stacks plus every
+	// unexported stack their `parent:` chain actually reaches; see
+	// parentClosure's doc for why an orphan stays out of it. The `isRoot`
+	// guard skips names the loop above already checked (against `stacks`,
+	// their own copy) so a root's fault is never reported twice.
 	closure := parentClosure(stacks, parents)
 	for _, name := range closure {
+		if _, isRoot := stacks.Healthy[name]; isRoot {
+			continue
+		}
 		errs = append(errs, checkStack(root, parents, parents.Healthy[name])...)
 	}
 	errs = append(errs, checkCycles(parents, closure)...)

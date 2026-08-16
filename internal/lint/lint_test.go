@@ -474,6 +474,48 @@ func TestRunCatalogueJudgesOnlyExportedObjects(t *testing.T) {
 	}
 }
 
+// I1 (final whole-branch review, 2026-08-16): a `stacks/<name>` that is a
+// SYMLINK to a directory is a HEALTHY stack to config.LoadStack (it reads
+// stack.yaml straight through the link) but invisible to config.LoadStacks —
+// os.ReadDir's DirEntry.IsDir() is lstat-based, so a symlink entry never
+// answers true and LoadStacks skips it (internal/config/stack.go: "a
+// directory without a stack.yaml is ignored", and a symlink entry is never
+// even statted for one). RunCatalogue still loads devx by NAME through
+// LoadStack, so the export exists in `stacks` — but before this fix, `judge`
+// only ever ran checkStack over `parents.Healthy`, the LoadStacks copy where
+// devx never landed, so its confinement faults went unchecked. Reproduced
+// against 8baec66: this exact tree returned zero findings.
+func TestRunCatalogueJudgesASymlinkedExportedStack(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, ".devx-real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The absolute path is the confinement fault: written absolute in
+	// stack.yaml, refused unconditionally by checkDeclaredPath regardless of
+	// where it happens to point (see that function's doc, refusal #1).
+	absStep := filepath.Join(realDir, "outside.sh")
+	if err := os.WriteFile(absStep, []byte("true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stackYAML := "image: devx:v1\nbase: claude\nprovision:\n  steps: [" + absStep + "]\n"
+	if err := os.WriteFile(filepath.Join(realDir, "stack.yaml"), []byte(stackYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "stacks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(root, "stacks", "devx")); err != nil {
+		t.Fatal(err)
+	}
+
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}})
+	joined := errsString(errs)
+	if !strings.Contains(joined, "absolute") || !strings.Contains(joined, "devx") {
+		t.Fatalf("expected the exported stack's absolute-path fault to be caught even though its directory is a symlink, got: %v", errs)
+	}
+}
+
 // An exported object that does not load is the source's fault and must be
 // named — the catalogue promised it.
 func TestRunCatalogueReportsUnloadableExports(t *testing.T) {
