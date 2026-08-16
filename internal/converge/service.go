@@ -596,11 +596,26 @@ func (s Service) writePersonal(req Request, plan *Plan) (*source.Personal, error
 		// mapping the file already held — on the strength of a decode error
 		// that has nothing to do with those mappings. Refuse before the
 		// write, so the existing file — whatever it holds — survives.
+		//
+		// This refusal lands INSIDE the `applying` window (spec §12.3), same
+		// as stateUnreadable and failed below it: every resource has already
+		// verified, and on ModeInit/ModeAdd the checkout is already installed
+		// (Apply's own ordering comment, step 4, runs before this call). A
+		// bare error would leave the applying receipt in place with no
+		// command named. s.resumeCommand is NOT the right helper here even
+		// though it exists for exactly this purpose elsewhere in Apply: its
+		// ModeInit/ModeAdd branch answers "den source add" on the theory that
+		// "nothing is installed yet" — true for every OTHER failure in Apply,
+		// which all run before the checkout is installed, but false here. The
+		// resume is `den source configure` regardless of mode, because the
+		// checkout already exists by the time this branch can be reached.
 		return nil, fmt.Errorf(
-			"source %q: cannot read the existing personal configuration at %s (%w) — den will "+
-				"not overwrite it with only this run's confirmed repositories, which would drop "+
-				"every mapping already there; fix or restore the file by hand, then retry",
-			req.Name, source.PersonalPath(req.DenHome, req.Name), err)
+			"source %q: cannot read the existing personal configuration at %s (%w) — every "+
+				"resource of version %s converged and the checkout is installed, but den will not "+
+				"overwrite this file with only this run's confirmed repositories, which would drop "+
+				"every mapping already there. Fix or restore the file by hand, then `den source "+
+				"configure %s` to write the personal configuration and finish the convergence",
+			req.Name, source.PersonalPath(req.DenHome, req.Name), err, plan.Version, req.Name)
 	}
 	maps.Copy(personal.Repos, plan.ConfirmedRepos())
 	if len(personal.Repos) == 0 {

@@ -705,6 +705,15 @@ func TestApplyPreservesHandWrittenRepoPaths(t *testing.T) {
 // this run's confirmed repositories, silently dropping "other". The refusal
 // this test expects must land BEFORE any write, so the corrupt file's own
 // bytes — whatever the user typed into it — survive untouched.
+//
+// This is a ModeInit request (requestFor's default), and that mode matters:
+// by the time writePersonal runs, Apply has already installed the checkout
+// (its own ordering comment, step 4) even on ModeInit/ModeAdd. The refusal
+// must therefore name `den source configure`, NOT `den source add` —
+// s.resumeCommand's ModeInit/ModeAdd branch would answer "add" on the theory
+// that nothing is installed yet, which is false at this specific point in
+// Apply and would send the user to a command that fails with "already
+// installed".
 func TestApplyRefusesRatherThanDroppingRepoMappingsWhenPersonalIsUnreadable(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
 	if err := source.WritePersonal(denHome, "dg", source.Personal{
@@ -737,6 +746,13 @@ func TestApplyRefusesRatherThanDroppingRepoMappingsWhenPersonalIsUnreadable(t *t
 	}
 	if !strings.Contains(err.Error(), personalPath) {
 		t.Errorf("error does not name the personal file: %v", err)
+	}
+	if !strings.Contains(err.Error(), "den source configure dg") {
+		t.Errorf("the refusal does not name the command that resumes it: %v", err)
+	}
+	if strings.Contains(err.Error(), "den source add") {
+		t.Errorf("the refusal points at `den source add`, which fails here — the checkout is "+
+			"already installed by the time writePersonal runs: %v", err)
 	}
 
 	after, err := os.ReadFile(personalPath)
