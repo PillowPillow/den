@@ -1186,7 +1186,7 @@ git commit -m "test(init): lock source onboarding flow"
 - Consumes: Den's finalized manifest schema and `den lint`.
 - Produces: Digitaleo source functional version `1.0.0`, recommended namespace `dg`, five nest exports, one stack export, and the resources currently documented as manual prerequisites.
 
-- [ ] **Step 1: Create the real manifest**
+- [x] **Step 1: Create the real manifest**
 
 ```yaml
 schema_version: 1
@@ -1237,7 +1237,7 @@ resources:
     - stack: base
 ```
 
-- [ ] **Step 2: Add a safe answer-file fixture**
+- [x] **Step 2: Add a safe answer-file fixture**
 
 ```yaml
 repository_roots:
@@ -1251,13 +1251,13 @@ credentials:
 
 The fixture names an environment variable but contains no secret.
 
-- [ ] **Step 3: Validate the source with the built Den binary**
+- [x] **Step 3: Validate the source with the built Den binary**
 
 Run from the Digitaleo repository: `/tmp/den-source-onboarding lint .`
 
 Expected: exit 0 with no lint finding.
 
-- [ ] **Step 4: Replace the manual installation section**
+- [x] **Step 4: Replace the manual installation section**
 
 Lead with:
 
@@ -1268,18 +1268,36 @@ den init --source <url-de-ce-repo> --answers testdata/onboarding-answers.yaml
 
 Keep detailed sbx credential/policy commands in a troubleshooting section. Add exact manual migration instructions from `~/.den/config.yaml.repos` to `~/.den/source-config/dg.yaml.repos`. Explain `ready`/`partially_ready`, `den source configure dg`, and `den source update dg`.
 
-- [ ] **Step 5: Run Digitaleo acceptance with fake sbx from the Den repository**
+- [x] **Step 5: Run Digitaleo acceptance with fake sbx from the Den repository**
 
 Run from Den with the explicit source path: `DIGITALEO_DEN_ENV=/Users/polochon/Development/Digitaleo/digitaleo-den-env go test ./internal/converge -run TestDigitaleoManifestAcceptance -v`
 
 `TestDigitaleoManifestAcceptance`, created in Task 13, skips only when `DIGITALEO_DEN_ENV` is unset. When set, it copies that source into a temporary Git remote and drives the same fake-sbx acceptance harness as the generic fixture. It asserts the three credentials, two policies, `base` build, all five nests, source-scoped mappings, readiness, redaction, personal config, and receipt.
 
-- [ ] **Step 6: Commit in the Digitaleo repository**
+- [x] **Step 6: Commit in the Digitaleo repository**
 
 ```bash
 git add den-source.yaml testdata/onboarding-answers.yaml README.md
 git commit -m "feat: publish declarative den source"
 ```
+
+> Divergence settled in Task 14 — the acceptance entry point is `TestRealSourceAcceptance` in
+> `internal/cli`, not `TestDigitaleoManifestAcceptance` in `internal/converge` (see Task 13's note
+> for why the acceptance file moved), and it derives what it asserts from the manifest instead of
+> taking hard-coded counts. Run: `DIGITALEO_DEN_ENV=/Users/polochon/Development/Digitaleo/digitaleo-den-env
+> go test ./internal/cli -run TestRealSourceAcceptance` — PASS on the real source.
+>
+> Work is isolated on branch `feature/declarative-den-source`, cut from `feature/acli` (`170d687`),
+> which is where that repository stood. Off HEAD rather than `main` on purpose: `170d687` adds acli
+> to the base stack, and the manifest's `build_network.allow` declares `acli.atlassian.com` — a
+> branch off main would carry a contract for a stack whose acli step is not there. Reversible: the
+> branch can be rebased or dropped. Commit `bc31766`, in that repository only.
+>
+> Found while writing the mapping documentation, NOT fixed (it changes a nest's contract, which is
+> outside this task): `dg:agentic-bank` declares `key: js-agentic-bank` while `dg:leo` declares
+> `key: js.agentic-bank` for the SAME repository — and leo.yaml's own comment claims it reuses the
+> other key. Until the two nests agree, a user has to map one repository twice. The README now says
+> so explicitly rather than quietly listing one of the two.
 
 ### Task 15: Run cross-repository verification and prepare review
 
