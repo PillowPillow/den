@@ -1,0 +1,21 @@
+{
+  "rules": [
+    {
+      "id": "rule-local-example",
+      "name": "allow-example-services",
+      "policy_id": "policy-local-example",
+      "scope": "global",
+      "applies_to": "all",
+      "resource_type": "network",
+      "decision": "allow",
+      "resources": [
+        "api.example.test",
+        "registry.example.test:443"
+      ],
+      "origin": "local",
+      "layer": "local",
+      "status": "active",
+      "editable": true
+    }
+  ]
+}

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/PillowPillow/den/internal/source"
 )
 
 // testDenHome builds a complete ~/.den and points DEN_HOME at it.
@@ -602,5 +604,50 @@ func TestNestShowResolvesRelativeCommandLineRepos(t *testing.T) {
 	if !strings.Contains(out, expected) {
 		t.Errorf("output = %q, expected containing %q — the relative path must resolve "+
 			"against the process's working directory", out, expected)
+	}
+}
+
+// `den nest show corp:api` resolves through the SOURCE's mapping, and its
+// unmapped-key remedy names the source's own file. A dry-run that sent the user
+// to config.yaml would name a file where adding the key changes nothing: a
+// manifested source never reads the global mapping (spec §6).
+func TestNestShowUsesTheSourceScopedMapping(t *testing.T) {
+	dir := testDenHome(t)
+	writeUnder(t, dir, filepath.Join("sources", "corp", "stacks", "teamstack", "stack.yaml"), "image: teamstack:v1\n")
+	writeUnder(t, dir, filepath.Join("sources", "corp", "nests", "api.yaml"),
+		"stack: teamstack\nselect: prompt\nrepos:\n  - { key: api }\n  - { key: crm, optional: true }\n")
+	writeUnder(t, dir, filepath.Join("sources", "corp", "den-source.yaml"), `schema_version: 1
+kind: source
+metadata: { name: corp, version: 1.0.0 }
+exports:
+  nests:
+    - { name: api, path: nests/api.yaml }
+  stacks:
+    - { name: teamstack, path: stacks/teamstack/stack.yaml }
+`)
+	if err := source.WritePersonal(dir, "corp", source.Personal{
+		Version: "1.0.0",
+		Repos:   map[string]string{"api": "/dev/source-api"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.WriteReceipt(dir, "corp", source.Receipt{
+		Status: source.StatusReady, Version: "1.0.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := run(t, "nest", "show", "corp:api")
+	if err != nil {
+		t.Fatalf("den nest show corp:api: %v", err)
+	}
+	if !strings.Contains(out, "/dev/source-api") {
+		t.Errorf("the source's own mapping must resolve the key:\n%s", out)
+	}
+	if want := source.PersonalPath(dir, "corp"); !strings.Contains(out, want) {
+		t.Errorf("the unmapped key's remedy must name %s:\n%s", want, out)
+	}
+	if strings.Contains(out, filepath.Join(dir, "config.yaml")) {
+		t.Errorf("a manifested source's remedy must not send the user to the global config:\n%s", out)
 	}
 }

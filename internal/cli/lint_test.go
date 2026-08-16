@@ -81,3 +81,45 @@ func TestLintReportsEveryFindingThroughTheCommand(t *testing.T) {
 		t.Errorf("expected at least 3 itemized findings, counted %d; got:\n%s", got, msg)
 	}
 }
+
+// `den lint` on a MANIFESTED source runs the contract's own judgments too — a
+// team's CI runs this command and nothing else, so a manifest fault that only
+// surfaced at `den source add` would be found by the teammate installing the
+// source rather than by the pipeline that published it.
+func TestLintValidatesTheSourceManifest(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "stacks", "base", "stack.yaml"),
+		"image: base:v1\nbase: claude\n")
+	mustWriteFile(t, filepath.Join(root, "nests", "leo.yaml"), "stack: base\nrepos:\n  - { key: api }\n")
+	manifest := `schema_version: 1
+kind: source
+metadata: { name: dg, version: 1.0.0 }
+exports:
+  nests:
+    - { name: leo, path: nests/leo.yaml }
+  stacks:
+    - { name: base, path: stacks/base/stack.yaml }
+`
+	mustWriteFile(t, filepath.Join(root, "den-source.yaml"), manifest)
+
+	cmd := NewRootCmdWith(Deps{})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"lint", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("lint on a valid manifested source: %v", err)
+	}
+	if !strings.Contains(out.String(), "ok") {
+		t.Errorf("output = %q", out.String())
+	}
+
+	// The same tree, with a manifest exporting a nest that is not there.
+	mustWriteFile(t, filepath.Join(root, "den-source.yaml"),
+		strings.Replace(manifest, "name: leo, path: nests/leo.yaml", "name: ghost, path: nests/ghost.yaml", 1))
+	cmd = NewRootCmdWith(Deps{})
+	cmd.SetArgs([]string{"lint", root})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "ghost") {
+		t.Fatalf("expected the missing export to be named, got: %v", err)
+	}
+}

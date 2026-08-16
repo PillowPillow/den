@@ -13,6 +13,7 @@ import (
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -515,7 +516,7 @@ func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g 
 	// cleanup of every worktree'd source sandbox degraded to the warning
 	// below while the directories stayed on disk. nestOfSandbox holds the
 	// decode, shared with `den ports`.
-	n, err := nestOfSandbox(home, ref, sandboxName)
+	n, srcName, err := nestOfSandbox(home, ref, sandboxName)
 	if err != nil {
 		// wt and gl.WorktreeRoot are both available here: without them the user
 		// learns a worktree was abandoned, but not where to go find it.
@@ -541,6 +542,28 @@ func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g 
 	// the derivation miss, and the guard miss with it. Neither side is
 	// normalized here: the same keys serve the record path, on records that
 	// need no repair.
+	// The SCOPE the keys are resolved in, decided once for the whole loop.
+	//
+	// A manifested source's nests resolve their `key:` entries through THAT
+	// source's personal configuration, never through config.yaml (spec §6) —
+	// so looking them up globally here would find nothing (leaving worktrees on
+	// disk with a message pointing at the wrong file), or worse, find an
+	// unrelated repository of the same key and derive a directory belonging to
+	// someone else.
+	//
+	// Still best-effort, like everything on this branch: a source whose
+	// personal configuration cannot be read leaves the mapping empty, and an
+	// unmapped key is reported and skipped rather than guessed at.
+	mapping, mappingPath := gl.Repos, config.GlobalPath(home)
+	if srcName != "" && source.HasManifest(source.Dir(home, srcName)) {
+		mapping, mappingPath = map[string]string{}, source.PersonalPath(home, srcName)
+		if personal, err := source.LoadPersonal(home, srcName); err == nil {
+			if expanded, err := personal.ExpandedRepos(); err == nil {
+				mapping = expanded
+			}
+		}
+	}
+
 	guard := newMountGuard(home, sandboxName)
 
 	// Directories left alone because a record den could NOT read might be the
@@ -562,13 +585,13 @@ func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g 
 		// move a directory it cannot attribute to a repo.
 		path := repo.Path
 		if repo.Key != "" {
-			path = gl.Repos[repo.Key]
+			path = mapping[repo.Key]
 		}
 		if path == "" {
 			fmt.Fprintf(warnW, "nest %q: repo key %q is not mapped on this machine, so den cannot "+
 				"locate its worktree %q — it is left on disk; map it under `repos:` in %s and re-run "+
 				"`den rm`, or remove the directory by hand\n",
-				n.Name, repo.Key, wt, config.GlobalPath(home))
+				n.Name, repo.Key, wt, mappingPath)
 			continue
 		}
 		// The directory this repo's worktree would be at, derived exactly as

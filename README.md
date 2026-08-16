@@ -78,6 +78,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | Command | Role |
 |---|---|
 | `den init` | creates a den home from the shipped example (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`); refuses if `config.yaml` already exists |
+| `den init --source <url>` | creates a **source-aware** home instead — no example nest, no local stack — and converges everything the source declares (see [Declarative sources](#declarative-sources)) |
 | `den spawn <nest> [repo...] [-- <cmd>]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise; extra repos are mounted on the fly; runs `<cmd>` instead of a shell when one is given |
 | `den ls` | lists live sandboxes, with their nest, instance, worktree, status and workspace count |
 | `den exec <name> <cmd> [args...]` | runs one command in an existing sandbox and exits with that command's own status |
@@ -88,7 +89,9 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den nest ls` | lists the declared nests |
 | `den nest show <n>` | shows a fully resolved nest (stack, agent, egress, repos) |
 | `den source add <url> [--name n]` | clones a team source under `~/.den/sources/<n>/` and validates it; refuses (and removes the clone) if invalid |
-| `den source update [n]` | fetches and fast-forwards one source, or every installed source when none is named; refuses rather than overwrite local or unpushed work |
+| `den source update [n]` | fetches and fast-forwards one source, or every installed source when none is named; refuses rather than overwrite local or unpushed work. A **declarative** source updates to an exact published version, after a plan and a confirmation |
+| `den source configure <n>` | reconverges an installed declarative source on this machine, without contacting its remote: maps a repo cloned since, finishes an interrupted run |
+| `den source status [n]` | reports what a declarative source needs and what this machine has; exits non-zero on `blocked` and `unknown` only |
 | `den source ls` | lists installed sources: name, HEAD, last fetch, URL |
 | `den source rm <n> [--force]` | removes an installed source; refuses on a dirty working tree or commits unreachable from any remote-tracking ref, unless `--force` |
 | `den lint <path>` | validates a checkout (stacks, nests, references, path confinement) — what a team source's CI runs |
@@ -527,6 +530,10 @@ repos:
   front-app: ~/dev/front
 ```
 
+A source carrying `den-source.yaml` reads its mapping from `~/.den/source-config/<name>.yaml`
+instead — see [Declarative sources](#declarative-sources). One file per source, so two teams can
+use the same key for two different repositories.
+
 An unmapped key is a refusal **before any side effect** — no clone is ever attempted on the
 user's behalf:
 
@@ -605,6 +612,151 @@ spelling `corp:backend` keeps working throughout. If the source is **uninstalled
 spawn, the flattened name has nothing left to decode from and den can only report the missing
 local nest; `den source add` it again, or destroy the sandbox with `den rm --keep-worktrees`.
 
+<a id="declarative-sources"></a>
+### Declarative sources — one-command onboarding
+
+A source can carry a **contract**: `den-source.yaml` at its root. den then knows what the source
+needs from a machine — credentials, egress, images — and can converge all of it in one command:
+
+```bash
+$ den init --source git@gitlab.corp:dev/stacks.git
+source: corp  version: 1.4.0
+
+applying this plan builds stack base, which RUNS the provision scripts of source corp
+(/Users/alice/.den/cache/sources/candidate-813/checkout) — confirm only a source you trust
+
+RESOURCES
+create    credential     github
+unchanged credential     gitlab_registry
+          observed: configured in sbx
+update    build_network  build_network
+          observed: 1 of 2 hosts allowed
+          expected: registry.corp, proxy.corp
+
+REPOSITORIES
+review-mgmt  map to /Users/alice/dev/review-mgmt (its remote is this repository)
+front-app    not on this machine — den does not clone it; the nests needing it stay not_ready
+
+NESTS
+backend            ready
+
+status: ready
+
+apply this plan? [y/N]
+```
+
+`den init --source` writes a source-aware `config.yaml` — no `defaults.stack`, no example nest, no
+local stack — and installs the source. On a den home that already exists it changes **nothing** in
+`config.yaml`, byte for byte. The same convergence runs from `den source add <url>` on an existing
+home, and from `den source configure <name>` afterwards.
+
+Nothing is applied before the plan is confirmed. `--yes` is the answer of someone who has read one
+before (a CI, a provisioning script); with no terminal and no `--yes`, den prints the plan, applies
+nothing and exits **zero**.
+
+#### What the contract declares
+
+```yaml
+# den-source.yaml, at the root of the source repo
+schema_version: 1
+kind: source
+metadata: { name: corp, version: 1.4.0 }   # name is a recommendation; --name overrides it
+requires: { den: ">=1.7.0", sbx: ">=0.38.0" }  # floors; den installs neither binary
+exports:                                    # explicit: a file not exported stays internal
+  nests:
+    - { name: backend, path: nests/backend.yaml }
+  stacks:
+    - { name: base, path: stacks/base/stack.yaml }
+inputs:
+  credentials:                              # what a human (or an answer file) supplies
+    gitlab_token: { prompt: "GitLab personal access token" }
+resources:
+  credentials:                              # closed vocabulary — den names no command
+    - { id: github, type: sbx_github, scope: global }
+    - { id: gitlab_registry, type: sbx_registry, scope: global, host: registry.corp:443,
+        value_from: { credential: gitlab_token } }
+    - { id: gitlab_http, type: sbx_http_substitution, scope: global, host: gitlab.corp,
+        environment: GITLAB_TOKEN, value_from: { credential: gitlab_token } }
+  build_network: { allow: [registry.corp, proxy.corp] }
+  builds:
+    - { stack: base }
+```
+
+The vocabulary is **closed**: `sbx_github`, `sbx_registry`, `sbx_http_substitution`, all `scope:
+global`. A manifest names no shell command, no hook and no plugin — it can only instantiate what
+den compiles in. An unknown type is refused, never ignored.
+
+A source **without** `den-source.yaml` keeps the behavior described above, unchanged: `den source
+add` clones and lints it, `den source update` fast-forwards it, and den converges nothing for it.
+
+#### Answering without a terminal
+
+```yaml
+# answers.yaml — the answers of ONE run; den stores none of it
+repository_roots:                  # where to LOOK for working repos; den never clones
+  - ~/dev
+credentials:
+  gitlab_token:
+    from_env: GITLAB_TOKEN         # the variable NAME; a literal value here is refused
+repos:                             # settle a discovery den will not make alone
+  front-app: ~/dev/front
+```
+
+```bash
+den init --source git@gitlab.corp:dev/stacks.git --answers answers.yaml --yes
+```
+
+A credential value never travels in an argv, and never lands in a plan, a log, an error, a config
+or a receipt. den maps a repository only when it is a **fact** — you named the directory, or
+exactly one directory under the roots carries the declared remote. A directory merely *named* like
+the repository is reported for you to confirm; nothing is mounted on a guess.
+
+#### The four files
+
+| File | Owner | Holds |
+|---|---|---|
+| `<source>/den-source.yaml` | the team, in git | the contract above |
+| `~/.den/config.yaml` | you | your personal settings; never travels through a source |
+| `~/.den/source-config/<name>.yaml` | you, per machine | the exact version you converged, and this source's repo mapping |
+| `~/.den/state/sources/<name>.yaml` | den | the convergence receipt: what was applied, when, from which commit |
+
+#### Statuses
+
+`ready` · `partially_ready` (a working repository is missing — den does not clone) · `blocked` ·
+`unknown` (den could not observe the machine — never reported as "absent", the two have different
+remedies). Nests are `ready` or `not_ready`. `den doctor` reports every declarative source with the
+same verdict, and fails on `blocked` and `unknown`.
+
+#### Updates and resume
+
+`den source update <name>` fetches, then converges to the version the source **publishes**. A
+greater `metadata.version` gets a full plan and a confirmation; the same version on a new commit is
+reported and applied to nothing (the contract did not change — the team must publish a version); a
+lower version is refused, with the checkout untouched. den converges forward.
+
+An interrupted application leaves an `applying` receipt: the previous version stays the active one,
+every consumer (`den spawn`, `den nest show`, `den build`) refuses rather than mix a new catalogue
+with old infrastructure, and `den source configure <name>` finishes the job — without fetching, and
+without reapplying what it can verify is already there.
+
+#### Coming from `repos:` in `config.yaml`
+
+A declarative source resolves its repo keys through `~/.den/source-config/<name>.yaml` **only**. If
+keys it needs are still mapped in your global `config.yaml`, den prints the block to move and
+copies nothing:
+
+```
+REPOSITORY MAPPINGS TO MIGRATE
+/Users/alice/.den/config.yaml no longer supplies the repositories of a manifested source. den
+copies nothing — check these are the same repositories, then add them to
+/Users/alice/.den/source-config/corp.yaml yourself:
+
+repos:
+  review-mgmt: /Users/alice/dev/review-mgmt
+```
+
+Two teams may use `review-mgmt` for two different repositories; den will not decide that for you.
+
 ### Fail-closed updates
 
 `den source update` is the only thing that touches the network — a spawn never fetches, so
@@ -624,15 +776,22 @@ fetched in over 7 days, den prints a **hint**, never a refusal:
 hint: source "corp" was last fetched more than 7 days ago — den source update corp
 ```
 
+### Authoring a source
+
+The sections above are the installer's side. The publisher's side — the repo layout a source must
+have, what a shared nest may declare, the full `den-source.yaml` field reference, and when to bump
+`metadata.version` — is [`docs/source-authoring.md`](docs/source-authoring.md).
+
 ### `den lint <path>`
 
 The same validation `source add`/`source update` run: strict YAML, `parent:` resolvable and
 acyclic, declared paths (`kit`, `kits`, `provision.includes`/`steps`) existing and confined to the
 checkout, bare (never prefixed) internal references, a nest with no `stack:`, and a nest whose
-`repos:` carries an **absolute** `path:` (`/Users/alice/dev/x`, or a `~/` that expands to one) —
-that names a directory only the authoring machine has. Declare `key:` instead and let each
-teammate map it. A *relative* `path:` is not currently refused, though it is no more shareable:
-treat `key:` as the only form that travels. It reports every finding at once, not one per push.
+`repos:` carries **any** `path:`. An absolute one (`/Users/alice/dev/x`, or a `~/` that expands to
+one) names a directory only the authoring machine has; a relative one resolves against whatever
+directory each teammate launched den from, and a work repo lives outside the checkout anyway — so
+neither travels, and both are refused. Declare `key:` instead and let each teammate map it. It
+reports every finding at once, not one per push.
 A stack's illegal name, missing `image:`, or a repo entry with both (or neither) `path:` and
 `key:` are refused too — those surface as the load error on the offending file, which can end the
 report early on that one file rather than join the itemized list above. Point it at a checkout to

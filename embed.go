@@ -19,3 +19,21 @@ import "embed"
 //
 //go:embed examples/den-home
 var ExampleDenHome embed.FS
+
+// SourceAwareDenHome is the home `den init --source <url>` writes: personal
+// settings only, no placeholder nest and no local stack.
+//
+// A SECOND example directory rather than a filter over the first: the two
+// homes differ by what they must NOT contain, and a filter would have to
+// encode that absence in Go — where nothing tells a reader why
+// `nests/example.yaml` is skipped, and nothing stops a later file added to
+// examples/den-home from silently reaching a source-aware home. Two
+// directories make each home a thing a human can read whole, which is the
+// same reason examples/den-home exists on disk at all (see above).
+//
+// Its config.yaml carries no `defaults.stack`: every nest it will resolve
+// comes from the installed source and declares its own stack. That is the
+// key config.Validate stopped requiring for this file to be legal.
+//
+//go:embed examples/den-home-source
+var SourceAwareDenHome embed.FS
