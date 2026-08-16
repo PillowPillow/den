@@ -6,9 +6,11 @@ import (
 	"io"
 
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/converge"
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -77,6 +79,7 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 					"its sandbox is gone\n", b.Path, b.Err)
 			}
 			checks = append(checks, doctor.OrphanCheck(live, manifests))
+			checks = append(checks, sourceChecks(cmd.Context(), home, runner, g)...)
 
 			failures, warnings := 0, 0
 			for _, c := range checks {
@@ -151,4 +154,50 @@ func reclaimOrphans(ctx context.Context, home string, orphans []doctor.Orphan,
 		}
 	}
 	return nil
+}
+
+// sourceChecks diagnoses every manifested source installed in this home.
+//
+// Read HERE, not in internal/doctor, for the reason the live list above is:
+// observing a source means running sbx, and that package runs none. cli owns
+// the runner; doctor owns the verdict (doctor.SourceCheck).
+//
+// One check per source, in sorted order, and a legacy source produces none —
+// it declares nothing to converge, so there is nothing doctor could judge.
+func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktree.Git) []doctor.Check {
+	names, err := source.Names(home)
+	if err != nil || len(names) == 0 {
+		// A home with no sources/ directory is the normal case, not a fault.
+		return nil
+	}
+	svc := converge.Service{Git: g, Sbx: runner}
+	var checks []doctor.Check
+	for _, name := range names {
+		if !source.HasManifest(source.Dir(home, name)) {
+			continue
+		}
+		plan, err := svc.Status(ctx, home, name)
+		if err != nil {
+			checks = append(checks, doctor.Check{Name: "source " + name, Level: doctor.LevelFail,
+				Detail: err.Error()})
+			continue
+		}
+		checks = append(checks, doctor.SourceCheck(name, plan.Status, sourceDetail(plan)))
+	}
+	return checks
+}
+
+// sourceDetail is the one line doctor prints for a source: its version, its
+// verdict, and the first thing to do about it. The full report — every
+// resource, every nest — is `den source status <name>`, which the detail names
+// when there is something to read there.
+func sourceDetail(p *converge.Plan) string {
+	detail := fmt.Sprintf("version %s: %s", p.Version, p.Status)
+	if len(p.Warnings) > 0 {
+		return detail + " — " + p.Warnings[0]
+	}
+	if p.Status != "ready" {
+		return detail + fmt.Sprintf(" — `den source status %s` says what is missing", p.Source)
+	}
+	return detail
 }

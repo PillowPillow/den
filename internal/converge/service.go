@@ -140,6 +140,77 @@ func (s Service) Plan(ctx context.Context, req Request) (*Plan, error) {
 	return plan, nil
 }
 
+// Status is the read-only view of an INSTALLED source (spec §12.1): what den
+// observes on this machine, against what the source declares.
+//
+// It shares Plan's inspection and its readiness evaluation, and differs in the
+// one thing a status must not do: it asks no question and takes no answer. The
+// repositories it reports come from the personal configuration den already
+// wrote, never from a fresh scan — a status is a report on a decision, not a
+// new discovery.
+//
+// It contacts no remote, and it never applies anything. An unobservable
+// machine is `unknown`, which is a state doctor renders and exits non-zero on
+// (spec §12.2), never an error that would leave it with nothing to print.
+func (s Service) Status(ctx context.Context, denHome, name string) (*Plan, error) {
+	c, err := source.InstalledCandidate(ctx, s.Git, denHome, name)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	m := c.Manifest
+	if m == nil {
+		return nil, fmt.Errorf(
+			"source %q: no %s — a legacy source declares no resources to report on; "+
+				"`den source ls` shows what den knows about it", name, source.ManifestFile)
+	}
+
+	plan := &Plan{Source: name, Version: m.Metadata.Version}
+	state, observeErr := ReadSbxState(ctx, s.Sbx)
+	if observeErr != nil {
+		plan.Resources = unobservedResources(m, observeErr)
+	} else {
+		for _, d := range s.drivers(Request{DenHome: denHome, Name: name, Candidate: c}, m, state) {
+			o, err := d.Inspect(ctx)
+			if err != nil {
+				p := d.Plan(Observation{})
+				p.Known, p.Observed = false, err.Error()
+				plan.Resources = append(plan.Resources, p)
+				continue
+			}
+			plan.Resources = append(plan.Resources, d.Plan(o))
+		}
+	}
+
+	reqs, err := CollectRepoRequirements(c.Root, m)
+	if err != nil {
+		return nil, err
+	}
+	mapping := map[string]string{}
+	if personal, err := source.LoadPersonal(denHome, name); err == nil {
+		// An unexpandable path is a fault of the personal file, reported by the
+		// RequireUsable gate below and by the spawn that would use it. A status
+		// must still render, so it falls back on "nothing mapped" rather than
+		// refusing to print anything at all.
+		if expanded, err := personal.ExpandedRepos(); err == nil {
+			mapping = expanded
+		}
+	}
+	plan.RepoMatches = MatchesFromMapping(reqs, mapping)
+	plan.Nests = EvaluateReadiness(m.ExportedNestNames(), plan.RepoMatches)
+	plan.Status = AggregateStatus(plan.Resources, plan.Nests)
+
+	// The consumers' own gate, asked here so the status says what a spawn
+	// would say. A source whose three files disagree is BLOCKED whatever its
+	// resources look like: den refuses to use it, and a status reporting
+	// "ready" next to a spawn that refuses would be the worse of the two lies.
+	if _, err := source.RequireUsable(denHome, name); err != nil {
+		plan.Warnings = append(plan.Warnings, err.Error())
+		plan.Status = source.StatusBlocked
+	}
+	return plan, nil
+}
+
 // checkCompatibility verifies the binaries against the manifest's floors.
 //
 // A version that is TOO OLD is a refusal: den installs neither binary, so

@@ -72,6 +72,20 @@ func newSourceCmd(denHome *string, d Deps) *cobra.Command {
 	updateFlags.bind(update, false, false)
 	cmd.AddCommand(update)
 
+	status := &cobra.Command{
+		Use:   "status [name]",
+		Short: "Report what a manifested source needs and what this machine already has",
+		Args:  atMostOneArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			home, err := config.Home(*denHome)
+			if err != nil {
+				return err
+			}
+			return sourceStatus(cmd, d, home, args)
+		},
+	}
+	cmd.AddCommand(status)
+
 	ls := &cobra.Command{
 		Use:   "ls",
 		Short: "List installed sources",
@@ -274,6 +288,60 @@ func updateSource(cmd *cobra.Command, d Deps, home, name string, flags convergen
 		return nil
 	}
 	return runConvergence(cmd, d, converge.ModeUpdate, home, name, c, flags, nil)
+}
+
+// sourceStatus is `den source status [name]`: what each manifested source
+// needs, and what this machine already has.
+//
+// Read-only, and the exit code is the verdict a script acts on: `blocked` and
+// `unknown` are failures, `partially_ready` is not. A missing working
+// repository is a normal state of a correctly installed source — den does not
+// clone, so failing on it would make the command red on every machine that has
+// not cloned everything yet (spec §12.1).
+func sourceStatus(cmd *cobra.Command, d Deps, home string, args []string) error {
+	names := args
+	if len(names) == 0 {
+		all, err := source.Names(home)
+		if err != nil {
+			return err
+		}
+		names = all
+	}
+	out := cmd.OutOrStdout()
+	if len(names) == 0 {
+		fmt.Fprintln(out, "no source installed")
+		return nil
+	}
+
+	svc := converge.Service{Git: d.Git, Sbx: d.Sbx}
+	var failures []string
+	for i, name := range names {
+		if i > 0 {
+			fmt.Fprintln(out)
+		}
+		// A legacy source is NAMED rather than skipped: a user looking at a
+		// list of their sources must see all of them, and "why is corp not
+		// here" is a worse question than one line saying it has no contract.
+		if !source.HasManifest(source.Dir(home, name)) {
+			fmt.Fprintf(out, "source: %s  legacy — no %s, so den converges nothing for it\n",
+				name, source.ManifestFile)
+			continue
+		}
+		plan, err := svc.Status(cmd.Context(), home, name)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+		converge.RenderStatus(out, plan)
+		if !converge.Succeeds(plan.Status) {
+			failures = append(failures, fmt.Sprintf("%s: %s", name, plan.Status))
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("%d source(s) den cannot use as configured:\n  - %s",
+			len(failures), strings.Join(failures, "\n  - "))
+	}
+	return nil
 }
 
 // updateAllSources drives a bare `den source update`: every installed

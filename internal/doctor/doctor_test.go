@@ -1656,3 +1656,47 @@ func TestOrphanCheckIsOKWithNoRecordAtAll(t *testing.T) {
 		t.Errorf("no record means nothing to reclaim: %#v", c)
 	}
 }
+
+// A stackless nest in a home with no `defaults.stack` — the shape a
+// source-aware home has — is diagnosed with the two files that could fix it,
+// the same judgment nest.Resolve makes. It used to read `stack "" not found`,
+// which sends the user looking for a stack nobody ever named.
+func TestDoctorNamesBothFilesWhenNoStackIsConfigured(t *testing.T) {
+	home := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(home, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("config.yaml", `
+agents:
+  claude:
+    config_dir: /tmp/den-agents/claude
+    env: { CLAUDE_CONFIG_DIR: "{config_dir}" }
+defaults:
+  agent: claude
+egress:
+  - api.anthropic.com
+`)
+	write("nests/api.yaml", "repos: []\n")
+
+	var detail string
+	for _, c := range Run(home, okDeps()) {
+		if c.Name == "nest api" {
+			detail = c.Detail
+		}
+	}
+	if !strings.Contains(detail, "no stack is configured") {
+		t.Fatalf("nest api = %q, want the contextual refusal", detail)
+	}
+	for _, want := range []string{"nests/api.yaml", "config.yaml", "defaults.stack"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("nest api = %q, want it to name %q", detail, want)
+		}
+	}
+}

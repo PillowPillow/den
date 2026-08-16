@@ -701,3 +701,116 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// Status is the read-only view of an installed source (spec §12.1). It reads
+// the machine and the den home, and NOTHING else — the remote most of all: the
+// test deletes it before asking, so any fetch would fail the call.
+func TestStatusObservesWithoutContactingTheRemote(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := newMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
+		&strings.Builder{}, &strings.Builder{}); err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	cleanup()
+	if err := os.RemoveAll(remote); err != nil {
+		t.Fatal(err)
+	}
+
+	before := len(f.calls)
+	status, err := s.Status(context.Background(), denHome, "dg")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Status != source.StatusReady {
+		t.Errorf("status = %q, want ready:\n%+v", status.Status, status)
+	}
+	if len(status.Resources) != len(planFor(t, s, req).Resources) {
+		t.Errorf("resources = %+v, want every declared resource reported", status.Resources)
+	}
+	for _, r := range status.Resources {
+		if r.Action != ActionUnchanged {
+			t.Errorf("resource %s = %q: a converged machine has nothing to do", r.ID, r.Action)
+		}
+	}
+	for _, c := range f.calls[before:] {
+		if len(c) > 1 && c[1] != "ls" {
+			t.Errorf("status ran a mutating sbx command: %v", c)
+		}
+	}
+}
+
+// A source this machine holds in a half-converged state is BLOCKED, and the
+// status carries the same sentence RequireUsable refuses spawns with.
+func TestStatusReportsADivergenceAsBlocked(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := newMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
+		&strings.Builder{}, &strings.Builder{}); err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	cleanup()
+	// The state an interrupted update leaves: the checkout is at 1.0.0 while
+	// this machine is configured for something else.
+	if err := source.WritePersonal(denHome, "dg", source.Personal{Version: "0.9.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := s.Status(context.Background(), denHome, "dg")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Status != source.StatusBlocked {
+		t.Errorf("status = %q, want blocked", status.Status)
+	}
+	if len(status.Warnings) == 0 || !strings.Contains(status.Warnings[0], "0.9.0") {
+		t.Errorf("warnings = %v, want the divergence named", status.Warnings)
+	}
+}
+
+// A machine den cannot observe is `unknown`, never "nothing is configured":
+// the two have different remedies and a user acts on the word (spec §12.2).
+func TestStatusReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := newMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
+		&strings.Builder{}, &strings.Builder{}); err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	cleanup()
+	f.fail["secret ls -g"] = errors.New("keychain access denied")
+
+	status, err := s.Status(context.Background(), denHome, "dg")
+	if err != nil {
+		t.Fatalf("an unobservable machine is a state, not an error: %v", err)
+	}
+	if status.Status != source.StatusUnknown {
+		t.Errorf("status = %q, want unknown", status.Status)
+	}
+	var rendered strings.Builder
+	RenderStatus(&rendered, status)
+	if strings.Contains(rendered.String(), "absent") {
+		t.Errorf("an unobserved resource was rendered as absent:\n%s", rendered.String())
+	}
+}
+
+// A legacy source has no contract to report on, and the refusal says which
+// command does apply to it.
+func TestStatusRefusesALegacySource(t *testing.T) {
+	denHome := t.TempDir()
+	tree := t.TempDir()
+	writeFile(t, filepath.Join(tree, "stacks", "devx", "stack.yaml"), "image: devx:v1\n")
+	remote := sourceRemote(t, tree)
+	s := Service{Git: worktree.NewGit(), Now: testClock}
+	if _, err := source.Add(context.Background(), s.Git, denHome, remote, "corp"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.Status(context.Background(), denHome, "corp")
+	if err == nil || !strings.Contains(err.Error(), source.ManifestFile) {
+		t.Fatalf("error = %v, want a refusal naming the missing contract", err)
+	}
+}

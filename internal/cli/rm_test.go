@@ -2014,3 +2014,77 @@ func TestRmKeepsEveryWorktreeWhenTheRecordsDirectoryCannotBeEnumerated(t *testin
 		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
 	}
 }
+
+// sourceNestFixture installs a MANIFESTED source whose nest declares its repo
+// by key, maps that key in the source's own personal configuration, and
+// creates the worktree a spawn would have. The sandbox gets NO creation
+// record: that is what sends `den rm` down cleanWorktreesLegacy, the branch
+// that has to resolve the key itself.
+func sourceNestFixture(t *testing.T, denHome string, mapKey bool) (repo, wt string) {
+	t.Helper()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	repo = filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+
+	src := filepath.Join("sources", "corp")
+	writeUnder(t, denHome, filepath.Join(src, "den-source.yaml"), `schema_version: 1
+kind: source
+metadata: { name: corp, version: 1.0.0 }
+exports:
+  nests:
+    - { name: api, path: nests/api.yaml }
+  stacks:
+    - { name: devx, path: stacks/devx/stack.yaml }
+`)
+	writeUnder(t, denHome, filepath.Join(src, "stacks", "devx", "stack.yaml"), "image: devx:v1\n")
+	writeUnder(t, denHome, filepath.Join(src, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n  - { key: api, url: https://git.example.test/team/api.git }\n")
+	if mapKey {
+		writeUnder(t, denHome, filepath.Join("source-config", "corp.yaml"),
+			"schema_version: 1\nversion: 1.0.0\nrepos:\n  api: "+repo+"\n")
+	}
+	return repo, createWorktree(t, repo, root, "feat12")
+}
+
+// A sandbox spawned from a manifested source resolves its repo keys through
+// THAT source's personal configuration. Without a creation record, `den rm`
+// has to do the same lookup — resolving it in config.yaml would find nothing
+// here and abandon the worktree on disk.
+func TestRmWithoutARecordResolvesKeysThroughTheSourceMapping(t *testing.T) {
+	denHome := t.TempDir()
+	_, wt := sourceNestFixture(t, denHome, true)
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+
+	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f,
+		"--den-home", denHome, "rm", "corp-api.feat12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s\n%s", err, stdout, stderr)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the worktree was not reclaimed (%v): the key resolved in the wrong scope\n%s",
+			err, stderr)
+	}
+}
+
+// And when the source maps nothing, the remedy names the file that would fix
+// it — the source's own configuration, never config.yaml, which den would
+// refuse to read for a manifested source anyway.
+func TestRmWithoutARecordNamesTheSourceConfigurationOfAnUnmappedKey(t *testing.T) {
+	denHome := t.TempDir()
+	_, wt := sourceNestFixture(t, denHome, false)
+	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
+
+	_, stderr, err := executeCmdWithSbxSeparateStreams(t, f,
+		"--den-home", denHome, "rm", "corp-api.feat12")
+	if err != nil {
+		t.Fatalf("an unmapped key must not refuse the removal: %v\n%s", err, stderr)
+	}
+	want := filepath.Join(denHome, "source-config", "corp.yaml")
+	if !strings.Contains(stderr, want) {
+		t.Errorf("the warning must name %s; got:\n%s", want, stderr)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("den moved a directory it could not attribute to a repo: %v", err)
+	}
+}

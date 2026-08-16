@@ -1018,19 +1018,19 @@ git commit -m "feat(source): update exact source versions explicitly"
 - Consumes: read-only resource inspectors, readiness evaluator, receipt, and renderers.
 - Produces: `Service.Status(ctx, denHome, name)`, `den source status [name]`, and aggregated doctor checks.
 
-- [ ] **Step 1: Write source status tests**
+- [x] **Step 1: Write source status tests**
 
 Assert one-name and all-source modes, stable ordering, no Git fetch calls, missing repo detail with URL/dependent nests/remedy, and non-zero exit for `blocked`/`unknown` only. Assert `partially_ready` exits zero.
 
-- [ ] **Step 2: Write doctor regression for unavailable sbx**
+- [x] **Step 2: Write doctor regression for unavailable sbx**
 
 Make the injected runner return the observed keychain/daemon error. Assert doctor contains an `unknown` source check, exits non-zero, and never prints `all good`. Add divergence and partially-ready cases.
 
-- [ ] **Step 3: Implement read-only observation**
+- [x] **Step 3: Implement read-only observation**
 
 `Service.Status` loads installed manifest/config/receipt, runs resource `Inspect` only, reevaluates exported nests, and never calls `Apply`, `fetch`, or a mutating sbx command. `source status` uses `RenderStatus`.
 
-- [ ] **Step 4: Extend doctor dependencies and levels**
+- [x] **Step 4: Extend doctor dependencies and levels**
 
 > Divergence recorded in Task 1: `internal/doctor/doctor.go:405-413` still falls back on
 > `g.Defaults.Stack` per nest and calls `stacks.Get("")` when both are empty, so a source-aware home
@@ -1041,7 +1041,7 @@ Make the injected runner return the observed keychain/daemon error. Assert docto
 
 Add the same injected `sbx.Runner` and Git reader already available at CLI wiring. Map `ready` to OK, `partially_ready` to warning, and `blocked`/`unknown` to fail. Report receipt/checkout/config divergence as fail.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run: `go test ./internal/doctor ./internal/converge ./internal/cli -run 'Doctor|SourceStatus|Unknown'`
 
@@ -1049,6 +1049,34 @@ Run: `go test ./internal/doctor ./internal/converge ./internal/cli -run 'Doctor|
 git add internal/converge internal/doctor internal/cli/source.go internal/cli/source_test.go internal/cli/doctor.go internal/cli/doctor_test.go
 git commit -m "feat(doctor): report manifested source readiness"
 ```
+
+> Divergence settled in Task 12 — `internal/doctor` gained NO sbx runner and NO Git reader, contrary
+> to Step 4's wording. That package's first line promises "no side effects, no network", and
+> `internal/cli/doctor.go` already states why the live sandbox list is read on its side of that
+> boundary. So the split is: `cli.sourceChecks` observes (it owns the runner), `doctor.SourceCheck`
+> judges. The level mapping lives in doctor, once, so `den doctor` and `den source status` cannot
+> disagree on what counts as broken: `ready` → ok, `partially_ready` → warning (den never clones, so
+> a missing working repository is a normal state), everything else → fail. `unknown` fails on
+> purpose — the prototype produced exactly that state on a machine whose credentials were fine, and
+> a den that read "could not look" as OK would have reported it healthy.
+>
+> `Service.Status` reads the repository mapping den already wrote (`MatchesFromMapping`) instead of
+> rediscovering: a status reports on a decision already made, and a fresh scan could disagree with
+> what a spawn will really mount. It also asks `source.RequireUsable` and reports its refusal as a
+> warning with status `blocked` — a status saying "ready" next to a spawn that refuses is the worse
+> of the two lies.
+>
+> The two divergences recorded earlier are both settled here:
+> - `internal/doctor/doctor.go` now makes the same stackless-nest judgment as `nest.Resolve`, naming
+>   the nest file and `config.yaml` instead of `stack "" not found`.
+> - `internal/cli/rm.go`'s `cleanWorktreesLegacy` now resolves `key:` entries through the SOURCE's
+>   personal configuration when the sandbox came from a manifested source, and names that file in
+>   the unmapped-key warning. `nestOfSandbox` returns the source name for it (both call sites
+>   updated) rather than decoding a second time, since a second decode could disagree with the
+>   first. Still best-effort and still never a refusal (doctrine T13/T16): an unmapped key is
+>   reported and the directory left on disk. Before this, a source sandbox with no creation record
+>   looked its keys up in `config.yaml`, where a manifested source has none — den abandoned the
+>   worktree and pointed the user at a file that would not have helped.
 
 ### Task 13: Lock the complete Den acceptance flow
 

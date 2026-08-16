@@ -2,12 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	den "github.com/PillowPillow/den"
+	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/worktree"
 )
@@ -427,15 +429,20 @@ func publishFixture(t *testing.T, url, version string) {
 	gitCmd(t, dir, "commit", "-m", "publish "+version)
 }
 
-// installFixture installs the manifested fixture at 1.0.0 and returns its
-// remote URL, so an update test starts from a converged machine.
+// installFixture creates a source-aware home converged on the fixture at
+// 1.0.0, and returns the remote URL — the state every update, status and
+// doctor test starts from.
+//
+// Through `den init --source`, not `den source add`: that is how such a home
+// comes to exist, and a home assembled any other way would have no config.yaml
+// for doctor to read.
 func installFixture(t *testing.T, d Deps, home, work string) string {
 	t.Helper()
 	url := makeManifestedSourceRepo(t)
-	out, err := runCLI(t, d, "source", "add", url,
+	out, err := runCLI(t, d, "init", "--source", url,
 		"--answers", writeAnswerFile(t, work), "--yes", "--den-home", home)
 	if err != nil {
-		t.Fatalf("source add: %v\n%s", err, out)
+		t.Fatalf("init --source: %v\n%s", err, out)
 	}
 	return url
 }
@@ -536,5 +543,130 @@ func TestSourceUpdateRefusesADowngrade(t *testing.T) {
 	}
 	if !strings.Contains(readFile(t, filepath.Join(home, "sources", "dg", "den-source.yaml")), "1.0.0") {
 		t.Error("a refused update moved the checkout")
+	}
+}
+
+// `den source status` reports without asking anything, and its exit code
+// carries the verdict: only blocked and unknown are failures (spec §12.1).
+func TestSourceStatusExitsNonZeroOnlyWhenDenCannotUseTheSource(t *testing.T) {
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+
+	t.Run("ready", func(t *testing.T) {
+		home := filepath.Join(t.TempDir(), "den")
+		d := convergeDeps(convergedSbx())
+		installFixture(t, d, home, work)
+
+		out, err := runCLI(t, d, "source", "status", "dg", "--den-home", home)
+		if err != nil {
+			t.Fatalf("a usable source is not a failure: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "status: ready") || !strings.Contains(out, "RESOURCES") {
+			t.Errorf("status output:\n%s", out)
+		}
+	})
+
+	t.Run("partially ready", func(t *testing.T) {
+		home := filepath.Join(t.TempDir(), "den")
+		d := convergeDeps(convergedSbx())
+		installFixture(t, d, home, t.TempDir()) // no repository on this machine
+
+		out, err := runCLI(t, d, "source", "status", "dg", "--den-home", home)
+		if err != nil {
+			t.Fatalf("a missing working repository is not a failure: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "partially_ready") || !strings.Contains(out, "not_ready") {
+			t.Errorf("status output:\n%s", out)
+		}
+		if !strings.Contains(out, fixtureRepoURL) || !strings.Contains(out, "den source configure dg") {
+			t.Errorf("the missing repository is reported without its url or its remedy:\n%s", out)
+		}
+	})
+
+	t.Run("unknown", func(t *testing.T) {
+		home := filepath.Join(t.TempDir(), "den")
+		f := convergedSbx()
+		d := convergeDeps(f)
+		installFixture(t, d, home, work)
+		// The machine stops answering — the shape the prototype observed when
+		// Keychain access was denied.
+		f.Responses = map[string]sbx.Response{}
+		f.Default = sbx.Response{Err: errors.New("keychain access denied")}
+
+		out, err := runCLI(t, d, "source", "status", "dg", "--den-home", home)
+		if err == nil {
+			t.Fatalf("an unobservable machine must not exit zero:\n%s", out)
+		}
+		if strings.Contains(out, "absent") {
+			t.Errorf("an unobserved resource was reported absent:\n%s", out)
+		}
+	})
+}
+
+// With no name, every installed source is reported, in sorted order, and a
+// legacy source is named rather than silently skipped.
+func TestSourceStatusReportsEverySourceInOrder(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if _, err := runCLI(t, d, "source", "add", makeSourceRepo(t),
+		"--name", "corp", "--den-home", home); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runCLI(t, d, "source", "status", "--den-home", home)
+	if err != nil {
+		t.Fatalf("source status: %v\n%s", err, out)
+	}
+	corp, dg := strings.Index(out, "corp"), strings.Index(out, "dg")
+	if corp < 0 || dg < 0 {
+		t.Fatalf("both sources must be reported:\n%s", out)
+	}
+	if corp > dg {
+		t.Errorf("sources are not reported in sorted order:\n%s", out)
+	}
+	if !strings.Contains(out, "legacy") {
+		t.Errorf("the legacy source is reported without saying why it has no status:\n%s", out)
+	}
+}
+
+// doctor is where an unobservable machine must NOT read as healthy: the source
+// check is unknown, the exit is non-zero, and "all good" never appears.
+func TestDoctorReportsAnUnobservableSourceAsUnknown(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+
+	blind := &sbx.Fake{Default: sbx.Response{Err: errors.New("keychain access denied")}}
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), blind)
+	if err == nil {
+		t.Fatalf("an unknown source must make doctor exit non-zero:\n%s", out)
+	}
+	if !strings.Contains(out, "source dg") || !strings.Contains(out, "unknown") {
+		t.Errorf("the source check is missing from the report:\n%s", out)
+	}
+	if strings.Contains(out, "all good") {
+		t.Errorf("doctor claimed a healthy machine it could not observe:\n%s", out)
+	}
+}
+
+// The healthy case, so the check is not one that only ever fails.
+func TestDoctorReportsAReadySource(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), convergedSbx())
+	if err != nil {
+		t.Fatalf("a converged source must not fail doctor: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[ok  ] source dg") {
+		t.Errorf("the source check is missing or not ok:\n%s", out)
 	}
 }

@@ -188,6 +188,36 @@ func DiscoverRepos(ctx context.Context, git worktree.Git, reqs []RepoRequirement
 	return out, nil
 }
 
+// MatchesFromMapping is the STATUS view of what DiscoverRepos answers for an
+// installation: which declared repositories this machine can actually mount.
+//
+// It reads the mapping den already wrote and checks the directories still
+// exist. No scan, no git, no classification: a status reports on a decision
+// already made, and rediscovering would let `den source status` disagree with
+// what a spawn will really mount.
+//
+// A mapped directory that has since been moved or deleted comes out ABSENT,
+// exactly like one that was never mapped — because for the nest that needs it,
+// it is.
+func MatchesFromMapping(reqs []RepoRequirement, mapping map[string]string) []RepoMatch {
+	out := make([]RepoMatch, 0, len(reqs))
+	for _, req := range reqs {
+		match := RepoMatch{Requirement: req, Kind: MatchAbsent}
+		if path := mapping[req.Key]; path != "" {
+			if _, err := os.Stat(path); err == nil {
+				match.Kind, match.Path, match.Confirmed = MatchExplicit, path, true
+			} else {
+				// The path is kept on an absent match: the remedy is "clone it
+				// back there, or remap it", and neither is actionable without
+				// the directory den was told about.
+				match.Path = path
+			}
+		}
+		out = append(out, match)
+	}
+	return out
+}
+
 // UnconfirmedMatches returns the matches a human (or an answer file) still has
 // to settle, in requirement order. An absent repository is NOT one of them:
 // there is nothing to choose, and the nests that need it simply become
