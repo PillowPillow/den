@@ -63,6 +63,24 @@ func TestMachineConfiguresTheGithubCredentialThroughAttach(t *testing.T) {
 	}
 }
 
+// A truncated argv — one ending in a flag with no value after it — is a
+// caller defect (internal/converge/sbx.go always pairs `--host`/`--env` with
+// a value; this is unreachable from there), but Machine is a production file
+// other packages build on, and the double reading args[i+1] blind used to
+// panic on it instead of failing the assertion a test wiring it wrong should
+// see.
+func TestMachineRunSensitiveRefusesATruncatedArgv(t *testing.T) {
+	m := NewMachine()
+	for _, args := range [][]string{
+		{"secret", "set-custom", "-g", "--host"},
+		{"secret", "set-custom", "-g", "--host", "example.test", "--env"},
+	} {
+		if _, err := m.RunSensitive(t.Context(), nil, args...); err == nil {
+			t.Errorf("RunSensitive(%v) = nil error, want a refusal naming the missing value", args)
+		}
+	}
+}
+
 // And the driver-facing consequence: a declared host carrying an explicit port
 // is NOT satisfied by a rule for the default port. The machine records what it
 // was told, so this reads as the round trip den performs.

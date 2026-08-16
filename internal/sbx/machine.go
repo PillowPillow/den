@@ -194,10 +194,22 @@ func (m *Machine) RunSensitive(_ context.Context, redacted []int, args ...string
 	var entry CustomSecret
 	for i, a := range args {
 		switch a {
-		case "--host":
-			entry.Host = args[i+1]
-		case "--env":
-			entry.Env = args[i+1]
+		case "--host", "--env":
+			// The real call site (internal/converge/sbx.go) always pairs the
+			// flag with a value, so this never fires from there — but Machine
+			// is a production file other packages build on, and a truncated
+			// argv used to read args[i+1] straight past the slice and panic
+			// the double instead of failing whatever assertion wired it wrong.
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf(
+					"RunSensitive: %q has no value after it in %q — a truncated argv, not something "+
+						"sbx would ever be asked to run", a, safe)
+			}
+			if a == "--host" {
+				entry.Host = args[i+1]
+			} else {
+				entry.Env = args[i+1]
+			}
 		}
 	}
 	m.Customs[entry] = true
