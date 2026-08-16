@@ -219,9 +219,17 @@ func (p *Plan) ConfirmedRepos() map[string]string {
 	return out
 }
 
-// Changes reports whether applying this plan would mutate anything. A plan
-// that changes nothing needs no confirmation, and saying so is more useful
-// than asking a question whose answer cannot matter.
+// Changes reports whether applying this plan would create or update a
+// RESOURCE — a credential, the build_network allowlist, a stack build. It is
+// not a full mutation oracle: Apply does other work regardless of this
+// verdict (ModeInit/ModeAdd still install the candidate, ModeUpdate still
+// fast-forwards the checkout, and every resource is still verified even when
+// unchanged), so a false Changes() does not mean Apply is a no-op.
+//
+// What it IS true for: a resource plan with nothing to create or update asks
+// nothing of a human that the plan itself didn't already answer, so
+// confirm() (internal/cli/answers.go) skips the interactive question on this
+// verdict alone and lets Apply run as it always would.
 func (p *Plan) Changes() bool {
 	for _, r := range p.Resources {
 		if r.Action == ActionCreate || r.Action == ActionUpdate {
