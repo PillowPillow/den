@@ -124,7 +124,7 @@ func TestRequireUsableRefusesADriftedManifest(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a refusal on a drifted manifest")
 	}
-	for _, want := range []string{"manifest", "changed", "den source configure dg"} {
+	for _, want := range []string{"den-source.yaml", "changed", "den source configure dg"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, expected a mention of %q", err.Error(), want)
 		}

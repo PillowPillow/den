@@ -140,10 +140,9 @@ func RequireUsable(denHome, name string) (*Active, error) {
 		}
 		if digest != receipt.ManifestDigest {
 			return nil, fmt.Errorf(
-				"source %q: the checkout's manifest changed since this machine converged — "+
-					"version %s did not change, but den-source.yaml did, so the applied resources "+
-					"may no longer match what's on disk; %s",
-				name, personal.Version, resume)
+				"source %q: %s changed since this machine converged — version %s did not change, "+
+					"but the file did, so the applied resources may no longer match what's on disk; %s",
+				name, ManifestPath(root), personal.Version, resume)
 		}
 	}
 	repos, err := personal.ExpandedRepos()

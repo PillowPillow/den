@@ -877,6 +877,49 @@ func TestUpdateActivatesTheNewVersionOnlyAfterEveryResourceVerifies(t *testing.T
 	}
 }
 
+// Apply computes the receipt's manifest digest from req.Candidate.Root — the
+// FETCHED PROBE FetchCandidate returns — before fastForward merges the
+// installed checkout onto that same commit (service.go:348 runs before the
+// ModeUpdate branch at service.go:376). RequireUsable then hashes the
+// INSTALLED checkout, a different directory. TestUpdateActivatesTheNewVersion…
+// above only exercises the RESUME half of that round trip (ModeConfigure from
+// InstalledCandidate, where Root already IS the installed dir); this is the
+// one test where a clean, single-attempt update completes without a resume,
+// so it is the one that would catch the probe and the fast-forwarded checkout
+// ever disagreeing on the bytes of the same git commit.
+func TestUpdateThatSucceedsOnFirstTryStaysUsable(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
+		&strings.Builder{}, &strings.Builder{}); err != nil {
+		t.Fatalf("installing 1.0.0: %v", err)
+	}
+	cleanup()
+
+	publishVersion(t, remote, "2.0.0", "new.example.test")
+	c, err := source.FetchCandidate(context.Background(), s.Git, denHome, "dg")
+	if err != nil {
+		t.Fatalf("FetchCandidate: %v", err)
+	}
+	defer c.Close()
+	update := req
+	update.Mode, update.Candidate = ModeUpdate, c
+
+	var out strings.Builder
+	if _, err := s.Apply(context.Background(), update, planFor(t, s, update), &out, &out); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	personal, err := source.LoadPersonal(denHome, "dg")
+	if err != nil || personal.Version != "2.0.0" {
+		t.Fatalf("personal = %+v (%v), want 2.0.0 active", personal, err)
+	}
+	if _, err := source.RequireUsable(denHome, "dg"); err != nil {
+		t.Errorf("a source that just converged cleanly on the first try must be usable: %v", err)
+	}
+}
+
 // gitOutput runs git for ASSERTIONS only.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
