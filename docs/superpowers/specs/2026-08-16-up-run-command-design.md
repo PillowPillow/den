@@ -187,13 +187,42 @@ que `unknown flag`.
 | `--detach` | ✓ (= `up -d` de compose) | enregistré, refusé | atteint la contradiction EXISTANTE `spawn.go:231` |
 | `-T` / `--no-tty` | enregistré, refusé | ✓ | atteint la contradiction EXISTANTE `spawn.go:254` |
 | `SetInterspersed(false)` | **non** | **oui** | |
-| `Args` | `exactlyOneArg` | ≥ 2 positionnels | |
+| `Args` | un validateur à lui (voir plus bas) | ≥ 2 positionnels | |
 
 **`up` n'arme pas `SetInterspersed(false)`**, et c'est une décision, pas un oubli : le
 raisonnement de `internal/cli/shell.go:93-100` s'applique mot pour mot. `up` ne prend aucune
 commande, donc aucun drapeau n'a de second propriétaire possible, et l'entrelacement achète une
 chose — `den up api -T` atteint le refus NOMMÉ de `-T` au lieu d'être refusé pour son ARITÉ par
 `exactlyOneArg`, message qui ne nomme ni le drapeau ni le remède.
+
+### Le second positionnel de `den up`
+
+`exactlyOneArg` (`internal/cli/root.go:263`) ne convient PAS ici, et c'est le seul endroit où cette
+tranche ajoute un message plutôt que d'en déplacer un. Le geste que la rupture rend le plus probable
+est la mémoire des doigts :
+
+```
+$ den up api ~/dev/hotfix
+```
+
+Sous `exactlyOneArg`, l'utilisateur lit « exactly one argument expected: 2 received — usage: … »
+(`argsBetween`, `root.go:278-296`), qui ne nomme ni `--repo`, ni ce qui a changé. `den up` porte donc
+son propre validateur, qui refuse tout positionnel au-delà du premier en NOMMANT la migration :
+
+```
+den up: extra arguments — ad-hoc repos go behind --repo now — write `den up --repo ~/dev/hotfix api`
+```
+
+Le remède est construit par le constructeur partagé du §5 (les drapeaux remontent à gauche du nom),
+pas recollé à la main, et il entre dans `TestRunRemediesAreThemselvesLegal` au même titre que ceux de
+`run`.
+
+**Le même geste sur `den run` n'est PAS rattrapable, et c'est assumé.**
+`den run api ~/dev/hotfix go test` donne au sandbox une commande `~/dev/hotfix go test`, qui échoue à
+l'intérieur. den ne peut pas faire mieux sans deviner : distinguer un chemin d'un nom de programme
+demanderait un `os.Stat` sur le premier jeton de la commande, c'est-à-dire exactement la
+normalisation silencieuse que le §2 de la spec 2026-07-27 refuse. `den up` peut nommer la migration
+parce qu'il n'a AUCUNE lecture pour un second positionnel ; `den run` en a une, légitime.
 
 ### Les refus de `den run`
 
@@ -247,6 +276,11 @@ exacte que la tranche 1 a corrigée après revue (`den shell` proposait « donne
 |---|---|---|
 | `spawn.go:231` — `--detach` + commande | « --detach and a command after `--` contradict each other — drop one: … » | « …`den run` runs a command inside the sandbox — use `den up --detach <nest>` » |
 | `spawn.go:254` — `-T` sans commande | « …give a command after `--`, or drop -T » | « …give a command with `den run -T <nest> <cmd>`, or drop -T » |
+
+**Les deux refus restent atteignables tôt**, et c'est vérifié plutôt que supposé : ils sont à
+l'étape 0 de `Spawn`, aux lignes 231 et 254, tandis que `config.LoadGlobal` est ligne 260 et
+`source.Locate` juste après. `den up api -T` refuse donc sur `-T` sans lire une seule ligne de
+configuration — un nest cassé ou une source absente ne peut pas voler le message.
 
 **Aucun des deux contrôles ne déménage dans `internal/cli`.** `internal/spawn` possède la
 contradiction entre champs de `spawn.Options` ; un second contrôle côté cobra serait deux sources
@@ -315,6 +349,8 @@ qu'un `strings.Contains(err, "-T")` ne regardait pas la moitié qui avait pourri
 - `TestRunRefusesDenFlagsAfterTheNestName` — `--repo`, `-T`, `--` ;
 - `TestRunRemediesAreThemselvesLegal` — le jumeau de la propriété de la tranche 1 ;
 - `TestUpKeepsInterspersedFlags` — `den up api -T` atteint le refus nommé, pas l'erreur d'arité ;
+- `TestUpNamesTheRepoFlagOnASecondPositional` — `den up api ~/dev/hotfix` ; message ENTIER, le
+  remède doit nommer `--repo` et rester légal ;
 - `TestRepoFlagDoesNotSplitOnComma` — garde la mesure (c.2), c'est-à-dire le choix
   `StringArrayVar` contre `StringSliceVar`, invisible à la lecture ;
 - `TestUpStillReadsDenHomeBeforeTheSubcommand` — garde la mesure (c.3) sur la persistante.
@@ -330,7 +366,13 @@ processus, `sbx.Fake` suffit, et `worktree.NeutralizeGitEnvironment()` reste app
 2. **`den run` n'est pas éphémère** (§4). compose jette son conteneur, den garde sa sandbox.
 3. **Pas de `-v` pour `--repo`.** compose épelle `-v` un volume ; den monte des repos, et un
    raccourci d'une lettre coûterait une collision pour un drapeau rare.
-4. **`den run -d` n'existe pas.** compose a `run -d` (détacher LA COMMANDE). den a
+4. **`--only` / `--without` n'adressent toujours QUE les repos déclarés.** Le §6 de
+   `2026-08-04-adhoc-repos-design.md` le décidait pour des positionnels (« un repo à la volée se
+   retire en ne le tapant pas ») ; l'argument ne dépend pas de l'orthographe et vaut mot pour mot
+   pour `--repo`. Rien ne change non plus dans la fusion des listes ni dans `checkUniqueNames`, qui
+   garde l'unicité des basenames. Écrit ici parce qu'un drapeau, contrairement à un positionnel,
+   INVITE la question — et que l'inventer au moment du plan serait un élargissement silencieux.
+5. **`den run -d` n'existe pas.** compose a `run -d` (détacher LA COMMANDE). den a
    `den up --detach`, qui est le `up -d` de compose. Hors périmètre, nommé pour qu'un lecteur ne le
    prenne pas pour un oubli.
 
