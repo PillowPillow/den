@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/PillowPillow/den/internal/agent"
 	"github.com/PillowPillow/den/internal/config"
@@ -12,129 +11,6 @@ import (
 	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/spf13/cobra"
 )
-
-// execFlags is the CLOSED set of tokens den refuses in first-command position.
-// Closed rather than "anything starting with -", because a command's own flags
-// MUST pass through: `den exec api go test -v` is the whole point of
-// SetInterspersed(false), and a prefix rule would eat it.
-//
-// `--den-home` is in the set although it belongs to the ROOT, not to `den exec`.
-// SetInterspersed(false) stops the flag parser at the first positional, and a
-// persistent flag is merged into the same FlagSet — so it stops being read there
-// too. Left out of this set, `den exec api --den-home /tmp true` sent a program
-// literally named `--den-home` into the sandbox. One contract for one order:
-// every flag den owns goes left of the sandbox name, persistent or not.
-//
-// `--help` and `-h` are deliberately absent. Cobra does not intercept them past
-// the first positional (measured 2026-08-14 in den's real command tree), so
-// `den exec api mytool --help` asks mytool for its help, inside the sandbox —
-// which is what `docker compose exec` does too.
-//
-// placeholder is what the flag's VALUE is called when den has to invent one for
-// a remedy — empty on a boolean flag, which takes none. It is only ever reached
-// by a line that ends on the flag itself (`den exec api --workdir`): everywhere
-// else the value is the token the user actually typed.
-type execFlag struct{ name, placeholder string }
-
-var execFlags = []execFlag{
-	{name: "-T"},
-	{name: "--no-tty"},
-	{name: "--workdir", placeholder: "<dir>"},
-	{name: "--den-home", placeholder: "<path>"},
-}
-
-// execShape is the LEGAL command line den reads out of a refused one: the
-// sandbox name, den's own flags lifted to where they belong, and the command.
-//
-// It exists because every refusal below ends in "write `…`", and a remedy that
-// is itself refused costs the user a second round trip. Before 2026-08-14 each
-// message re-joined the raw tail on its own — so `den exec api -- -T go build`
-// proposed `den exec api -T go build`, which the very next check refuses, and
-// `den exec api --` proposed `den exec api`, refused for having no command.
-// Building the shape ONCE and phrasing the refusal from it is what makes the
-// proposal answerable: TestExecRemediesAreThemselvesLegal feeds every remedy
-// back through execArgs and requires nil.
-type execShape struct {
-	flags   []string // den's own, value included, in the order they were typed
-	name    string   // the sandbox; "" when the line names none, or names an empty one
-	command []string // what runs inside the sandbox; empty when none was given
-	sawDash bool     // a `--` was dropped from the line
-	// haveName separates "no name yet" from "the name IS the empty string", and
-	// the string's own emptiness cannot: `den exec "$SANDBOX" -T go build` with
-	// the variable unset hands over an empty first token, and a scan that kept
-	// looking would have taken `go` for the sandbox and proposed
-	// `den exec -T go build` — a legal line naming a sandbox the user never
-	// typed, which is worse than no proposal. It ends up in the branch that
-	// proposes nothing.
-	haveName bool
-}
-
-// execRewrite reads the positionals cobra handed over and returns that shape.
-//
-// One left-to-right pass, and the same rule on both sides of the sandbox name:
-// a `--` is dropped, a den flag is lifted (with its value), and the FIRST token
-// that is neither ends the scan — everything from there is the command,
-// verbatim, its own flags included. Both sides, because the sandbox name is not
-// always first: pflag eats a LEADING `--` before its interspersed check
-// (measured 2026-08-14, cobra v1.10.2), so `den exec -- -T api go build`
-// arrives here as ["-T","api","go","build"].
-//
-// A `=` in the token means the value is already inside it (`--workdir=/srv`),
-// and the next token must NOT be consumed — doing so would eat the command and
-// turn "no command given" into a lie about a line that had one.
-func execRewrite(args []string) execShape {
-	var s execShape
-	for i := 0; i < len(args); i++ {
-		tok := args[i]
-		if tok == "--" {
-			s.sawDash = true
-			continue
-		}
-		if f, ok := execFlagOf(tok); ok {
-			s.flags = append(s.flags, tok)
-			if f.placeholder != "" && !strings.Contains(tok, "=") {
-				if i+1 < len(args) {
-					i++
-					s.flags = append(s.flags, args[i])
-				} else {
-					s.flags = append(s.flags, f.placeholder)
-				}
-			}
-			continue
-		}
-		if !s.haveName {
-			s.name, s.haveName = tok, true
-			continue
-		}
-		s.command = args[i:]
-		return s
-	}
-	return s
-}
-
-// execFlagOf answers whether a token is one of den's own flags, `--flag=value`
-// included: pflag accepts both spellings, so a set that knew only the bare name
-// would let `--workdir=/srv` through to the VM.
-func execFlagOf(tok string) (execFlag, bool) {
-	name, _, _ := strings.Cut(tok, "=")
-	for _, f := range execFlags {
-		if f.name == name {
-			return f, true
-		}
-	}
-	return execFlag{}, false
-}
-
-// execLine spells a shape back as a command line, for the "write `…`" half of
-// every refusal. den's flags first, then the sandbox name, then the command —
-// the order the contract requires, which is the whole point of proposing it.
-func execLine(path string, s execShape, command []string) string {
-	parts := make([]string, 0, len(s.flags)+len(command)+2)
-	parts = append(parts, path)
-	parts = append(parts, s.flags...)
-	parts = append(parts, s.name)
-	return strings.Join(append(parts, command...), " ")
-}
 
 // execArgs accepts a sandbox name followed by a command. The command needs no
 // `--`, and that separator is now refused rather than tolerated.
@@ -169,7 +45,7 @@ func execLine(path string, s execShape, command []string) string {
 // for the cases; the property is pinned by TestExecRemediesAreThemselvesLegal,
 // which feeds every remedy back through this function.
 func execArgs(cmd *cobra.Command, args []string) error {
-	s := execRewrite(args)
+	s := execRewrite(cmd, args)
 	path := cmd.CommandPath()
 	// FIRST-DEFECT-WINS, and the order is the order the user can act on. What is
 	// MISSING outranks what is misplaced: `den exec api --` has both a stray
