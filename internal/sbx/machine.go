@@ -250,11 +250,19 @@ var (
 // NormalizeNetworkResource applies sbx's own normalization of a network
 // resource: a host with no port is stored with :443.
 //
-// Measured on 2026-08-16, on a machine where a human had run
+// The rule comes from ONE sample, and the next reader should know which:
+// measured 2026-08-16 against sbx v0.38.0, on a machine where a human had run
 // `sbx policy allow network cdn.playwright.dev` (no port, the spelling
-// digitaleo-den-env's README tells them to type): the rule comes back out of
+// digitaleo-den-env's README tells them to type). That rule comes back out of
 // `sbx policy ls --type network --source local --decision allow --json` as
 // "cdn.playwright.dev:443".
+//
+// What has NOT been observed yet is den performing the round trip itself —
+// den's own `policy allow` is the same command shape, so the inference holds,
+// but the first real `den init --source --yes` is what confirms it. If sbx
+// ever stores a portless allow under another default, the failure mode is the
+// one this function exists to prevent: den reporting a host it just allowed as
+// still missing, and a resource it just applied failing to verify.
 //
 // It lives HERE, in the package that owns what sbx says, and is the SOLE
 // definition: internal/converge compares a manifest's declared host against
