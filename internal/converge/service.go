@@ -488,15 +488,18 @@ func (s Service) failed(req Request, applying source.Receipt, applied []Resource
 // The window's content depends on the mode: ModeUpdate has just
 // fast-forwarded the installed checkout onto the target version (the merge
 // immediately above), so the checkout and the applying resources have
-// already diverged. ModeInit/ModeAdd install nothing until every resource
-// verifies (see Apply's own ordering comment), so nothing is on disk under
-// sources/<name>/ yet — resumeCommand already draws exactly this line for
-// every other failure in Apply, and this message must not contradict it.
+// already diverged — worth saying here, since resumeCommand's own message for
+// that branch is silent on it. ModeInit/ModeAdd install nothing until every
+// resource verifies (see Apply's own ordering comment), so nothing is on disk
+// under sources/<name>/ yet, and resumeCommand ALREADY says so ("nothing is
+// installed yet, and the resources that did converge are recorded") — this
+// function must not repeat that clause itself, or the rendered message says
+// it twice (caught in review: the doubled sentence was untested because only
+// the ModeUpdate branch had a test).
 func (s Service) stateUnreadable(req Request, applying source.Receipt, cause error) error {
 	if req.Mode == ModeInit || req.Mode == ModeAdd {
 		return fmt.Errorf(
-			"source %q: cannot read sbx state to apply version %s (%w) — nothing is installed yet, "+
-				"and the resources that did converge are recorded; %s",
+			"source %q: cannot read sbx state to apply version %s (%w) — %s",
 			req.Name, applying.TargetVersion, cause, s.resumeCommand(req))
 	}
 	return fmt.Errorf(
@@ -555,7 +558,7 @@ func (s Service) fastForward(ctx context.Context, req Request) error {
 				"also have orphaned local commits only reachable via the old history, so "+
 				"`den source rm %s` may itself refuse naming them — `den source rm --force %s` "+
 				"then `den source add %s --name %s` re-clones it if you have nothing there worth "+
-				"keeping (%w)",
+				"keeping, or ask the team to fix the remote's history instead (%w)",
 			req.Name, dir, req.Candidate.Commit, req.Candidate.Manifest.Metadata.Version, req.Name,
 			req.Name, req.Name, url, req.Name, err)
 	}

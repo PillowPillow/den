@@ -502,6 +502,51 @@ func TestApplyNamesTheRemedyWhenFastForwardIsImpossible(t *testing.T) {
 	if !strings.Contains(err.Error(), "re-clones") && !strings.Contains(err.Error(), "rm --force") {
 		t.Errorf("error does not say the checkout must be re-cloned: %v", err)
 	}
+	// The brief requires BOTH remedies named — a re-clone is not the only way
+	// out: the team fixing the remote's history also unblocks a retry.
+	if !strings.Contains(err.Error(), "fix the remote") {
+		t.Errorf("error does not offer fixing the remote as an alternative: %v", err)
+	}
+}
+
+// stateUnreadable's OTHER branch: on a first install (ModeInit/ModeAdd)
+// nothing is on disk yet, and resumeCommand already says so — this branch
+// must not repeat that sentence itself. Found in review: the doubled clause
+// (stateUnreadable's own "nothing is installed yet, and the resources that
+// did converge are recorded" plus resumeCommand's near-identical one) was
+// invisible because only the ModeUpdate branch, above, had a test.
+func TestApplyNamesTheResumeCommandWhenSbxStateIsUnreadableOnFirstInstall(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+
+	plan := planFor(t, s, req)
+	// The read fails only INSIDE Apply: Plan above already read the state
+	// successfully with the same double.
+	f.Fail["secret ls -g"] = errors.New("keychain error -50")
+
+	var out strings.Builder
+	_, err := s.Apply(context.Background(), req, plan, &out, &out)
+	if err == nil {
+		t.Fatal("expected the unreadable sbx state to fail the first install")
+	}
+	if strings.Contains(err.Error(), "den source configure") {
+		t.Errorf("a failed FIRST install must not point at configure: %v", err)
+	}
+	if !strings.Contains(err.Error(), "den source add") || !strings.Contains(err.Error(), remote) {
+		t.Errorf("error does not name the resume command: %v", err)
+	}
+	if !strings.Contains(err.Error(), "1.0.0") {
+		t.Errorf("error does not name the target version: %v", err)
+	}
+	const clause = "resources that did converge are recorded"
+	if n := strings.Count(err.Error(), clause); n != 1 {
+		t.Errorf("clause %q appears %d times in %q, want exactly once", clause, n, err.Error())
+	}
+	if _, statErr := os.Stat(source.Dir(denHome, "dg")); statErr == nil {
+		t.Error("a failed first install must not install the source")
+	}
 }
 
 // gitCmd runs git for TEST SETUP — mutating the remote — never for an
