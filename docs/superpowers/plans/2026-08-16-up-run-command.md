@@ -624,6 +624,18 @@ func shellSplit(t *testing.T, line string) []string {
 			inQuote = false
 		case inQuote:
 			cur.WriteByte(c)
+		// The '\'' idiom (close, escape, reopen) puts a literal quote OUTSIDE the
+		// quoted region: a backslash there escapes the next byte rather than
+		// starting a new word. Without this case the escaped quote is read as an
+		// unmatched open, the scan runs off the end of the line looking for a
+		// close the next real quote already consumed, and the "an inner single
+		// quote" row below faults "unterminated quote". Added 2026-08-16, during
+		// implementation: the first draft of this helper omitted it and failed its
+		// own test.
+		case c == '\\' && i+1 < len(line):
+			i++
+			cur.WriteByte(line[i])
+			inWord = true
 		case c == '\'':
 			inQuote, inWord = true, true
 		case c == ' ':
@@ -722,11 +734,20 @@ const shellSafe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" +
 //
 // SINGLE quotes, which is what makes this safe rather than merely tidy: POSIX
 // single quotes interpolate nothing, so a path carrying `$`, `*`, a backtick or
-// a backslash survives verbatim. An inner single quote is spelled '\'' — close,
-// escape, reopen — the only way out of a single-quoted string.
+// a backslash survives verbatim. An inner single quote is closed, escaped and
+// reopened — see the ReplaceAll below for the four-byte idiom that does it, the
+// only way out of a single-quoted string.
 //
-// An empty token becomes '' rather than vanishing: `den exec "$SANDBOX" …` with
-// the variable unset must not silently lose a word from the line den echoes.
+// An empty token is rendered as a quoted empty string rather than vanishing:
+// `den exec "$SANDBOX" …` with the variable unset must not silently lose a word
+// from the line den echoes.
+//
+// Do NOT spell the idiom or the empty string literally in THIS comment, and do
+// not "restore" them: gofmt's doc-comment formatter (go/doc/comment) reads two
+// adjacent quote marks as a typographic double quote and silently drops a byte
+// — measured 2026-08-16, and it corrupts exactly the byte this function exists
+// to preserve. `internal/agent/links.go:175-181` already avoids the same trap.
+// A lone apostrophe is unaffected; only doubled adjacent quotes trigger it.
 //
 // A non-ASCII rune is not in shellSafe, so it is quoted. Harmless, and the
 // conservative direction: over-quoting produces a longer legal line,
