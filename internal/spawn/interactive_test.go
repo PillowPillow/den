@@ -1440,3 +1440,60 @@ func TestPromptAnnotationNamesTheRunningDenHomesConfig(t *testing.T) {
 		t.Errorf("the checklist annotation must name %s, not a bare filename:\n%s", want, out.String())
 	}
 }
+
+// A LOCAL nest resolves its `key:` repos through config.yaml — and the
+// checklist has to say so too.
+//
+// The regression this locks: the mapping handed to the checklist became nil
+// for every nest outside a manifested source (nil is nest.Resolve's signal to
+// fall back on config.yaml), so `-i` annotated every keyed repo as "not
+// mapped" while the spawn one step later mounted it perfectly well. The screen
+// where a user decides whether to include a repo must not tell them it is
+// unavailable.
+func TestInteractiveAnnotatesNothingForAMappedLocalKey(t *testing.T) {
+	denHome, api := denTest(t)
+	optional := filepath.Join(t.TempDir(), "docs")
+	if err := os.MkdirAll(optional, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(denHome, "config.yaml"),
+		readAll(t, filepath.Join(denHome, "config.yaml"))+
+			"repos:\n  docs: "+optional+"\n")
+	write(t, filepath.Join(denHome, "nests", "api.yaml"),
+		"stack: devx\nrepos:\n"+
+			"  - { path: "+api+" }\n"+
+			"  - { key: docs, optional: true }\n")
+
+	fake, d := fakeDeps()
+	out := &bytes.Buffer{}
+	d.Out = out
+	d.In = strings.NewReader("\n") // accept the default selection
+	d.IsTTY = func() bool { return true }
+	if err := Spawn(context.Background(), denHome,
+		Options{Nest: "api", Interactive: true}, d); err != nil {
+		t.Fatalf("interactive spawn: %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "not mapped") {
+		t.Errorf("the checklist calls a mapped key unmapped:\n%s", out.String())
+	}
+	// And the spawn really did mount it, so the assertion above is about the
+	// annotation and not about a repo that was dropped.
+	mounted := false
+	for _, c := range fake.Calls {
+		if c[0] == "create" && slices.Contains(c, optional) {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Errorf("the mapped optional repo was not mounted; calls: %v", fake.Calls)
+	}
+}
+
+func readAll(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}

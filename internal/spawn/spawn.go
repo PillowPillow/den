@@ -288,6 +288,13 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	repoMapping := active.RepoMapping()
 	repoMappingPath := active.MappingPath(denHome)
 	if repoMapping == nil {
+		// nil means "no source scope" — a local nest, or a legacy source. It is
+		// the signal nest.Resolve reads to fall back on config.yaml's `repos:`,
+		// and the CHECKLIST has to make the same fallback explicit: it renders
+		// its "(not mapped in …)" note from this map directly, so handing it the
+		// nil would annotate every keyed repo as unmapped, including the ones
+		// nest.Resolve resolves fine one step later.
+		repoMapping = g.Repos
 		repoMappingPath = config.GlobalPath(denHome)
 	}
 
