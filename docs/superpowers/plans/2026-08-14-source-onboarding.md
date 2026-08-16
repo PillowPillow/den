@@ -1349,7 +1349,7 @@ Expected: lint exits 0; diff check is empty; status contains no uncommitted feat
 
 Run `DIGITALEO_DEN_ENV=/Users/polochon/Development/Digitaleo/digitaleo-den-env go test ./internal/converge -run TestDigitaleoManifestAcceptance -v`. The harness uses a temporary `--den-home`, a file URL to a temporary source clone, and fake sbx adapters. Never point this verification at the real `~/.den` or mutate live sbx credentials/policies. Assert `source status`, source config, receipt, and missing-repo remedies from command output.
 
-- [ ] **Step 4: Request code review**
+- [x] **Step 4: Request code review**
 
 Invoke `superpowers:requesting-code-review`. Review the Den commits against `docs/superpowers/specs/2026-08-14-source-onboarding-design.md`, then review the separate Digitaleo commit against the finalized Den schema. Resolve findings with focused tests and separate fix commits.
 
@@ -1374,3 +1374,43 @@ Invoke `superpowers:requesting-code-review`. Review the Den commits against `doc
 >   that directory carries a SECOND remote pointing at php.baseo. Discovery reads every remote by
 >   design, and refusing to guess between them is the intended behavior.
 
+> Step 4 ran on 2026-08-16 with two independent reviewers (the user authorized sub-agents for it):
+> one over the den commits against the design spec, one over the Digitaleo commit against the
+> finalized schema. Both reviews were acted on in full; the fixes are separate commits, and each
+> Important/Critical finding got a test that fails without its fix.
+>
+> **den — three Important, no Critical.** `f3cade5` fixes a regression this delivery introduced: the
+> `-i` checklist received a nil repo mapping for every nest outside a manifested source, so it
+> annotated mapped keys as unmapped. Confirmed by stashing only `spawn.go` and watching the new test
+> fail. `e00c72e` keys the github credential on its TYPE rather than the manifest's `id:` (a source
+> free to choose another id would inspect one service, configure another, and never verify), and
+> makes the resume command follow the mode — a failed FIRST install pointed at `den source
+> configure`, which answers "not installed".
+>
+> **The Digitaleo review found a Critical in DEN, one host past where it aimed** (`1c9aca8`). It
+> flagged the registry host as an unverified byte-for-byte coupling; the registry side was fine, the
+> POLICY side was not. `sbx policy allow network cdn.playwright.dev` — the portless spelling a human
+> is told to type — is stored by sbx as `cdn.playwright.dev:443` (measured 2026-08-16 on a rule the
+> user had created by hand). `networkDriver` compared the declared bare host exactly, never matched,
+> re-applied the rule every run, then failed to VERIFY what it had just applied: source blocked
+> permanently, on a correctly configured machine, on the first real `--yes`. `sbx.Machine` hid it by
+> storing the argv verbatim — the double was made honest FIRST, nine converge tests went red, then
+> the driver was fixed. Real-binary confirmation: `0 of 2 hosts allowed` became `1 of 2`.
+>
+> **Digitaleo — two Critical, both documentation** (`0ada1b2` in that repo). The headline install
+> command could not run (`--answers` resolves from the cwd, and `den init --source` clones the
+> source itself, so a teammate has no local file to pass), and the README contradicted `leo.yaml` —
+> and itself — on the exact key the commit claimed to have documented. Also: `den source add` moved
+> out of the troubleshooting section (on a manifested source it IS the convergence), an upgrade path
+> added for machines that already have `dg`, and `nests/leo.yaml`'s false comment corrected in place
+> — a comment is not a contract, unlike the key it describes, which stays deferred.
+>
+> Two findings declined, with reasons: a manifest rule forcing `id: github` (the type already
+> determines the service, so the rule would refuse manifests that are now correct), and renaming
+> `testdata/onboarding-answers.yaml` to `examples/` (the path is what this plan specifies).
+>
+> **One item is NOT closed and gates the release:** `den-source.yaml` declares
+> `requires.den: ">=1.7.0"` and den's newest tag is `v1.6.0`. Publishing the Digitaleo source before
+> den is tagged `v1.7.0` refuses the first teammate who installs it. Merge and tag den first. Every
+> verification in this plan that passed the floor did so on a binary built with
+> `-ldflags '-X .../internal/cli.Version=1.7.0'`.
