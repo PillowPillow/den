@@ -7,6 +7,7 @@ package lint
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -40,7 +41,9 @@ func Run(root string) []error {
 	for _, b := range broken {
 		errs = append(errs, fmt.Errorf("nest %q: %w", b.Name, b.Err))
 	}
-	return append(errs, judge(resolved, stacks, nests)...)
+	// stacks passed for BOTH parameters: without a catalogue there is no
+	// narrower "judged" set than the full scan — see judge's doc.
+	return append(errs, judge(resolved, stacks, stacks, nests)...)
 }
 
 // Catalogue is the explicit export list of a manifested source: the names it
@@ -55,21 +58,52 @@ type Catalogue struct {
 
 // RunCatalogue is Run for a source that PUBLISHES its objects (spec
 // 2026-08-14 §5.2): the same checks, over the declared catalogue instead of
-// whatever the directories contain.
+// whatever the directories contain — with ONE exception, a stack's
+// `parent:` (see below).
 //
-// The difference is not cosmetic. A stack present in the checkout but absent
-// from `exports.stacks` is an implementation detail of the source, so an
-// exported nest may not resolve its `stack:` through it — the teammate who
-// installs the source addresses exported names and nothing else. Feeding the
-// directory scan to these checks would accept exactly that, and the refusal
-// would only appear on the teammate's machine, at spawn.
+// nest `stack:` stays scoped to the catalogue. A stack present in the
+// checkout but absent from `exports.stacks` is an implementation detail of
+// the source, so an exported nest may not resolve its `stack:` through it —
+// the teammate who installs the source addresses exported names and nothing
+// else. Feeding the directory scan to THAT check would accept exactly what
+// spawn later refuses, and the refusal would only appear on the teammate's
+// machine.
 //
-// Symmetrically, an unexported object's own faults are not findings: nothing
-// published can reach it.
+// stack `parent:` does NOT stay scoped to the catalogue (Task 7 review fix,
+// 2026-08-16). A stack's parent is internal composition — nothing on the
+// personal side ever addresses it — and buildDriver.Apply
+// (internal/converge/build.go) already resolves the chain through a full
+// config.LoadStacks scan plus build.Chain: den BUILDS what the
+// catalogue-scoped version REFUSED, with a message that named the
+// checkout's own stacks/ directory, where the parent visibly exists. judge
+// is handed two config.Stacks for exactly this split: `stacks`, the
+// export-scoped set that decides WHAT is judged, and `parents`, the full
+// checkout scan that decides what a `parent:` chain may resolve THROUGH.
+//
+// Ruling on unexported faults: an unexported stack's own faults (a broken
+// stack.yaml, a bad `kit:`/`provision.*` path, its OWN unresolved
+// `parent:`) ARE lint findings, but only when the stack lies on an EXPORTED
+// stack's `parent:` ancestry — the closure parentClosure computes below.
+// That closure, not the export list, is the published surface for
+// `parent:` purposes: it is exactly what `den build` walks for that export
+// (build.Chain refuses on ANY broken link or cycle anywhere in the chain,
+// not only the immediate parent), so judging less would let lint ACCEPT a
+// chain build REFUSES — the direction that matters more, since
+// source.Lint deletes the clone it accepted. An orphan stack that no
+// export's ancestry reaches stays unjudged: "nothing published can reach
+// it" still holds for it, unchanged from before this fix.
 func RunCatalogue(root string, cat Catalogue) []error {
 	resolved, errs := resolveRoot(root)
 	if len(errs) > 0 {
 		return errs
+	}
+
+	// The full scan `parent:` resolves through — see the doc above. A
+	// structural failure here (an unreadable stacks/ directory) is reported
+	// the same way Run reports it: nothing more can be judged.
+	parents, err := config.LoadStacks(resolved)
+	if err != nil {
+		return append(errs, err)
 	}
 
 	// Built by name rather than filtered from LoadStacks: an EXPORTED stack
@@ -95,25 +129,76 @@ func RunCatalogue(root string, cat Catalogue) []error {
 		}
 		nests = append(nests, n)
 	}
-	return append(errs, judge(resolved, stacks, nests)...)
+	return append(errs, judge(resolved, stacks, parents, nests)...)
 }
 
 // judge is the shared verdict: the checks themselves never learn WHERE the
 // objects came from. One implementation, so a manifested source can never be
 // accepted on a rule a legacy one is refused on, or the reverse.
-func judge(root string, stacks config.Stacks, nests []*nest.Nest) []error {
+//
+// Two config.Stacks, not one: `stacks` decides what is JUDGED — whose own
+// faults are findings, and what a nest's `stack:` may resolve through.
+// `parents` decides what a `parent:` chain may resolve THROUGH, and may be
+// broader. Run passes the same value for both — without a catalogue,
+// "judged" and "resolvable" are already the same set. RunCatalogue does not
+// (see its doc).
+func judge(root string, stacks, parents config.Stacks, nests []*nest.Nest) []error {
 	var errs []error
 	for _, b := range stacks.Broken {
 		errs = append(errs, fmt.Errorf("stack %q: %w", b.Name, b.Err))
 	}
-	for _, name := range stacks.Names() {
-		errs = append(errs, checkStack(root, stacks, stacks.Healthy[name])...)
+	// The ancestor closure of the JUDGED stacks, resolved through `parents`:
+	// for Run, stacks == parents == the full scan, so every healthy stack is
+	// already its own root and the closure is exactly stacks.Names() —
+	// unchanged from before this function took two arguments. For
+	// RunCatalogue it is strictly the exported stacks plus every unexported
+	// stack their `parent:` chain actually reaches; see parentClosure's doc
+	// for why an orphan stays out of it.
+	closure := parentClosure(stacks, parents)
+	for _, name := range closure {
+		errs = append(errs, checkStack(root, parents, parents.Healthy[name])...)
 	}
-	errs = append(errs, checkCycles(stacks)...)
+	errs = append(errs, checkCycles(parents, closure)...)
 	for _, n := range nests {
 		errs = append(errs, checkNest(root, stacks, n)...)
 	}
 	return errs
+}
+
+// parentClosure returns the names of every JUDGED stack (roots) together
+// with every HEALTHY stack their `parent:` chain reaches, transitively,
+// resolved through parents — sorted, for the same reproducibility reason
+// config.Stacks.Names is.
+//
+// A stack that fails to resolve (absent, or present but broken) is never
+// added: there is no *config.Stack for judge's checkStack loop to run on,
+// and its OWN fault already surfaces at the point that names it — the
+// CHILD's `stacks.Get(s.Parent)` in checkStack, which distinguishes
+// "unreadable" from "does not exist" and cites the right file either way.
+// Walking further past it here would only rediscover the same fault a
+// second time, with a worse message.
+//
+// The `seen` guard doubles as cycle protection: a `parent:` cycle would
+// otherwise recurse forever. It reports NOTHING about the cycle itself —
+// that verdict belongs to checkCycles, which judge calls with this same
+// closure as its start set.
+func parentClosure(roots, parents config.Stacks) []string {
+	seen := map[string]bool{}
+	var walk func(name string)
+	walk = func(name string) {
+		s, ok := parents.Healthy[name]
+		if !ok || seen[name] {
+			return
+		}
+		seen[name] = true
+		if s.Parent != "" {
+			walk(s.Parent)
+		}
+	}
+	for _, name := range roots.Names() {
+		walk(name)
+	}
+	return slices.Sorted(maps.Keys(seen))
 }
 
 // resolveRoot turns the caller's path into the one every confinement check
@@ -147,7 +232,11 @@ func resolveRoot(root string) (string, []error) {
 // root and exist. Confinement is a shareability rule, not a security one: a
 // path that escapes the checkout depends on the machine that receives the
 // source, so the object is not distributable (spec 2026-08-04 §5).
-func checkStack(root string, stacks config.Stacks, s *config.Stack) []error {
+//
+// parents resolves `s.Parent` — the set judge's caller decides that against
+// (see judge's doc), which for RunCatalogue is broader than the stacks this
+// function is CALLED for.
+func checkStack(root string, parents config.Stacks, s *config.Stack) []error {
 	var errs []error
 	if s.Parent != "" {
 		if source, _ := config.SplitSourceRef(s.Parent); source != "" {
@@ -155,7 +244,7 @@ func checkStack(root string, stacks config.Stacks, s *config.Stack) []error {
 				"stack %q: `parent: %s` is a prefixed reference — inside a source, references are "+
 					"bare and resolve in the source itself: the install name is chosen per machine "+
 					"and CI knows none", s.Name, s.Parent))
-		} else if _, err := stacks.Get(s.Parent); err != nil {
+		} else if _, err := parents.Get(s.Parent); err != nil {
 			errs = append(errs, fmt.Errorf("stack %q: %w", s.Name, err))
 		}
 	}
@@ -235,13 +324,21 @@ func checkDeclaredPath(root string, s *config.Stack, key, p string, wasAbsolute 
 	return nil
 }
 
-// checkCycles walks parent edges among HEALTHY stacks. Three colors are not
-// needed at this scale: a walked set per start plus a global done set keeps
-// it linear and the first cycle found names its members.
-func checkCycles(stacks config.Stacks) []error {
+// checkCycles walks parent edges among HEALTHY stacks in stacks, starting
+// only from startNames — the set judge decided is worth judging (every
+// healthy stack for Run, the exported stacks' ancestor closure for
+// RunCatalogue). stacks itself may be broader than startNames: RunCatalogue
+// passes the full checkout scan, because a cycle can close through a stack
+// outside the export list, and build.Chain (internal/build/graph.go) would
+// refuse it the SAME way at `den build` regardless of who exports what — a
+// cycle among only-catalogue stacks is exactly the accept-what-build-refuses
+// case judge's doc warns against. Three colors are not needed at this scale:
+// a walked set per start plus a global done set keeps it linear and the
+// first cycle found names its members.
+func checkCycles(stacks config.Stacks, startNames []string) []error {
 	var errs []error
 	done := map[string]bool{}
-	for _, start := range stacks.Names() {
+	for _, start := range startNames {
 		if done[start] {
 			continue
 		}
