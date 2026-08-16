@@ -54,7 +54,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 			}
 			return ""
 		},
-	}, answersManifest(), path, true)
+	}, answersManifest(), path)
 	if err != nil {
 		t.Fatalf("answer-file collection: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 			prompted = append(prompted, prompt)
 			return "sentinel-secret", nil
 		},
-	}, answersManifest(), "", false)
+	}, answersManifest(), "")
 	if err != nil {
 		t.Fatalf("interactive collection: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 // flags, because a CI needs `--answers` AND `--yes` to get through.
 func TestCollectInitialAnswersRefusesWithoutATerminal(t *testing.T) {
 	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), "", false)
+	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), "")
 	if err == nil {
 		t.Fatal("expected a refusal with no terminal and no answer file")
 	}
@@ -117,7 +117,7 @@ func TestCollectInitialAnswersNeedsNoTerminalWhenTheFileIsComplete(t *testing.T)
 	cmd, _ := answersCmd("")
 	a, err := collectInitialAnswers(cmd, Deps{
 		Getenv: func(string) string { return "sentinel-secret" },
-	}, answersManifest(), path, true)
+	}, answersManifest(), path)
 	if err != nil {
 		t.Fatalf("collectInitialAnswers: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestDepsGetenvIsHermeticByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), path, true)
+	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), path)
 	if err == nil || !strings.Contains(err.Error(), "GLPAT") {
 		t.Fatalf("error = %v, expected the unset-variable refusal", err)
 	}
@@ -154,7 +154,7 @@ func TestCollectInitialAnswersRefusesAnUndeclaredCredential(t *testing.T) {
 	cmd, _ := answersCmd("")
 	_, err := collectInitialAnswers(cmd, Deps{
 		Getenv: func(string) string { return "sentinel-secret" },
-	}, answersManifest(), path, true)
+	}, answersManifest(), path)
 	if err == nil || !strings.Contains(err.Error(), "ghost_token") {
 		t.Fatalf("error = %v, expected the undeclared credential to be named", err)
 	}

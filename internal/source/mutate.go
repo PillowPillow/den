@@ -57,14 +57,14 @@ func Add(ctx context.Context, git worktree.Git, denHome, url, name string) (stri
 		// Best-effort removal: the refusal below matters more than the cleanup's
 		// own error, and a leftover directory is visible in `den source ls`.
 		os.RemoveAll(dir)
-		return "", lintRefusal(name, url, errs)
+		return "", LintRefusal(name, url, errs)
 	}
 	return name, nil
 }
 
-// lintRefusal assembles lint findings into one refusal, ConfigError-shaped:
+// LintRefusal assembles lint findings into one refusal, ConfigError-shaped:
 // all faults at once, so the team repo gets one report instead of one per push.
-func lintRefusal(name, where string, errs []error) error {
+func LintRefusal(name, where string, errs []error) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "source %q: %s is not a valid source:", name, where)
 	for _, e := range errs {
@@ -285,7 +285,7 @@ func Update(ctx context.Context, git worktree.Git, denHome, name string) error {
 	}
 	if len(lintErrs) > 0 {
 		return fmt.Errorf("%w\nthe local clone stays on its last valid state — nothing changed",
-			lintRefusal(name, "the fetched update", lintErrs))
+			LintRefusal(name, "the fetched update", lintErrs))
 	}
 	if _, err := git.Run(ctx, dir, "merge", "--ff-only", "@{u}"); err != nil {
 		return fmt.Errorf(

@@ -159,7 +159,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 			return nil
 		},
 	})
-	root.AddCommand(newInitCmd(&denHome))
+	root.AddCommand(newInitCmd(&denHome, deps))
 	root.AddCommand(newNestCmd(&denHome))
 	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor, deps.Sbx, deps.Git))
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
@@ -180,7 +180,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	root.AddCommand(newBuildCmd(&denHome, deps.Sbx))
 	// `den source` reads the SAME injected Git as `den rm` (deps.Git) — the
 	// whole tree tests against file:// remotes, never the real network.
-	root.AddCommand(newSourceCmd(&denHome, deps.Git))
+	root.AddCommand(newSourceCmd(&denHome, deps))
 	// `den lint` validates an arbitrary checkout: stacks, nests, references,
 	// confinement. Deliberately den-home-agnostic, so a CI runner needs no
 	// den home at all.

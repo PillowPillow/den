@@ -838,7 +838,7 @@ git commit -m "feat(init): add resumable convergence service"
 - Consumes: `converge.Service`, typed answers, rendering, existing `deninit.Run`, and legacy `source.Add`.
 - Produces: `den init --source`, manifested `den source add`, and `den source configure`.
 
-- [ ] **Step 1: Write CLI wiring tests**
+- [x] **Step 1: Write CLI wiring tests**
 
 Cover:
 
@@ -850,11 +850,11 @@ den source configure dg --answers <file> --yes --den-home <tmp>
 
 Assert `--name` overrides `metadata.name`. Assert a no-TTY invocation without `--yes` prints the complete plan, exits without mutation, and tells the user to rerun with `--yes`. Assert interactive rejection leaves all files and sbx calls unchanged.
 
-- [ ] **Step 2: Preserve existing init and legacy source tests**
+- [x] **Step 2: Preserve existing init and legacy source tests**
 
 Run the existing `TestInit*` and legacy source add/update cases unchanged before editing. Add explicit regression tests proving `den init` still creates the embedded example and a source without `den-source.yaml` still follows `source.Add`.
 
-- [ ] **Step 3: Add source-aware initialization flags**
+- [x] **Step 3: Add source-aware initialization flags**
 
 ```go
 type convergenceFlags struct {
@@ -867,15 +867,15 @@ type convergenceFlags struct {
 
 Add `DenVersion func() string` to `cli.Deps`; `SystemDeps` returns `displayVersion`, and tests inject exact versions. When `--source` is empty, call the existing embedded-example path. Otherwise prepare `den.SourceAwareDenHome` in memory when `config.yaml` is absent, preserve an existing global config byte-for-byte, collect initial answers, calculate discovery, resolve unconfirmed repo matches, recalculate and print the final plan, confirm, then let `Service.Apply` write the prepared global config. Planning and rejected confirmation write nothing.
 
-- [ ] **Step 4: Dispatch manifested and legacy source add**
+- [x] **Step 4: Dispatch manifested and legacy source add**
 
 Probe the candidate for `den-source.yaml` before mutation. Manifested sources use convergence. Legacy sources call the current `source.Add`. Add `source configure <name>` only for manifested sources and return a clear manifest-required error for legacy sources.
 
-- [ ] **Step 5: Print manual legacy mapping instructions**
+- [x] **Step 5: Print manual legacy mapping instructions**
 
 If keys needed by the manifested source exist under global `config.yaml.repos`, print an exact YAML block under the destination `source.PersonalPath(home, name)`. Do not copy or remove it. A test compares global `config.yaml` before and after byte-for-byte.
 
-- [ ] **Step 6: Run CLI/full tests and commit**
+- [x] **Step 6: Run CLI/full tests and commit**
 
 Run: `go test ./internal/cli ./internal/deninit ./...`
 
@@ -883,6 +883,35 @@ Run: `go test ./internal/cli ./internal/deninit ./...`
 git add internal/cli internal/deninit
 git commit -m "feat(init): wire source onboarding commands"
 ```
+
+> Divergence settled in Task 10 — `internal/deninit` was NOT modified, contrary to the file list
+> above. The source-aware home is a single `config.yaml`, and `Service.Apply` already writes it at
+> the one point in the sequence that keeps an interrupted run resumable (before the `applying`
+> receipt's mutations, after nothing). Threading a second template and a second footer through
+> `deninit.Run` would add a second write order to the function whose write order is load-bearing
+> (its sentinel-last comment), for a file it would not even be responsible for.
+>
+> Four smaller divergences, all in service of the wiring:
+> - `source.lintRefusal` is now exported as `source.LintRefusal`. The CLI lints the CANDIDATE before
+>   installing it — the clone is never under `sources/` at that point, so it cannot go through
+>   `source.Add` — and the refusal a user reads must be the same one `den source add` has always
+>   printed.
+> - `Candidate.Close` now removes the staging directory even after a successful `Install`. `Install`
+>   renames the checkout OUT of it, so the `installed` guard was leaving one empty
+>   `cache/sources/candidate-*` behind per installation, forever. Locked by
+>   `TestAcquireCandidateStagesOutsideSources`.
+> - `collectInitialAnswers` lost its `yes` parameter, which its body never read. Task 10 was its
+>   first real caller; a parameter that decides nothing had to go before three commands passed it.
+> - `sbx.SecretRunner` is obtained by type-asserting `Deps.Sbx`, not from a second injected field:
+>   `deps.Sbx` is the SINGLE runner (CLAUDE.md), and a second field would be a second runner to keep
+>   in sync. A runner that cannot carry a secret off argv is refused by name, and the legacy
+>   `den source add` path never reaches the assertion — it needs no sbx at all.
+>
+> One judgment call worth naming: the migration block prints the repository paths as
+> `config.LoadGlobal` resolves them, so a `~/Development/api` in the global file is shown expanded.
+> That matches what den itself writes into `source-config/<name>.yaml` (discovery yields absolute
+> paths), and that file is per-machine and never travels — but the user pastes what they read, so a
+> hand-written `~` does not survive the migration unless they retype it.
 
 ### Task 11: Add explicit exact-version updates and configure-based resume
 

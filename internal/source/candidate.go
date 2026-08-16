@@ -31,19 +31,26 @@ type Candidate struct {
 	URL      string
 	Manifest *Manifest
 
-	// temp is the directory Close removes. Empty for a candidate that is
-	// already installed: Close must never delete the user's source.
+	// temp is the staging directory Close removes. Empty for a BORROWED
+	// candidate (the installed checkout): Close must never delete the user's
+	// source.
 	temp string
-	// installed is set once the candidate has been moved into place, so a
-	// deferred Close cannot remove what is now the real source.
+	// installed is set once the candidate has been moved into place, so Install
+	// cannot run twice and Root stops pointing inside temp.
 	installed bool
 }
 
-// Close removes a temporary clone. It is safe to call on an installed or
-// borrowed candidate — it then does nothing, which is what lets every caller
+// Close removes the staging directory. It is safe to call on a borrowed
+// candidate — it then does nothing, which is what lets every caller
 // `defer c.Close()` without knowing which kind it holds.
+//
+// It removes temp even AFTER a successful Install, and that is deliberate:
+// Install renames the checkout OUT of temp (into <denHome>/sources/<name>), so
+// what is left is an empty staging directory. Skipping it left one
+// `cache/sources/candidate-*` behind per installation, forever — visible to
+// anyone who looks, and growing.
 func (c *Candidate) Close() error {
-	if c == nil || c.temp == "" || c.installed {
+	if c == nil || c.temp == "" {
 		return nil
 	}
 	return os.RemoveAll(c.temp)

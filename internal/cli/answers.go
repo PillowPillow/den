@@ -26,7 +26,7 @@ import (
 // already carry it. Nothing is prompted "just in case": den reads a secret
 // because a resource needs it (spec §5.3).
 func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
-	answersPath string, yes bool) (converge.Answers, error) {
+	answersPath string) (converge.Answers, error) {
 
 	var a converge.Answers
 	if answersPath != "" {

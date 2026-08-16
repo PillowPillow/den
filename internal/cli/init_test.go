@@ -24,7 +24,7 @@ import (
 // none of.
 func runInit(t *testing.T, home string) (string, error) {
 	t.Helper()
-	cmd := newInitCmd(&home)
+	cmd := newInitCmd(&home, Deps{})
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 	cmd.SetErr(out)

@@ -72,6 +72,11 @@ func TestAcquireCandidateStagesOutsideSources(t *testing.T) {
 	if !HasManifest(Dir(denHome, "dg")) {
 		t.Error("Close removed the installed source")
 	}
+	// And it DOES remove the staging directory it emptied: skipping that left
+	// one cache/sources/candidate-* behind per installation, forever.
+	if entries, err := os.ReadDir(stagingDir(denHome)); err == nil && len(entries) > 0 {
+		t.Errorf("Close left %d staged entrie(s) behind after a successful install", len(entries))
+	}
 }
 
 // A source WITHOUT a manifest is acquired without error: `den source add`

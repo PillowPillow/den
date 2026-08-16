@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/converge"
 	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
@@ -16,13 +17,14 @@ import (
 // newSourceCmd manages team source repositories (spec 2026-08-04 §3). git is
 // the injected worktree.Git — the SAME injection `den rm` already receives —
 // so the whole tree tests against file:// remotes.
-func newSourceCmd(denHome *string, git worktree.Git) *cobra.Command {
+func newSourceCmd(denHome *string, d Deps) *cobra.Command {
+	git := d.Git
 	cmd := &cobra.Command{
 		Use:   "source",
 		Short: "Manage team source repositories (stacks/nests shared over git)",
 	}
 
-	var name string
+	var addFlags convergenceFlags
 	add := &cobra.Command{
 		Use:   "add <url>",
 		Short: "Clone a source repository under <den home>/sources/ and validate it",
@@ -32,18 +34,27 @@ func newSourceCmd(denHome *string, git worktree.Git) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resolved, err := source.Add(cmd.Context(), git, home, args[0], name)
+			return addSource(cmd, d, home, args[0], addFlags)
+		},
+	}
+	addFlags.bind(add, false, true)
+	cmd.AddCommand(add)
+
+	var configureFlags convergenceFlags
+	configure := &cobra.Command{
+		Use:   "configure <name>",
+		Short: "Reconverge an installed source on this machine, without contacting its remote",
+		Args:  exactlyOneArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(),
-				"source %q installed — its objects are addressed %s:<name> (e.g. `den spawn %s:<nest>`)\n",
-				resolved, resolved, resolved)
-			return nil
+			return configureSource(cmd, d, home, args[0], configureFlags)
 		},
 	}
-	add.Flags().StringVar(&name, "name", "", "install name (default: the URL's basename)")
-	cmd.AddCommand(add)
+	configureFlags.bind(configure, false, false)
+	cmd.AddCommand(configure)
 
 	update := &cobra.Command{
 		Use:   "update [name]",
@@ -129,6 +140,76 @@ func newSourceCmd(denHome *string, git worktree.Git) *cobra.Command {
 	cmd.AddCommand(rm)
 
 	return cmd
+}
+
+// addSource dispatches `den source add` on the ONE thing that separates the
+// two installations: whether the repository carries a den-source.yaml.
+//
+// The probe is a clone into the den home's cache, before any mutation — a
+// manifest can only be read from a checkout, and reading it must not be what
+// installs the source. A legacy repository is then handed to source.Add, which
+// clones again: the second clone is the price of leaving that path EXACTLY as
+// it was, lint refusal and self-removal included, and it is paid only by
+// sources that have no contract.
+func addSource(cmd *cobra.Command, d Deps, home, url string, flags convergenceFlags) error {
+	c, err := source.AcquireCandidate(cmd.Context(), d.Git, home, url)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	if c.Manifest == nil {
+		// Dropped now rather than at the deferred Close: the legacy path below
+		// clones into the same den home, and leaving a staging directory around
+		// for the duration would show up in nothing but confusion.
+		c.Close()
+		resolved, err := source.Add(cmd.Context(), d.Git, home, url, flags.Name)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"source %q installed — its objects are addressed %s:<name> (e.g. `den spawn %s:<nest>`)\n",
+			resolved, resolved, resolved)
+		return nil
+	}
+
+	name, err := source.ResolveNamespace(cmd.Context(), d.Git, home, url, flags.Name, c.Manifest)
+	if err != nil {
+		return err
+	}
+	if errs := source.Lint(c.Root); len(errs) > 0 {
+		return source.LintRefusal(name, url, errs)
+	}
+	// No fresh global configuration on this path: `den source add` adds a source
+	// to a den home that already exists. Creating one is `den init`'s job, and
+	// only it knows the user asked for a home.
+	return runConvergence(cmd, d, converge.ModeAdd, home, name, c, flags, nil)
+}
+
+// configureSource is `den source configure <name>`: the same convergence, over
+// the INSTALLED checkout (spec §11.1).
+//
+// It contacts no remote. That is what makes it the command for the two things
+// that happen after an installation — a repository cloned since, and a run
+// interrupted halfway — without a fetch changing what is being converged under
+// the user's feet.
+//
+// No usability gate on the receipt here, deliberately: source.RequireUsable
+// refuses while an `applying` receipt is in place, and this is the command that
+// clears it. Gating it would leave a partial application unresumable.
+func configureSource(cmd *cobra.Command, d Deps, home, name string, flags convergenceFlags) error {
+	c, err := source.InstalledCandidate(cmd.Context(), d.Git, home, name)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	if err := requireManifest(c, name, fmt.Sprintf(
+		"it is a legacy source, which declares nothing to converge; `den source update %s` fetches "+
+			"it and `den spawn %s:<nest>` uses it", name, name)); err != nil {
+		return err
+	}
+	return runConvergence(cmd, d, converge.ModeConfigure, home, name, c, flags, nil)
 }
 
 // updateAllSources drives a bare `den source update`: every installed
