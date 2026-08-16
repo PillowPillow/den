@@ -345,7 +345,7 @@ que `unknown flag`.
 | `--detach` | ✓ (= `up -d` de compose) | enregistré, refusé | atteint la contradiction EXISTANTE `spawn.go:231` |
 | `-T` / `--no-tty` | enregistré, refusé | ✓ | atteint la contradiction EXISTANTE `spawn.go:254` |
 | `SetInterspersed(false)` | **non** | **oui** | |
-| `Args` | un validateur à lui, TROIS branches ordonnées (voir plus bas) | ≥ 2 positionnels | |
+| `Args` | un validateur à lui, QUATRE branches ordonnées (voir plus bas) | ≥ 2 positionnels | |
 
 **`up` n'arme pas `SetInterspersed(false)`**, et c'est une décision, pas un oubli : le
 raisonnement de `internal/cli/shell.go:93-100` s'applique mot pour mot. `up` ne prend aucune
@@ -367,8 +367,12 @@ Sous `exactlyOneArg`, l'utilisateur lit « exactly one argument expected: 2 rece
 (`argsBetween`, `root.go:278-296`), qui ne nomme ni `--repo`, ni ce qui a changé. `den up` porte donc
 son propre validateur.
 
-**Ce validateur a trois branches, et leur ORDRE est le fond du sujet.** Une première rédaction n'en
+**Ce validateur a quatre branches, et leur ORDRE est le fond du sujet.** Une première rédaction n'en
 avait qu'une, et la mesure (f) montre qu'elle produisait deux remèdes absurdes.
+
+**La queue de commande est `args[1:]` une fois le nest identifié, JAMAIS `args[dash:]`.** Sur
+`up -- api`, `dash` vaut 0 alors que `api` est le nest et non une commande : indexer par `dash`
+inverserait les deux. `ArgsLenAtDash()` sert à savoir SI un `--` a été tapé, pas à découper.
 
 `--` ne disparaît pas de pflag parce que la spec le retire de la grammaire : pflag termine son parse
 sur `--` quoi qu'il arrive, y compris sans `SetInterspersed(false)`. Mesuré sur `up` :
@@ -509,13 +513,38 @@ sans passer par `cli.Deps` : `os.Stat` dans `rm.go:74` et `rm.go:597`, `os.Stat`
 `internal/ports/hermeticity_test.go` n'interdit à `internal/cli` que `net`, `hash/fnv` et `os/exec`.
 `os` n'est pas dans la liste. Un test hermétique donne un `t.TempDir()` et lit le verdict.
 
-**Une seule règle, et elle reste cheap** : le jeton est résolu contre le cwd de den sur l'hôte — la
-même base que `parseRepoArg` — puis `stat`é.
+**La normalisation, écrite en entier.** « La même base que `parseRepoArg` » ne suffisait pas : deux
+implémentations raisonnables divergeaient sur `~/repo` cité, sur les composants redondants, et sur un
+`os.Getwd` en échec. `parseRepoArg` (`internal/nest/repos.go:280-293`) fait exactement, et rien de
+plus :
 
+```go
+expanded, err := config.ExpandPath(raw)          // ~ étendu
+if !filepath.IsAbs(expanded) {
+    expanded = filepath.Join(cwd, expanded)      // relatif joint au cwd
+}
+return Repo{Path: filepath.Clean(expanded), AdHoc: true}
+```
+
+**Pas de `filepath.Abs`, pas d'`EvalSymlinks`.** L'avertissement reprend ces trois gestes et s'arrête
+là. Le cwd est celui d'`os.Getwd`, la source que `Spawn` utilise déjà
+(`internal/spawn/spawn.go:662`).
+
+- `config.ExpandPath` échoue : silence ;
+- `os.Getwd` échoue : silence — on ne peut pas résoudre un relatif sans base, et deviner en vaudrait
+  la peine pour un avis, pas pour un refus ;
 - l'erreur de `stat`, quelle qu'elle soit : silence ;
 - ça existe mais ce n'est pas un répertoire : silence — `den run api ./build.sh` est une commande
   légitime ;
 - c'est un répertoire : on avertit.
+
+**Le chemin normalisé ne sert QU'AU `stat`.** La ligne proposée porte le jeton BRUT, tel que
+l'utilisateur l'a tapé : proposer `den run --repo /Users/x/dev/hotfix …` à qui a écrit `~/dev/hotfix`
+lui rend une ligne qu'il ne reconnaît pas, et `parseRepoArg` refera l'expansion de toute façon.
+
+Les refus d'entrée de `parseRepoArg` — jeton vide, suffixe `:ro` — ne sont PAS rejoués ici : ce sont
+des refus de repo, et le jeton examiné n'est pas encore un repo. Un `:ro` en premier mot de commande
+part dans la VM comme tout le reste, sans avis.
 
 **Pas de test de git-ité.** Un répertoire non-git était un repo à la volée parfaitement légal — la
 décision 2 du 2026-08-04 n'exige `git` que sous `-w` — et c'est ce contrôle-là, pas le `stat`, qui
@@ -681,17 +710,49 @@ en plus de ceux relevés dans la queue positionnelle. **`Value.String()` est int
 sémantiquement faux. Il faut `SliceValue.GetSlice()` et **une paire `--repo <v>` par élément**, ce qui
 conserve l'ordre de frappe dont le §2 c.1 dépend.
 
-Deux règles à écrire, sinon elles seront devinées :
+Quatre règles à écrire, sinon elles seront devinées :
 
 - **Ordre** : drapeaux relus d'abord, dans l'ordre de `VisitAll` — qui est LEXICAL, `SortFlags` valant
   vrai par défaut (mesuré) — puis les drapeaux relevés dans la queue, dans l'ordre de frappe. L'ordre
   entre drapeaux distincts est indifférent à pflag ; à l'intérieur de `--repo`, l'ordre de la tranche
-  EST l'ordre de frappe.
-- **Doublons** (`den run --workdir /a api --workdir /b go test`) : pour un drapeau scalaire, le
-  **relevé** gagne et le relu est jeté — c'est le dernier tapé, et celui que den apprend à déplacer.
-  Pour `--repo`, la répétition a un sens : les deux sont émis, relus d'abord (nécessairement tapés à
-  gauche du nest), puis relevés. Sur `up`, l'entrelacement étant actif, rien n'est jamais relevé et le
-  conflit ne peut pas naître.
+  EST l'ordre de frappe. `--den-home` est émis UNE fois, depuis la persistante héritée, après le
+  chemin de la commande et avant le nest.
+- **Doublons scalaires** (`den run --workdir /a api --workdir /b go test`) : le **relevé** gagne et
+  le relu est jeté — c'est le dernier tapé, et celui que den apprend à déplacer. Sur `up`,
+  l'entrelacement étant actif, rien n'est jamais relevé et le conflit ne peut pas naître.
+- **Doublons de tranche** : `--repo`, `--only` et `--without` sont tous des `SliceValue`, et la règle
+  scalaire ne s'y applique PAS. Les deux origines sont émises — relues d'abord (nécessairement tapées
+  à gauche du nest), puis relevées — une paire `--<nom> <valeur>` par élément. Pour `--repo` la
+  répétition a un sens métier ; pour `--only` / `--without` elle est équivalente à la liste
+  concaténée, et la forme répétée est celle qui survit à une valeur portant une virgule.
+- **Booléens** : `Changed` dit qu'un booléen a été TAPÉ, jamais comment. Un booléen relu s'écrit
+  donc **canoniquement avec sa valeur** — `--detach=false`, `--detach=true` — et jamais sous sa forme
+  nue. C'est la seule règle sûre : émettre `--detach` pour un `--detach=false` retournerait la valeur,
+  et un remède peut alors déclencher une contradiction que la ligne d'origine ne déclenchait pas
+  (`--detach=true` réveille `spawn.go:231`). La forme nue reste ce que l'UTILISATEUR tape ; elle n'est
+  pas ce que den REPROPOSE.
+
+#### Le constructeur sert deux commandes à la fois
+
+La table dérivée et les valeurs de `Changed` viennent de la commande qui a PARSÉ la ligne. Le remède,
+lui, ne vise pas toujours cette commande-là : `den run api ~/dev/hotfix` propose `den up --repo … api`,
+et `den up api -- go test` propose `den run api go test`. Un constructeur qui ne prend que
+`cmd.CommandPath()` ne peut pas rendre ces lignes ; un qui ne prend qu'un chemin cible n'a plus de
+`FlagSet` d'où dériver et relire.
+
+Le constructeur prend donc **deux entrées distinctes** : la commande SOURCE (`*cobra.Command`, d'où
+viennent la table, `Changed` et les valeurs) et le chemin CIBLE (une chaîne : `den run`, `den up`,
+`den exec`, `den nest show`). Il expose en plus deux gestes que les appelants inter-commandes
+exigent :
+
+- **ajouter un drapeau synthétique** que la source n'a jamais porté — l'avertissement de `den run`
+  doit produire un `--repo <chemin>` alors que `--repo` n'est pas `Changed` sur la ligne tapée ;
+- **remplacer la queue** — le même avertissement retire le premier jeton de la commande, celui qui
+  était en réalité un repo.
+
+Sans ces deux gestes, la moitié des remèdes de cette spec ne sont pas constructibles, et ils seraient
+recollés à la main — c'est-à-dire hors de `TestRunRemediesAreThemselvesLegal`, donc libres de pourrir
+comme celui de la tranche 1.
 
 **(G) `execLine` joint sur une espace simple, donc un chemin à espace produit un remède illégal.**
 
@@ -766,7 +827,7 @@ Plus large que la tranche 1, qui tenait dans `internal/cli`.
 
 | Fichier | Changement |
 |---|---|
-| `internal/cli/spawn.go` | supprimé → `up.go` + `run.go`, partageant un corps `spawnNest` comme `exec`/`shell` partagent `enterSandbox`. Emporte `Use:` (l. 35), `Short:` (l. 36) et les neuf enregistrements de drapeaux (l. 85-97), dont l'aide de `--detach` (« after the spawn ») |
+| `internal/cli/spawn.go` | supprimé → `up.go` + `run.go`, partageant un corps `spawnNest` (frontière plus bas). Emporte `Use:` (l. 35), `Short:` (l. 36) et les neuf enregistrements de drapeaux (l. 85-97), dont l'aide de `--detach` (« after the spawn ») |
 | `internal/cli/exec.go` | `execFlags` manuel (l. 39-44) → table dérivée + classifieur écrit à la main (§5) ; `execShape`/`execRewrite`/`execLine` deviennent partagés et gagnent la relecture du `FlagSet` (F) et la citation shell (G) ; `spawnArgs` (l. 215-225) disparaît avec `--`, emportant sa chaîne « a nest must be named before `--` » (l. 221) ; commentaire coupé l. 433-434 |
 | `internal/cli/root.go` | deux `AddCommand` au lieu d'un (l. 173) ; ligne de migration (l. 397) ; `SuggestFor: []string{"down"}` sur `newRmCmd` (§9.7) ; `atLeastOneArg` (l. 262-269) **perd ses deux derniers appelants** — `nest show` passe au validateur de migration, `spawnArgs` disparaît — et son commentaire (« nothing caps how many a spawn may mount ») est faux dès que les repos quittent les positionnels |
 | `internal/cli/nest.go` | `den nest show` migre vers `--repo` (§7bis) : `Use:` l. 131, `Args:` l. 133, `opts.Repos = args[1:]` l. 193, enregistrement du drapeau l. 226-228 ; commentaires l. 43, 90, 147, 164-165 (coupé), 177, 190 à repointer |
@@ -786,6 +847,26 @@ Plus large que la tranche 1, qui tenait dans `internal/cli`.
 | `CHANGELOG.md` | une entrée sous `Changed`, rupture assumée, sans fenêtre de dépréciation. Les 9 occurrences existantes sont dans des entrées **publiées** : historiques, ne pas réécrire |
 | `CLAUDE.md` | l. 136-137, la note « `den <nest>` → `den spawn <nest>` le 2026-08-05 » gagne le troisième palier |
 | spec `2026-07-27-den-cli-design.md` | §2 (l. 61), §4.2 (l. 176), §5 (l. 218, 220, 234, 241), §6 (l. 248, 289, 343), §9.2 (l. 750, 752), §10 (l. 817), §11 (l. 926, 938), §12 (l. 984). **§14 / §14.1 ne sont PAS réécrits** : ce sont des relevés datés contre un `sbx` réel, et changer la commande citée falsifierait une mesure |
+
+### La frontière de `spawnNest`
+
+`enterSandbox` (`internal/cli/exec.go:259`) est le modèle, et sa vertu est d'être ENTIÈREMENT
+explicite : rien n'y est deviné depuis la commande. `spawnNest` prend la même forme :
+
+```go
+func spawnNest(cmd *cobra.Command, denHome *string, o spawn.Options, deps spawn.Deps) error
+```
+
+Il ne rend qu'une `error`. Ce qu'il fait est ce que `spawn.go:52-81` fait déjà aujourd'hui : résoudre
+`--den-home`, poser les flux de l'invocation (`Out`/`Err`/`In` depuis `cmd`), appeler `spawn.Spawn`.
+Ce qui reste propre à chaque commande tient en deux lignes :
+
+- `up` : `o.Nest = args[0]`, `o.Command` reste vide (un `Argv` vide vaut `bash -l`) ;
+- `run` : `o.Nest = args[0]`, `o.Command = args[1:]`.
+
+`--repo` se lie directement à `o.Repos` par `StringArrayVar`, sur les deux commandes. Aucune des deux
+ne construit d'`Options` que l'autre ne construirait — c'est le point : deux orthographes d'une porte
+sont deux portes, et `enterSandbox` existe pour cette raison.
 
 ### Le balayage, reproductible — et pourquoi une seule grep ne suffit pas
 
@@ -838,10 +919,27 @@ de `spawn.go` (rendus dans `den help`, dans `cmd.UseLine()` à l'intérieur de l
 `root_test.go:288` gèle, et recopiés gelés dans `unknown-command.golden`), l'aide de `--detach`
 (« after the spawn »), et la chaîne de `spawnArgs`.
 
-`internal/sbx`, `internal/manifest`, `internal/policy`, `internal/worktree`, `internal/build`,
-`internal/agent`, `internal/doctor` : commentaires seuls, aucun changement obligatoire.
+`internal/sbx`, `internal/manifest`, `internal/policy`, `internal/worktree`, `internal/agent`,
+`internal/doctor` : commentaires seuls, aucun changement obligatoire.
 **`internal/nest` n'est PAS intact** — la première rédaction le déclarait tel — puisque la doc de
 `Options.Repos` décrit une origine positionnelle qui disparaît.
+
+**`internal/build` non plus n'est pas « rien à faire »** : `build/sandbox.go:15`,
+`build/execute.go:302` et `build/plan.go:176` nomment `den spawn` ou la syntaxe positionnelle, et
+`internal/spawn/spawn.go` fait de même en 152, 157-160 et 198. Ce sont des commentaires, donc rien ne
+casse — mais ce sont des commentaires qui DÉCRIVENT une syntaxe supprimée, et les laisser revient à
+livrer la documentation morte que le §6 corrige par ailleurs.
+
+### Ce qui ne change PAS, vérifié plutôt que supposé
+
+Écrit ici pour qu'un plan ne rouvre pas l'enquête. La complétion et `den help` se peuplent depuis
+l'arbre cobra : deux `AddCommand` suffisent, il n'y a pas de liste à tenir. `--detach` et `Repos`
+sont des champs indépendants de `spawn.Options` — la seule contradiction est `Detach × Command`
+(§6), donc `den up --detach --repo /a api` est légal et le reste. `den doctor` lit des sandboxes
+vivantes et des enregistrements de manifeste, jamais une syntaxe de CLI. `internal/manifest`
+enregistre les repos RÉSOLUS avec `Repo.AdHoc`, donc `OriginCommandLine` survit tel quel au passage
+du positionnel au drapeau. Et `den build` appelle `build.Execute` directement, sans jamais passer par
+`spawn.Spawn` : il ne voit pas cette tranche.
 
 ### `den nest show` suit, sinon la césure du §4 est livrée
 
@@ -861,6 +959,13 @@ inatteignable, dont le message — « exactly one argument expected, 2 received 
 `den up`. `den nest show` réutilise donc **le validateur de migration de `up`**, dont le remède
 devient `den nest show --repo ~/dev/hotfix api` ; le dry-run ne peut pas être le seul endroit où la
 migration n'est pas nommée.
+
+**Cette réutilisation ne coûte AUCUN paramètre**, contrairement à ce qu'une rédaction intermédiaire
+supposait. Un validateur cobra reçoit déjà `*cobra.Command`, donc `cmd.CommandPath()` (« den nest
+show ») et `cmd.Flags()` (d'où `Changed("repo")` et la table dérivée) : la même fonction
+`func upArgs(cmd *cobra.Command, args []string) error` sert les deux sites sans être paramétrée.
+C'est le constructeur de remèdes INTER-COMMANDES qui a besoin d'une cible sélectionnable, pas le
+validateur — deux besoins distincts qu'il ne faut pas fondre en un.
 
 **Pas de `SetInterspersed(false)`**, pour le raisonnement de `internal/cli/shell.go:93-100` mot pour
 mot — `den nest show` ne prend AUCUNE commande, donc aucun drapeau n'a de second propriétaire
@@ -959,6 +1064,24 @@ qu'un `strings.Contains(err, "-T")` ne regardait pas la moitié qui avait pourri
   `StringSliceVar`, invisible à la lecture ;
 - `TestUpStillReadsDenHomeBeforeTheSubcommand` — garde la mesure (c.3) sur la persistante.
 
+### Quel harnais pour quel test
+
+`validateArgs` ne fait PAS tourner `RunE` (`exec_test.go:794`), et `executeCmdSeparateStreams` appelle
+un vrai `Execute()` (`root_test.go:38`). La règle : **tout ce qui est un refus va sur `validateArgs`,
+tout ce qui traverse `RunE` va sur `executeCmdSeparateStreams` + `sbx.Fake`.** Les cas où le choix
+n'est pas déductible, nommés une fois :
+
+- `TestRunPassesHelpToTheSandbox` — vrai `Execute()`, obligatoire : `--help` est absent du walk sous
+  `Find`+`ParseFlags`. (`TestExecPassesHelpToTheSandbox` est déjà écrit ainsi, `exec_test.go:944`.)
+- `TestRunWarnsWhenTheFirstCommandTokenIsADirectory` — vrai `Execute()`, l'avis sortant de `RunE` ; le
+  répertoire est un `t.TempDir()` et le test s'y place, puisque la règle joint le relatif au cwd.
+- `TestRunRemediesAreThemselvesLegal` — **les deux** : les refus par `validateArgs`, l'avis par
+  `Execute()`. La ligne proposée est rejouée par `shellSplit` dans les deux cas.
+- `TestRepoFlagDoesNotSplitOnComma` — vrai `Execute()` : l'observable est `spawn.Options.Repos` tel
+  que la `Fake` le reçoit, pas un message.
+- `TestUpStillReadsDenHomeBeforeTheSubcommand` — vrai `Execute()` : l'observable est le den home
+  effectivement lu.
+
 ### Trois commits, et le constructeur passe en premier
 
 La réécriture du constructeur touche **toutes** les fonctions de la famille : `execFlags` (supprimé),
@@ -972,8 +1095,11 @@ attente neuve.
    vérifiable : la table dérivée d'`exec` vaut `{workdir, no-tty/-T, den-home}` plus l'exclusion de
    l'aide, soit exactement les quatre entrées écrites à la main. **Porte : la suite d'`exec` verte
    avec ZÉRO édition de test.** Toute rupture signifie que le classifieur a changé le comportement
-   d'`exec`. (Le seul changement visible est le placeholder, `<dir>` → `<workdir>` ; aucun test ne
-   l'asserte, vérifié par grep.)
+   d'`exec`. (Les changements visibles sont DEUX placeholders, pas un : `execFlags` en porte deux
+   côte à côte, `--workdir` → `<dir>` et `--den-home` → `<path>`, qui deviennent `<workdir>` et
+   `<den-home>`. Aucun test n'asserte ni l'un ni l'autre — grep sur `internal/cli/*_test.go` et
+   `testdata/` : zéro résultat — donc la porte « zéro édition » tient malgré deux chaînes qui
+   changent.)
 2. **Commit 2 — la relecture des drapeaux (F).** Inverse exactement une attente existante, et
    réécrit `exec.go:199-202` d'« omission décidée » en « défaut corrigé ». Diff sur deux fichiers.
 3. **Commit 3 — la citation (G).** Remplace `strings.Fields` par `shellSplit` comme mécanisme de
