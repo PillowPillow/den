@@ -131,10 +131,13 @@ func classifyToken(tok string, long map[string]denFlag, short map[byte]denFlag) 
 // command.
 //
 // It exists because every refusal ends in "write `…`", and a remedy that is
-// itself refused costs the user a second round trip. Building the shape ONCE
-// and phrasing the refusal from it is what makes the proposal answerable:
-// TestExecRemediesAreThemselvesLegal feeds every remedy back through the
-// validator and requires nil.
+// itself refused costs the user a second round trip. Before 2026-08-14 each
+// message re-joined the raw tail on its own — so `den exec api -- -T go build`
+// proposed `den exec api -T go build`, which the very next check refuses, and
+// `den exec api --` proposed `den exec api`, refused for having no command.
+// Building the shape ONCE and phrasing the refusal from it is what makes the
+// proposal answerable: TestExecRemediesAreThemselvesLegal feeds every remedy
+// back through the validator and requires nil.
 type execShape struct {
 	flags   []string // den's own, value included, in the order they were typed
 	name    string   // the sandbox or nest; "" when the line names none
