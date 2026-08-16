@@ -308,3 +308,40 @@ func TestVerifyReReadsTheMachine(t *testing.T) {
 		t.Error("Verify must observe the machine again, not reuse the pre-mutation reading")
 	}
 }
+
+// The sbx service a github credential configures is decided by its TYPE, never
+// by the `id:` the source chose.
+//
+// The two coincide in every manifest written so far, which is exactly what made
+// this a trap: a source declaring `id: github-service` would have den inspect
+// one service, configure another, then fail to verify what it had just applied —
+// a resource permanently blocked by a name its author was free to pick.
+func TestGithubCredentialIsKeyedByTypeNotByItsDeclaredID(t *testing.T) {
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"secret ls -g": {Output: []byte(
+			"SCOPE   TYPE     NAME    SECRET\nglobal  service  github  (stored)\n")},
+		"policy ls --type network --source local --decision allow --json": {
+			Output: []byte(`{"rules":[]}`)},
+	}}
+	state, err := ReadSbxState(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &credentialDriver{
+		res: source.CredentialResource{
+			ID: "github-service", Type: source.CredentialGitHub, Scope: source.ScopeGlobal,
+		},
+		state: state, runner: f, secrets: f, source: "dg",
+	}
+
+	o, err := d.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.Present {
+		t.Fatal("the configured github service was not seen: the driver keyed on the resource id")
+	}
+	if d.Plan(o).Action != ActionUnchanged {
+		t.Errorf("action = %q, want unchanged on a machine that already has it", d.Plan(o).Action)
+	}
+}

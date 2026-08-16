@@ -297,6 +297,41 @@ func TestApplyLeavesAResumableStateOnFailure(t *testing.T) {
 	}
 }
 
+// The resume command has to name a command that WORKS. A first installation
+// that fails installed nothing, so `den source configure` would answer "not
+// installed" and send the user back one hop (spec §12.3 asks for the exact
+// command).
+func TestApplyNamesTheRightResumeCommandForEachMode(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	f.Fail["policy allow network api.example.test"] = errors.New("sbx refused")
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+
+	plan := planFor(t, s, req)
+	var out strings.Builder
+	_, err := s.Apply(context.Background(), req, plan, &out, &out)
+	if err == nil {
+		t.Fatal("expected the failure")
+	}
+	if strings.Contains(err.Error(), "den source configure") {
+		t.Errorf("a failed FIRST install must not point at configure: %v", err)
+	}
+	if !strings.Contains(err.Error(), "den source add") || !strings.Contains(err.Error(), remote) {
+		t.Errorf("the refusal does not name the command that resumes it: %v", err)
+	}
+
+	// The same failure on an INSTALLED source does point at configure.
+	configure := req
+	configure.Mode = ModeConfigure
+	if _, err = s.Apply(context.Background(), configure, plan, &out, &out); err == nil {
+		t.Fatal("expected the failure")
+	}
+	if !strings.Contains(err.Error(), "den source configure dg") {
+		t.Errorf("a reconvergence must resume with configure: %v", err)
+	}
+}
+
 // The resume: the same convergence run again skips what verifies and finishes
 // the rest. It also proves the skip is not blind — the run VERIFIES the
 // resources it does not reapply.

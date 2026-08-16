@@ -196,7 +196,7 @@ func sourceDetail(p *converge.Plan) string {
 	if len(p.Warnings) > 0 {
 		return detail + " — " + p.Warnings[0]
 	}
-	if p.Status != "ready" {
+	if p.Status != source.StatusReady {
 		return detail + fmt.Sprintf(" — `den source status %s` says what is missing", p.Source)
 	}
 	return detail

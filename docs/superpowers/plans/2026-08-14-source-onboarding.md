@@ -999,8 +999,10 @@ git commit -m "feat(source): update exact source versions explicitly"
 > the team, not a den flag.
 >
 > `den source update` with no name now dispatches through `updateSource` per source, so a manifested
-> source in that loop gets its own plan and its own confirmation: two sources are two contracts, and
-> one `--yes` must not cover both. The aggregation of per-source failures is unchanged.
+> source in that loop gets its own PLAN and its own interactive confirmation — two sources are two
+> contracts, and a plan for one must not be approved by a "y" typed at the other. `--yes` is NOT
+> scoped per source: it is one flag on one command line, and it covers the batch, exactly as it
+> does on any other command. The aggregation of per-source failures is unchanged.
 
 ### Task 12: Add source status and doctor integration
 
@@ -1172,6 +1174,15 @@ git commit -m "test(init): lock source onboarding flow"
 > a nest count written here would be wrong the first time the team publishes one. It is
 > `TestRealSourceAcceptance`, gated on `DIGITALEO_DEN_ENV`, and copies the checkout into a temporary
 > remote so the real repository comes out byte-identical.
+>
+> Three test files the earlier task lists name were never created, and their coverage lives
+> elsewhere — recorded here rather than in each task, since it is one decision made three times:
+> `internal/converge/render_test.go` (Task 7) is `internal/converge/model_test.go`, and
+> `internal/cli/source_test.go` (Tasks 10–12) and `internal/cli/doctor_test.go` (Task 12) are
+> `internal/cli/converge_test.go`. The convergence tests share one fixture — a manifested source
+> remote, a work repository, an sbx double — and splitting them across files by which COMMAND they
+> drive would have duplicated that fixture three ways. `internal/cli/source_test.go` and
+> `internal/cli/doctor_test.go` still exist and still hold the legacy coverage, untouched.
 
 ### Task 14: Publish the Digitaleo declarative source
 

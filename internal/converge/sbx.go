@@ -208,6 +208,18 @@ func ParseSbxVersion(output string) string {
 	return ""
 }
 
+// githubService is the sbx service name behind source.CredentialGitHub.
+//
+// Derived from the TYPE, never from the manifest's `id:`. The two happen to
+// coincide in every manifest written so far, and reading the id was a latent
+// trap: a source declaring `- { id: github-service, type: sbx_github }` would
+// have den inspect service "github-service", configure service "github", then
+// fail to verify what it had just applied — a resource permanently blocked by
+// a name the author was free to choose. The type fully determines the service:
+// `refuseUnusedFields` rejects `host:` and `environment:` on this type, so the
+// manifest has no field that could name it differently.
+const githubService = "github"
+
 // credentialDriver converges one declared sbx credential.
 type credentialDriver struct {
 	res     source.CredentialResource
@@ -224,7 +236,7 @@ func (d *credentialDriver) resume() string {
 func (d *credentialDriver) Inspect(context.Context) (Observation, error) {
 	switch d.res.Type {
 	case source.CredentialGitHub:
-		return Observation{Present: d.state.Services[d.res.ID], Detail: "configured in sbx"}, nil
+		return Observation{Present: d.state.Services[githubService], Detail: "configured in sbx"}, nil
 	case source.CredentialRegistry:
 		return Observation{Present: d.state.Registries[d.res.Host], Detail: "configured in sbx"}, nil
 	case source.CredentialHTTPSubstitution:
@@ -280,7 +292,7 @@ func (d *credentialDriver) Apply(ctx context.Context, answers Answers, out io.Wr
 	switch d.res.Type {
 	case source.CredentialGitHub:
 		fmt.Fprintf(out, "configuring the sbx github credential (sbx will ask for it)\n")
-		_, err := d.runner.Run(ctx, "secret", "set", "-g", "github")
+		_, err := d.runner.Run(ctx, "secret", "set", "-g", githubService)
 		return err
 
 	case source.CredentialRegistry:

@@ -432,6 +432,10 @@ func (s Service) failed(req Request, applying source.Receipt, applied []Resource
 
 	var resErr *ResourceError
 	if errors.As(cause, &resErr) {
+		// The driver wrote its own message but could not know WHICH command
+		// resumes it — only the mode says that. Corrected here rather than
+		// threaded into every driver.
+		resErr.Resume = s.resumeCommand(req)
 		return cause
 	}
 	return &ResourceError{
@@ -439,9 +443,28 @@ func (s Service) failed(req Request, applying source.Receipt, applied []Resource
 		Observed:  failing.Observed,
 		Expected:  failing.Expected,
 		Remaining: "the resources already applied are recorded; the rest were not attempted",
-		Resume:    fmt.Sprintf("run `den source configure %s`", req.Name),
+		Resume:    s.resumeCommand(req),
 		Cause:     cause,
 	}
+}
+
+// resumeCommand names the command that picks this convergence back up.
+//
+// It depends on the MODE, and getting it wrong costs the user a hop: on a first
+// installation the source is not installed yet — Install runs after the driver
+// loop, and the staging clone is dropped on the way out — so
+// `den source configure` would answer "not installed" and send them back to
+// `den source add`. Spec §12.3 asks for the exact command, not a plausible one.
+func (s Service) resumeCommand(req Request) string {
+	if req.Mode == ModeInit || req.Mode == ModeAdd {
+		url := req.Candidate.URL
+		if url == "" {
+			url = "<url>"
+		}
+		return fmt.Sprintf("run `den source add %s --name %s` again — nothing is installed yet, and "+
+			"the resources that did converge are recorded, so the retry skips them", url, req.Name)
+	}
+	return fmt.Sprintf("run `den source configure %s`", req.Name)
 }
 
 // fastForward moves the installed checkout onto the candidate's commit.

@@ -22,9 +22,16 @@ import (
 // planner, the same applier and the same validation as a human answering
 // prompts. The only difference between them is where the strings come from.
 //
-// A credential is read ONLY when the source declares it and the answers do not
-// already carry it. Nothing is prompted "just in case": den reads a secret
-// because a resource needs it (spec §5.3).
+// A credential is read when the source DECLARES it and the answers do not
+// already carry it — not when a resource turns out to need applying.
+//
+// That is spec §9.2's ordering (answers at step 7, inspection at step 8), and
+// it costs something worth naming: an interactive `den source configure` on a
+// fully converged machine still asks for the token, because den has not looked
+// at the machine yet when it asks. §5.3's "read a value only when a resource
+// needs it" would require planning first and prompting after, which would put
+// a terminal prompt in the middle of the plan the user is about to read. The
+// answer file is what makes that cost disappear for anyone it bothers.
 func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 	answersPath string) (converge.Answers, error) {
 
