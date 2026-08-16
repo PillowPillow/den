@@ -422,9 +422,9 @@ func (s Service) Apply(ctx context.Context, req Request, plan *Plan, out, errOut
 			// doctrine forbids.
 			readBackAbsent := planned
 			readBackAbsent.Observed = o.Detail
-			cause := fmt.Errorf("applied, then read back absent by the verification that follows every apply")
+			cause := errors.New("applied, then read back absent by the verification that follows every apply")
 			if planned.Action == ActionUnchanged {
-				cause = fmt.Errorf("read back absent by verification, though the plan observed it present")
+				cause = errors.New("read back absent by verification, though the plan observed it present")
 			}
 			return nil, s.failed(req, applying, applied, readBackAbsent, cause)
 		}

@@ -143,11 +143,14 @@ func TestAcceptanceFreshHomeConvergesEverythingTheSourceDeclares(t *testing.T) {
 		t.Errorf("mutation order = %v, want every credential, then the policy, then the build", order)
 	}
 
-	// 2. The machine really holds what the source declared. github is
-	// asserted only for the fixture's pre-seeded state, not as evidence of
-	// anything this run did — see the function comment above.
-	if !m.Services["github"] || !m.Registries["registry.example.test:443"] {
-		t.Errorf("credentials = %v / %v", m.Services, m.Registries)
+	// 2. The machine really holds what the source declared. github is NOT
+	// asserted here (M2, final whole-branch review, 2026-08-16): the fixture
+	// seeds it four lines above this test's start, so `m.Services["github"]`
+	// can no longer fail — an always-true clause inside a result assertion
+	// invites the next reader to believe this run configured it, when the
+	// function comment above already says it did not.
+	if !m.Registries["registry.example.test:443"] {
+		t.Errorf("credentials = %v", m.Registries)
 	}
 	// The STORED form, with the port sbx appends to a portless host — that is
 	// what a later inspection compares against (sbx.NormalizeNetworkResource).

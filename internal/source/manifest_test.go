@@ -223,6 +223,38 @@ func TestLoadManifestRefusesDocumentFaults(t *testing.T) {
 	}
 }
 
+// M3 (final whole-branch review, 2026-08-16): TestLoadManifestRefusesDocumentFaults
+// above pins checkEgressHost's boundary from ONE side only — every row there is
+// a refusal. A ported host and a bracketed IPv6 literal are accepted today
+// (verified empirically in review); this pins that they STAY accepted, so the
+// boundary is not left to review reports alone, which is exactly where
+// coverage goes to die.
+func TestLoadManifestAcceptsBoundaryEgressHosts(t *testing.T) {
+	cases := []struct {
+		name string
+		host string
+		yaml string // as written in stack.yaml — the IPv6 form needs quoting, `[` starts a YAML flow sequence otherwise
+	}{
+		{"ported host", "registry.example.test:443", "registry.example.test:443"},
+		{"bracketed IPv6", "[::1]:8080", `"[::1]:8080"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			yaml := strings.Replace(validManifestYAML, "- cdn.example.test\n", "- "+c.yaml+"\n", 1)
+			if yaml == validManifestYAML {
+				t.Fatalf("fixture defect: %q was not found in the valid manifest", "- cdn.example.test\n")
+			}
+			m, err := LoadManifest(writeManifest(t, yaml))
+			if err != nil {
+				t.Fatalf("LoadManifest(%q) = %v, want accepted", c.host, err)
+			}
+			if len(m.Resources.BuildNetwork.Allow) != 2 || m.Resources.BuildNetwork.Allow[0] != c.host {
+				t.Errorf("build_network.allow = %v, want [%q acli.example.test]", m.Resources.BuildNetwork.Allow, c.host)
+			}
+		})
+	}
+}
+
 func TestLoadManifestReportsAnAbsentFile(t *testing.T) {
 	_, err := LoadManifest(t.TempDir())
 	if err == nil {

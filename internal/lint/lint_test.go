@@ -442,7 +442,12 @@ func TestRunAcceptsKeyReposInANest(t *testing.T) {
 // The catalogue, not the directory, is the judge for a manifested source
 // (spec 2026-08-14 §5.2). A stack that exists but is not exported is an
 // implementation detail: a nest may not reference it, and its own faults are
-// not the source's — nothing exported can reach it.
+// not the source's — UNLESS an exported stack's `parent:` ancestry reaches
+// it (Task 7 review fix, 2026-08-16; see RunCatalogue's doc). This test's
+// `helper` stays outside every export's ancestry (nothing here declares a
+// `parent:`), so "nothing exported can reach it" still holds for it — the
+// refinement is exercised by TestRunCatalogueResolvesParentOutsideCatalogue
+// and its siblings below, not by this test.
 func TestRunCatalogueJudgesOnlyExportedObjects(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"stacks/devx/stack.yaml":   validStack,
