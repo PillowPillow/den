@@ -7,6 +7,43 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## Unreleased
+
+### Added
+- `den init --source <url>` installs a team source and configures the machine for it in one
+  command. A source that carries a `den-source.yaml` contract declares what it needs — sbx
+  credentials, the egress its builds pull through, the images to build — and den converges all of
+  it after printing a plan and asking. On a den home that does not exist yet it writes a
+  source-aware `config.yaml`: no `defaults.stack`, no example nest, no local stack, because the
+  source publishes the catalogue. On a home that already exists it changes nothing in
+  `config.yaml`.
+- `den source configure <name>` reconverges an installed declarative source without contacting its
+  remote. It is the command for the two things that happen after an installation: a repository
+  cloned since, and a run interrupted halfway.
+- `den source status [name]` reports what a source needs against what this machine has —
+  `ready`, `partially_ready`, `blocked`, `unknown` — and exits non-zero on the last two only. A
+  missing working repository is not a failure: den never clones one.
+- `--answers <file>` supplies the same answers a terminal would, so onboarding runs in CI: the
+  directories to look for working repositories in, the environment variable NAME holding each
+  credential, and an explicit repo mapping. A literal credential value in that file is refused.
+  `--yes` applies the printed plan without asking.
+- `den doctor` reports every declarative source, and fails when one is `blocked` or `unknown`. A
+  machine den could not observe is never reported as healthy.
+
+### Changed
+- `den source update <name>` converges a declarative source to the version its manifest
+  **publishes**: a greater version gets a plan and a confirmation, the same version on a new commit
+  is reported and applied to nothing, a lower version is refused with the checkout untouched. A
+  source without `den-source.yaml` keeps the fast-forward it has always had, unchanged — as does
+  `den source add` for such a source, and `den init` with no `--source`.
+- `defaults.stack` is no longer required in `config.yaml`. A source-aware home declares none, and
+  every nest it resolves brings its own. A nest with neither now names both files that could fix
+  it, in `den spawn` and in `den doctor` alike, instead of reporting `stack "" not found`.
+- `den rm` on a sandbox with no creation record resolves its repo keys through the source's own
+  mapping when the sandbox came from a declarative source, and names that file when a key is
+  unmapped. It used to look in `config.yaml`, where such a source has no keys — the worktree was
+  left on disk with a remedy that would not have worked.
+
 ## v1.6.0 — 2026-08-11
 
 ### Added

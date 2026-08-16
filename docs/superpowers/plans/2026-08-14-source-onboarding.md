@@ -1089,19 +1089,19 @@ git commit -m "feat(doctor): report manifested source readiness"
 - Consumes: public Cobra commands through `cli.NewRootCmdWith` and all fake adapters.
 - Produces: one tracer-bullet acceptance test for fresh/existing init, configure, status, update, and resume.
 
-- [ ] **Step 1: Add the fresh-home acceptance test**
+- [x] **Step 1: Add the fresh-home acceptance test**
 
 Build a temporary source remote with manifest, stack, nests, and provision files. Create temporary present repos with normalized remotes. Invoke the real root command with an answer file and `--yes`. Assert sbx command order, build order, installed source, no example nest/stack, source-scoped mappings, final receipt, redacted output, and `ready` status.
 
-- [ ] **Step 2: Add partial and existing-home acceptance cases**
+- [x] **Step 2: Add partial and existing-home acceptance cases**
 
 Omit one required repo and one optional repo. Assert installation succeeds as `partially_ready` and names only the required one. Start from a non-default global config and assert it remains byte-identical. Add the missing repo, run configure, and assert transition to `ready` without remote access.
 
-- [ ] **Step 3: Add update/resume acceptance cases**
+- [x] **Step 3: Add update/resume acceptance cases**
 
 Publish `1.1.0`, reject confirmation once, then accept and inject a mid-apply failure. Assert exact version remains `1.0.0`, source consumers refuse, configure resumes, and the final receipt/config converge on `1.1.0`.
 
-- [ ] **Step 4: Add the opt-in real-source acceptance entry point**
+- [x] **Step 4: Add the opt-in real-source acceptance entry point**
 
 ```go
 func TestDigitaleoManifestAcceptance(t *testing.T) {
@@ -1118,11 +1118,11 @@ func TestDigitaleoManifestAcceptance(t *testing.T) {
 
 `runSourceAcceptance` copies the supplied source into a temporary Git remote and uses only fake sbx adapters plus temporary repositories. It never reads or mutates the real den home.
 
-- [ ] **Step 5: Document generic behavior**
+- [x] **Step 5: Document generic behavior**
 
 Update README with `den init --source`, `--answers`, `--yes`, manifest/answer examples using snake_case, status meanings, exact update behavior, trust boundary, legacy compatibility, and manual global-to-source mapping migration. State that MCP values and repo cloning remain outside the flow.
 
-- [ ] **Step 6: Run all Den verification**
+- [x] **Step 6: Run all Den verification**
 
 Run: `go test ./...`
 
@@ -1132,18 +1132,46 @@ Run: `go test -race ./...`
 
 Expected: all commands PASS.
 
-- [ ] **Step 7: Build the exact binary used by cross-repository checks**
+- [x] **Step 7: Build the exact binary used by cross-repository checks**
 
 Run: `go build -ldflags '-X github.com/PillowPillow/den/internal/cli.Version=1.7.0' -o /tmp/den-source-onboarding ./cmd/den`
 
 Expected: `/tmp/den-source-onboarding version` prints `den 1.7.0` and exits 0.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add internal/converge/acceptance_test.go README.md CHANGELOG.md
 git commit -m "test(init): lock source onboarding flow"
 ```
+
+> Divergence settled in Task 13 — the acceptance test is `internal/cli/acceptance_test.go`, not
+> `internal/converge/acceptance_test.go`. Step 1 says "invoke the real root command", which is
+> `cli.NewRootCmdWith`; `internal/cli` imports `internal/converge`, so that test cannot live in
+> converge without an import cycle, and a `converge_test` package would lose every fixture it needs.
+>
+> That forced the decision Task 10 deferred: the mutable sbx double is now a PRODUCTION type,
+> `sbx.Machine` (`internal/sbx/machine.go`), beside `Fake` and for the same reason CLAUDE.md gives
+> for `Fake` — converge and cli both need it, and a double per package drifts from the real contract.
+> It carries a mutex (Fake has one because `policy.Settle` probes concurrently) and, like Fake,
+> records sensitive argv already redacted. `internal/converge/service_test.go` now uses it.
+>
+> The binary is built into the session scratchpad, not `/tmp/den-source-onboarding`: the environment
+> mandates the scratchpad for temporary files. Its purpose is unchanged and was verified — with
+> `-X .../internal/cli.Version=1.7.0`, a manifest declaring `requires.den: ">=1.7.0"` converges with
+> no refusal and no unknown-version warning. That real binary also ran the whole flow end to end
+> against a real filesystem and real git (`init --source`, `source status`, `doctor`): `all good`.
+>
+> One behavior fixed while running it: `collectInitialAnswers` demanded repository roots even when
+> an answer FILE was supplied without them, which made a source whose nests need no repository
+> impossible to install without a terminal. An answer file IS the answer — an absent
+> `repository_roots:` there now means "none", not "ask me".
+>
+> Step 4's `runSourceAcceptance` derives its expectations from the manifest instead of taking a
+> hard-coded `SourceExpectations`: the test travels with den, the source it converges does not, and
+> a nest count written here would be wrong the first time the team publishes one. It is
+> `TestRealSourceAcceptance`, gated on `DIGITALEO_DEN_ENV`, and copies the checkout into a temporary
+> remote so the real repository comes out byte-identical.
 
 ### Task 14: Publish the Digitaleo declarative source
 

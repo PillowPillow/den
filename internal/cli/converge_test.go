@@ -22,6 +22,8 @@ kind: source
 metadata:
   name: dg
   version: 1.0.0
+requires:
+  den: ">=1.7.0"
 exports:
   nests:
     - { name: api, path: nests/api.yaml }
@@ -33,14 +35,26 @@ inputs:
       prompt: "Registry token"
 resources:
   credentials:
+    - { id: github, type: sbx_github, scope: global }
     - id: registry
       type: sbx_registry
       scope: global
       host: registry.example.test:443
       value_from: { credential: registry_token }
+  build_network:
+    allow:
+      - registry.example.test
+  builds:
+    - stack: base
 `
 
-const fixtureRepoURL = "https://git.example.test/team/api.git"
+const (
+	fixtureRepoURL = "https://git.example.test/team/api.git"
+	// The OPTIONAL repository: a nest stays ready without it, which is what
+	// separates "this machine is missing something" from "this machine cannot
+	// run this nest".
+	fixtureOptionalURL = "https://git.example.test/team/front.git"
+)
 
 // makeManifestedSourceRepo builds a source repo carrying den-source.yaml and
 // returns its file:// URL. Real git on a temporary directory, like every other
@@ -59,8 +73,12 @@ func makeManifestedSourceRepo(t *testing.T) string {
 		}
 	}
 	write("den-source.yaml", fixtureManifest)
-	write("stacks/base/stack.yaml", "image: base:v1\nbase: claude\n")
-	write("nests/api.yaml", "stack: base\nrepos:\n  - { key: api, url: "+fixtureRepoURL+" }\n")
+	write("stacks/base/stack.yaml",
+		"image: base:v1\nbase: claude\nprovision:\n  steps: [provision/base.sh]\n")
+	write("stacks/base/provision/base.sh", "#!/bin/sh\ntrue\n")
+	write("nests/api.yaml", "stack: base\nrepos:\n"+
+		"  - { key: api, url: "+fixtureRepoURL+" }\n"+
+		"  - { key: front, url: "+fixtureOptionalURL+", optional: true }\n")
 	gitCmd(t, dir, "init", "-b", "main")
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "init")
@@ -72,43 +90,45 @@ func makeManifestedSourceRepo(t *testing.T) string {
 // kind den acts on without a human.
 func makeWorkRepo(t *testing.T, parent, name string) string {
 	t.Helper()
+	return makeWorkRepoFor(t, parent, name, fixtureRepoURL)
+}
+
+func makeWorkRepoFor(t *testing.T, parent, name, remote string) string {
+	t.Helper()
 	dir := filepath.Join(parent, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	gitCmd(t, dir, "init", "-b", "main")
-	gitCmd(t, dir, "remote", "add", "origin", fixtureRepoURL)
+	gitCmd(t, dir, "remote", "add", "origin", remote)
 	return dir
 }
 
 // convergedSbx is a machine on which everything the fixture declares is
-// ALREADY configured.
+// ALREADY configured: both credentials, the build egress, and the image.
 //
-// Deliberately static: what these tests lock is the CLI wiring — which files
-// are written, which plan is printed, what a refused confirmation leaves
-// behind. The apply/verify loop against a machine that CHANGES is locked by
-// internal/converge/service_test.go, on a mutable double; duplicating it here
-// would test the engine twice and the wiring once.
-func convergedSbx() *sbx.Fake {
-	return &sbx.Fake{
-		Responses: map[string]sbx.Response{
-			"secret ls -g": {Output: []byte(
-				"SCOPE   TYPE      NAME                       SECRET\n" +
-					"global  registry  registry.example.test:443  (stored)\n")},
-			"policy ls --type network --source local --decision allow --json": {
-				Output: []byte(`{"rules":[]}`)},
-		},
-	}
+// The tests around it lock the CLI WIRING — which files are written, which plan
+// is printed, what a refused confirmation leaves behind — so starting from a
+// converged machine keeps them about that. acceptance_test.go starts from an
+// empty sbx.NewMachine() instead, which is where the mutations themselves are
+// observed.
+func convergedSbx() *sbx.Machine {
+	m := sbx.NewMachine()
+	m.Services["github"] = true
+	m.Registries["registry.example.test:443"] = true
+	m.Allowed["registry.example.test"] = true
+	m.Images["base:v1"] = true
+	return m
 }
 
 // convergeDeps wires the injected world of a convergence run: real git (file://
 // remotes only), the fake machine, an environment holding the answer file's
 // credential, and a pinned den version. IsTTY stays nil — these runs are
 // non-interactive, which is what `--answers` plus `--yes` is for.
-func convergeDeps(f *sbx.Fake) Deps {
+func convergeDeps(runner sbx.Runner) Deps {
 	return Deps{
 		Git: worktree.NewGit(),
-		Sbx: f,
+		Sbx: runner,
 		Getenv: func(k string) string {
 			if k == "DEN_TEST_REGISTRY_TOKEN" {
 				return "sentinel-token"
@@ -590,8 +610,7 @@ func TestSourceStatusExitsNonZeroOnlyWhenDenCannotUseTheSource(t *testing.T) {
 		installFixture(t, d, home, work)
 		// The machine stops answering — the shape the prototype observed when
 		// Keychain access was denied.
-		f.Responses = map[string]sbx.Response{}
-		f.Default = sbx.Response{Err: errors.New("keychain access denied")}
+		f.Fail["secret ls -g"] = errors.New("keychain access denied")
 
 		out, err := runCLI(t, d, "source", "status", "dg", "--den-home", home)
 		if err == nil {

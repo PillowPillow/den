@@ -40,7 +40,12 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 	}
 
 	missing := converge.MissingCredentials(m, a)
-	needsRoots := len(a.RepositoryRoots) == 0
+	// An answer FILE is the answer. A `repository_roots:` it does not carry
+	// means "none" — not "ask me": prompting past a file the user wrote would
+	// make `--answers` mean "some of the answers", and would leave a source
+	// whose nests declare no repository at all impossible to install without a
+	// terminal, over roots den would never look in.
+	needsRoots := len(a.RepositoryRoots) == 0 && answersPath == ""
 
 	// Nothing left to ask: a fully-answered non-interactive run never touches
 	// the terminal, so `den init --source ... --answers f --yes` works with no

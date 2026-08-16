@@ -3,14 +3,10 @@ package converge
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"io/fs"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,147 +35,6 @@ func sourceRemote(t *testing.T, tree string) string {
 	return tree
 }
 
-// machine is a MUTABLE sbx double: it answers the inspection commands from an
-// internal state that its own mutating commands change.
-//
-// A static double would make every Verify fail — den configures a credential
-// and then re-reads the machine to PROVE it, which is the property the applier
-// exists to have. Simulating the state is therefore not test convenience: it is
-// the only way to exercise the apply → verify loop at all.
-type machine struct {
-	calls      [][]string
-	services   map[string]bool
-	registries map[string]bool
-	customs    map[string]bool
-	allowed    map[string]bool
-	images     map[string]bool
-	// fail maps a joined argv to the error that command must return.
-	fail map[string]error
-}
-
-func newMachine() *machine {
-	return &machine{
-		services: map[string]bool{}, registries: map[string]bool{}, customs: map[string]bool{},
-		allowed: map[string]bool{}, images: map[string]bool{}, fail: map[string]error{},
-	}
-}
-
-func (m *machine) record(args []string) { m.calls = append(m.calls, slices.Clone(args)) }
-
-func (m *machine) Run(_ context.Context, args ...string) ([]byte, error) {
-	m.record(args)
-	joined := strings.Join(args, " ")
-	if err := m.fail[joined]; err != nil {
-		return nil, err
-	}
-	switch {
-	case joined == "version":
-		return []byte("sbx version: v0.38.0 abc\n"), nil
-	case joined == "secret ls -g":
-		return []byte(m.renderSecrets()), nil
-	case strings.HasPrefix(joined, "policy ls"):
-		return []byte(m.renderPolicies()), nil
-	case joined == "template ls --json":
-		return []byte(m.renderImages()), nil
-	case joined == "ls --json":
-		return []byte(`{"sandboxes":[]}`), nil
-	case joined == "secret set -g github":
-		m.services["github"] = true
-		return nil, nil
-	case len(args) == 4 && args[0] == "policy" && args[1] == "allow" && args[2] == "network":
-		m.allowed[args[3]] = true
-		return nil, nil
-	case len(args) == 4 && args[0] == "template" && args[1] == "save":
-		m.images[args[3]] = true
-		return nil, nil
-	}
-	return nil, nil
-}
-
-func (m *machine) RunInput(_ context.Context, _ []byte, args ...string) ([]byte, error) {
-	m.record(args)
-	if err := m.fail[strings.Join(args, " ")]; err != nil {
-		return nil, err
-	}
-	// secret set -g --registry <host> --password-stdin
-	if len(args) >= 5 && args[3] == "--registry" {
-		m.registries[args[4]] = true
-	}
-	return nil, nil
-}
-
-func (m *machine) RunSensitive(_ context.Context, redacted []int, args ...string) ([]byte, error) {
-	safe := sbx.RedactArgs(args, redacted)
-	m.record(safe)
-	if err := m.fail[strings.Join(safe, " ")]; err != nil {
-		return nil, err
-	}
-	// secret set-custom -g --host <host> --env <env> --value <secret>
-	var host, env string
-	for i, a := range args {
-		switch a {
-		case "--host":
-			host = args[i+1]
-		case "--env":
-			env = args[i+1]
-		}
-	}
-	m.customs[customKey(host, env)] = true
-	return nil, nil
-}
-
-func (m *machine) Stream(_ context.Context, _ io.Writer, args ...string) error {
-	m.record(args)
-	return m.fail[strings.Join(args, " ")]
-}
-
-func (m *machine) Attach(_ context.Context, args ...string) error {
-	m.record(args)
-	return nil
-}
-
-func (m *machine) Pipe(_ context.Context, args ...string) error {
-	m.record(args)
-	return nil
-}
-
-func (m *machine) renderSecrets() string {
-	var b strings.Builder
-	b.WriteString("SCOPE      TYPE       NAME       SECRET\n")
-	for _, name := range slices.Sorted(maps.Keys(m.services)) {
-		fmt.Fprintf(&b, "(global)   service    %s   (stored)\n", name)
-	}
-	for _, host := range slices.Sorted(maps.Keys(m.registries)) {
-		fmt.Fprintf(&b, "(global)   registry   %s   token-***\n", host)
-	}
-	if len(m.customs) > 0 {
-		b.WriteString("\nCUSTOM SECRETS\nSCOPE      TARGETS   ENV   PLACEHOLDER   SECRET\n")
-		for _, key := range slices.Sorted(maps.Keys(m.customs)) {
-			targets, env, _ := strings.Cut(key, "\x00")
-			fmt.Fprintf(&b, "(global)   %s   %s   sbx-cs-x   token-***\n", targets, env)
-		}
-	}
-	return b.String()
-}
-
-func (m *machine) renderPolicies() string {
-	hosts := slices.Sorted(maps.Keys(m.allowed))
-	quoted := make([]string, 0, len(hosts))
-	for _, h := range hosts {
-		quoted = append(quoted, `"`+h+`"`)
-	}
-	return `{"rules":[{"resources":[` + strings.Join(quoted, ",") + `]}]}`
-}
-
-func (m *machine) renderImages() string {
-	var entries []string
-	for _, image := range slices.Sorted(maps.Keys(m.images)) {
-		repo, tag, _ := strings.Cut(image, ":")
-		entries = append(entries, `{"repository":"docker.io/library/`+repo+`","tag":"`+tag+`"}`)
-	}
-	return `{"images":[` + strings.Join(entries, ",") + `]}`
-}
-
 // serviceFixture prepares a den home, a source remote whose nests need one
 // repository, and that repository present on the machine.
 func serviceFixture(t *testing.T) (denHome, remote, repo string) {
@@ -206,7 +61,7 @@ func planFor(t *testing.T, s Service, req Request) *Plan {
 	return p
 }
 
-func requestFor(t *testing.T, denHome, remote, root string, f *machine) (Service, Request, func()) {
+func requestFor(t *testing.T, denHome, remote, root string, f *sbx.Machine) (Service, Request, func()) {
 	t.Helper()
 	s := Service{Git: worktree.NewGit(), Sbx: f, Secrets: f, Now: testClock}
 	c, err := source.AcquireCandidate(context.Background(), s.Git, denHome, remote)
@@ -248,7 +103,7 @@ func snapshot(t *testing.T, dir string) []string {
 // already changed the machine would make the confirmation a formality.
 func TestPlanMutatesNothing(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
-	f := newMachine()
+	f := sbx.NewMachine()
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	defer cleanup()
 
@@ -267,7 +122,7 @@ func TestPlanMutatesNothing(t *testing.T) {
 	if _, err := os.Stat(source.ReceiptPath(denHome, "dg")); err == nil {
 		t.Error("planning wrote a receipt")
 	}
-	for _, call := range f.calls {
+	for _, call := range f.Calls {
 		switch call[0] {
 		case "secret", "policy":
 			if len(call) > 1 && call[1] != "ls" {
@@ -305,8 +160,8 @@ func TestPlanMutatesNothing(t *testing.T) {
 // an installation whose scope they cannot see.
 func TestPlanReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
-	f := newMachine()
-	f.fail["secret ls -g"] = errors.New("keychain error -50")
+	f := sbx.NewMachine()
+	f.Fail["secret ls -g"] = errors.New("keychain error -50")
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	defer cleanup()
 
@@ -330,7 +185,7 @@ func TestPlanReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {
 // The application order of spec §9.2, and the final commit marker last.
 func TestApplyOrdersMutationsAndCommitsLast(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
-	f := newMachine()
+	f := sbx.NewMachine()
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	defer cleanup()
 	req.FreshGlobalConfig = []byte("agents: {}\n")
@@ -344,7 +199,7 @@ func TestApplyOrdersMutationsAndCommitsLast(t *testing.T) {
 
 	// Credentials, then the policy, then the build.
 	order := []string{}
-	for _, c := range f.calls {
+	for _, c := range f.Calls {
 		switch {
 		case c[0] == "secret" && c[1] != "ls":
 			order = append(order, "secret")
@@ -413,8 +268,8 @@ func TestApplyOrdersMutationsAndCommitsLast(t *testing.T) {
 // is what makes `den source configure` a resume rather than a restart.
 func TestApplyLeavesAResumableStateOnFailure(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
-	f := newMachine()
-	f.fail["policy allow network api.example.test"] = errors.New("sbx refused")
+	f := sbx.NewMachine()
+	f.Fail["policy allow network api.example.test"] = errors.New("sbx refused")
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	defer cleanup()
 
@@ -447,8 +302,8 @@ func TestApplyLeavesAResumableStateOnFailure(t *testing.T) {
 // resources it does not reapply.
 func TestConfigureResumesWithoutReapplyingVerifiedResources(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
-	f := newMachine()
-	f.fail["policy allow network api.example.test"] = errors.New("sbx refused")
+	f := sbx.NewMachine()
+	f.Fail["policy allow network api.example.test"] = errors.New("sbx refused")
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	defer cleanup()
 
@@ -460,9 +315,9 @@ func TestConfigureResumesWithoutReapplyingVerifiedResources(t *testing.T) {
 
 	// The credentials applied by the failed run are really on the machine
 	// (the double recorded them), and the policy command now works.
-	delete(f.fail, "policy allow network api.example.test")
+	delete(f.Fail, "policy allow network api.example.test")
 
-	before := len(f.calls)
+	before := len(f.Calls)
 	second := planFor(t, s, req)
 	for _, r := range second.Resources {
 		if r.Kind == KindCredential && r.Action != ActionUnchanged {
@@ -472,7 +327,7 @@ func TestConfigureResumesWithoutReapplyingVerifiedResources(t *testing.T) {
 	if _, err := s.Apply(context.Background(), req, second, &out, &out); err != nil {
 		t.Fatalf("the resume must complete: %v", err)
 	}
-	for _, c := range f.calls[before:] {
+	for _, c := range f.Calls[before:] {
 		if c[0] == "secret" && c[1] != "ls" {
 			t.Errorf("a verified credential was reapplied: %v", c)
 		}
@@ -491,7 +346,7 @@ func TestConfigureResumesWithoutReapplyingVerifiedResources(t *testing.T) {
 // clones (spec §7.2).
 func TestApplySucceedsPartiallyWhenARepositoryIsMissing(t *testing.T) {
 	denHome, remote, _ := serviceFixture(t)
-	f := newMachine()
+	f := sbx.NewMachine()
 	s, req, cleanup := requestFor(t, denHome, remote, t.TempDir(), f) // an empty root
 	defer cleanup()
 
@@ -527,7 +382,7 @@ func TestApplyNeverRewritesAnExistingGlobalConfig(t *testing.T) {
 	existing := "agents:\n  claude:\n    update: \"claude update\"\n# a comment the user wrote\n"
 	writeFile(t, filepath.Join(denHome, "config.yaml"), existing)
 
-	f := newMachine()
+	f := sbx.NewMachine()
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	defer cleanup()
 	req.FreshGlobalConfig = []byte("agents: {}\n")
@@ -557,7 +412,7 @@ func TestApplyPreservesHandWrittenRepoPaths(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	f := newMachine()
+	f := sbx.NewMachine()
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	defer cleanup()
 
@@ -612,7 +467,7 @@ func publishVersion(t *testing.T, remote, version, extraHost string) {
 // the new catalogue with the old infrastructure.
 func TestUpdateActivatesTheNewVersionOnlyAfterEveryResourceVerifies(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
-	f := newMachine()
+	f := sbx.NewMachine()
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
 		&strings.Builder{}, &strings.Builder{}); err != nil {
@@ -623,7 +478,7 @@ func TestUpdateActivatesTheNewVersionOnlyAfterEveryResourceVerifies(t *testing.T
 	before := gitOutput(t, installed, "rev-parse", "HEAD")
 
 	publishVersion(t, remote, "2.0.0", "new.example.test")
-	f.fail["policy allow network new.example.test"] = errors.New("sbx refused")
+	f.Fail["policy allow network new.example.test"] = errors.New("sbx refused")
 
 	c, err := source.FetchCandidate(context.Background(), s.Git, denHome, "dg")
 	if err != nil {
@@ -671,7 +526,7 @@ func TestUpdateActivatesTheNewVersionOnlyAfterEveryResourceVerifies(t *testing.T
 
 	// And `den source configure` finishes it, from the INSTALLED checkout — no
 	// fetch, no reapplication of what already verified.
-	delete(f.fail, "policy allow network new.example.test")
+	delete(f.Fail, "policy allow network new.example.test")
 	resume, err := source.InstalledCandidate(context.Background(), s.Git, denHome, "dg")
 	if err != nil {
 		t.Fatal(err)
@@ -707,7 +562,7 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 // test deletes it before asking, so any fetch would fail the call.
 func TestStatusObservesWithoutContactingTheRemote(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
-	f := newMachine()
+	f := sbx.NewMachine()
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
 		&strings.Builder{}, &strings.Builder{}); err != nil {
@@ -718,7 +573,7 @@ func TestStatusObservesWithoutContactingTheRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	before := len(f.calls)
+	before := len(f.Calls)
 	status, err := s.Status(context.Background(), denHome, "dg")
 	if err != nil {
 		t.Fatalf("Status: %v", err)
@@ -734,7 +589,7 @@ func TestStatusObservesWithoutContactingTheRemote(t *testing.T) {
 			t.Errorf("resource %s = %q: a converged machine has nothing to do", r.ID, r.Action)
 		}
 	}
-	for _, c := range f.calls[before:] {
+	for _, c := range f.Calls[before:] {
 		if len(c) > 1 && c[1] != "ls" {
 			t.Errorf("status ran a mutating sbx command: %v", c)
 		}
@@ -745,7 +600,7 @@ func TestStatusObservesWithoutContactingTheRemote(t *testing.T) {
 // status carries the same sentence RequireUsable refuses spawns with.
 func TestStatusReportsADivergenceAsBlocked(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
-	f := newMachine()
+	f := sbx.NewMachine()
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
 		&strings.Builder{}, &strings.Builder{}); err != nil {
@@ -774,14 +629,14 @@ func TestStatusReportsADivergenceAsBlocked(t *testing.T) {
 // the two have different remedies and a user acts on the word (spec §12.2).
 func TestStatusReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
-	f := newMachine()
+	f := sbx.NewMachine()
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
 		&strings.Builder{}, &strings.Builder{}); err != nil {
 		t.Fatalf("installing: %v", err)
 	}
 	cleanup()
-	f.fail["secret ls -g"] = errors.New("keychain access denied")
+	f.Fail["secret ls -g"] = errors.New("keychain access denied")
 
 	status, err := s.Status(context.Background(), denHome, "dg")
 	if err != nil {
