@@ -35,8 +35,13 @@ type Candidate struct {
 	// candidate (the installed checkout): Close must never delete the user's
 	// source.
 	temp string
-	// installed is set once the candidate has been moved into place, so Install
-	// cannot run twice and Root stops pointing inside temp.
+	// installed is set once the candidate has been moved into place, guarding
+	// against a SECOND Install renaming an already-installed source out from
+	// under its name: Install's own os.Stat(dest) refusal already catches a
+	// repeat call under the SAME name, but a repeat call under a DIFFERENT
+	// name would find dest free and happily os.Rename what is now a live
+	// source (c.Root already points at it) into a second location — this
+	// field is what refuses that instead.
 	installed bool
 	// cleanup runs BEFORE temp is removed, for a candidate that is more than a
 	// directory: a fetched update is a registered git worktree, and its
@@ -157,6 +162,11 @@ func InstalledCandidate(ctx context.Context, git worktree.Git, denHome, name str
 // can ever observe a half-populated source directory. The staging area is
 // chosen to make that possible (see stagingDir).
 func (c *Candidate) Install(denHome, name string) error {
+	if c.installed {
+		return fmt.Errorf(
+			"candidate already installed at %s: Install runs once per candidate — acquire a fresh "+
+				"one to install again", c.Root)
+	}
 	if err := config.ValidateSourceName(name); err != nil {
 		return err
 	}

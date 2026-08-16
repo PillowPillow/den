@@ -141,6 +141,30 @@ func TestResolveNamespace(t *testing.T) {
 	}
 }
 
+// A second Install is the dangerous repeat: os.Stat(dest) alone only catches
+// a repeat under the SAME name (dest already exists). Under a DIFFERENT name
+// dest is free, and without the installed guard Install would os.Rename the
+// now-live first installation into a second location — this proves the guard
+// refuses that instead of doing it.
+func TestCandidateInstallRefusesASecondCallUnderAnotherName(t *testing.T) {
+	denHome := t.TempDir()
+	c := &Candidate{Root: t.TempDir()}
+	if err := c.Install(denHome, "first"); err != nil {
+		t.Fatalf("first Install: %v", err)
+	}
+	if err := c.Install(denHome, "second"); err == nil {
+		t.Fatal("a second Install must be refused")
+	} else if !strings.Contains(err.Error(), "already installed") {
+		t.Errorf("error = %q, expected it to name the guard", err.Error())
+	}
+	if _, err := os.Stat(Dir(denHome, "first")); err != nil {
+		t.Errorf("the first installation must still be at its name: %v", err)
+	}
+	if _, err := os.Stat(Dir(denHome, "second")); !os.IsNotExist(err) {
+		t.Errorf("a refused Install must not have created %s", Dir(denHome, "second"))
+	}
+}
+
 // The digest is over the FILE, so two manifests that decode identically but
 // differ in text are told apart — that is what a maintainer compares.
 func TestManifestDigestCoversTheBytes(t *testing.T) {
