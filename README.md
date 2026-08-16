@@ -766,15 +766,22 @@ fetched in over 7 days, den prints a **hint**, never a refusal:
 hint: source "corp" was last fetched more than 7 days ago — den source update corp
 ```
 
+### Authoring a source
+
+The sections above are the installer's side. The publisher's side — the repo layout a source must
+have, what a shared nest may declare, the full `den-source.yaml` field reference, and when to bump
+`metadata.version` — is [`docs/source-authoring.md`](docs/source-authoring.md).
+
 ### `den lint <path>`
 
 The same validation `source add`/`source update` run: strict YAML, `parent:` resolvable and
 acyclic, declared paths (`kit`, `kits`, `provision.includes`/`steps`) existing and confined to the
 checkout, bare (never prefixed) internal references, a nest with no `stack:`, and a nest whose
-`repos:` carries an **absolute** `path:` (`/Users/alice/dev/x`, or a `~/` that expands to one) —
-that names a directory only the authoring machine has. Declare `key:` instead and let each
-teammate map it. A *relative* `path:` is not currently refused, though it is no more shareable:
-treat `key:` as the only form that travels. It reports every finding at once, not one per push.
+`repos:` carries **any** `path:`. An absolute one (`/Users/alice/dev/x`, or a `~/` that expands to
+one) names a directory only the authoring machine has; a relative one resolves against whatever
+directory each teammate launched den from, and a work repo lives outside the checkout anyway — so
+neither travels, and both are refused. Declare `key:` instead and let each teammate map it. It
+reports every finding at once, not one per push.
 A stack's illegal name, missing `image:`, or a repo entry with both (or neither) `path:` and
 `key:` are refused too — those surface as the load error on the offending file, which can end the
 report early on that one file rather than join the itemized list above. Point it at a checkout to
