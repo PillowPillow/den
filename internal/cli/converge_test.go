@@ -413,3 +413,128 @@ func TestSourceAddPrintsTheManualRepoMigration(t *testing.T) {
 		t.Errorf("den modified the global configuration:\n%s", got)
 	}
 }
+
+// publishFixture republishes the fixture source at a new version. The URL is a
+// file:// remote, so its directory is the path it names.
+func publishFixture(t *testing.T, url, version string) {
+	t.Helper()
+	dir := strings.TrimPrefix(url, "file://")
+	body := strings.Replace(fixtureManifest, "version: 1.0.0", "version: "+version, 1)
+	if err := os.WriteFile(filepath.Join(dir, "den-source.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "publish "+version)
+}
+
+// installFixture installs the manifested fixture at 1.0.0 and returns its
+// remote URL, so an update test starts from a converged machine.
+func installFixture(t *testing.T, d Deps, home, work string) string {
+	t.Helper()
+	url := makeManifestedSourceRepo(t)
+	out, err := runCLI(t, d, "source", "add", url,
+		"--answers", writeAnswerFile(t, work), "--yes", "--den-home", home)
+	if err != nil {
+		t.Fatalf("source add: %v\n%s", err, out)
+	}
+	return url
+}
+
+// A greater version is a full convergence: plan, confirmation, then the
+// checkout and the active version move together.
+func TestSourceUpdateConvergesAGreaterVersion(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	url := installFixture(t, d, home, work)
+
+	publishFixture(t, url, "2.0.0")
+	out, err := runCLI(t, d, "source", "update", "dg",
+		"--answers", writeAnswerFile(t, work), "--yes", "--den-home", home)
+	if err != nil {
+		t.Fatalf("source update: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "2.0.0") {
+		t.Errorf("the plan does not name the version being converged:\n%s", out)
+	}
+	personal := readFile(t, filepath.Join(home, "source-config", "dg.yaml"))
+	if !strings.Contains(personal, "version: 2.0.0") {
+		t.Errorf("the machine is not configured for the new version:\n%s", personal)
+	}
+	receipt := readFile(t, filepath.Join(home, "state", "sources", "dg.yaml"))
+	if !strings.Contains(receipt, "status: ready") || !strings.Contains(receipt, "version: 2.0.0") {
+		t.Errorf("receipt = %s", receipt)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(home, "sources", "dg", "den-source.yaml")), "2.0.0") {
+		t.Error("the installed checkout was not fast-forwarded")
+	}
+}
+
+// The same version is not an update, whatever the commit says — and den says
+// which of the two situations it found.
+func TestSourceUpdateReportsUnchangedThenDrift(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	url := installFixture(t, d, home, work)
+	head := func() string {
+		return readFile(t, filepath.Join(home, "sources", "dg", "den-source.yaml"))
+	}
+	before := head()
+
+	out, err := runCLI(t, d, "source", "update", "dg", "--den-home", home)
+	if err != nil {
+		t.Fatalf("source update: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "1.0.0") || !strings.Contains(out, "unchanged") {
+		t.Errorf("an up-to-date source is not reported unchanged:\n%s", out)
+	}
+
+	// The team pushes content without bumping the version.
+	dir := strings.TrimPrefix(url, "file://")
+	if err := os.WriteFile(filepath.Join(dir, "stacks", "base", "stack.yaml"),
+		[]byte("image: base:v2\nbase: claude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "content without a version")
+
+	out, err = runCLI(t, d, "source", "update", "dg", "--den-home", home)
+	if err != nil {
+		t.Fatalf("a drift is a warning, not a failure: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "1.0.0") {
+		t.Errorf("the drift warning does not name the version:\n%s", out)
+	}
+	if head() != before {
+		t.Error("den moved the checkout for a version that did not change")
+	}
+}
+
+// den converges forward. A published version below the configured one is a
+// refusal, and the checkout stays where it is.
+func TestSourceUpdateRefusesADowngrade(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	url := installFixture(t, d, home, work)
+	before := readFile(t, filepath.Join(home, "source-config", "dg.yaml"))
+
+	publishFixture(t, url, "0.9.0")
+	_, err := runCLI(t, d, "source", "update", "dg", "--yes", "--den-home", home)
+	if err == nil {
+		t.Fatal("expected a refusal: 0.9.0 is older than the configured 1.0.0")
+	}
+	if !strings.Contains(err.Error(), "older") {
+		t.Errorf("the refusal does not say what is wrong: %v", err)
+	}
+	if got := readFile(t, filepath.Join(home, "source-config", "dg.yaml")); got != before {
+		t.Errorf("a refused update changed the personal configuration:\n%s", got)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(home, "sources", "dg", "den-source.yaml")), "1.0.0") {
+		t.Error("a refused update moved the checkout")
+	}
+}

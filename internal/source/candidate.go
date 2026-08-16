@@ -38,6 +38,11 @@ type Candidate struct {
 	// installed is set once the candidate has been moved into place, so Install
 	// cannot run twice and Root stops pointing inside temp.
 	installed bool
+	// cleanup runs BEFORE temp is removed, for a candidate that is more than a
+	// directory: a fetched update is a registered git worktree, and its
+	// registration must be dropped while its directory still exists (see
+	// detachWorktree).
+	cleanup func() error
 }
 
 // Close removes the staging directory. It is safe to call on a borrowed
@@ -52,6 +57,16 @@ type Candidate struct {
 func (c *Candidate) Close() error {
 	if c == nil || c.temp == "" {
 		return nil
+	}
+	if c.cleanup != nil {
+		// Once: Close is routinely called explicitly AND deferred, and a second
+		// `worktree remove` on an already-removed probe fails for a reason that
+		// has nothing to do with this call.
+		cleanup := c.cleanup
+		c.cleanup = nil
+		if err := cleanup(); err != nil {
+			return err
+		}
 	}
 	return os.RemoveAll(c.temp)
 }

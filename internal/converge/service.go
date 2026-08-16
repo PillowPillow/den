@@ -286,6 +286,21 @@ func (s Service) Apply(ctx context.Context, req Request, plan *Plan, out, errOut
 		return nil, err
 	}
 
+	// An UPDATE moves the installed checkout BEFORE its resources are applied,
+	// and that order is deliberate: the builds of the new version run its
+	// provision scripts, and a machine converged for a version whose content is
+	// not on disk would be unreproducible.
+	//
+	// Which leaves, between here and the personal configuration written at the
+	// end, the one window where the checkout is ahead of what converged. That
+	// window is exactly what the `applying` receipt above marks and what
+	// RequireUsable refuses on — never a state a spawn can walk into.
+	if req.Mode == ModeUpdate {
+		if err := s.fastForward(ctx, req); err != nil {
+			return nil, err
+		}
+	}
+
 	state, err := ReadSbxState(ctx, s.Sbx)
 	if err != nil {
 		return nil, err
@@ -356,6 +371,26 @@ func (s Service) failed(req Request, applying source.Receipt, applied []Resource
 		Resume:    fmt.Sprintf("run `den source configure %s`", req.Name),
 		Cause:     cause,
 	}
+}
+
+// fastForward moves the installed checkout onto the candidate's commit.
+//
+// Onto the COMMIT the plan was computed from, never onto "@{u}": the
+// remote-tracking ref may have moved between the fetch and the confirmation,
+// and den must apply the plan a human read, not whatever the remote says now.
+//
+// `--ff-only`, so a rewritten history is a refusal instead of a merge commit
+// den would then have to explain — same contract as the legacy
+// `den source update` (internal/source/mutate.go).
+func (s Service) fastForward(ctx context.Context, req Request) error {
+	dir := source.Dir(req.DenHome, req.Name)
+	if _, err := s.Git.Run(ctx, dir, "merge", "--ff-only", req.Candidate.Commit); err != nil {
+		return fmt.Errorf(
+			"source %q: cannot fast-forward %s onto the confirmed commit %s — the team repo "+
+				"rewrote its history since the fetch; nothing of version %s was applied (%w)",
+			req.Name, dir, req.Candidate.Commit, req.Candidate.Manifest.Metadata.Version, err)
+	}
+	return nil
 }
 
 // writePersonal MERGES the confirmed mappings into the existing personal

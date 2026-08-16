@@ -1,16 +1,13 @@
 package cli
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/converge"
 	"github.com/PillowPillow/den/internal/source"
-	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -56,6 +53,7 @@ func newSourceCmd(denHome *string, d Deps) *cobra.Command {
 	configureFlags.bind(configure, false, false)
 	cmd.AddCommand(configure)
 
+	var updateFlags convergenceFlags
 	update := &cobra.Command{
 		Use:   "update [name]",
 		Short: "Fetch and fast-forward one source, or every installed source when no name is given",
@@ -65,17 +63,13 @@ func newSourceCmd(denHome *string, d Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := cmd.OutOrStdout()
 			if len(args) == 1 {
-				if err := source.Update(cmd.Context(), git, home, args[0]); err != nil {
-					return err
-				}
-				fmt.Fprintf(out, "source %q updated\n", args[0])
-				return nil
+				return updateSource(cmd, d, home, args[0], updateFlags)
 			}
-			return updateAllSources(cmd.Context(), git, home, out)
+			return updateAllSources(cmd, d, home, updateFlags)
 		},
 	}
+	updateFlags.bind(update, false, false)
 	cmd.AddCommand(update)
 
 	ls := &cobra.Command{
@@ -212,6 +206,76 @@ func configureSource(cmd *cobra.Command, d Deps, home, name string, flags conver
 	return runConvergence(cmd, d, converge.ModeConfigure, home, name, c, flags, nil)
 }
 
+// updateSource dispatches `den source update <name>` on the same verdict
+// `den source add` uses: whether the INSTALLED source carries a contract.
+//
+// A legacy source keeps the fast-forward it has always had. A manifested one
+// gets the version policy of spec §11.2 — den updates to an exactly named
+// version, after a plan and a confirmation, never because a branch moved.
+func updateSource(cmd *cobra.Command, d Deps, home, name string, flags convergenceFlags) error {
+	out := cmd.OutOrStdout()
+	if !source.HasManifest(source.Dir(home, name)) {
+		// Not installed lands here too, deliberately: source.Update owns that
+		// refusal and its wording, and duplicating the check would give the user
+		// two different messages for one situation.
+		if err := source.Update(cmd.Context(), d.Git, home, name); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "source %q updated\n", name)
+		return nil
+	}
+
+	c, err := source.FetchCandidate(cmd.Context(), d.Git, home, name)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	if err := requireManifest(c, name, fmt.Sprintf(
+		"the fetched update dropped it, so den cannot tell what to converge — the team must "+
+			"restore %s, or `den source rm %s` and reinstall it as a legacy source",
+		source.ManifestFile, name)); err != nil {
+		return err
+	}
+	// The same judge as add and the legacy update: an invalid update leaves the
+	// installed checkout exactly where it was.
+	if errs := source.Lint(c.Root); len(errs) > 0 {
+		return fmt.Errorf("%w\nthe local clone stays on its last valid state — nothing changed",
+			source.LintRefusal(name, "the fetched update", errs))
+	}
+
+	configured := ""
+	if personal, err := source.LoadPersonal(home, name); err == nil {
+		configured = personal.Version
+	}
+	head, err := d.Git.Run(cmd.Context(), source.Dir(home, name), "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	action, err := source.DecideUpdate(name, configured, c.Manifest.Metadata.Version,
+		strings.TrimSpace(string(head)) == c.Commit)
+	if err != nil {
+		return err
+	}
+	switch action {
+	case source.UpdateUnchanged:
+		fmt.Fprintf(out, "source %q is unchanged: version %s, on the commit this machine converged\n",
+			name, configured)
+		return nil
+	case source.UpdateDrift:
+		// A warning, not a refusal: nothing is wrong with the machine. What den
+		// refuses is to move it, because the contract did not change — see
+		// source.DecideUpdate.
+		fmt.Fprintf(out,
+			"source %q: the team published new content on version %s without changing the version.\n"+
+				"den converges an exact version, so nothing was applied and the checkout is "+
+				"untouched — including any provision script the new commits changed. Ask the team "+
+				"to publish a greater `metadata.version`.\n", name, configured)
+		return nil
+	}
+	return runConvergence(cmd, d, converge.ModeUpdate, home, name, c, flags, nil)
+}
+
 // updateAllSources drives a bare `den source update`: every installed
 // source, in source.Names's order (sorted — os.ReadDir's own order).
 // source.Names, not source.List, on purpose: List lints every source and
@@ -224,7 +288,12 @@ func configureSource(cmd *cobra.Command, d Deps, home, name string, flags conver
 // source.Update's bare `git fetch` error carries no name at all
 // (mutate.go), so leaving that out would make a fetch failure in a
 // multi-source update impossible to attribute.
-func updateAllSources(ctx context.Context, git worktree.Git, home string, out io.Writer) error {
+//
+// Each source is dispatched INDEPENDENTLY through updateSource, so a
+// manifested one gets its own plan and its own confirmation in this loop: two
+// sources are two contracts, and a single "yes" must never cover both.
+func updateAllSources(cmd *cobra.Command, d Deps, home string, flags convergenceFlags) error {
+	out := cmd.OutOrStdout()
 	names, err := source.Names(home)
 	if err != nil {
 		return err
@@ -235,11 +304,10 @@ func updateAllSources(ctx context.Context, git worktree.Git, home string, out io
 	}
 	var failures []string
 	for _, name := range names {
-		if err := source.Update(ctx, git, home, name); err != nil {
+		if err := updateSource(cmd, d, home, name, flags); err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
-		fmt.Fprintf(out, "source %q updated\n", name)
 	}
 	if len(failures) > 0 {
 		return fmt.Errorf("%d source(s) failed to update:\n  - %s",

@@ -929,7 +929,7 @@ git commit -m "feat(init): wire source onboarding commands"
 - Consumes: existing dirty/unpushed guards, fetched candidate, SemVer comparison, convergence plan/apply, and receipt resume state.
 - Produces: manifested `den source update <name>` with exact-version semantics; legacy `source.Update` remains unchanged.
 
-- [ ] **Step 1: Write equal, greater, downgrade, dirty, and unpushed tests**
+- [x] **Step 1: Write equal, greater, downgrade, dirty, and unpushed tests**
 
 Use temporary remotes with successive commits and manifests. Assert:
 
@@ -940,11 +940,11 @@ Use temporary remotes with successive commits and manifests. Assert:
 - dirty or locally unique commits refuse before fetch/application;
 - `source update` without a name continues to aggregate per-source failures; it dispatches legacy sources to the old fast-forward path and manifested sources to independent plan/confirmation cycles in sorted source-name order.
 
-- [ ] **Step 2: Write partial-update resume tests**
+- [x] **Step 2: Write partial-update resume tests**
 
 Fail the second policy after the first credential verifies. Assert checkout may point at the target while `Personal.Version` stays previous, receipt is `applying`, source consumers refuse, and `source configure dg` completes without fetching or reapplying the verified credential.
 
-- [ ] **Step 3: Split legacy fast-forward from manifested candidate fetch**
+- [x] **Step 3: Split legacy fast-forward from manifested candidate fetch**
 
 Keep `source.Update` as the legacy implementation. Add a fetched detached worktree API that returns candidate root, commit, manifest, and cleanup function without moving the installed checkout:
 
@@ -960,11 +960,11 @@ func (c *Candidate) Close() error
 
 Use the checked-out branch's `@{u}` and preserve current dirty/upstream/ahead safety messages.
 
-- [ ] **Step 4: Apply the candidate only after confirmation**
+- [x] **Step 4: Apply the candidate only after confirmation**
 
 Compare `Candidate.Manifest.Metadata.Version` against `Personal.Version`. Build the full plan from candidate content. After confirmation, move checkout to candidate commit through a fast-forward, apply/verify, then finalize personal config and receipt. Do not fetch from configure/status/spawn/build.
 
-- [ ] **Step 5: Run source/convergence/CLI tests and commit**
+- [x] **Step 5: Run source/convergence/CLI tests and commit**
 
 Run: `go test ./internal/source ./internal/converge ./internal/cli -run 'Update|Resume|Divergence'`
 
@@ -972,6 +972,35 @@ Run: `go test ./internal/source ./internal/converge ./internal/cli -run 'Update|
 git add internal/source internal/converge/service.go internal/converge/service_test.go internal/cli/source.go internal/cli/source_test.go
 git commit -m "feat(source): update exact source versions explicitly"
 ```
+
+> Divergence settled in Task 11 — the fetched-candidate API and the version policy live in a NEW
+> file, `internal/source/update.go`, not in `candidate.go`/`mutate.go` as the file list says. Two
+> reasons: `mutate.go` is the LEGACY path and had to stay untouched (its guards are reused, not
+> edited), and the version policy is a pure function (`DecideUpdate`) whose whole value is being
+> readable and exhaustively testable on its own. `Candidate` gained one field — a `cleanup` hook —
+> because a fetched update is a registered git worktree, and `worktree remove` must run while its
+> directory still exists (`mutate.go` documents that ordering at length).
+>
+> Ordering, made explicit because the plan's Step 1 wording ("refuses before checkout mutation") and
+> its Step 3 wording ("dirty or unpushed refuse before fetch") are two different guarantees:
+> - dirty / no upstream / unpushed commits refuse BEFORE the fetch. That order is the safety
+>   property — a refusal reached after a fetch has orphaned local commits leaves the user with a
+>   remedy (`den source rm`) that destroys the work the refusal was protecting.
+> - a DOWNGRADE refuses after the fetch, before any checkout mutation. It cannot be earlier: the
+>   candidate's version is in the fetched content. The fetch is not neutral (it moves
+>   remote-tracking refs and resets the staleness clock a spawn reads), so the refusal says the
+>   checkout is untouched rather than claiming nothing happened.
+>
+> `Service.Apply` fast-forwards to `req.Candidate.Commit`, never to `@{u}`: the remote-tracking ref
+> may have moved between the fetch and the confirmation, and den applies the plan a human read.
+>
+> `UpdateDrift` (same version, new commit) leaves everything untouched, and the message says so
+> including the provision scripts the new commits may have changed — the remedy is a version bump by
+> the team, not a den flag.
+>
+> `den source update` with no name now dispatches through `updateSource` per source, so a manifested
+> source in that loop gets its own plan and its own confirmation: two sources are two contracts, and
+> one `--yes` must not cover both. The aggregation of per-source failures is unchanged.
 
 ### Task 12: Add source status and doctor integration
 

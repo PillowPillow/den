@@ -577,3 +577,127 @@ func TestApplyPreservesHandWrittenRepoPaths(t *testing.T) {
 		t.Errorf("repos = %#v, expected the discovered mapping added", personal.Repos)
 	}
 }
+
+// publishVersion rewrites the remote's manifest at a new version, adding one
+// host to the egress the source's builds need — so an update really has a
+// resource to converge, the way a real version bump does.
+func publishVersion(t *testing.T, remote, version, extraHost string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(remote, source.ManifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(raw), "version: 1.0.0", "version: "+version, 1)
+	updated = strings.Replace(updated, "      - cdn.example.test",
+		"      - cdn.example.test\n      - "+extraHost, 1)
+	writeFile(t, filepath.Join(remote, source.ManifestFile), updated)
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"-c", "user.email=t@example.test", "-c", "user.name=t", "commit", "-q", "-m", "publish " + version},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = remote
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// An update moves the checkout to the CONFIRMED commit before applying, and
+// makes the new version active only once every resource verifies.
+//
+// The two halves of that sentence are the whole safety property of spec §11.3:
+// between them, the machine holds a checkout at the new version whose resources
+// are half applied — and RequireUsable must refuse there, or a spawn would mix
+// the new catalogue with the old infrastructure.
+func TestUpdateActivatesTheNewVersionOnlyAfterEveryResourceVerifies(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := newMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
+		&strings.Builder{}, &strings.Builder{}); err != nil {
+		t.Fatalf("installing 1.0.0: %v", err)
+	}
+	cleanup()
+	installed := source.Dir(denHome, "dg")
+	before := gitOutput(t, installed, "rev-parse", "HEAD")
+
+	publishVersion(t, remote, "2.0.0", "new.example.test")
+	f.fail["policy allow network new.example.test"] = errors.New("sbx refused")
+
+	c, err := source.FetchCandidate(context.Background(), s.Git, denHome, "dg")
+	if err != nil {
+		t.Fatalf("FetchCandidate: %v", err)
+	}
+	defer c.Close()
+	update := req
+	update.Mode = ModeUpdate
+	update.Candidate = c
+
+	plan := planFor(t, s, update)
+	if plan.Version != "2.0.0" {
+		t.Fatalf("the plan is not computed from the fetched content: %+v", plan)
+	}
+	var out strings.Builder
+	if _, err := s.Apply(context.Background(), update, plan, &out, &out); err == nil {
+		t.Fatal("expected the failing policy to stop the update")
+	}
+
+	// The checkout IS at the new version — the builds of 2.0.0 run from it.
+	if got := gitOutput(t, installed, "rev-parse", "HEAD"); got == before {
+		t.Errorf("the checkout was never fast-forwarded (still %s)", before)
+	}
+	if got := gitOutput(t, installed, "rev-parse", "HEAD"); got != c.Commit {
+		t.Errorf("HEAD = %s, want the confirmed commit %s", got, c.Commit)
+	}
+	// But the ACTIVE version is still the one whose resources are applied.
+	personal, err := source.LoadPersonal(denHome, "dg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personal.Version != "1.0.0" {
+		t.Errorf("personal version = %q, want the previous one until the new one converges", personal.Version)
+	}
+	receipt, err := source.LoadReceipt(denHome, "dg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != source.StatusApplying || receipt.TargetVersion != "2.0.0" {
+		t.Errorf("receipt = %+v, want an applying marker naming 2.0.0", receipt)
+	}
+	if _, err := source.RequireUsable(denHome, "dg"); err == nil {
+		t.Error("a half-converged source must not be usable")
+	}
+
+	// And `den source configure` finishes it, from the INSTALLED checkout — no
+	// fetch, no reapplication of what already verified.
+	delete(f.fail, "policy allow network new.example.test")
+	resume, err := source.InstalledCandidate(context.Background(), s.Git, denHome, "dg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resume.Close()
+	finish := update
+	finish.Mode, finish.Candidate = ModeConfigure, resume
+	if _, err := s.Apply(context.Background(), finish, planFor(t, s, finish), &out, &out); err != nil {
+		t.Fatalf("the resume must complete: %v", err)
+	}
+	if personal, err = source.LoadPersonal(denHome, "dg"); err != nil || personal.Version != "2.0.0" {
+		t.Errorf("personal = %+v (%v), want the new version active after the resume", personal, err)
+	}
+	if _, err := source.RequireUsable(denHome, "dg"); err != nil {
+		t.Errorf("the converged source is not usable: %v", err)
+	}
+}
+
+// gitOutput runs git for ASSERTIONS only.
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
