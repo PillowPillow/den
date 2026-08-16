@@ -89,13 +89,25 @@ func mutationOrder(m *sbx.Machine) []string {
 
 // The whole flow on a fresh machine: one command, no terminal, and a den home
 // plus an sbx configured for the source.
+//
+// github is the ONE exception to "nothing configured": since Task 5
+// (internal/cli/answers.go), den refuses BEFORE applying anything when a
+// declared sbx_github credential is genuinely absent and there is no
+// terminal — it takes no `value_from` at all (manifest.go's own refusal), so
+// sbx always collects it interactively, through the Attach Task 4 wired, and
+// a command with no terminal could never complete it here either. This
+// test's subject is the OTHER machinery a fresh laptop still needs — mutation
+// order, the source-aware home, the personal mapping, the receipt, nest
+// usability — so it starts from a machine on which a human already ran
+// `sbx secret set -g github` once, the way a real provisioned laptop would.
 func TestAcceptanceFreshHomeConvergesEverythingTheSourceDeclares(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "den")
 	work := t.TempDir()
 	makeWorkRepo(t, work, "api")
 	makeWorkRepoFor(t, work, "front", fixtureOptionalURL)
 	url := makeManifestedSourceRepo(t)
-	m := sbx.NewMachine() // nothing configured: a laptop on its first day
+	m := sbx.NewMachine() // nothing configured, except github — see the comment above
+	m.Services["github"] = true
 
 	out, err := runCLI(t, convergeDeps(m), "init", "--source", url,
 		"--answers", writeAnswerFile(t, work), "--yes", "--den-home", home)
@@ -104,7 +116,10 @@ func TestAcceptanceFreshHomeConvergesEverythingTheSourceDeclares(t *testing.T) {
 	}
 
 	// 1. The order of the mutations is the safety property: a build pulls
-	// through the registry credential and needs the egress.
+	// through the registry credential and needs the egress. github is
+	// pre-configured (see the function comment above), so the only credential
+	// mutation this run makes is the registry one — still enough to prove the
+	// ordering.
 	order := mutationOrder(m)
 	lastCredential, firstPolicy, firstBuild := -1, -1, -1
 	for i, kind := range order {
@@ -128,7 +143,9 @@ func TestAcceptanceFreshHomeConvergesEverythingTheSourceDeclares(t *testing.T) {
 		t.Errorf("mutation order = %v, want every credential, then the policy, then the build", order)
 	}
 
-	// 2. The machine really holds what the source declared.
+	// 2. The machine really holds what the source declared. github is
+	// asserted only for the fixture's pre-seeded state, not as evidence of
+	// anything this run did — see the function comment above.
 	if !m.Services["github"] || !m.Registries["registry.example.test:443"] {
 		t.Errorf("credentials = %v / %v", m.Services, m.Registries)
 	}
@@ -181,6 +198,10 @@ func TestAcceptancePartialInstallNamesOnlyTheRequiredRepository(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "den")
 	work := t.TempDir() // neither repository is here
 	m := sbx.NewMachine()
+	// github pre-configured: see TestAcceptanceFreshHomeConvergesEverythingTheSourceDeclares's
+	// comment — this run has no terminal either, and the repository readiness
+	// under test here has nothing to do with that credential.
+	m.Services["github"] = true
 
 	out, err := runCLI(t, convergeDeps(m), "init", "--source", makeManifestedSourceRepo(t),
 		"--answers", writeAnswerFile(t, work), "--yes", "--den-home", home)
@@ -211,6 +232,11 @@ func TestAcceptanceExistingHomeSurvivesAndConfigureCompletesIt(t *testing.T) {
 	work := t.TempDir()
 	url := makeManifestedSourceRepo(t)
 	m := sbx.NewMachine()
+	// github pre-configured: see TestAcceptanceFreshHomeConvergesEverythingTheSourceDeclares's
+	// comment — the initial `init --source` below has no terminal either, and
+	// what this test proves (an existing home surviving, configure completing
+	// it later) has nothing to do with that credential.
+	m.Services["github"] = true
 
 	// A den home the user already had, with settings of their own.
 	if err := os.MkdirAll(home, 0o755); err != nil {
@@ -262,6 +288,11 @@ func TestAcceptanceUpdateRefusedThenInterruptedThenResumed(t *testing.T) {
 	// consumer refuse below is the interrupted convergence itself.
 	makeWorkRepoFor(t, work, "front", fixtureOptionalURL)
 	m := sbx.NewMachine()
+	// github pre-configured: see TestAcceptanceFreshHomeConvergesEverythingTheSourceDeclares's
+	// comment — the initial `init --source` below has no terminal either, and
+	// the update/interrupt/resume sequence under test here has nothing to do
+	// with that credential.
+	m.Services["github"] = true
 	d := convergeDeps(m)
 
 	url := makeManifestedSourceRepo(t)

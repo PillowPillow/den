@@ -235,18 +235,37 @@ func (d *credentialDriver) resume() string {
 
 func (d *credentialDriver) Inspect(context.Context) (Observation, error) {
 	switch d.res.Type {
-	case source.CredentialGitHub:
-		return Observation{Present: d.state.Services[githubService], Detail: "configured in sbx"}, nil
-	case source.CredentialRegistry:
-		return Observation{Present: d.state.Registries[d.res.Host], Detail: "configured in sbx"}, nil
-	case source.CredentialHTTPSubstitution:
-		return Observation{
-			Present: d.state.Customs[customKey(d.res.Host, d.res.Environment)],
-			Detail:  "configured in sbx",
-		}, nil
+	case source.CredentialGitHub, source.CredentialRegistry, source.CredentialHTTPSubstitution:
+		return Observation{Present: CredentialPresent(d.res, d.state), Detail: "configured in sbx"}, nil
 	}
 	// Unreachable through LoadManifest, which refuses an unsupported type.
 	return Observation{}, fmt.Errorf("credential %q: unsupported type %q", d.res.ID, d.res.Type)
+}
+
+// CredentialPresent asks a single question — per the resource's own TYPE —
+// against one observation of the machine. Exported so a caller that must
+// judge "is this genuinely absent" BEFORE Service.Plan runs (den's
+// non-interactive resume, internal/cli/answers.go) asks it the identical way
+// Inspect does above, rather than re-encoding the per-type dispatch a second
+// time. Two implementations of "is it there" is exactly the defect class
+// this plan repairs — see 1c9aca8/d4ece41 on this branch for the network-rule
+// version of the same lesson.
+//
+// state is a completed ReadSbxState observation, never nil: a caller that
+// could not observe the machine has no question to ask here at all, and must
+// treat every credential as absent itself — the nil guard other call sites
+// already carry (see stillMissingCredentials) — rather than pass a nil state
+// in and rely on this function to decide it for them.
+func CredentialPresent(res source.CredentialResource, state *SbxState) bool {
+	switch res.Type {
+	case source.CredentialGitHub:
+		return state.Services[githubService]
+	case source.CredentialRegistry:
+		return state.Registries[res.Host]
+	case source.CredentialHTTPSubstitution:
+		return state.Customs[customKey(res.Host, res.Environment)]
+	}
+	return false
 }
 
 func (d *credentialDriver) Plan(o Observation) ResourcePlan {

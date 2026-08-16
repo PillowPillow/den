@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/PillowPillow/den/internal/converge"
+	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/source"
 )
 
@@ -24,11 +26,44 @@ func answersManifest() *source.Manifest {
 	}
 }
 
+// credentialManifest declares actual RESOURCES on top of answersManifest's
+// shape: a github credential (no input — sbx collects it interactively) and a
+// registry credential fed by the "registry_token" input. It is what exercises
+// stillMissingCredentials' machine-aware filtering, which answersManifest
+// cannot: an input with no resource behind it has nothing for den to inspect.
+func credentialManifest() *source.Manifest {
+	return &source.Manifest{
+		SchemaVersion: source.ManifestSchema,
+		Kind:          "source",
+		Metadata:      source.Metadata{Name: "dg", Version: "1.0.0"},
+		Inputs: source.Inputs{Credentials: map[string]source.CredentialInput{
+			"registry_token": {Prompt: "Registry token"},
+		}},
+		Resources: source.Resources{Credentials: []source.CredentialResource{
+			{ID: "github", Type: source.CredentialGitHub, Scope: source.ScopeGlobal},
+			{
+				ID: "registry", Type: source.CredentialRegistry, Scope: source.ScopeGlobal,
+				Host:      "registry.example.test:443",
+				ValueFrom: source.ValueFrom{Credential: "registry_token"},
+			},
+		}},
+	}
+}
+
 // answersCmd is a bare command carrying the streams collectInitialAnswers
 // reads and writes: the function under test takes its input from the cobra
 // command, never from the process.
+//
+// SetContext, so cmd.Context() answers context.Background() the way a command
+// dispatched through cobra's own Execute always does (Command.Context's own
+// doc: nil "Otherwise" — only before Execute or SetContext ran). Load-bearing
+// since stillMissingCredentials threads this context into converge.ReadSbxState;
+// a real Runner given a nil one would panic building its exec.Cmd, and even the
+// Machine double, which ignores it, should not be handed one no production
+// call path would ever produce.
 func answersCmd(stdin string) (*cobra.Command, *bytes.Buffer) {
 	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 	cmd.SetIn(strings.NewReader(stdin))
@@ -54,7 +89,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 			}
 			return ""
 		},
-	}, answersManifest(), path)
+	}, answersManifest(), path, false)
 	if err != nil {
 		t.Fatalf("answer-file collection: %v", err)
 	}
@@ -67,7 +102,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 			prompted = append(prompted, prompt)
 			return "sentinel-secret", nil
 		},
-	}, answersManifest(), "")
+	}, answersManifest(), "", false)
 	if err != nil {
 		t.Fatalf("interactive collection: %v", err)
 	}
@@ -94,7 +129,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 // flags, because a CI needs `--answers` AND `--yes` to get through.
 func TestCollectInitialAnswersRefusesWithoutATerminal(t *testing.T) {
 	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), "")
+	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), "", false)
 	if err == nil {
 		t.Fatal("expected a refusal with no terminal and no answer file")
 	}
@@ -117,12 +152,168 @@ func TestCollectInitialAnswersNeedsNoTerminalWhenTheFileIsComplete(t *testing.T)
 	cmd, _ := answersCmd("")
 	a, err := collectInitialAnswers(cmd, Deps{
 		Getenv: func(string) string { return "sentinel-secret" },
-	}, answersManifest(), path)
+	}, answersManifest(), path, false)
 	if err != nil {
 		t.Fatalf("collectInitialAnswers: %v", err)
 	}
 	if a.Credentials["gitlab_token"].Value != "sentinel-secret" {
 		t.Errorf("credentials = %v", a.Credentials)
+	}
+}
+
+// A registry credential genuinely absent from the machine still refuses
+// without a terminal, and the refusal names the exact answer-file key that
+// would supply it — the narrower half of Task 5's contract: fewer refusals,
+// never a weaker one. `--yes` is set: this run intends to apply, which is
+// exactly when a credential an answer file COULD have supplied must still
+// block it.
+func TestCollectInitialAnswersRefusesAGenuinelyAbsentRegistryCredential(t *testing.T) {
+	m := sbx.NewMachine()
+	m.Services["github"] = true // present: must not be named in this refusal
+
+	cmd, _ := answersCmd("")
+	_, err := collectInitialAnswers(cmd, Deps{Sbx: m}, credentialManifest(), "", true)
+	if err == nil {
+		t.Fatal("expected a refusal: the registry credential is absent and there is no terminal")
+	}
+	for _, want := range []string{"registry_token", "from_env"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected a mention of %q", err.Error(), want)
+		}
+	}
+	if strings.Contains(err.Error(), "github") {
+		t.Errorf("error = %q: github is already configured and must not be named", err.Error())
+	}
+}
+
+// A github credential genuinely absent from the machine refuses too, but with
+// a DIFFERENT remedy: it takes no `value_from` (manifest.go's own refusal),
+// so sbx always collects it interactively, and the message must say a
+// terminal is required rather than point at an answer-file key that could
+// never have worked. `--yes` is set — see
+// TestCollectInitialAnswersDoesNotRefuseOverAnAbsentGithubCredentialOnAPlanOnlyRun
+// for why that matters here: without it, this run would never try to APPLY
+// anything, and den has nothing to refuse yet.
+func TestCollectInitialAnswersRefusesAnAbsentGithubCredentialNamingTheTerminal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "answers.yaml")
+	if err := os.WriteFile(path,
+		[]byte("credentials:\n  registry_token:\n    from_env: TEST_REGISTRY_TOKEN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := sbx.NewMachine()
+	m.Registries["registry.example.test:443"] = true // present: must not be named below
+
+	cmd, _ := answersCmd("")
+	_, err := collectInitialAnswers(cmd, Deps{
+		Sbx:    m,
+		Getenv: func(k string) string { return map[string]string{"TEST_REGISTRY_TOKEN": "tok"}[k] },
+	}, credentialManifest(), path, true)
+	if err == nil {
+		t.Fatal("expected a refusal: github is absent and there is no terminal to configure it on")
+	}
+	if !strings.Contains(err.Error(), "terminal") {
+		t.Errorf("error = %q, expected it to say a terminal is required", err.Error())
+	}
+	if strings.Contains(err.Error(), "registry_token") {
+		t.Errorf("error = %q: the registry credential was answered and must not be named", err.Error())
+	}
+	if strings.Contains(err.Error(), "credentials.github") {
+		t.Errorf("error = %q: github takes no answer-file key (manifest.go refuses value_from for it)",
+			err.Error())
+	}
+}
+
+// Without `--yes`, this run will not apply anything even once confirmed —
+// confirm() only ever returns true here on `yes`, since there is no terminal
+// to type "y" on — so an absent github credential is not yet a reason to
+// refuse: Service.Plan's own doctrine is that the plan still lists everything
+// the source declares, and this run must reach it. Caught in review of this
+// very task: the first draft of the no-terminal refusal did not gate on
+// `yes` and turned a `den init --source --answers <file>` PLAN into a
+// refusal, on a machine with no github credential yet.
+func TestCollectInitialAnswersDoesNotRefuseOverAnAbsentGithubCredentialOnAPlanOnlyRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "answers.yaml")
+	root := t.TempDir()
+	if err := os.WriteFile(path, []byte("repository_roots: ["+root+"]\n"+
+		"credentials:\n  registry_token:\n    from_env: TEST_REGISTRY_TOKEN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := sbx.NewMachine() // github absent
+
+	cmd, _ := answersCmd("")
+	_, err := collectInitialAnswers(cmd, Deps{
+		Sbx:    m,
+		Getenv: func(k string) string { return map[string]string{"TEST_REGISTRY_TOKEN": "tok"}[k] },
+	}, credentialManifest(), path, false)
+	if err != nil {
+		t.Fatalf("a plan-only run must not refuse over a credential it will not try to configure: %v", err)
+	}
+}
+
+// TestSourceConfigureResumesWhenTheMachineAlreadyHoldsTheCredentials is Task
+// 5's central scenario: `den source configure --yes` must clear an `applying`
+// receipt left by an interrupted run when every credential the manifest
+// declares is already configured in sbx — without an answer file
+// re-supplying a secret sbx already holds (spec §11.3).
+//
+// The applying receipt is written directly rather than produced by a real
+// failure: Apply installs the checkout only after every resource of a FIRST
+// install verifies (service.go's own Apply ordering comment), so a resource
+// failure during `source add` never leaves an INSTALLED checkout for
+// `source configure` to resume — the interruption this test needs can only
+// follow a successful install (or an interrupted UPDATE, already covered by
+// TestAcceptanceUpdateRefusedThenInterruptedThenResumed). Both converge on
+// the same state a real interruption leaves: an installed checkout whose
+// receipt still reads `status: applying`.
+func TestSourceConfigureResumesWhenTheMachineAlreadyHoldsTheCredentials(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	makeWorkRepoFor(t, work, "front", fixtureOptionalURL)
+	url := makeManifestedSourceRepo(t)
+	m := sbx.NewMachine()
+	// github pre-configured: after Task 4, sbx collects it only through a real
+	// terminal (Attach), and after THIS task den refuses before applying
+	// anything when it is genuinely absent and there is none — the initial
+	// `source add` below has no terminal either, so a machine starting without
+	// it could never get past its own bootstrap. This test's subject is the
+	// RESUME, not the first-time github bootstrap (which needs a human once,
+	// interactively) — so it starts from a machine on which that already
+	// happened, the way a real provisioned machine would.
+	m.Services["github"] = true
+	d := convergeDeps(m)
+
+	if out, err := runCLI(t, d, "source", "add", url,
+		"--answers", writeAnswerFile(t, work), "--yes", "--den-home", home); err != nil {
+		t.Fatalf("source add: %v\n%s", err, out)
+	}
+	if !m.Registries["registry.example.test:443"] {
+		t.Fatalf("the fixture install did not configure the registry credential: %v", m.Registries)
+	}
+
+	// An interruption, simulated directly (see the comment above): the
+	// checkout is installed and every resource is really converged, but the
+	// receipt says a run is still applying.
+	if err := source.WriteReceipt(home, "dg",
+		source.Receipt{Status: source.StatusApplying, TargetVersion: "1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The resume: no terminal (convergeDeps sets no IsTTY), and an answer file
+	// carrying NO `credentials:` block at all — the escape this task removes
+	// is having to re-supply a secret sbx already holds.
+	noCreds := filepath.Join(t.TempDir(), "answers.yaml")
+	if err := os.WriteFile(noCreds, []byte("repository_roots: ["+work+"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI(t, d, "source", "configure", "dg",
+		"--answers", noCreds, "--yes", "--den-home", home)
+	if err != nil {
+		t.Fatalf("the resume must proceed without a terminal: %v\n%s", err, out)
+	}
+	receipt := readFile(t, filepath.Join(home, "state", "sources", "dg.yaml"))
+	if !strings.Contains(receipt, "status: ready") {
+		t.Errorf("the resume did not clear the applying receipt:\n%s", receipt)
 	}
 }
 
@@ -136,7 +327,7 @@ func TestDepsGetenvIsHermeticByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), path)
+	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), path, false)
 	if err == nil || !strings.Contains(err.Error(), "GLPAT") {
 		t.Fatalf("error = %v, expected the unset-variable refusal", err)
 	}
@@ -154,7 +345,7 @@ func TestCollectInitialAnswersRefusesAnUndeclaredCredential(t *testing.T) {
 	cmd, _ := answersCmd("")
 	_, err := collectInitialAnswers(cmd, Deps{
 		Getenv: func(string) string { return "sentinel-secret" },
-	}, answersManifest(), path)
+	}, answersManifest(), path, false)
 	if err == nil || !strings.Contains(err.Error(), "ghost_token") {
 		t.Fatalf("error = %v, expected the undeclared credential to be named", err)
 	}

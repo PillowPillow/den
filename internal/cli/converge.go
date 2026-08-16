@@ -84,7 +84,7 @@ func runConvergence(cmd *cobra.Command, d Deps, mode converge.Mode, home, name s
 		FreshGlobalConfig: fresh,
 	}
 
-	answers, err := collectInitialAnswers(cmd, d, c.Manifest, f.Answers)
+	answers, err := collectInitialAnswers(cmd, d, c.Manifest, f.Answers, f.Yes)
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -32,8 +34,26 @@ import (
 // needs it" would require planning first and prompting after, which would put
 // a terminal prompt in the middle of the plan the user is about to read. The
 // answer file is what makes that cost disappear for anyone it bothers.
+//
+// The ONE exception is the no-terminal REFUSAL below: there, den has nobody
+// left to ask, so before giving up it checks the machine — the answers alone
+// are not enough to tell "missing" from "already configured", and a resumed
+// `den source configure --yes` (spec §11.3) must not refuse over a credential
+// sbx already holds. That check costs an `sbx secret ls -g`/`policy ls`, paid
+// only on the branch that would otherwise refuse.
+//
+// yes is `--yes`, threaded in ONLY for that same refusal, and only for the
+// half of it a plan-only run does not need: a run without `--yes` never
+// applies anything even when confirmed (confirm() itself refuses without a
+// terminal and without `--yes`), so a credential no answer can ever supply
+// (sbx_github) is not this run's problem yet — Service.Plan's own doctrine is
+// that the plan still lists everything the source declares, and a refusal
+// here would leave a plan-only run with nothing to print. A credential an
+// ANSWER could have supplied stays refused regardless of yes, exactly as
+// before this parameter existed (TestCollectInitialAnswersRefusesWithoutATerminal
+// passes no `--yes` at all and still expects the refusal).
 func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
-	answersPath string) (converge.Answers, error) {
+	answersPath string, yes bool) (converge.Answers, error) {
 
 	var a converge.Answers
 	if answersPath != "" {
@@ -54,17 +74,35 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 	// terminal, over roots den would never look in.
 	needsRoots := len(a.RepositoryRoots) == 0 && answersPath == ""
 
-	// Nothing left to ask: a fully-answered non-interactive run never touches
-	// the terminal, so `den init --source ... --answers f --yes` works with no
-	// tty at all — a cron job, a CI step, a provisioning script.
-	if len(missing) == 0 && !needsRoots {
+	// Nothing left to ask FROM AN ANSWER, and there is a terminal standing by
+	// for the one credential no answer can ever supply (sbx_github: manifest.go
+	// refuses `value_from` for it, so sbx always collects it interactively,
+	// through the Attach Apply hands to). An interactive run pays no machine
+	// check for this — it never touches the terminal PAST this point unless a
+	// prompt below actually needs it — so this fast path costs nothing new.
+	if len(missing) == 0 && !needsRoots && d.IsTTY != nil && d.IsTTY() {
 		return a, nil
 	}
+
 	if d.IsTTY == nil || !d.IsTTY() {
-		return converge.Answers{}, fmt.Errorf(
-			"%s — den has no terminal to ask on: pass `--answers <file>` naming the repository "+
-				"roots and the environment variables holding the credentials, and `--yes` to apply "+
-				"the printed plan", whatIsMissing(missing, needsRoots))
+		// Before refusing, ask the MACHINE what it already holds — the same
+		// per-type question Service.Plan's credential driver Inspect asks
+		// (converge.CredentialPresent), so this refusal and the plan the user
+		// would see next can never disagree about what is present. A credential
+		// still absent stays refused; one already configured drops out.
+		stillMissing, needsTerminal := stillMissingCredentials(cmd.Context(), d, m, missing)
+		if !yes {
+			// Nothing would apply on this run even if den asked for confirmation
+			// (confirm() only ever returns true here on `yes`, since there is no
+			// terminal to type "y" on) — so an absent github credential is not
+			// yet a reason to refuse; the printed plan is what tells the user it
+			// needs one.
+			needsTerminal = nil
+		}
+		if len(stillMissing) == 0 && len(needsTerminal) == 0 && !needsRoots {
+			return a, nil
+		}
+		return converge.Answers{}, noTerminalRefusal(stillMissing, needsTerminal, needsRoots)
 	}
 
 	in := bufio.NewReader(cmd.InOrStdin())
@@ -105,19 +143,97 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 	return a, nil
 }
 
-// whatIsMissing names what the run would have had to ask for. Assembled here
-// so the no-terminal refusal says which answer is absent rather than "some
-// input" — the user has to know whether to add roots, credentials, or both.
-func whatIsMissing(missing []string, needsRoots bool) string {
-	switch {
-	case needsRoots && len(missing) > 0:
-		return fmt.Sprintf("this source needs the credentials %v and the directories to look for its "+
-			"working repositories in", missing)
-	case needsRoots:
-		return "den needs the directories to look for this source's working repositories in"
-	default:
-		return fmt.Sprintf("this source needs the credentials %v", missing)
+// stillMissingCredentials narrows `missing` — the declared inputs the ANSWERS
+// do not cover — down to the inputs the MACHINE does not cover either, and
+// separately names the declared sbx_github credentials that are absent.
+//
+// github is named apart because it never appears in `missing` at all: it
+// takes no `value_from` (manifest.go's own refusal), so it has no input name
+// to be missing FROM. Its own absence is a resource-level fact, checked here
+// directly against the same observation.
+//
+// An input `missing` names but no resource references is left in the
+// refusal untouched: den has no resource driver to ask about it, so it
+// cannot claim the machine already holds it — the same conservative default
+// Service.Plan's unobservedResources falls back on when it cannot observe at
+// all, applied here to a single input that happens to have no observer.
+//
+// A machine den cannot observe — Sbx unset (a test wiring gap; every real
+// caller injects one) or ReadSbxState itself failing — is treated the same
+// way: state stays nil, converge.CredentialPresent then answers false for
+// everything, and every declared credential resource stays in the refusal.
+// That is the safe direction: the reverse could let a resume skip a
+// credential nobody actually configured, on the strength of a read that
+// never happened.
+func stillMissingCredentials(ctx context.Context, d Deps, m *source.Manifest, missing []string) (
+	stillMissing, needsTerminal []string) {
+
+	var state *converge.SbxState
+	if d.Sbx != nil {
+		if s, err := converge.ReadSbxState(ctx, d.Sbx); err == nil {
+			state = s
+		}
 	}
+
+	referenced := map[string]bool{}
+	needed := map[string]bool{}
+	for _, res := range m.Resources.Credentials {
+		present := state != nil && converge.CredentialPresent(res, state)
+		if res.Type == source.CredentialGitHub {
+			if !present {
+				needsTerminal = append(needsTerminal, res.ID)
+			}
+			continue
+		}
+		name := res.ValueFrom.Credential
+		if name == "" {
+			continue // refused at manifest load (manifest.go); nothing to key on
+		}
+		referenced[name] = true
+		if !present {
+			needed[name] = true
+		}
+	}
+
+	for _, name := range missing {
+		if !referenced[name] || needed[name] {
+			stillMissing = append(stillMissing, name)
+		}
+	}
+	return stillMissing, needsTerminal
+}
+
+// noTerminalRefusal explains, term by term, what den still needs and how to
+// supply it — an answer-file key for what an answer file CAN carry, and a
+// distinct sentence for a credential it cannot: sbx_github takes no
+// `value_from` (manifest.go's refusal, kept by Task 4's ruling), so sbx
+// always collects it through the terminal Apply hands to Attach, and no
+// `credentials.<name>.from_env` line exists to point at instead — pointing at
+// one anyway would send the user to fix an answer file that could never have
+// worked.
+func noTerminalRefusal(missing, needsTerminal []string, needsRoots bool) error {
+	var need []string
+	if needsRoots {
+		need = append(need,
+			"the directories to look for its working repositories in (`repository_roots:`)")
+	}
+	for _, name := range missing {
+		need = append(need, fmt.Sprintf(
+			"the credential %q (`credentials.%s.from_env` in the answer file)", name, name))
+	}
+
+	msg := "den has no terminal to ask on"
+	if len(need) > 0 {
+		msg += fmt.Sprintf(" and this source still needs %s — pass `--answers <file>` supplying it, "+
+			"and `--yes` to apply the printed plan", strings.Join(need, "; "))
+	}
+	for _, id := range needsTerminal {
+		msg += fmt.Sprintf(
+			"; the credential %q cannot be configured without a terminal — sbx collects it "+
+				"interactively (e.g. `sbx secret set -g github`); run this command again from one",
+			id)
+	}
+	return errors.New(msg)
 }
 
 // askRepositoryRoots reads the directories to scan. They are answers to ONE
