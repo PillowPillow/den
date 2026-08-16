@@ -188,6 +188,19 @@ func TestLoadManifestRefusesDocumentFaults(t *testing.T) {
 		{"substitution without environment", "      environment: GITLAB_TOKEN\n", "", `credential resource "gitlab_http": type "sbx_http_substitution" requires "environment"`},
 		{"unsupported scope", "{ id: github, type: sbx_github, scope: global }", "{ id: github, type: sbx_github, scope: sandbox }", `scope "sandbox" is unsupported`},
 		{"build of an unexported stack", "- stack: base", "- stack: helper", `resources.builds: stack "helper" is not exported`},
+		// NormalizeNetworkResource (internal/sbx/machine.go) appends ":443" to
+		// anything without a colon: an empty entry would become ":443", and a
+		// CIDR or a URL would become something sbx never accepts as a policy
+		// rule. den refuses these at load rather than letting sbx reject a
+		// mangled string deep inside Apply (spec §2).
+		{"empty egress host", "- cdn.example.test\n", "- \"\"\n", "resources.build_network.allow"},
+		{"whitespace-only egress host", "- cdn.example.test\n", "- \"   \"\n", "resources.build_network.allow"},
+		{"egress host with a scheme", "- cdn.example.test\n", "- https://cdn.example.test\n", "resources.build_network.allow"},
+		{"egress host with a path", "- cdn.example.test\n", "- cdn.example.test/v1\n", "resources.build_network.allow"},
+		// A CIDR is caught by the same path check: sbx's rule is a bare host
+		// (optionally ported), never a range, and "/8" would become
+		// "10.0.0.0/8:443" under NormalizeNetworkResource.
+		{"CIDR egress host", "- cdn.example.test\n", "- 10.0.0.0/8\n", "resources.build_network.allow"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

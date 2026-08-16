@@ -337,6 +337,12 @@ func checkResources(p string, m *Manifest) error {
 		}
 	}
 
+	for _, host := range m.Resources.BuildNetwork.Allow {
+		if err := checkEgressHost(p, host); err != nil {
+			return err
+		}
+	}
+
 	exported := map[string]bool{}
 	for _, e := range m.Exports.Stacks {
 		exported[e.Name] = true
@@ -347,6 +353,43 @@ func checkResources(p string, m *Manifest) error {
 				"%s: resources.builds: stack %q is not exported — den builds only what the source "+
 					"publishes under exports.stacks", p, b.Stack)
 		}
+	}
+	return nil
+}
+
+// checkEgressHost judges one resources.build_network.allow entry against what
+// sbx.NormalizeNetworkResource (internal/sbx/machine.go, NOT changed by this
+// check) does with it: that function appends ":443" to anything without a
+// colon, so an empty entry silently becomes ":443" and a CIDR or a URL becomes
+// a string sbx's own "policy allow network" would never have accepted if typed
+// by hand. den refuses these at load — naming the file and the key — rather
+// than letting the mangled string surface only when sbx rejects it deep inside
+// Apply (spec §2: refuse rather than normalize in silence).
+//
+// Deliberately string-level here, in internal/source: reaching into
+// internal/sbx to reuse its normalization would add an import edge this
+// package does not otherwise need, for a judgment that is really "is this a
+// bare host", not "how does sbx store one".
+func checkEgressHost(p, host string) error {
+	trimmed := strings.TrimSpace(host)
+	if trimmed == "" {
+		return fmt.Errorf(
+			"%s: resources.build_network.allow: an entry is empty — name the host (or `host:port`) "+
+				"to allow", p)
+	}
+	if strings.Contains(trimmed, "://") {
+		return fmt.Errorf(
+			"%s: resources.build_network.allow: %q carries a scheme — sbx's egress rule is a bare "+
+				"host, optionally with a port (`host` or `host:port`), never a URL", p, host)
+	}
+	if strings.Contains(trimmed, "/") {
+		// Also where a CIDR lands (e.g. "10.0.0.0/8"): sbx allows a host, not a
+		// range, so the same remedy applies — write the bare host it should
+		// match.
+		return fmt.Errorf(
+			"%s: resources.build_network.allow: %q carries a path — sbx's egress rule is a bare "+
+				"host, optionally with a port (`host` or `host:port`), never a URL path or a CIDR "+
+				"range", p, host)
 	}
 	return nil
 }
