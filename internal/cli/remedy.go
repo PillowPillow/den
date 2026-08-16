@@ -263,6 +263,41 @@ func readBackFlags(cmd *cobra.Command, lifted map[string]bool) []string {
 	return out
 }
 
+// shellSafe is the character set a token may carry bare. Everything else — a
+// space above all, but also a `$`, a `*`, a backtick — forces quoting.
+const shellSafe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+	"0123456789_@%+=:,./-"
+
+// shellQuote renders one token as a shell word.
+//
+// SINGLE quotes, which is what makes this safe rather than merely tidy: POSIX
+// single quotes interpolate nothing, so a path carrying `$`, `*`, a backtick or
+// a backslash survives verbatim. An inner single quote is closed, escaped and
+// reopened — see the ReplaceAll below for the four-byte idiom that does it,
+// the only way out of a single-quoted string. (Spelled out here rather than in
+// this comment: gofmt's doc-comment formatter reads two adjacent quote marks
+// as a typographic double quote and silently drops one, which is exactly the
+// byte this function must not lose.)
+//
+// An empty token is rendered as a quoted empty string rather than vanishing:
+// `den exec "$SANDBOX" …` with the variable unset must not silently lose a
+// word from the line den echoes.
+//
+// A non-ASCII rune is not in shellSafe, so it is quoted. Harmless, and the
+// conservative direction: over-quoting produces a longer legal line,
+// under-quoting produces a different command.
+func shellQuote(tok string) string {
+	if tok == "" {
+		return "''"
+	}
+	for _, r := range tok {
+		if !strings.ContainsRune(shellSafe, r) {
+			return "'" + strings.ReplaceAll(tok, "'", `'\''`) + "'"
+		}
+	}
+	return tok
+}
+
 // remedyLine spells a shape back as a command line, for the "write `…`" half of
 // every refusal. den's flags first, then the name, then the command — the order
 // the contract requires, which is the whole point of proposing it.
@@ -279,6 +314,9 @@ func remedyLine(source *cobra.Command, target string, s execShape, command []str
 	parts = append(parts, s.flags...)
 	parts = append(parts, s.name)
 	parts = append(parts, command...)
+	for i, p := range parts {
+		parts[i] = shellQuote(p)
+	}
 	// target is NOT one of the parts: it carries a space ("den nest show"), and
 	// Task 3's quoting would wrap it in quotes. It is den's own prefix, never a
 	// shell word the user supplies.

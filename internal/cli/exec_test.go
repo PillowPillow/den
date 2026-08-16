@@ -831,6 +831,23 @@ func remedyOf(t *testing.T, msg string) string {
 	return line
 }
 
+// A path with a space must come back quoted, or the proposed line reparses into
+// something else entirely: `--workdir /tmp/hot fix api true` binds
+// --workdir=/tmp/hot and leaves sandbox `fix`, command `api true`. Legal, and
+// absurd. The assertion is on the WHOLE message: the half that rots is never
+// the half a Contains happens to look at.
+func TestExecRemedyQuotesAValueContainingASpace(t *testing.T) {
+	err := validateArgs(t, "exec", "api", "--workdir", "/tmp/hot fix", "true")
+	if err == nil {
+		t.Fatal("a flag after the sandbox name must be refused")
+	}
+	const want = "den exec: den's flags go before the sandbox name — " +
+		"write `den exec --workdir '/tmp/hot fix' api true`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
 // Every refusal ends in "write `…`", and the line it writes must be one den
 // ACCEPTS. That is one property, not five, so it is tested as one: each case
 // asserts the remedy, then feeds the remedy back through the same validator and
@@ -882,6 +899,12 @@ func TestExecRemediesAreThemselvesLegal(t *testing.T) {
 			[]string{"exec", "api", "--workdir=/srv", "true"}, "den exec --workdir=/srv api true"},
 		{"the root's own den home after the name",
 			[]string{"exec", "api", "--den-home", "/tmp", "true"}, "den exec --den-home /tmp api true"},
+		{"a value with a space after the name",
+			[]string{"exec", "api", "--workdir", "/tmp/hot fix", "true"},
+			"den exec --workdir '/tmp/hot fix' api true"},
+		{"an empty value after the name",
+			[]string{"exec", "api", "--workdir", "", "true"},
+			"den exec --workdir '' api true"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateArgs(t, tc.argv...)
@@ -893,7 +916,12 @@ func TestExecRemediesAreThemselvesLegal(t *testing.T) {
 				t.Errorf("remedy = %q, want %q (full message: %q)", got, tc.want, err.Error())
 			}
 			// The property, and the reason this test exists: replay it.
-			replay := strings.Fields(got)[1:] // drop "den"
+			//
+			// shellSplit, not strings.Fields: Fields splits on the space the
+			// quoting rule protects, so it would declare the CORRECTED remedy
+			// broken — and, before 2026-08-16, looped cleanly on a line that
+			// reparsed into a different sandbox. See remedy_test.go.
+			replay := shellSplit(t, got)[1:] // drop "den"
 			if err := validateArgs(t, replay...); err != nil {
 				t.Errorf("the remedy %q is refused in turn: %v", got, err)
 			}
