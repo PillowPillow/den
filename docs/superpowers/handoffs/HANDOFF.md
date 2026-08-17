@@ -115,7 +115,8 @@ dernier** — voir le piège du §6, et l'ordre est mesuré, pas supposé (spec 
 `den up <nest> [-w wt] [--repo p] [--without r] [--only r] [-i] [--agent a] [--detach]`
 (spawn-or-attach + shell) · `den run <nest> <cmd> [args...]` (spawn-or-attach + command, mêmes
 drapeaux) ·
-`den ls` · `den sh <name>` · `den ports <name> [--add H:C]` · `den rm <name> [--keep-worktrees]` ·
+`den ls` · `den exec <name> <cmd> [args...]` · `den shell <name>` ·
+`den ports <name> [--add H:C]` · `den rm <name> [--keep-worktrees]` ·
 `den build [stack] [--force]` · `den nest ls|show` · `den doctor` · `den version` · flag global
 `--den-home`.
 

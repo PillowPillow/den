@@ -184,8 +184,10 @@ den nest show scratch --repo ~/dev/a           # what would be mounted, without 
 
 `--repo` is repeatable, never a comma list, and it cannot take a shell glob: the shell expands the
 glob before den ever sees the command line, so `--repo ~/dev/proj-*` binds the first match and the
-rest arrive as bare positionals, which `den up`/`den run` refuse rather than guess at. Expand the
-glob into repeated flags yourself:
+rest arrive as bare positionals. `den up` refuses them rather than guess which one is the nest.
+`den run` reads the second match as the nest and the rest as the command, warns that the first word
+of that command is a directory, then fails to resolve the nest. Expand the glob into repeated flags
+yourself:
 
 ```zsh
 # zsh, parameter distribution — the `--repo=<val>` spelling is mandatory
