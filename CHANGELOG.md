@@ -7,7 +7,12 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
-## Unreleased
+## v1.8.0 — 2026-08-17
+
+### Added
+- `den run <nest> <cmd>` warns when the first word of the command is a readable directory —
+  `den run api ~/dev/hotfix go test` is a legal command line, so den runs it as typed and says
+  once that the directory was not mounted, naming the `--repo` line that would mount it.
 
 ### Changed
 - **Breaking:** `den spawn` is gone, with no alias. `den up <nest>` creates or re-attaches and
@@ -18,6 +23,25 @@ not repeated here.
   `--repo` pairs (portable). `--` leaves the family: `den run`'s own flags sit left of the nest
   name, and everything from the command on is passed through verbatim, the way `den exec`
   already worked.
+- **Breaking:** `den nest show <nest> [repo...]` becomes `den nest show [--repo <path>...] <nest>`.
+  The dry-run follows the family rather than keeping one ad-hoc repo spelled two ways between
+  sibling commands; typing the old form prints the same migration message `den up` does.
+- `den down` is not a command, and typing it now makes den suggest `den rm`.
+
+### Fixed
+- A refusal in the `den up` / `den run` / `den exec` / `den nest show` family proposes a line den
+  itself accepts. Three ways it did not: the proposal dropped the flags already parsed off the
+  line, so `den exec --workdir /srv -- api go build` proposed a line without `--workdir` and
+  `den run --as reco -w feat api` proposed `den up api` — which attaches a *different* sandbox;
+  it did not quote what a shell would split, so `den exec api --workdir '/tmp/hot fix' true`
+  proposed a line reparsing into another sandbox running another command; and it could name a
+  flag the target always refuses, so `den up -T api /dev/hotfix` proposed a line refused one
+  round trip later.
+- `den up --help` rendered `-T, --no-tty den up` instead of the flag's description. Cobra reads
+  the first backquoted span of a usage string as that flag's value placeholder; `den run
+  --detach` and `den shell` lost text the same way.
+- `den up "$NEST" repo` with the variable unset proposed a line naming an empty nest. den now
+  refuses the empty name instead. `den nest show` inherited the same slip.
 
 ## v1.7.0 — 2026-08-16
 
