@@ -815,9 +815,16 @@ func validateArgs(t *testing.T, argv ...string) error {
 // remedyOf returns the command line a refusal proposes: the backticked span
 // right after "write ". Anchored on that word rather than on the first backtick
 // of the message, because a refusal quotes the token it objects to first
-// (“den exec: `--` is not needed — write `…` “). The "no command given"
-// wording carries a second remedy after this one — `den shell …` — and it is
-// not a `den exec` line, so it is not what this file replays.
+// (“den exec: `--` is not needed — write `…` “).
+//
+// It reads the FIRST remedy only, and that is a limit rather than a decision.
+// The "no command given" wording carries a second one — the `den shell …` /
+// `den up …` half — which this helper cannot see, so the replay property cannot
+// vouch for it. That blindness is exactly how the second remedy was a
+// hand-built Sprintf dropping every flag until 2026-08-16 (exec.go holds the
+// story). It comes out of the shared builder now, and what covers it is a
+// WHOLE-MESSAGE assertion — TestRunShellRemedyCarriesTheFlagsThatDecideTheSandbox
+// (run_test.go) — not this function.
 func remedyOf(t *testing.T, msg string) string {
 	t.Helper()
 	_, after, ok := strings.Cut(msg, "write `")

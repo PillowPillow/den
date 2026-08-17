@@ -78,8 +78,31 @@ func enterArgs(cmd *cobra.Command, args []string, noun, shellCmd string) error {
 		// The example command is den's, not the user's — they gave none. It
 		// carries their flags anyway: someone who typed `den exec api -T` gets
 		// `den exec -T api go test`, which is their intent, spelled legally.
-		return fmt.Errorf("%s: no command given — write `%s`, or `%s %s` for a shell",
-			path, remedyLine(cmd, path, s, []string{"go", "test"}), shellCmd, s.name)
+		//
+		// The SHELL half goes through the SAME builder, and until 2026-08-16 it
+		// did not: it was a Sprintf of shellCmd and the bare name, so every flag
+		// the user typed vanished from it. `den run --as reco -w feat api`
+		// proposed `den up api`, and --as is what makes the sandbox `api.reco` —
+		// following that advice creates or attaches a DIFFERENT sandbox.
+		// `den run --repo /a --workdir /srv api` proposed `den up api` and the
+		// mount vanished in silence, which is word for word the regression
+		// up.go's separator branch says must never happen. The pattern is the
+		// one run.go's advisory forbids by name: a Sprintf at the call site sits
+		// outside the replay property — remedyOf reads the FIRST backticked span
+		// only — hence it was free to rot, and it did.
+		//
+		// The cost is known and accepted rather than filtered. -T is
+		// registered-and-always-refused on both `den shell` and `den up`, so
+		// `den run -T api` now proposes `den up -T api`, which spawn.Spawn's
+		// step 0 refuses: one extra round trip on a line that was already wrong,
+		// where before the user got a line that WORKED and silently changed the
+		// sandbox. Dropping the flag here instead would be the silent
+		// normalization spec §2 refuses, and refusing it on the cobra side would
+		// be a second source for a verdict step 0 owns alone — which of the two
+		// the family should do is a spec question, not this call site's.
+		return fmt.Errorf("%s: no command given — write `%s`, or `%s` for a shell",
+			path, remedyLine(cmd, path, s, []string{"go", "test"}),
+			remedyLine(cmd, shellCmd, s, nil))
 	case cmd.ArgsLenAtDash() == 0:
 		// The one shape SetInterspersed(false) does not neutralize, and the only
 		// reason this validator consults ArgsLenAtDash at all: pflag ate the

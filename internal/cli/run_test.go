@@ -310,12 +310,34 @@ func TestRunRemediesCarryEveryRepoTypedBeforeTheNestName(t *testing.T) {
 		t.Fatal("a run with no command must be refused")
 	}
 	const want = "den run: no command given — write `den run --repo /b --repo /a api go test`, " +
-		"or `den up api` for a shell"
+		"or `den up --repo /b --repo /a api` for a shell"
 	if err.Error() != want {
 		t.Errorf("message = %q, want %q", err.Error(), want)
 	}
 	if strings.Contains(err.Error(), "[/b,/a]") {
 		t.Errorf("Value.String()'s slice form must never appear; got %q", err.Error())
+	}
+}
+
+// The SHELL half of "no command given" must carry the user's flags too, and
+// --as is the sharpest case there is: it is what makes the sandbox `api.reco`,
+// so a proposal that drops it names a DIFFERENT sandbox and the user follows it
+// into one — silently, since both lines are legal. It was a Sprintf of the bare
+// name until 2026-08-16.
+//
+// The assertion is on the WHOLE message, and it has to be: remedyOf reads the
+// FIRST backticked span only, so TestRunRemediesAreThemselvesLegal replays the
+// `den run …` half and structurally cannot see this one.
+func TestRunShellRemedyCarriesTheFlagsThatDecideTheSandbox(t *testing.T) {
+	err := validateArgs(t, "run", "--as", "reco", "-w", "feat", "api")
+	if err == nil {
+		t.Fatal("a run with no command must be refused")
+	}
+	const want = "den run: no command given — " +
+		"write `den run --as reco --worktree feat api go test`, " +
+		"or `den up --as reco --worktree feat api` for a shell"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
 	}
 }
 
