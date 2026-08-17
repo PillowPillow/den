@@ -44,7 +44,7 @@ directory, and guessing wrong moves a live VM's workspace to the trash; `agent.R
 the mixin den itself generated under `cache/`.
 
 **Every system access is injected through `cli.Deps`** (`internal/cli/root.go`), and `deps.Sbx` is
-the *single* `sbx.Runner` shared by `ls`, `sh`, `ports` and spawn — structurally there is no second
+the *single* `sbx.Runner` shared by `ls`, `shell`, `ports`, `up` and `run` — structurally there is no second
 runner to keep in sync. The other fields are injected because the real implementations touch the
 machine: `Scanner` binds host sockets, `Open` spawns a browser, `SSHAgent` forks `ssh-add`, `IsTTY`
 reads the terminal. Hard-wiring any of them breaks the suite's hermeticity.
@@ -135,4 +135,6 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   correct **à leur date** et ils ne sont pas réécrits. Traduire en `task check` en les lisant.
 - Les plans et handoffs datés sous `docs/superpowers/` disent `den <nest>` pour spawner. C'était
   vrai à leur date : la forme nue a été remplacée par `den spawn <nest>` le 2026-08-05 (spec
-  `2026-08-05-spawn-command-design.md`). Traduire en lisant, comme pour `make` → `task`.
+  `2026-08-05-spawn-command-design.md`), puis `den spawn <nest>` a lui-même été remplacé par
+  `den up <nest>` / `den run <nest> <cmd>` le 2026-08-16, sans alias (spec
+  `2026-08-16-up-run-command-design.md`). Traduire en lisant, comme pour `make` → `task`.

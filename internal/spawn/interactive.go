@@ -16,7 +16,7 @@ import (
 //
 // ONE LINE-ish, on purpose, and exported so the wiring site names it: this is
 // the part of `-i` (and, since #60, of the `-it` decision in `den exec`/`den
-// spawn -- <cmd>`) that binds den to the process's actual descriptors.
+// run <cmd>`) that binds den to the process's actual descriptors.
 // Everything around it — the checklist, the toggles, the refusals — takes an
 // io.Reader and is tested. Growing this function is how that boundary gets
 // lost.
@@ -101,7 +101,7 @@ func nonInteractiveEquivalents(prompts bool) string {
 // caller selected both; this layer only displays them.
 func interactiveWithout(d Deps, mappingPath string, n *nest.Nest, mapping map[string]string) ([]string, error) {
 	// Nothing to ask comes FIRST, before the terminal check: a nest with no
-	// optional repo needs no answer, so it needs no terminal either — `den spawn
+	// optional repo needs no answer, so it needs no terminal either — `den up
 	// api -i --detach` from a script keeps working, and says why it asked nothing
 	// rather than drawing an empty list.
 	if !hasOptionalRepo(n.Repos) {
@@ -168,7 +168,7 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 //
 // It decides the initial state of every box, which is NOT cosmetic. `-i` starts
 // full, because confirming an -i checklist without touching it must produce
-// exactly what `den spawn` alone produces
+// exactly what `den up` alone produces
 // (TestInteractiveProducesTheSameArgvAsTheEquivalentWithout). A `select: prompt`
 // nest starts EMPTY, because it has no default selection to propose by
 // definition — and thirty ticked boxes would turn an empty line into a

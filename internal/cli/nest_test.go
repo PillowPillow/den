@@ -568,7 +568,7 @@ func TestNestShowHeaderKeepsTheSourcePrefix(t *testing.T) {
 
 func TestNestShowResolvesCommandLineRepos(t *testing.T) {
 	testDenHome(t)
-	out, err := run(t, "nest", "show", "api", "/dev/hotfix")
+	out, err := run(t, "nest", "show", "api", "--repo", "/dev/hotfix")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -592,7 +592,7 @@ func TestNestShowResolvesCommandLineRepos(t *testing.T) {
 // wiring-defect message instead of resolving.
 func TestNestShowResolvesRelativeCommandLineRepos(t *testing.T) {
 	testDenHome(t)
-	out, err := run(t, "nest", "show", "api", "./hotfix")
+	out, err := run(t, "nest", "show", "api", "--repo", "./hotfix")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -604,6 +604,35 @@ func TestNestShowResolvesRelativeCommandLineRepos(t *testing.T) {
 	if !strings.Contains(out, expected) {
 		t.Errorf("output = %q, expected containing %q — the relative path must resolve "+
 			"against the process's working directory", out, expected)
+	}
+}
+
+// The dry-run cannot be the one place the migration goes unnamed: it reuses
+// `den up`'s validator, and the remedy names THIS command because it comes from
+// cmd.CommandPath(), not from a hardcoded string.
+func TestNestShowNamesTheRepoFlagOnASecondPositional(t *testing.T) {
+	err := validateArgs(t, "nest", "show", "api", "/dev/hotfix")
+	if err == nil {
+		t.Fatal("a second positional must be refused")
+	}
+	const want = "den nest show: extra arguments — ad-hoc repos go behind --repo now — " +
+		"write `den nest show --repo /dev/hotfix api`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
+// Branch 2 fires on the dry-run too, and the remedy names `den run`. Accepted
+// rather than special-cased: the user typed a command, and commands go to
+// `den run`. Proposing `den nest show api` instead would drop `foo` in silence.
+func TestNestShowSendsACommandToRun(t *testing.T) {
+	err := validateArgs(t, "nest", "show", "api", "--", "foo")
+	if err == nil {
+		t.Fatal("a command after `--` must be refused")
+	}
+	const want = "den nest show: den nest show takes no command — write `den run api foo`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
 	}
 }
 

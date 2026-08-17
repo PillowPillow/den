@@ -301,7 +301,7 @@ func buildOne(ctx context.Context, d Deps, s *config.Stack, plan buildPlan, out,
 	}
 	// den passes the image name. THE point of the whole sequence: `image:` and
 	// what is actually saved cannot disagree, so `den build` succeeding and
-	// `den spawn` demanding `den build` can no longer both be true.
+	// `den up`/`den run` demanding `den build` can no longer both be true.
 	if _, err := d.Sbx.Run(ctx, "template", "save", name, s.Image); err != nil {
 		return fmt.Errorf("stack %q: could not save image %s: %w", s.Name, s.Image, err)
 	}

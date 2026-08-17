@@ -128,8 +128,8 @@ func (n *Nest) PromptsForRepos() bool { return n.Select == SelectPrompt }
 // question the checklist asks.
 //
 // It lives in THIS package, not in internal/spawn where it was first written,
-// because two commands have to give one verdict: `den spawn` (step 0bis) and
-// `den nest show`, which internal/cli documents as its dry-run and which reaches
+// because three commands have to give one verdict: `den up`/`den run` (step
+// 0bis) and `den nest show`, which internal/cli documents as its dry-run and which reaches
 // nest.Resolve without ever going through Spawn. One flag answered twice in two
 // dialects is the divergence this function exists to make impossible — the same
 // argument spawn.ResolveStack already carries for the stack reference. Nothing

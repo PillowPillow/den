@@ -79,7 +79,8 @@ you use a different one — that is what makes `den` testable and scriptable.
 |---|---|
 | `den init` | creates a den home from the shipped example (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`); refuses if `config.yaml` already exists |
 | `den init --source <url>` | creates a **source-aware** home instead — no example nest, no local stack — and converges everything the source declares (see [Declarative sources](#declarative-sources)) |
-| `den spawn <nest> [repo...] [-- <cmd>]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise; extra repos are mounted on the fly; runs `<cmd>` instead of a shell when one is given |
+| `den up <nest> [--repo p...]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise, then opens a shell; ad-hoc repos are mounted on the fly via a repeatable `--repo` |
+| `den run <nest> <cmd> [args...] [--repo p...]` | the same spawn-or-attach, running `<cmd>` instead of opening a shell; exits with the command's own status |
 | `den ls` | lists live sandboxes, with their nest, instance, worktree, status and workspace count |
 | `den exec <name> <cmd> [args...]` | runs one command in an existing sandbox and exits with that command's own status |
 | `den shell <name>` | opens a login shell in an existing sandbox |
@@ -98,24 +99,33 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den doctor` | diagnoses the configuration and the environment, and reports records whose sandbox is gone; `--fix` reclaims their worktrees (`--force` if one is dirty) |
 | `den version` | binary version |
 
-Options of `den spawn`:
+Options `den up` and `den run` share:
 
 | Option | Effect |
 |---|---|
 | `-w`, `--worktree <branch>` | propagates a worktree of that name across **all** the nest's repos, and suffixes the sandbox name (`api.feat12`) |
+| `--repo <path>` | mount this repository too, ad hoc; repeatable, and the order you type is the order den mounts |
 | `--as <label>` | name this instance, to run several sandboxes of one nest side by side |
-| `--detach` | prepares the sandbox without attaching a shell; refused together with a command after `--` — `--detach` spawns without entering the sandbox, a command has to run inside it |
 | `--only <repo,...>` | keep only these optional repos (required repos stay mounted) |
 | `--without <repo,...>` | exclude these optional repos |
 | `-i`, `--interactive` | pick the optional repos from a checklist; refused together with `--only`/`--without`, and outside a terminal (a pipe or CI must use those two) |
 | `--agent <name>` | overrides `defaults.agent` |
-| `-- <cmd> [args...]` | runs this command instead of opening a shell; its exit status becomes den's |
-| `-T` | never allocate a terminal — for pipes and CI; refused together with no command after `--` — a shell needs one |
 | `--workdir <path>` | working directory for the command (default: the directory you ran `den` from, when the sandbox mounts it; otherwise the first workspace it reports) |
+
+Where the two commands diverge — each registers the other's flag only to refuse it by name:
+
+| Option | On `den up` | On `den run` |
+|---|---|---|
+| `--detach` | prepares the sandbox without opening a shell | refused — `den run` runs a command inside the sandbox; use `den up --detach` |
+| `-T` | refused — a login shell needs a terminal; use `den run -T` | never allocate a terminal — for pipes and CI |
+
+`den run`'s own flags sit **before** the nest name; everything after it is the command, verbatim,
+its own flags included — `den run api go test -v` passes `-v` to `go test`, the same rule
+`den exec` follows. There is no `--`.
 
 `-w` takes a **branch** name, and a branch name often contains a `/`.
 The branch keeps the name as typed — that is the name in `git log` and in the PR — while the
-sandbox name and the worktree directory take a flattened form: `den spawn api -w feature/123` works on
+sandbox name and the worktree directory take a flattened form: `den up api -w feature/123` works on
 branch `feature/123` in a sandbox `api.feature-123`. That is the name it appears under in
 `den ls`, and the one `den exec` and `den rm` expect.
 
@@ -129,12 +139,12 @@ A sandbox is named `<nest>[.<instance>]`, and the instance is the only thing tha
 sandboxes of one nest. `-w` fills it with the flattened branch; `--as` fills it directly:
 
 ```bash
-den spawn api --as analyse-a
-den spawn api --as analyse-b   # same repos, two microVMs
+den up api --as analyse-a
+den up api --as analyse-b   # same repos, two microVMs
 ```
 
 `--as` renames the sandbox only. Under `-w`, the worktree directory keeps being named after the
-branch, so `den spawn api -w feature/123 --as reco` puts the worktree exactly where `-w` alone
+branch, so `den up api -w feature/123 --as reco` puts the worktree exactly where `-w` alone
 would have put it — a label never renames a worktree directory, since two nests spawned `--as x`
 would otherwise collide on it. den never generates an instance name on its own: running a second
 instance of one nest is always a deliberate `-w` or `--as`, never something den infers for you.
@@ -164,29 +174,47 @@ letting the sandbox answer `bash: --den-home: command not found`.
 ### Mounting a repo on the fly
 
 A nest file is still required — what becomes optional is its `repos:` block. A repo does not need
-to be declared there to enter the sandbox: the paths that follow the nest name are mounted like
-`repos:` entries, worktree included.
+to be declared there to enter the sandbox: repeat `--repo <path>` and each one mounts like a
+`repos:` entry, worktree included.
 
 ```bash
-den spawn scratch ~/dev/a ~/dev/b     # a nest with no `repos:` — both repos come from the command line
-den spawn api ~/dev/hotfix            # additive: api's repos PLUS hotfix
-den spawn scratch .                   # the current directory
-den spawn api -w feat/x ~/dev/hotfix  # -w propagates a worktree to hotfix, same as api's own repos
-den nest show scratch ~/dev/a         # what would be mounted, without creating anything
+den up scratch --repo ~/dev/a --repo ~/dev/b   # a nest with no `repos:` — both repos come from the flag
+den up api --repo ~/dev/hotfix                 # additive: api's repos PLUS hotfix
+den up scratch --repo .                        # the current directory
+den up api -w feat/x --repo ~/dev/hotfix       # -w propagates a worktree to hotfix, same as api's own repos
+den nest show scratch --repo ~/dev/a           # what would be mounted, without creating anything
 ```
 
-The first repo on the command line becomes the directory where the shell starts. Mounts are frozen
-at sandbox creation, so on an already-live sandbox `den` warns rather than changing anything: it
-names any path it will not mount, and it says so separately when the shell will not start where you
-asked — asking for a subset of what is already mounted triggers only the second. `den rm <name>`
+`--repo` is repeatable, never a comma list, and it cannot take a shell glob: the shell expands the
+glob before den ever sees the command line, so `--repo ~/dev/proj-*` binds the first match and the
+rest arrive as bare positionals. `den up` refuses them rather than guess which one is the nest.
+`den run` reads the second match as the nest and the rest as the command, warns that the first word
+of that command is a directory, then fails to resolve the nest. Expand the glob into repeated flags
+yourself:
+
+```zsh
+# zsh, parameter distribution — the `--repo=<val>` spelling is mandatory
+repos=(~/dev/proj-*); den up --repo=${^repos} scratch
+```
+
+```bash
+# portable, and the only one that survives a space in a path
+repos=(); for d in ~/dev/proj-*; do repos+=(--repo "$d"); done
+den up "${repos[@]}" scratch
+```
+
+The first `--repo` on the command line becomes the directory where the shell starts. Mounts are
+frozen at sandbox creation, so on an already-live sandbox `den` warns rather than changing anything:
+it names any path it will not mount, and it says so separately when the shell will not start where
+you asked — asking for a subset of what is already mounted triggers only the second. `den rm <name>`
 then relaunch to change either.
 
 `:ro` is not accepted: a repo mounted on the fly is mounted writable, like a declared `repos:` entry.
 Under `-w`, it must also be a git repository, exactly like a declared one — den refuses before
 creating anything otherwise.
 
-`--without` and `--only` still address only the declared `repos:` list, so a repo given on the
-command line is dropped by not typing it. Naming an undeclared repo on either flag is not a no-op:
+`--without` and `--only` still address only the declared `repos:` list, so a repo given behind
+`--repo` is dropped by not typing it. Naming an undeclared repo on either flag is not a no-op:
 den refuses the whole spawn with `repo "<name>" unknown in this nest`.
 
 **`den rm` reclaims the worktree of a repo given on the command line too.** At creation den writes
@@ -214,14 +242,15 @@ moves worktrees to `~/.den/trash/`.
 `~/.den/state/` holds those records and is **never purged automatically** — unlike `~/.den/cache/`,
 it is not reconstructible.
 
-`den nest show` takes `--agent`, `--only` and `--without` — the same three as a spawn, and for the
-same reason: resolution is what they act on, so showing a nest under them is how you read what a
-spawn would do without spawning it. Including the refusals: `--without` on a `select: prompt` nest
-is rejected here exactly as it is on a spawn, since a dry-run that accepts what the run refuses is
-not one. It has no `-w`: a worktree changes the sandbox name, not the resolved nest.
+`den nest show` takes `--agent`, `--only`, `--without` and `--repo` — the same set `den up` and
+`den run` take, and for the same reason: resolution is what they act on, so showing a nest under
+them is how you read what `den up`/`den run` would do without spawning it. Including the refusals:
+`--without` on a `select: prompt` nest is rejected here exactly as it is on `den up`/`den run`,
+since a dry-run that accepts what the run refuses is not one. It has no `-w`: a worktree changes the
+sandbox name, not the resolved nest.
 
 A stopped sandbox — which `sbx` does on its own after a few minutes of inactivity — is not a
-failure: `den spawn` and `den exec` pick it back up, with its state.
+failure: `den up`, `den run` and `den exec` pick it back up, with its state.
 
 ## Ports
 
@@ -397,8 +426,8 @@ provision:
   steps: [./provision/glab.sh]
 ```
 
-- **`image:` is required**, on every stack. It is the single name den saves into and `den spawn`
-  looks for, which is what keeps the two from ever disagreeing.
+- **`image:` is required**, on every stack. It is the single name den saves into and `den up`/`den
+  run` looks for, which is what keeps the two from ever disagreeing.
 - **`base:` or `parent:`, never both.** `base:` names the sbx agent a root stack starts from
   (`claude`); `parent:` names another stack, and the build starts from *its* image. A stack that
   declares `provision.steps` must have exactly one of them.
@@ -463,7 +492,7 @@ nest's egress policy.
 - A **pre-existing `<stack>-build` sandbox is a refusal**, not a cleanup: that is a legal nest name,
   so removing it blindly could destroy a sandbox of yours. The message names `sbx rm --force`.
 
-`den spawn` uses the same inventory: if the stack declares `provision.steps` and its image was
+`den up`/`den run` uses the same inventory: if the stack declares `provision.steps` and its image was
 never built, den stops and tells you to run `den build <stack>`. Without that check the failure
 surfaces as sbx's own `403 Forbidden: pull failed for image "X"` — sbx treats an unknown template as
 a registry pull, so the message talks about authorization rather than about a missing build. A stack
@@ -474,8 +503,8 @@ build to suggest.
 
 If your `~/.den` predates this model, every stack still has a `stacks/<name>/build.sh` and **den no
 longer reads it**. Nothing breaks and nothing is deleted, but until you migrate, `den build` skips
-every stack ("no `provision.steps`, nothing for den to build") and `den spawn` stops warning about
-missing images.
+every stack ("no `provision.steps`, nothing for den to build") and `den up`/`den run` stops warning
+about missing images.
 
 To migrate a stack: split what the script does into one file per stage under `stacks/<name>/provision/`,
 list them in `steps:`, move any shared function library into `includes:`, and delete the `build.sh`
@@ -492,9 +521,9 @@ only from a VPN, and unrelated to the product's own GitHub. den clones it under
 
 ```bash
 $ den source add git@gitlab.corp:dev/stacks.git --name corp
-source "corp" installed — its objects are addressed corp:<name> (e.g. `den spawn corp:<nest>`)
+source "corp" installed — its objects are addressed corp:<name> (e.g. `den up corp:<nest>`)
 
-$ den spawn corp:backend
+$ den up corp:backend
 # resolves the nest "backend" and its stack inside the "corp" source, then
 # spawns (or attaches to) the sandbox "corp-backend"
 
@@ -546,7 +575,7 @@ repo key "review-mgmt" is not mapped on this machine — add `review-mgmt: <loca
 den performs itself. Local nests can use `key:` too — it is one mechanism, not a sources-only one.
 
 Keys are resolved **after** `--without`/`--only`, so an unmapped key on an *optional* repo is
-escapable: a teammate who simply does not have the front-end checkout runs `den spawn corp:backend
+escapable: a teammate who simply does not have the front-end checkout runs `den up corp:backend
 --without front-app` and spawns without it. The refusal says so itself when the repo is optional.
 A key on a repo that is still selected always refuses — den never drops a repo on its own — and
 a *required* one is never offered the escape, since `--without` refuses required repos outright.
@@ -735,7 +764,7 @@ reported and applied to nothing (the contract did not change — the team must p
 lower version is refused, with the checkout untouched. den converges forward.
 
 An interrupted application leaves an `applying` receipt: the previous version stays the active one,
-every consumer (`den spawn`, `den nest show`, `den build`) refuses rather than mix a new catalogue
+every consumer (`den up`, `den nest show`, `den build`) refuses rather than mix a new catalogue
 with old infrastructure, and `den source configure <name>` finishes the job — without fetching, and
 without reapplying what it can verify is already there.
 

@@ -660,9 +660,9 @@ func TestExecMinusTSuppressesTheTtyEvenOnATerminal(t *testing.T) {
 	}
 }
 
-// --workdir is spelled LONG on purpose: -w is den spawn's worktree, and giving
-// it a second meaning on a sibling command is the collision den refuses
-// elsewhere. The flag overrides the workspace the VM reported.
+// --workdir is spelled LONG on purpose: -w is `den up` / `den run`'s worktree,
+// and giving it a second meaning on a sibling command is the collision den
+// refuses elsewhere. The flag overrides the workspace the VM reported.
 //
 // It sits LEFT of the sandbox name since 2026-08-14: den's own flags all do,
 // because SetInterspersed(false) hands everything past that name to the VM.
@@ -685,9 +685,9 @@ func TestExecWorkdirOverridesTheReportedWorkspace(t *testing.T) {
 	}
 }
 
-// `-w` must NOT be accepted here: silently taking den spawn's worktree
-// shorthand as a workdir is exactly the kind of collision that makes two
-// sibling commands mean different things by one letter.
+// `-w` must NOT be accepted here: silently taking `den up` / `den run`'s
+// worktree shorthand as a workdir is exactly the kind of collision that makes
+// two sibling commands mean different things by one letter.
 func TestExecRefusesTheShortWorkdirFlag(t *testing.T) {
 	f := &sbx.Fake{}
 	if _, err := executeCmdWithSbx(t, f, "exec", "-w", "/srv", "api", "true"); err == nil {
@@ -815,9 +815,16 @@ func validateArgs(t *testing.T, argv ...string) error {
 // remedyOf returns the command line a refusal proposes: the backticked span
 // right after "write ". Anchored on that word rather than on the first backtick
 // of the message, because a refusal quotes the token it objects to first
-// (“den exec: `--` is not needed — write `…` “). The "no command given"
-// wording carries a second remedy after this one — `den shell …` — and it is
-// not a `den exec` line, so it is not what this file replays.
+// (“den exec: `--` is not needed — write `…` “).
+//
+// It reads the FIRST remedy only, and that is a limit rather than a decision.
+// The "no command given" wording carries a second one — the `den shell …` /
+// `den up …` half — which this helper cannot see, so the replay property cannot
+// vouch for it. That blindness is exactly how the second remedy was a
+// hand-built Sprintf dropping every flag until 2026-08-16 (exec.go holds the
+// story). It comes out of the shared builder now, and what covers it is a
+// WHOLE-MESSAGE assertion — TestRunShellRemedyCarriesTheFlagsThatDecideTheSandbox
+// (run_test.go) — not this function.
 func remedyOf(t *testing.T, msg string) string {
 	t.Helper()
 	_, after, ok := strings.Cut(msg, "write `")
@@ -829,6 +836,23 @@ func remedyOf(t *testing.T, msg string) string {
 		t.Fatalf("unterminated remedy in %q", msg)
 	}
 	return line
+}
+
+// A path with a space must come back quoted, or the proposed line reparses into
+// something else entirely: `--workdir /tmp/hot fix api true` binds
+// --workdir=/tmp/hot and leaves sandbox `fix`, command `api true`. Legal, and
+// absurd. The assertion is on the WHOLE message: the half that rots is never
+// the half a Contains happens to look at.
+func TestExecRemedyQuotesAValueContainingASpace(t *testing.T) {
+	err := validateArgs(t, "exec", "api", "--workdir", "/tmp/hot fix", "true")
+	if err == nil {
+		t.Fatal("a flag after the sandbox name must be refused")
+	}
+	const want = "den exec: den's flags go before the sandbox name — " +
+		"write `den exec --workdir '/tmp/hot fix' api true`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
 }
 
 // Every refusal ends in "write `…`", and the line it writes must be one den
@@ -860,13 +884,20 @@ func TestExecRemediesAreThemselvesLegal(t *testing.T) {
 			[]string{"exec", "api", "--"}, "den exec api go test"},
 		{"a leading separator",
 			[]string{"exec", "--", "api", "go", "build"}, "den exec api go build"},
-		// The one case where the remedy DROPS something the user typed, and it
-		// is accepted: cobra parsed `-T` before pflag ate the separator, so the
-		// flag is already in effect and is not among the arguments this
-		// validator sees. The proposal stays legal, which is the property under
-		// test; the row exists so the omission stays a decision.
+		// This row was inverted on 2026-08-16. It used to expect
+		// `den exec api go build` and carried a comment calling the dropped `-T`
+		// an accepted omission. The remedy is a line the user RETYPES, so a
+		// dropped flag is a silently different run — and with --repo it would be
+		// a dropped mount.
+		//
+		// `--no-tty=true`, not `-T`: readBackFlags spells a read-back boolean
+		// canonically with its value, and it has no shorthand path — it emits
+		// "--" + f.Name. The bare form stays what the USER types.
+		//
+		// The replay holds: pflag parses `--no-tty=true` left of the first
+		// positional, so s.flags is empty and enterArgs returns nil.
 		{"a flag before a leading separator",
-			[]string{"exec", "-T", "--", "api", "go", "build"}, "den exec api go build"},
+			[]string{"exec", "-T", "--", "api", "go", "build"}, "den exec --no-tty=true api go build"},
 		{"a flag and no command",
 			[]string{"exec", "api", "-T"}, "den exec -T api go test"},
 		{"a workdir after the name",
@@ -875,6 +906,12 @@ func TestExecRemediesAreThemselvesLegal(t *testing.T) {
 			[]string{"exec", "api", "--workdir=/srv", "true"}, "den exec --workdir=/srv api true"},
 		{"the root's own den home after the name",
 			[]string{"exec", "api", "--den-home", "/tmp", "true"}, "den exec --den-home /tmp api true"},
+		{"a value with a space after the name",
+			[]string{"exec", "api", "--workdir", "/tmp/hot fix", "true"},
+			"den exec --workdir '/tmp/hot fix' api true"},
+		{"an empty value after the name",
+			[]string{"exec", "api", "--workdir", "", "true"},
+			"den exec --workdir '' api true"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateArgs(t, tc.argv...)
@@ -886,11 +923,59 @@ func TestExecRemediesAreThemselvesLegal(t *testing.T) {
 				t.Errorf("remedy = %q, want %q (full message: %q)", got, tc.want, err.Error())
 			}
 			// The property, and the reason this test exists: replay it.
-			replay := strings.Fields(got)[1:] // drop "den"
+			//
+			// shellSplit, not strings.Fields: Fields splits on the space the
+			// quoting rule protects, so it would declare the CORRECTED remedy
+			// broken — and, before 2026-08-16, looped cleanly on a line that
+			// reparsed into a different sandbox. See remedy_test.go.
+			replay := shellSplit(t, got)[1:] // drop "den"
 			if err := validateArgs(t, replay...); err != nil {
 				t.Errorf("the remedy %q is refused in turn: %v", got, err)
 			}
 		})
+	}
+}
+
+// The remedy must carry a flag pflag consumed before the validator ran.
+// Measured on the 2026-08-16 binary, the proposal dropped `--workdir /srv`
+// entirely: a line the user retypes, silently landing them in another
+// directory. exec.go called the omission a decision on the grounds that "cobra
+// has honoured the flag" — it honoured it on an invocation that is REFUSED and
+// never runs.
+func TestExecRemediesCarryFlagsTypedBeforeTheSeparator(t *testing.T) {
+	err := validateArgs(t, "exec", "--workdir", "/srv", "--", "api", "go", "build")
+	if err == nil {
+		t.Fatal("a leading separator must be refused")
+	}
+	const want = "den exec: `--` is not needed, and a sandbox name must come first — " +
+		"write `den exec --workdir /srv api go build`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
+// readBackFlags's SCALAR DUPLICATES rule: `den exec --workdir /a api --workdir
+// /b go test` reads `--workdir /a` back off the FlagSet AND lifts `--workdir
+// /b` out of the tail — one flag, two origins, and only one can survive the
+// remedy. The LIFTED value wins (`/b`, not `/a`): it is the last one the user
+// typed, and the one den is teaching them to move to the front of the line.
+// SetInterspersed(false) is what makes this reachable through `exec` alone —
+// the flag typed after the name stays a positional until execRewrite lifts it,
+// so both origins are populated on the very same call.
+//
+// This is a dedicated test rather than a TestExecRemediesAreThemselvesLegal
+// row on purpose: that suite only asserts the remedy REPLAYS, which a remedy
+// naming either `/a` or `/b` would do equally. The property here is which
+// value SURVIVES, and only a fixed expectation can catch a silent swap.
+func TestExecRemediesKeepTheLastTypedScalarFlag(t *testing.T) {
+	err := validateArgs(t, "exec", "--workdir", "/a", "api", "--workdir", "/b", "go", "test")
+	if err == nil {
+		t.Fatal("den's flags after the sandbox name must be refused")
+	}
+	const want = "den exec: den's flags go before the sandbox name — " +
+		"write `den exec --workdir /b api go test`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
 	}
 }
 

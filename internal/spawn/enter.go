@@ -11,7 +11,7 @@ import (
 // Argv EMPTY means `bash -l`: the interactive shell is not a special case in
 // this package, it is the default argument. That is the whole shape of #60 —
 // one door, two modes — and putting the default here rather than at each call
-// site is what keeps `den exec` and `den spawn` from drifting apart.
+// site is what keeps `den exec`, `den shell`, `den up` and `den run` from drifting apart.
 type Command struct {
 	// Argv is the command and its arguments. Empty ⇒ `bash -l`.
 	Argv []string

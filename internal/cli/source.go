@@ -178,7 +178,7 @@ func addSource(cmd *cobra.Command, d Deps, home, url string, flags convergenceFl
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(),
-			"source %q installed — its objects are addressed %s:<name> (e.g. `den spawn %s:<nest>`)\n",
+			"source %q installed — its objects are addressed %s:<name> (e.g. `den up %s:<nest>`)\n",
 			resolved, resolved, resolved)
 		return nil
 	}
@@ -216,7 +216,7 @@ func configureSource(cmd *cobra.Command, d Deps, home, name string, flags conver
 
 	if err := requireManifest(c, name, fmt.Sprintf(
 		"it is a legacy source, which declares nothing to converge; `den source update %s` fetches "+
-			"it and `den spawn %s:<nest>` uses it", name, name)); err != nil {
+			"it and `den up %s:<nest>` uses it", name, name)); err != nil {
 		return err
 	}
 	return runConvergence(cmd, d, converge.ModeConfigure, home, name, c, flags, nil)

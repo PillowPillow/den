@@ -112,8 +112,11 @@ dernier** — voir le piège du §6, et l'ordre est mesuré, pas supposé (spec 
 
 ## 4. Surface de commandes v1 (toute livrée)
 
-`den <nest> [-w wt] [--without r] [--only r] [-i] [--agent a] [--detach]` (spawn-or-attach + shell) ·
-`den ls` · `den sh <name>` · `den ports <name> [--add H:C]` · `den rm <name> [--keep-worktrees]` ·
+`den up <nest> [-w wt] [--repo p] [--without r] [--only r] [-i] [--agent a] [--detach]`
+(spawn-or-attach + shell) · `den run <nest> <cmd> [args...]` (spawn-or-attach + command, mêmes
+drapeaux) ·
+`den ls` · `den exec <name> <cmd> [args...]` · `den shell <name>` ·
+`den ports <name> [--add H:C]` · `den rm <name> [--keep-worktrees]` ·
 `den build [stack] [--force]` · `den nest ls|show` · `den doctor` · `den version` · flag global
 `--den-home`.
 
@@ -127,7 +130,7 @@ Ils sont écrits et justifiés dans `CLAUDE.md`, qui est chargé à chaque sessi
 
 - **Cascade de config** : global ← stack ← nest ← flags, résolue par `nest.Resolve`.
 - **Tout accès système passe par `cli.Deps`**, et `deps.Sbx` est le `sbx.Runner` **unique** partagé
-  par `ls`, `sh`, `ports` et spawn. Câbler une implémentation réelle en dur casse l'hermétisme.
+  par `ls`, `shell`, `ports`, `up` et `run`. Câbler une implémentation réelle en dur casse l'hermétisme.
 - **L'ordre de la séquence de spawn est délibéré** : tout ce qui est refusable depuis la seule
   config est refusé **avant le premier effet de bord**, pour qu'un refus ne laisse jamais un
   worktree orphelin. `sbx ls` est désormais lu **avant** `nest.Resolve` (étape « 1bis ») : le

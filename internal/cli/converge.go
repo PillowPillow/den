@@ -121,7 +121,7 @@ func runConvergence(cmd *cobra.Command, d Deps, mode converge.Mode, home, name s
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "\nsource %q is %s at version %s — `den spawn %s:<nest>`\n",
+	fmt.Fprintf(out, "\nsource %q is %s at version %s — `den up %s:<nest>`\n",
 		name, result.Status, plan.Version, name)
 	return nil
 }

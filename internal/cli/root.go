@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"os/signal"
 	"runtime"
@@ -119,7 +118,7 @@ func NewRootCmd() *cobra.Command {
 }
 
 // NewRootCmdWith takes its world accesses as a parameter, so tests can exercise
-// `den ls` and `den spawn` without sbx (or git) being installed: EVERY system
+// `den ls` and `den up` without sbx (or git) being installed: EVERY system
 // access comes from the caller, none is hard-wired here.
 //
 // denHome is declared HERE, not at package level, so two command trees built in
@@ -165,7 +164,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
 	// `den exec` gets the SSH probe and the OS too: re-entering a sandbox whose
 	// forwarded agent has been emptied fails `git push` exactly as a fresh
-	// `den spawn` would, and this is the surface that re-enters most often.
+	// `den up`/`den run` would, and this is the surface that re-enters most often.
 	// runtime.GOOS is named here, at the wiring site, like the spawn's below.
 	root.AddCommand(newExecCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS, deps.Freshness, deps.IsTTY))
 	// `den shell` gets what `den exec` gets, minus deps.IsTTY, and for the same
@@ -195,28 +194,30 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// den home at all.
 	root.AddCommand(newLintCmd())
 
-	// `den spawn` is ASSEMBLED here from the very fields newLsCmd just got:
-	// deps.Sbx is the single source. Out/Err/In are left unset, newSpawnCmd's
-	// RunE overwrites them on every run from the command itself (the only way
-	// to follow a test's SetOut).
-	root.AddCommand(newSpawnCmd(&denHome, spawn.Deps{
+	// `den up` and `den run` are ASSEMBLED here from the very fields newLsCmd
+	// just got: deps.Sbx is the single source. Out/Err/In are left unset —
+	// spawnNest overwrites them on every run from the command itself, the only
+	// way to follow a test's SetOut.
+	//
+	// ONE Deps value for both, deliberately: two literals would be two places to
+	// keep in sync, and a field wired on one command and forgotten on the other
+	// is silent.
+	spawnDeps := spawn.Deps{
 		Sbx:       deps.Sbx,
 		Git:       deps.Git,
 		Policy:    deps.Policy,
 		Freshness: deps.Freshness,
 		SSHAgent:  deps.SSHAgent,
 		IsTTY:     deps.IsTTY,
-		// The real OS, named at the wiring site like every other system
-		// access: spawn has no SystemDeps constructor to hold it (see
-		// spawn.Deps), and a field left implicit here is a dependency the
-		// reader has to hunt for.
+		// The real OS, named at the wiring site like every other system access.
 		GOOS: runtime.GOOS,
-		// The real clock for the source-staleness hint (spawn.Deps.Now): nil
-		// is what the package's own tests want (no source touched, no clock
-		// owed), but a live den wiring this field to nothing would silently
-		// drop the hint for every user, forever.
+		// The real clock for the source-staleness hint (spawn.Deps.Now): nil is
+		// what the package's own tests want, but a live den wiring this to
+		// nothing would silently drop the hint for every user, forever.
 		Now: time.Now,
-	}))
+	}
+	root.AddCommand(newUpCmd(&denHome, spawnDeps))
+	root.AddCommand(newRunCmd(&denHome, spawnDeps))
 	return root
 }
 
@@ -235,8 +236,8 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 // cancellation chain — Run reads ctx.Err() itself because a killed process's
 // own error otherwise hides it — so any command that shells out through
 // Runner.Run already "recognizes a Ctrl-C" instead of just dying with it. And
-// Runner.Attach (the interactive `exec -it` path used by `den spawn` and `den
-// exec`) deliberately sets cmd.Cancel = nil, so this context ending
+// Runner.Attach (the interactive `exec -it` path used by `den up`, `den run`,
+// `den exec` and `den shell`) deliberately sets cmd.Cancel = nil, so this context ending
 // does nothing to an attached shell — the tty driver delivers a Ctrl-C typed
 // inside it directly to the sandbox's foreground process, not through here.
 // Checked, not assumed: in both callers (internal/cli/exec.go, spawn.Spawn at
@@ -291,11 +292,6 @@ var (
 	noArgs        = argsBetween(0, 0)
 	exactlyOneArg = argsBetween(1, 1)
 	atMostOneArg  = argsBetween(0, 1)
-	// atLeastOneArg has no upper bound because the arguments past the first are
-	// repos, and nothing caps how many a spawn may mount. argsBetween's
-	// "too many" branch is therefore unreachable through it — only the
-	// "one argument expected: none received" wording is ever produced.
-	atLeastOneArg = argsBetween(1, math.MaxInt)
 )
 
 // argsBetween returns a validator accepting between min and max arguments.
@@ -386,10 +382,15 @@ func unknownCommand(cmd *cobra.Command, args []string) error {
 // slice by name, so the order is deterministic and a golden can hold it.
 //
 // The migration line is STATIC. A kinder version would read the den home to
-// say "api is a nest, type `den spawn api`" — rejected: it would put a
+// say "api is a nest, type `den up api`" — rejected: it would put a
 // fallible config.Home, hence a second class of error, on the most banal
 // error path of the whole CLI. The fixed line carries the whole migration for
 // nothing.
+//
+// It carries `den spawn` too since 2026-08-16, and cobra cannot: `spawn`→`up`
+// is edit distance 5 and `spawn`→`run` is 4, both above
+// SuggestionsMinimumDistance = 2, so `den spawn api` gets no "did you mean" at
+// all. This line is the whole migration.
 func unknownCommandError(root *cobra.Command, arg string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "unknown command %q", arg)
@@ -423,7 +424,8 @@ func unknownCommandError(root *cobra.Command, arg string) error {
 		}
 		fmt.Fprintf(&b, "\n  %-*s %s", pad, sub.Name(), sub.Short)
 	}
-	b.WriteString("\n\n`den <nest>` no longer spawns: use `den spawn <nest>`.")
+	b.WriteString("\n\n`den <nest>` and `den spawn <nest>` no longer spawn: " +
+		"use `den up <nest>`, or `den run <nest> <cmd>`.")
 	b.WriteString("\nRun `den help <command>` for details.")
 	return errors.New(b.String())
 }

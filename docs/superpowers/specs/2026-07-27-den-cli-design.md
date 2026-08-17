@@ -58,7 +58,7 @@ obligatoire** : un nom qui commence par `-` ou `+` est indiscernable d'un flag, 
 `sbx create --name` que pour den lui-même (`den nest show -api` échoue sur un flag inconnu avant
 même d'atteindre la résolution du nest). Un `-w feature/123` est donc refusé avec un message
 actionnable, jamais normalisé en silence : normaliser casserait l'aller-retour
-`den spawn <nest> -w <wt>` → nom de sandbox → `den ls`.
+`den up <nest> -w <wt>` → nom de sandbox → `den ls`.
 
 ---
 
@@ -173,7 +173,7 @@ est un refus au **chargement** (`config.LoadStack`), jamais une valeur que den c
 refus voisins ci-dessus : le vide voyage dans **trois** directions, et seule la première se voit.
 
 1. **Constructible.** La stack se construit entièrement, `sbx template save <S>-build ""` s'exécute,
-   den annonce le succès. Le `den spawn` suivant répond « image&nbsp;&nbsp;n'est pas construite —
+   den annonce le succès. Le `den up`/`den run` suivant répond « image&nbsp;&nbsp;n'est pas construite —
    lance `den build devx` » (l'espace doublé est la place de l'image), c'est-à-dire exactement ce que
    l'utilisateur vient de faire. C'est la **boucle fermée** du §6 : den possédant `template save` en
    corrige le NOM, rien n'en corrigeait la vacuité.
@@ -214,11 +214,13 @@ agents:                              # optionnel : override du config_dir PAR ag
 ```
 
 **`repos:` est facultatif.** Un nest qui n'en déclare aucun reste un objet spawnable complet — il
-porte sa stack, son egress, son env, ses ports et ses profils agents — et reçoit ses dépôts en
-positionnels : `den spawn scratch ~/dev/a ~/dev/b`. Les positionnels sont additifs et passent
-**devant** les `repos:` déclarés, parce que `Workspaces[0]` décide du répertoire où démarre le shell
-attaché. Ils n'entrent pas dans l'identité : `den spawn scratch ~/dev/a` et `den spawn scratch
-~/dev/b` visent la même sandbox `scratch`. Détail : `2026-08-04-adhoc-repos-design.md`.
+porte sa stack, son egress, son env, ses ports et ses profils agents — et reçoit ses dépôts derrière
+un `--repo` répétable : `den up scratch --repo ~/dev/a --repo ~/dev/b`. Ces repos ad hoc sont additifs
+et passent **devant** les `repos:` déclarés, parce que `Workspaces[0]` décide du répertoire où
+démarre le shell attaché. Ils n'entrent pas dans l'identité : `den up scratch --repo ~/dev/a` et
+`den up scratch --repo ~/dev/b` visent la même sandbox `scratch`. Détail :
+`2026-08-04-adhoc-repos-design.md` (positionnels, à l'origine) et `2026-08-16-up-run-command-design.md`
+(le passage à `--repo`).
 
 **Règles de fusion** (cascade) : `global ← stack ← nest ← flags CLI`.
 **Egress effectif** = `baseline ∪ stack.egress ∪ nest.egress` (dédupliqué), appliqué **scopé à la
@@ -231,21 +233,22 @@ sandbox**.
 | Commande | Rôle |
 |---|---|
 | `den init` | crée un den home à partir de l'exemple embarqué (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`) ; refuse si `config.yaml` existe déjà |
-| `den spawn <nest> [repo...] [-w <wt>] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell ; les `repo...` sont des repos montés à la volée, additifs aux `repos:` du nest et placés devant eux |
+| `den up <nest> [-w <wt>] [--repo p...] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell ; `--repo`, répétable, mounte des repos à la volée, additifs aux `repos:` du nest et placés devant eux |
+| `den run <nest> <cmd> [args...] [mêmes drapeaux]` | le même spawn-or-attach, en lançant `<cmd>` au lieu d'ouvrir un shell ; sort avec le statut de la commande |
 | `den ls` | sandboxes vivantes (`sbx ls --json` filtré sur le motif de nommage, colonnes nom/nest/worktree/statut/workspaces) |
 | `den sh <name>` | shell dans une sandbox existante |
 | `den ports <name> [--add H:C]` | **publie à la demande** la fenêtre déclarée + affiche le tableau |
 | `den rm <name> [--keep-worktrees]` | teardown (profil agent persiste ; worktrees nettoyés sauf `--keep`) |
 | `den build [<stack>] [--force]` | build image(s), ordre DAG |
 | `den doctor [--fix] [--force]` | valide config, teste egress, présence/login sbx ; signale les manifestes sans sandbox et, sous `--fix`, récupère leurs worktrees (spec 2026-08-05) |
-| `den nest ls` / `den nest show <n> [repo...]` | inspecter les nests déclarés |
+| `den nest ls` / `den nest show <n> [--repo p...]` | inspecter les nests déclarés |
 | `den source add\|update\|ls\|rm`, `den lint <path>` | sources d'équipe (clones git partagés) — voir spec 2026-08-04 |
 
 Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <name>`.
 
 ---
 
-## 6. Data flow du spawn — `den spawn <nest> [-w <wt>] …`
+## 6. Data flow du spawn — `den up <nest> [-w <wt>] …` / `den run <nest> <cmd> …`
 
 1. **Résolution.** Charge `config.yaml` + `nests/<nest>.yaml` + `stacks/<stack>/stack.yaml`.
    Fusion en cascade.
@@ -286,8 +289,8 @@ Réservé (hors v1, nommage figé) : `den agent <nest> [ticket]`, `den review <n
 7. **Policy + settle-loop** (cf. §7).
 8. **SSH** selon `ssh.mode` : `agent-forward` (défaut) / `mount ~/.ssh_sbx` / `none`.
 9. **Attache.** `sbx exec -it -w <workdir> <name> bash -l` → shell, sauf `--detach`.
-   `<workdir>` est tranché par **un seul juge**, `spawn.StartDir`, appelé par `den spawn` comme
-   par `den exec` (#69, 2026-08-14) : `--workdir` d'abord, sinon le **cwd** du processus qui a
+   `<workdir>` est tranché par **un seul juge**, `spawn.StartDir`, appelé par `den up`/`den run` comme
+   par `den exec`/`den shell` (#69, 2026-08-14) : `--workdir` d'abord, sinon le **cwd** du processus qui a
    tapé la commande dès qu'un workspace monté le contient (le plus profond gagne — A11 : le
    chemin hôte EST le chemin in-VM, donc le cwd est un chemin valide dans la VM), sinon le
    premier workspace, sinon rien (pas de `-w`). Aucun match ⇒ **silence** : lancer den depuis
@@ -340,7 +343,7 @@ Le modèle #8 laissait le nom de l'image s'écrire **deux fois sans lien** : `im
 après le script — le code de sortie, et c'est tout. Éditer l'un sans l'autre produisait ceci :
 
 1. `den build devx` → le script tourne, sort en 0, den annonce le succès ;
-2. `den spawn` → `checkStackImage` ne trouve pas `image:` dans l'inventaire → « lance
+2. `den up`/`den run` → `checkStackImage` ne trouve pas `image:` dans l'inventaire → « lance
    `den build devx` » ;
 3. …ce que l'utilisateur vient de faire, avec succès.
 
@@ -747,9 +750,9 @@ Quatre verdicts, et ce qu'ils coûtent :
   invisible. C'est le silence de #18 reconstitué à l'intérieur du correctif de #27.
 
 **La porte tient sur les DEUX chemins depuis l'issue #27.** Elle ne tenait d'abord que sur
-`den spawn` : `den sh` est une commande à part, qui ne passe pas par la séquence du §6, et sur le
+`den up`/`den run` : `den sh` est une commande à part, qui ne passe pas par la séquence du §6, et sur le
 banc la sandbox `gamma` dont la porte venait d'être prouvée fermée (`fail … exit=1`) refusait
-`den spawn <nest> --agent broken` **et** donnait un shell en silence à `den sh gamma`. Une garantie tenue
+`den up <nest> --agent broken` **et** donnait un shell en silence à `den sh gamma`. Une garantie tenue
 par une porte sur deux est plus trompeuse que pas de garantie du tout, d'autant que `den sh` sur une
 sandbox **arrêtée** la redémarre — c'est-à-dire exactement le « une sandbox démarre » dont parle le
 §9.1. L'arbitrage du verdict vit désormais dans **une seule fonction** (`spawn.reportFreshness`) :
@@ -814,7 +817,7 @@ comme le reste pour que les trois états soient rejouables sans agent réel sur 
 - `den doctor` **nomme le compte d'identités** quand tout va bien — `[ok] ssh.mode agent-forward,
   SSH_AUTH_SOCK=… (N identities)`. Un `[ok]` muet ne laisserait repérer ni un socket périmé ni un
   agent qui a perdu ses clés ;
-- `den spawn` en `agent-forward` **avertit sur stderr**, avant le `sbx create` et aussi quand il
+- `den up`/`den run` en `agent-forward` **avertit sur stderr**, avant le `sbx create` et aussi quand il
   attache à une sandbox déjà vivante. Sur stderr et pas stdout : c'est l'environnement de den qui
   est en cause, pas la sandbox que le reste de la sortie décrit.
 
@@ -923,7 +926,7 @@ nest. Cache `~/.den/cache/` reconstructible, jamais source de vérité.
 | Mise à jour de l'agent impossible au boot | **Fail-closed** après 3 tentatives (§9.1) : le kit sort non-zéro. Layeré en dernier → aucun autre kit lésé. Diagnostic dans `/var/log/sbx-kit-startup.log` — que **den lit** : il **refuse** d'ouvrir la sandbox et cite la ligne (§9.2) |
 | Nom de sandbox déjà vivant | **Spawn-or-attach** (pas une erreur) : attache |
 | Sandbox **arrêtée**, et l'opération exige une VM vivante (`den ports`) | den la **démarre**, l'annonce sur stderr, puis **relit** son état. Voir la décision ci-dessous |
-| Sandbox **arrêtée** sous `den spawn --detach` | den ne démarre rien et **ne dit pas `ready`** : il dit qu'elle reste arrêtée, que son état est préservé, et quelles commandes la relancent |
+| Sandbox **arrêtée** sous `den up --detach` | den ne démarre rien et **ne dit pas `ready`** : il dit qu'elle reste arrêtée, que son état est préservé, et quelles commandes la relancent |
 
 **Une décision, deux situations** (issues #16 et #17, écrite ici parce qu'elle gouverne deux
 commandes) :
@@ -935,7 +938,7 @@ Le §2 (« den refuse plutôt que de normaliser en silence ») porte sur l'**int
 l'utilisateur — une clé mal tapée, une contradiction de drapeaux. Publier un port n'a rien
 d'ambigu : ça exige un endpoint. Un refus nommerait bien l'état et le remède, mais la seule suite
 possible serait de lancer une commande qui démarre la VM — celle que den refusait de faire. F2 avait
-déjà tranché dans ce sens pour `den sh` et `den spawn`, où `sbx exec` redémarre de façon
+déjà tranché dans ce sens pour `den sh` et `den up`/`den run`, où `sbx exec` redémarre de façon
 transparente ; `sbx ports` ne partage pas ce comportement, d'où un `500 Internal Server Error: … no
 container endpoint with IP address found` qui ne nommait ni la cause ni le remède.
 
@@ -981,7 +984,7 @@ internal/
   agent/                 # résolution agent + mixin généré (env + egress)
   build/                 # graphe `parent`, ordre, arbitrage d'image, séquence de build (§6)
   doctor/                # diagnostic de la configuration et de l'environnement
-  spawn/                 # orchestration de `den spawn` (§6), hors cli pour rester testable
+  spawn/                 # orchestration de `den up`/`den run` (§6), hors cli pour rester testable
 ```
 
 **Tests (TDD) :**

@@ -1,0 +1,601 @@
+package cli
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/PillowPillow/den/internal/spawn"
+	"github.com/spf13/cobra"
+)
+
+// runRun runs `den run` on a given den home, with injected access. runUp's twin
+// (up_test.go), and it exists for the same reason: without injection the
+// flag-to-spawn.Options wiring is unverifiable, and any test reaching
+// `sbx create` would try to run the real binary.
+func runRun(t *testing.T, home string, deps spawn.Deps, args ...string) (string, error) {
+	t.Helper()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, deps))
+	return executeCmd(t, root, append([]string{"run"}, args...)...)
+}
+
+// Mirrors TestExecPutsItsOwnChatterOnStderrWithoutATty (exec_test.go):
+// `den run -T api go build > out.txt` must not let den's own log join the file
+// the command owns. Before the I1 fix, spawn.Spawn wrote every line it says to
+// d.Out regardless of a terminal, so this reaches `sbx exec` through Pipe with
+// den's chatter already on stdout and FAILS against the old code.
+//
+// Uses executeCmdSeparateStreams directly (not runRun, which merges streams via
+// executeCmd) because the whole point is telling the two apart.
+func TestRunPutsItsOwnChatterOnStderrWithoutATty(t *testing.T) {
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	d.IsTTY = func() bool { return false }
+
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	stdout, stderr, err := executeCmdSeparateStreams(t, root, "run", "api", "true")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("stdout must belong to the command alone; got %q", stdout)
+	}
+	if !strings.Contains(stderr, "creating sandbox") {
+		t.Errorf("den's own chatter must land on stderr; got %q", stderr)
+	}
+}
+
+// The interactive path keeps saying it on stdout, as it always has (mirrors
+// TestExecKeepsItsChatterOnStdoutWithATty, exec_test.go): nothing is piped
+// there under a terminal, and moving it would change a surface #60 does not
+// touch. Guards the other direction of the split — inverting spawn.go's `!tty`
+// to `tty` would still pass TestRunPutsItsOwnChatterOnStderrWithoutATty above
+// only by accident; this test would catch it.
+func TestRunKeepsItsChatterOnStdoutWithATty(t *testing.T) {
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	d.IsTTY = func() bool { return true }
+
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	stdout, stderr, err := executeCmdSeparateStreams(t, root, "run", "api", "true")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout, "creating sandbox") {
+		t.Errorf("den's own chatter must stay on stdout under a tty; got %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr must stay empty on the tty path; got %q", stderr)
+	}
+}
+
+// The command REACHES spawn.Options, and --detach is refused against it. Two
+// properties in one line, because the contradiction is the only thing an
+// unwired o.Command can be proven by: unwired, `--detach` alone is a perfectly
+// ordinary spawn and nothing is refused.
+//
+// The message is asserted WHOLE, and its remedy must be `den up --detach` — the
+// command that detaches. It used to promise "a command after `--`", a shape
+// this family no longer has.
+func TestRunRefusesDetach(t *testing.T) {
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	_, err := executeCmd(t, root, "run", "--detach", "api", "true")
+	if err == nil {
+		t.Fatal("--detach with a command must be refused")
+	}
+	const want = "--detach and a command contradict each other — drop one: --detach spawns " +
+		"without entering the sandbox, and `den run` runs a command inside it — " +
+		"use `den up --detach <nest>`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
+// -T/--no-tty must reach spawn.Options, and `den run` is the ONLY command that
+// carries a WORKING one — `den up` registers it to refuse it, so
+// TestUpRefusesNoTTY proves the refusal and nothing about the wiring. Registered
+// per-command by design (registerSpawnFlags holds only the shared flags), which
+// means this arrow has no other test behind it: `BoolVarP(&o.Detach, "no-tty",
+// "T", …)` here would compile and pass every other case in this file.
+//
+// Proven by the DIFFERENCE with and without the flag, the idiom
+// TestDetachReachesSpawnOptions uses, with the probe answering TRUE — the one
+// case -T exists to override. Wired, `tty` is false and the command goes through
+// Pipe; unwired, it goes through Attach.
+//
+// The cost of the silent version, measured by this repo already: `sbx exec -t`
+// with no terminal behind it DISCARDS the command's output while still returning
+// its status (2026-08-10 on v0.38.0, spec §14.0). `den run -T api go build | tee
+// log` would come back empty and green.
+func TestNoTTYReachesRunOptions(t *testing.T) {
+	for _, name := range []string{"-T", "--no-tty"} {
+		t.Run(name, func(t *testing.T) {
+			home := denHomeSpawnable(t)
+
+			fWith, dWith := fakeSpawnDeps()
+			dWith.IsTTY = func() bool { return true }
+			if _, err := runRun(t, home, dWith, name, "api", "true"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(fWith.Attaches) != 0 {
+				t.Errorf("%s must suppress the terminal; attaches: %v", name, fWith.Attaches)
+			}
+			if !fWith.HasPiped("exec") {
+				t.Errorf("%s must send the command through Pipe; pipes: %v", name, fWith.Pipes)
+			}
+
+			fWithout, dWithout := fakeSpawnDeps()
+			dWithout.IsTTY = func() bool { return true }
+			if _, err := runRun(t, home, dWithout, "api", "true"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(fWithout.Attaches) != 1 {
+				t.Errorf("without %s, a terminal must be allocated; attaches: %v",
+					name, fWithout.Attaches)
+			}
+		})
+	}
+}
+
+// The command is a COMMAND, never a repo to mount. Proven by an INVALID value,
+// the idiom up_test.go uses for the mirror property
+// (TestRepoFlagReachesSpawnOptions): a path that does not exist fails the spawn
+// WHEN IT IS READ AS A REPO, so a `den run` naming one must not fail on it.
+//
+// Weaker than it was before 2026-08-16, and deliberately kept: `den run` has no
+// positional-repo syntax left for the command to be confused with, so the only
+// regression it can still catch is a RunE that fed args[1:] to o.Repos.
+func TestRunDoesNotMountTheCommandAsARepo(t *testing.T) {
+	_, d := fakeSpawnDeps()
+	missing := filepath.Join(t.TempDir(), "gone")
+
+	_, err := runRun(t, denHomeSpawnable(t), d, "api", missing)
+	if err != nil && strings.Contains(err.Error(), missing) {
+		t.Errorf("what follows the nest name is a command, not a repo to mount: %v", err)
+	}
+}
+
+// Every short spelling the exact-name comparison missed before 2026-08-16. Each
+// of these, judged "not den's", became the nest name or the first word of the
+// command and reached the VM as `bash: -wfeat: command not found`. The rows the
+// old comparison missed ARE the test.
+func TestRunRefusesDenFlagsAfterTheNestName(t *testing.T) {
+	for _, argv := range [][]string{
+		{"run", "api", "--workdir", "/srv", "go", "build"},
+		{"run", "api", "--workdir=/srv", "go", "build"},
+		{"run", "api", "-w", "feat", "go", "build"},
+		{"run", "api", "-wfeat", "go", "build"},
+		{"run", "api", "-w=feat", "go", "build"},
+		{"run", "api", "-iT", "go", "build"},
+		{"run", "api", "-Ti", "go", "build"},
+		{"run", "api", "-iTw", "feat", "go", "build"},
+		{"run", "api", "-iTwfeat", "go", "build"},
+		{"run", "api", "-iT=true", "go", "build"},
+		{"run", "api", "--repo", "/a", "go", "build"},
+		{"run", "api", "--", "go", "build"},
+	} {
+		t.Run(strings.Join(argv[2:], " "), func(t *testing.T) {
+			if err := validateArgs(t, argv...); err == nil {
+				t.Fatalf("%v must be refused", argv)
+			}
+		})
+	}
+}
+
+// The value travels WITH the cluster instead of being abandoned: `-iTw feat`
+// consumes the next token, and the lifted line must carry it.
+func TestRunLiftsAShorthandClusterWithItsValue(t *testing.T) {
+	err := validateArgs(t, "run", "api", "-iTw", "feat", "go", "test")
+	if err == nil {
+		t.Fatal("a cluster after the nest name must be refused")
+	}
+	const want = "den run: den's flags go before the nest name — " +
+		"write `den run -iTw feat api go test`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
+// pflag's order rule, which the naive reading inverts: the `=` binds to the
+// PRECEDING letter and ends the token, whatever that letter's arity. `-iT=true`
+// sets both booleans; `-wi feat` sets worktree="i" and leaves `feat` positional.
+//
+// The third row is what that last sentence COSTS the remedy, and it is measured
+// rather than assumed: `-wi` carries its value inside the token, so the cluster
+// consumes nothing, and `feat` is the first word of the command. The proposed
+// line therefore reads `den run -wi api feat go test` — worktree="i", nest api,
+// command `feat go test`, which is exactly what the refused line meant. Moving
+// `feat` left of `api`, as a reading that assumed the cluster consumed it would
+// do, would silently make `feat` the nest.
+func TestRunTreatsAnEqualsInsideAClusterAsTheValue(t *testing.T) {
+	for _, tc := range []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"run", "api", "-iT=true", "go", "test"},
+			"den run: den's flags go before the nest name — write `den run -iT=true api go test`"},
+		{[]string{"run", "api", "-Ti=false", "go", "test"},
+			"den run: den's flags go before the nest name — write `den run -Ti=false api go test`"},
+		{[]string{"run", "api", "-wi", "feat", "go", "test"},
+			"den run: den's flags go before the nest name — write `den run -wi api feat go test`"},
+	} {
+		t.Run(tc.argv[2], func(t *testing.T) {
+			err := validateArgs(t, tc.argv...)
+			if err == nil {
+				t.Fatalf("%v must be refused", tc.argv)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("message = %q, want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// The command's OWN flags pass through untouched — what SetInterspersed(false)
+// buys, and the guard against a classifier that overreaches.
+func TestRunPassesTheCommandsOwnFlagsThrough(t *testing.T) {
+	if err := validateArgs(t, "run", "api", "go", "test", "-v", "-run", "TestX"); err != nil {
+		t.Errorf("the command's own flags must pass through; got %v", err)
+	}
+}
+
+// An unknown LETTER disqualifies the whole cluster, and `-Tv` reaches the VM.
+// That is the measured status quo of `den exec`, and the only right answer:
+// `-Tv` is not a legal den spelling, so den cannot lift it into a remedy.
+func TestRunPassesUnknownClustersToTheSandbox(t *testing.T) {
+	if err := validateArgs(t, "run", "api", "-Tv", "go", "build"); err != nil {
+		t.Errorf("an unknown cluster must reach the sandbox; got %v", err)
+	}
+}
+
+// MUST go through a real Execute(): --help is ABSENT from the walk under
+// Find+ParseFlags and PRESENT under Execute(), because cobra adds it in
+// InitDefaultHelpFlag. A test built on validateArgs is blind to this
+// regression.
+//
+// Asserted on the TAIL of a piped call rather than on a whole prefix, unlike
+// TestExecPassesHelpToTheSandbox (exec_test.go): there the workspace is
+// scripted, here `den run` creates the sandbox and StartDir picks the workdir
+// out of a temporary directory this test cannot spell.
+func TestRunPassesHelpToTheSandbox(t *testing.T) {
+	home := denHomeSpawnable(t)
+	f, d := fakeSpawnDeps()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	if _, err := executeCmd(t, root, "run", "api", "mytool", "--help"); err != nil {
+		t.Fatalf("--help past the nest name belongs to the command; got %v", err)
+	}
+	var reached bool
+	for _, call := range f.Pipes {
+		if len(call) >= 2 && slices.Equal(call[len(call)-2:], []string{"mytool", "--help"}) {
+			reached = true
+		}
+	}
+	if !reached {
+		t.Errorf("`mytool --help` must reach the sandbox verbatim; pipes = %v", f.Pipes)
+	}
+}
+
+// The persistent --den-home is in the derived table without being listed
+// anywhere: left out, `den run api --den-home /tmp true` sent a program
+// literally named `--den-home` into the sandbox.
+func TestDerivedFlagSetSeesThePersistentDenHome(t *testing.T) {
+	err := validateArgs(t, "run", "api", "--den-home", "/tmp", "true")
+	if err == nil {
+		t.Fatal("--den-home after the nest name must be refused")
+	}
+	const want = "den run: den's flags go before the nest name — " +
+		"write `den run --den-home /tmp api true`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
+// Two --repo read back off the FlagSet must come out as two PAIRS, in typing
+// order. Value.String() renders a stringArray as "[/a,/b]", which reparses as
+// one bogus path named exactly that — a syntactically legal remedy that is
+// semantically false, so the replay below cannot catch it. SliceValue.GetSlice
+// is the only correct read.
+func TestRunRemediesCarryEveryRepoTypedBeforeTheNestName(t *testing.T) {
+	err := validateArgs(t, "run", "--repo", "/b", "--repo", "/a", "api")
+	if err == nil {
+		t.Fatal("a run with no command must be refused")
+	}
+	const want = "den run: no command given — write `den run --repo /b --repo /a api go test`, " +
+		"or `den up --repo /b --repo /a api` for a shell"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+	if strings.Contains(err.Error(), "[/b,/a]") {
+		t.Errorf("Value.String()'s slice form must never appear; got %q", err.Error())
+	}
+}
+
+// The SHELL half of "no command given" must carry the user's flags too, and
+// --as is the sharpest case there is: it is what makes the sandbox `api.reco`,
+// so a proposal that drops it names a DIFFERENT sandbox and the user follows it
+// into one — silently, since both lines are legal. It was a Sprintf of the bare
+// name until 2026-08-16.
+//
+// The assertion is on the WHOLE message, and it has to be: remedyOf reads the
+// FIRST backticked span only, so TestRunRemediesAreThemselvesLegal replays the
+// `den run …` half and structurally cannot see this one.
+func TestRunShellRemedyCarriesTheFlagsThatDecideTheSandbox(t *testing.T) {
+	err := validateArgs(t, "run", "--as", "reco", "-w", "feat", "api")
+	if err == nil {
+		t.Fatal("a run with no command must be refused")
+	}
+	const want = "den run: no command given — " +
+		"write `den run --as reco --worktree feat api go test`, " +
+		"or `den up --as reco --worktree feat api` for a shell"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
+// The duplicate rule: the flag typed AFTER the name wins, because it is the last
+// one typed and the one den is teaching the user to move.
+func TestRunRemedyPrefersTheFlagTypedAfterTheName(t *testing.T) {
+	err := validateArgs(t, "run", "--workdir", "/a", "api", "--workdir", "/b", "go", "test")
+	if err == nil {
+		t.Fatal("a flag after the nest name must be refused")
+	}
+	const want = "den run: den's flags go before the nest name — " +
+		"write `den run --workdir /b api go test`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestRunRemedyQuotesAValueContainingASpace(t *testing.T) {
+	err := validateArgs(t, "run", "api", "--repo", "/tmp/hot fix", "go", "test")
+	if err == nil {
+		t.Fatal("a flag after the nest name must be refused")
+	}
+	const want = "den run: den's flags go before the nest name — " +
+		"write `den run --repo '/tmp/hot fix' api go test`"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
+// The twin of slice 1's hard-won property: a remedy den proposes is itself
+// accepted by den. Replayed through shellSplit, never strings.Fields.
+func TestRunRemediesAreThemselvesLegal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{"a flag after the name", []string{"run", "api", "-T", "go", "build"},
+			"den run -T api go build"},
+		{"a separator", []string{"run", "api", "--", "go", "build"},
+			"den run api go build"},
+		{"a leading separator", []string{"run", "--", "api", "go", "build"},
+			"den run api go build"},
+		{"a repo after the name", []string{"run", "api", "--repo", "/a", "go", "build"},
+			"den run --repo /a api go build"},
+		{"a repo with a space", []string{"run", "api", "--repo", "/tmp/hot fix", "go", "build"},
+			"den run --repo '/tmp/hot fix' api go build"},
+		{"a cluster with a value", []string{"run", "api", "-iTw", "feat", "go", "build"},
+			"den run -iTw feat api go build"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateArgs(t, tc.argv...)
+			if err == nil {
+				t.Fatalf("%v must be refused", tc.argv)
+			}
+			got := remedyOf(t, err.Error())
+			if got != tc.want {
+				t.Errorf("remedy = %q, want %q (full message: %q)", got, tc.want, err.Error())
+			}
+			replay := shellSplit(t, got)[1:] // drop "den"
+			if err := validateArgs(t, replay...); err != nil {
+				t.Errorf("the remedy %q is refused in turn: %v", got, err)
+			}
+		})
+	}
+
+	// The advisory line comes in TWO shapes, one per target, and both need the
+	// replay: `warnFirstCommandTokenIsADirectory` builds each with the same
+	// shared builder, and `target` is the only thing that differs between them
+	// — exactly the kind of difference a builder can get wrong for one target
+	// and not the other. `up -- --repo /a api` proposing `den run --repo /a api
+	// /a api` (fixed 2026-08-16, see the comment above TestUpRemediesAreThemselvesLegal)
+	// was that exact class of bug: syntactically legal, semantically false, and
+	// invisible to a replay that only ever tried one target. So both rows here
+	// run through executeCmdSeparateStreams, pull the line out of stderr and
+	// replay it — the "with a tail" row for the `den run` target, the "with no
+	// tail" row for `den up`.
+	for _, tc := range []struct {
+		name string
+		argv []string
+	}{
+		{"with a tail (targets den run)", []string{"run", "api", "hotfix", "go", "test"}},
+		{"with no tail (targets den up)", []string{"run", "api", "hotfix"}},
+	} {
+		t.Run("the advisory line "+tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			if err := os.Mkdir(filepath.Join(dir, "hotfix"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			home := denHomeSpawnable(t)
+			_, d := fakeSpawnDeps()
+			root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+			root.AddCommand(newRunCmd(&home, d))
+			_, stderr, err := executeCmdSeparateStreams(t, root, tc.argv...)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := remedyOf(t, stderr)
+			replay := shellSplit(t, got)[1:] // drop "den"
+			if err := validateArgs(t, replay...); err != nil {
+				t.Errorf("the advisory line %q is refused in turn: %v", got, err)
+			}
+		})
+	}
+}
+
+// The `den up` half of the same property, and it lives here because the builder
+// is shared: `den up` proposes `den run` lines, so a remedy of its own that the
+// other command refused would be invisible to the loop above.
+//
+// Every row pins its expected string, and the last two are why. The replay half
+// CANNOT see the defect they cover: `up -- --repo /a api` proposed `den run
+// --repo /a api /a api` until 2026-08-16 — the nest emitted twice, once as the
+// name and once as the first word of a command the user never typed — and
+// validateArgs accepts that line, so a loop that only replayed would have gone
+// green over it. Syntactically legal, semantically false. The `want` is the
+// whole assertion here; the replay is the second half, not the first.
+//
+// Named, so nobody reads more into the last row than it says: `den up -T api` is
+// legal to the VALIDATOR and refused one layer down, in spawn.Spawn's step 0.
+// That is the deferred always-refused-flag remedy class (ledger ruling 3),
+// parked for the whole-branch review; this row asserts the SHAPE of the line,
+// not that it runs.
+func TestUpRemediesAreThemselvesLegal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{"a useless separator", []string{"up", "--", "api"}, "den up api"},
+		{"a trailing separator", []string{"up", "api", "--"}, "den up api"},
+		{"a repo across the separator", []string{"up", "--repo", "/a", "--", "api"},
+			"den up --repo /a api"},
+		{"a second positional", []string{"up", "api", "/dev/hotfix"},
+			"den up --repo /dev/hotfix api"},
+		{"a command", []string{"up", "api", "--", "go", "test"}, "den run api go test"},
+		// pflag eats a LEADING `--` before its interspersed check, so these two
+		// arrive with den's own flags as POSITIONALS and args[0] is a flag, not
+		// the nest. The remedy must lift the flag and name the nest ONCE.
+		{"a leading separator before a flag", []string{"up", "--", "--repo", "/a", "api"},
+			"den up --repo /a api"},
+		{"a leading separator before a shorthand", []string{"up", "--", "-T", "api"},
+			"den up -T api"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateArgs(t, tc.argv...)
+			if err == nil {
+				t.Fatalf("%v must be refused", tc.argv)
+			}
+			got := remedyOf(t, err.Error())
+			if got != tc.want {
+				t.Errorf("remedy = %q, want %q (full message: %q)", got, tc.want, err.Error())
+			}
+			replay := shellSplit(t, got)[1:] // drop "den"
+			if err := validateArgs(t, replay...); err != nil {
+				t.Errorf("the remedy %q is refused in turn: %v", got, err)
+			}
+		})
+	}
+}
+
+// `den down` is a compose reflex, and cobra catches nothing on its own.
+// SuggestFor on `rm` is what puts the real gesture in front of the user. The
+// field must widen nothing else: `den dwon` still suggests nothing.
+func TestDownSuggestsRm(t *testing.T) {
+	t.Setenv("DEN_HOME", t.TempDir())
+
+	_, err := run(t, "down", "api")
+	if err == nil {
+		t.Fatal("`den down` is not a command")
+	}
+	if !strings.Contains(err.Error(), "did you mean `den rm`?") {
+		t.Errorf("`den down` must point at `den rm`; got %q", err.Error())
+	}
+	_, err = run(t, "dwon")
+	if err == nil {
+		t.Fatal("`den dwon` is not a command")
+	}
+	if strings.Contains(err.Error(), "did you mean") {
+		t.Errorf("SuggestFor must widen nothing else; got %q", err.Error())
+	}
+}
+
+// The warning goes through a real Execute(): it comes out of RunE, not out of
+// the validator — no validator in this repo writes to a stream, and one that did
+// would staple advice under a line already refused for something else.
+//
+// The directory is a t.TempDir() and the test chdirs into it, because the
+// normalization joins a relative path to the cwd.
+func TestRunWarnsWhenTheFirstCommandTokenIsADirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Mkdir(filepath.Join(dir, "hotfix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	_, stderr, err := executeCmdSeparateStreams(t, root, "run", "api", "hotfix", "go", "test")
+	if err != nil {
+		t.Fatalf("the line must RUN, not be refused: %v", err)
+	}
+	const want = "! hotfix is a directory on this host, and den is passing it to the sandbox as the " +
+		"first word of the command — ad-hoc repos go behind `--repo` now — " +
+		"write `den run --repo hotfix api go test`\n"
+	if !strings.Contains(stderr, want) {
+		t.Errorf("stderr must carry %q; got %q", want, stderr)
+	}
+}
+
+// With no other command on the line, the remedy must name `den up`:
+// `den run --repo hotfix api` would be refused in turn for "no command given".
+// That is the dead-on-arrival remedy slice 1 paid for once.
+func TestRunWarningNamesUpWhenTheLineCarriesNoOtherCommand(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Mkdir(filepath.Join(dir, "hotfix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	_, stderr, err := executeCmdSeparateStreams(t, root, "run", "api", "hotfix")
+	if err != nil {
+		t.Fatalf("the line must RUN, not be refused: %v", err)
+	}
+	if !strings.Contains(stderr, "write `den up --repo hotfix api`") {
+		t.Errorf("the remedy must name `den up`; got %q", stderr)
+	}
+}
+
+// A file is not a directory: `den run api ./build.sh` is a legitimate command.
+// And the false positive, priced honestly: a command whose first word is also
+// the name of a directory in the cwd. In a repo carrying build/, `den run api
+// build` prints one advisory line too many — argv, exit status and output
+// unchanged. That is the whole cost.
+func TestRunDoesNotWarnOnAFileOrAPlainWord(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "build.sh"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	for _, tok := range []string{"./build.sh", "go"} {
+		t.Run(tok, func(t *testing.T) {
+			_, stderr, err := executeCmdSeparateStreams(t, root, "run", "api", tok, "test")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if strings.Contains(stderr, "is a directory on this host") {
+				t.Errorf("no warning is owed for %q; got %q", tok, stderr)
+			}
+		})
+	}
+}

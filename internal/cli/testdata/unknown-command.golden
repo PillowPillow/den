@@ -1,5 +1,7 @@
 unknown command "api"
 
+did you mean `den up`?
+
 Commands:
   build       Build stack images, in dependency order
   completion  Generate the autocompletion script for the specified shell
@@ -12,10 +14,11 @@ Commands:
   nest        Inspect the declared nests
   ports       Show where a sandbox's declared ports land on the host
   rm          Destroy a sandbox (the agent profile persists)
+  run         Spawn or attach a nest's sandbox, then run a command
   shell       Open a login shell in an existing sandbox
   source      Manage team source repositories (stacks/nests shared over git)
-  spawn       Spawn or attach a nest's sandbox
+  up          Spawn or attach a nest's sandbox, then open a shell
   version     Print den's version
 
-`den <nest>` no longer spawns: use `den spawn <nest>`.
+`den <nest>` and `den spawn <nest>` no longer spawn: use `den up <nest>`, or `den run <nest> <cmd>`.
 Run `den help <command>` for details.

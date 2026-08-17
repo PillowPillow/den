@@ -1,4 +1,5 @@
-// Package spawn orchestrates the full `den spawn` sequence (spec §6).
+// Package spawn orchestrates the sequence that `den up` and `den run` both
+// reach (spec §6).
 //
 // It lives outside internal/cli on purpose: it's the densest logic in the
 // project, and it must be testable without cobra or a tty.
@@ -41,7 +42,7 @@ type Deps struct {
 	Freshness agent.GateOptions
 	// Out is where Spawn's own log goes — EXCEPT on a non-tty command: Spawn
 	// aliases Out to Err at its own top, unconditionally, so a caller piping
-	// `den spawn api -T -- go build` never gets den's lines mixed into the
+	// `den run api -T go build` never gets den's lines mixed into the
 	// command's stdout. A Deps built by hand and left with Err nil keeps its
 	// log on Out regardless (the alias only fires when Err is set); see the
 	// ordering comment at the top of Spawn for why that fallback exists.
@@ -125,7 +126,7 @@ func (d Deps) goos() string {
 // that cli.Deps enforces between `den ls` and spawn. Deps stays a plain
 // struct with exported fields; the caller wires it explicitly.
 
-// Options carries the flags of `den spawn`.
+// Options carries the flags of `den up` and `den run`.
 type Options struct {
 	Nest     string
 	Worktree string
@@ -149,14 +150,15 @@ type Options struct {
 	// Interactive is `-i`: pick the nest's optional repos from a checklist
 	// instead of naming them on the command line.
 	Interactive bool
-	// Repos are the repositories given as positionals: `den spawn <nest> ~/dev/a`.
+	// Repos are the ad-hoc repositories, `den up --repo ~/dev/a <nest>` (they
+	// were positionals until 2026-08-16, hence the plural read out of one flag).
 	// Raw — tilde unexpanded, possibly relative; nest.Resolve normalizes them.
 	// Additive to the nest's `repos:`, and placed AHEAD of them, so the first
 	// one becomes the directory the attached shell starts in.
 	Repos []string
-	// Command is what to run in the sandbox instead of a login shell,
-	// everything the CLI found after `--`. Empty ⇒ attach a shell, which is
-	// what a spawn has always done.
+	// Command is what to run in the sandbox instead of a login shell: what
+	// `den run` found past the nest name. Empty ⇒ attach a shell, which is what
+	// `den up` always does.
 	Command []string
 	// Workdir overrides the directory the command runs in. Empty ⇒ the first
 	// workspace the VM reports, the same rule the shell follows.
@@ -195,7 +197,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		d.Out = io.Discard
 	}
 	// Non-interactive: den's own log joins the diagnostics on Err, because
-	// the child owns stdout — `den spawn api -T -- go build > out.txt` must
+	// the child owns stdout — `den run api -T go build > out.txt` must
 	// not let den's lines land in the file the child owns, the same
 	// contract `den exec` already holds (internal/cli/exec.go, `chatter`).
 	//
@@ -230,8 +232,9 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// return, which is precisely what #60 exists to deliver.
 	if o.Detach && len(o.Command) > 0 {
 		return fmt.Errorf(
-			"--detach and a command after `--` contradict each other — drop one: " +
-				"--detach spawns without entering the sandbox, a command has to run inside it")
+			"--detach and a command contradict each other — drop one: --detach spawns " +
+				"without entering the sandbox, and `den run` runs a command inside it — " +
+				"use `den up --detach <nest>`")
 	}
 
 	// The third contradiction, refused for the same reason and in the same
@@ -246,15 +249,15 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// The two messages are no longer identical, and that is deliberate since
 	// 2026-08-14. This comment used to promise `den exec` an identical string;
 	// `den exec` requires a command now and contradicts nothing, and the
-	// remedies of the two surviving refusals genuinely differ: here the way out
-	// is a command after `--`, which `den spawn` still takes, while `den shell`
-	// has no command form at all and must send the user to `den exec`. Copying
-	// this sentence there would hand a `--` to the one command that refuses it.
+	// remedies of the two surviving refusals genuinely differ. The rule that
+	// settles them since 2026-08-16: the remedy each command names is the one
+	// that exists ON it — `den up` sends the user to `den run`, `den shell`
+	// sends them to `den exec`, and neither mentions a separator den refuses.
 	// Keep the refusal on both; keep each remedy true of its own command.
 	if o.NoTTY && len(o.Command) == 0 {
 		return fmt.Errorf(
 			"-T asks for no terminal and no command asks for a shell, which needs one — " +
-				"give a command after `--`, or drop -T")
+				"give a command with `den run -T <nest> <cmd>`, or drop -T")
 	}
 
 	// 1. Resolve the cascade.
@@ -690,7 +693,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 	}
 	// The working directory is read HERE, once, and handed to internal/nest,
-	// which stays pure: `den spawn scratch .` is then assertable without a test having
+	// which stays pure: `den up scratch --repo .` is then assertable without a test having
 	// to chdir. os.Getwd is world access, like the os.Stat probes at step 2 —
 	// this side of the boundary is where it belongs.
 	//
@@ -729,7 +732,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 				// (parseRepoArg, internal/nest/repos.go) so a directory legitimately
 				// named with leading/trailing spaces survives intact — but that only
 				// pays off if this check names it verbatim. Under %s the padding
-				// blends into the surrounding text and `den spawn api " /dev/api "` prints
+				// blends into the surrounding text and `den up api --repo " /dev/api "` prints
 				// exactly like a clean path. And unlike the declared branch below,
 				// this one names no remedy: the origin alone tells the user where the
 				// path came from, not what to do about it.
@@ -825,7 +828,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// hand.
 	//
 	// This applies when RE-ATTACHING to a live sandbox too: if a mount host
-	// disappears from disk, `den spawn` can no longer attach even though none
+	// disappears from disk, `den up` can no longer attach even though none
 	// of this is re-read at attach time (the VM keeps its create-time mounts).
 	// `den shell <name>` is the one path that skips all of this. It was
 	// `den exec <name>` until 2026-08-14, when that form stopped meaning "enter":
@@ -888,7 +891,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	}
 	// Same invariant, same place: kits go into `sbx create`'s `--kit`
 	// argv. `den doctor` already checks them, but only for whoever runs
-	// it — without this, `den spawn` would exit 0 and let sbx fail
+	// it — without this, `den up`/`den run` would exit 0 and let sbx fail
 	// booting the microVM, leaving the user with a dead VM instead of a
 	// den message.
 	for _, k := range r.Stack.DeclaredKits() {
@@ -920,7 +923,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// verdict feeds. It moved up because it has to be BOTH:
 	//
 	//   - conditional on creating. A live sandbox is attached to, and attaching
-	//     needs no image — refusing there would refuse a `den spawn` that works,
+	//     needs no image — refusing there would refuse a `den up`/`den run` that works,
 	//     over an image the VM stopped needing the moment it was created.
 	//   - upstream of the worktrees. A refusal at the old position would already
 	//     have created a git worktree per repo and left the user to clean them
@@ -982,7 +985,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// (internal/manifest). The record answers the one question the flags
 	// cannot — the sandbox name's second component is the INSTANCE LABEL since
 	// `--as`, so it no longer says whether the VM mounts worktrees, which ones,
-	// or under which layout. Re-deriving from `-w` made `den spawn api --as
+	// or under which layout. Re-deriving from `-w` made `den up api --as
 	// reco -w other` compare the VM against paths it was never created with,
 	// and reportUnmountedRepos then printed "is not mounted" for every repo of
 	// a perfectly healthy sandbox, with `den rm` as the advice.
@@ -1156,7 +1159,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 
 		// Configuration drift. NOTHING reapplies a mixin to a running
 		// VM: it keeps its create-time policy and env. We WARN without
-		// refusing (refusing would break a `den spawn` that worked
+		// refusing (refusing would break a `den up`/`den run` that worked
 		// yesterday over a harmless YAML change) and without recreating
 		// (unrequested destruction of a VM that may carry work in
 		// progress).
@@ -1246,7 +1249,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// A `select: prompt` nest is the deliberate exception, and it is not new:
 		// there the paragraph prints on every attach, `-i` or not, because the
 		// checklist not opening IS the surprise — the mode's whole promise is that
-		// den asks, and a bare `den spawn generic` that asks nothing needs the
+		// den asks, and a bare `den up generic` that asks nothing needs the
 		// reason every single time (decision 6). That permanence is asserted by
 		// TestPromptModeDoesNotPromptWhenAttaching and predates this change.
 		//
@@ -1255,7 +1258,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		//     re-derived: that is what internal/manifest exists for. A legacy
 		//     sandbox, or one created outside den, simply drops the line.
 		//   - the IGNORED `-w` is the same defect on the other flag: since the
-		//     attach branch takes its worktree from the record, `den spawn api --as
+		//     attach branch takes its worktree from the record, `den up api --as
 		//     reco -w other` attached and said nothing about the flag it did not
 		//     honour. It stays quiet when `-w` AGREES with the record, which is the
 		//     ordinary re-attach — the user retypes the command that created the
@@ -1595,7 +1598,7 @@ func checkFreshness(ctx context.Context, d Deps, sandboxName string, detach bool
 //
 // It exists because §9.1's promise is about a sandbox starting, not about the
 // command that starts it, and den had been keeping that promise on one door out
-// of two. `den spawn` refused a sandbox whose freshness command failed; the
+// of two. `den up`/`den run` refused a sandbox whose freshness command failed; the
 // same sandbox handed out a shell in silence through `den exec`, which does not
 // route through Spawn at all — measured on the bench after PR #26, issue #27.
 // A guarantee held by one door is worse than none: it teaches the user that den
@@ -1741,7 +1744,7 @@ const reentryPending = " on re-entry, where the sandbox is already up and the jo
 // (TestRunDoesNotQueryTheAgentWhenTheSocketIsAbsent):
 //
 //   - there is nothing to interrogate without a socket, so the probe would be
-//     a wasted `ssh-add` — a fork on the mainline `den spawn` path, bounded
+//     a wasted `ssh-add` — a fork on the mainline `den up`/`den run` path, bounded
 //     only by sshagent's 2 s timeout;
 //   - the answer it comes back with is StateUnreachable, whose message says
 //     SSH_AUTH_SOCK "points at" a dead socket. On a host that simply has no
@@ -1813,7 +1816,7 @@ func warnEmptySSHAgent(w io.Writer, sshMode, socket string, probe func() sshagen
 // It exists because the warning is just as true there: the forwarded socket is
 // a live proxy, so re-entering a sandbox whose agent has since been emptied
 // hits the same `git push` failure, just as silently. Without this the warning
-// covered only the FIRST `den spawn` of the day, while `den exec` — the cheap
+// covered only the FIRST `den up`/`den run` of the day, while `den exec` — the cheap
 // re-entry, used far more often — said nothing on any OS.
 //
 // The one divergence is the ABSENT socket, and it is why this is a separate
@@ -1830,7 +1833,7 @@ func warnEmptySSHAgent(w io.Writer, sshMode, socket string, probe func() sshagen
 // The probe interrogates the agent of the shell running `den exec`, which is the
 // same one on a stable per-user socket (macOS launchd) and can differ from a
 // per-shell `eval $(ssh-agent)` on Linux. That is the same approximation the
-// attach branch of `den spawn` already makes, and the trade is deliberate: the
+// attach branch of `den up`/`den run` already makes, and the trade is deliberate: the
 // cost of being wrong is one advisory line suggesting a harmless `ssh-add`, the
 // cost of staying silent is the publickey failure this package exists to name.
 func WarnEmptySSHAgentOnReentry(w io.Writer, sshMode, socket string, probe func() sshagent.Result, goos string) {
@@ -1862,7 +1865,7 @@ func WarnEmptySSHAgentOnReentry(w io.Writer, sshMode, socket string, probe func(
 //     `image:` may name a registry image sbx will happily pull, and den has no
 //     remedy to offer for it — `den build` on a stack den cannot build is not
 //     advice, it is a second error. Refusing there would turn a working
-//     `den spawn` into a stop.
+//     `den up`/`den run` into a stop.
 //   - An `image:` pinned by DIGEST is left alone. `sbx template ls` reports a
 //     repository and a tag and no digest at all (sbx.IsDigestRef says so in
 //     full), so the inventory can neither confirm nor deny the pin — and
@@ -2013,9 +2016,9 @@ func reportMissingGitDirs(out io.Writer, sandboxName string, mounted, expected [
 // The mount half is presence: is each expected path anywhere in what the VM
 // mounts. The start-directory half is Decision 4 — the FIRST repo this
 // invocation named wins the attach's `-w` — and it can fail on its own even
-// when nothing is missing: `den spawn scratch ~/dev/a ~/dev/b` creates a VM
-// with Workspaces = [a, b, …] and Workdir() = a; the next day, `den spawn
-// scratch ~/dev/b` resolves to expected = [b], which the VM already mounts — nothing
+// when nothing is missing: `den up scratch --repo ~/dev/a --repo ~/dev/b` creates a VM
+// with Workspaces = [a, b, …] and Workdir() = a; the next day, `den up
+// scratch --repo ~/dev/b` resolves to expected = [b], which the VM already mounts — nothing
 // "missing" — yet the attach still runs with workdir = a, frozen at the
 // original create. A presence-only check goes silent on exactly that ordinary
 // "ask for a subset of what's already mounted" gesture, which is the harm
@@ -2026,7 +2029,7 @@ func reportMissingGitDirs(out io.Writer, sandboxName string, mounted, expected [
 // workspaces as positionals, and den reapplies NOTHING to a running VM.
 //
 // Warn, never refuse, and never recreate: the same doctrine as reportDrift.
-// Refusing would break a `den spawn` that worked yesterday over a path added
+// Refusing would break a `den up`/`den run` that worked yesterday over a path added
 // today, and recreating would destroy work in progress in the VM.
 //
 // The mount half also covers a case that was silent before: a `repos:` entry
@@ -2090,7 +2093,7 @@ func reportUnmountedRepos(out io.Writer, sandboxName, workdir string, mounted, e
 	//
 	// CONTAINMENT, not equality — narrowed with #69, and the narrowing is the
 	// feature's other half rather than a cleanup. The workdir is now derived
-	// from the cwd the user typed from (spawn.StartDir), so `den spawn api`
+	// from the cwd the user typed from (spawn.StartDir), so `den up api`
 	// run from `<repo>/internal` lands in `<repo>/internal` while expected[0]
 	// is still `<repo>`. Equality fired there — on the HAPPY path — and
 	// printed a warning naming the directory the shell is already in: the same
@@ -2155,7 +2158,7 @@ func recordedWithout(n *nest.Nest, recorded manifest.Manifest) []string {
 		// repo was selected" makes den omit the declared one from the rebuilt
 		// --without, so nest.Resolve selects it again and resolveRepoKeys
 		// refuses the attach of a LIVE VM over a key the user had declined:
-		// `den spawn digitaleo ~/dev/crm`, decline `key: crm`, re-attach, and
+		// `den up digitaleo --repo ~/dev/crm`, decline `key: crm`, re-attach, and
 		// den refuses on crm. Origin is the only thing that tells the two apart.
 		if r.Origin == manifest.OriginCommandLine {
 			continue
@@ -2313,7 +2316,7 @@ func reportNestChangedSinceCreation(out io.Writer, sandboxName string, recorded,
 //
 // Warn, never refuse, never recreate — the doctrine of its three siblings.
 // Mounts are fixed at create time, so the edit takes effect at the next
-// create; refusing would break a `den spawn` that worked yesterday over a
+// create; refusing would break a `den up`/`den run` that worked yesterday over a
 // harmless YAML edit, and recreating would destroy work in progress.
 //
 // A mount REMOVED from the configuration stays deliberately out of scope:

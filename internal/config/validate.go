@@ -347,7 +347,7 @@ func (g *Global) ValidateWorktree() []error {
 		// LoadGlobalUnvalidated only makes the DEFAULT absolute; a
 		// hand-written value passes through unchanged, ExpandPath touching
 		// only "~". Without this check, a `worktree_root: wt-relative`
-		// resolves against the REPO's directory: `den spawn <nest> -w feat1` would
+		// resolves against the REPO's directory: `den up <nest> -w feat1` would
 		// really create a worktree and a branch inside the user's repo, then
 		// fail on sbx's argv guard — leaving the user to clean up by hand
 		// what den just created. Symmetrically, `den rm` would clean up in

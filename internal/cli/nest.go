@@ -40,8 +40,8 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 				return err
 			}
 			// Every installed source's own nests, prefixed "<source>:<name>"
-			// — the same reference spawn, `den exec`/`rm`/`ports` and `den
-			// nest show` all accept for that nest. A broken or unreadable
+			// — the same reference `den up`/`den run`, `den exec`/`rm`/`ports`
+			// and `den nest show` all accept for that nest. A broken or unreadable
 			// sources/ must not hide the local listing (srcNests doctrine
 			// below).
 			srcNests, srcBroken := listSourceNests(home)
@@ -87,8 +87,8 @@ func newNestLsCmd(denHome *string) *cobra.Command {
 
 // listSourceNests iterates every installed source (`os.ReadDir(source.Root)`)
 // and returns its nests and broken nests, both named "<source>:<name>" — the
-// same reference `den spawn`, `den exec`/`rm`/`ports` and `den nest show` all
-// accept for that nest. Renaming here, not at the call site: nest.ListNests
+// same reference `den up`/`den run`, `den exec`/`rm`/`ports` and `den nest
+// show` all accept for that nest. Renaming here, not at the call site: nest.ListNests
 // itself knows nothing of sources, and every caller wants the SAME prefixed
 // form, so there is one place to get it right.
 //
@@ -128,9 +128,20 @@ func listSourceNests(home string) (nests []*nest.Nest, broken []nest.BrokenNest)
 func newNestShowCmd(denHome *string) *cobra.Command {
 	var opts nest.Options
 	cmd := &cobra.Command{
-		Use:   "show <nest> [repo...]",
+		Use:   "show <nest>",
 		Short: "Show a fully resolved nest",
-		Args:  atLeastOneArg,
+		// upArgs, not exactlyOneArg: the latter would open a "too many
+		// arguments" branch whose message — "exactly one argument expected, 2
+		// received" — names neither --repo nor what changed. That is word for
+		// word the grievance §5 raises against exactlyOneArg on `den up`, and the
+		// dry-run cannot be the one place the migration goes unnamed.
+		//
+		// It costs NO parameter: a cobra validator already receives
+		// *cobra.Command, hence cmd.CommandPath() ("den nest show") and
+		// cmd.Flags() (Changed("repo"), and the derived table). The
+		// inter-command TARGET is the remedy builder's need, not the
+		// validator's — two distinct needs that must not be fused.
+		Args: upArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {
@@ -144,7 +155,7 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			// args[0] may be a source reference ("corp:api"): source.Locate
 			// is the SOLE place that turns it into a root to load the nest
 			// from — same mirror of internal/spawn.Spawn (spawn.go) kept
-			// deliberately identical, so `den nest show` and `den spawn`
+			// deliberately identical, so `den nest show`, `den up` and `den run`
 			// never resolve the SAME reference to two different nests.
 			nestRoot, srcName, bareNest, err := source.Locate(home, args[0])
 			if err != nil {
@@ -178,8 +189,8 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			// accepted here for exactly the reason this command exists as a
 			// separate path: it never goes through Spawn, so a refusal written
 			// inside Spawn reached nothing here, and `den nest show api
-			// --without crm` printed a confident resolution of a command `den
-			// spawn` would have rejected.
+			// --without crm` printed a confident resolution of a command
+			// `den up` / `den run` would have rejected.
 			//
 			// Placed before the stack resolution, mirroring Spawn's own order: a
 			// command line that contradicts itself is answered before den
@@ -191,8 +202,8 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			// Stack origin — through spawn.ResolveStack, the SAME function
 			// internal/spawn.Spawn calls: both refusals it can raise (an
 			// absent `stack:` inside a source, a prefixed one) must stay
-			// word-identical between `den nest show` and `den spawn`, or
-			// the two would resolve the same reference to two different
+			// word-identical between `den nest show`, `den up` and `den run`,
+			// or the three would resolve the same reference to two different
 			// diagnoses. Only the subject (args[0], what the user typed) is
 			// this call site's own.
 			stackRoot, _, ref, err := spawn.ResolveStack(home, g, nestRoot, srcName, bareNest, n, args[0])
@@ -204,10 +215,9 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// The dry-run of `den spawn <nest> [repo...]`: same resolution, no side
-			// effect. Reading the working directory here mirrors internal/spawn
-			// — internal/nest never reads it itself.
-			opts.Repos = args[1:]
+			// The dry-run of `den up <nest>` / `den run <nest> <cmd>`: same
+			// resolution, no side effect. Reading the working directory here
+			// mirrors internal/spawn — internal/nest never reads it itself.
 			if len(opts.Repos) > 0 {
 				if opts.Cwd, err = os.Getwd(); err != nil {
 					return fmt.Errorf(
@@ -243,6 +253,8 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 	cmd.Flags().StringVar(&opts.Agent, "agent", "", "agent to use (default: defaults.agent)")
 	cmd.Flags().StringSliceVar(&opts.Without, "without", nil, "exclude these optional repos")
 	cmd.Flags().StringSliceVar(&opts.Only, "only", nil, "keep only these optional repos")
+	cmd.Flags().StringArrayVar(&opts.Repos, "repo", nil,
+		"resolve as if this repository were mounted ad hoc (repeatable; the order you type is the order den mounts)")
 	return cmd
 }
 
