@@ -64,8 +64,13 @@ changelog:
   disable: true
 
 # homebrew_casks, not the deprecated `brews`: goreleaser v2 routes CLI binaries
-# through casks now. Casks are macOS-only — Linux users get the release
-# archives or `go install`, both of which answer `den version` correctly since
+# through casks now. The generated cask is NOT macOS-only, whatever the Homebrew
+# folklore says: goreleaser emits an `on_linux do ... end` block pointing at
+# den_<v>_linux_<arch>.tar.gz beside the darwin one, and Linuxbrew installs it
+# (observed 2026-08-17 on a colleague's box, cask v1.8.0). Everything below that
+# reaches for a macOS-only tool must therefore say so out loud — see the
+# postflight hook. Linux users without brew still have the release archives,
+# `install.sh` or `go install`; all of them answer `den version` correctly since
 # the ldflags/buildinfo arbitration in internal/cli/version.go.
 homebrew_casks:
   - name: den
@@ -87,9 +92,32 @@ homebrew_casks:
       post:
         # The binaries are not notarized: without stripping the quarantine
         # attribute Gatekeeper blocks the first run with "cannot be opened".
-        # This is goreleaser's documented pattern for unsigned CLI casks.
+        #
+        # `OS.mac?` and NOT goreleaser's documented probe, which shipped in
+        # v1.8.0 and broke every Linuxbrew install:
+        #
+        #   if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+        #
+        # In cask context `system_command` raises ErrorDuringExecution on a
+        # non-zero exit instead of returning a result, so on Linux — where
+        # /usr/bin/xattr does not exist and env answers 127 — the exception
+        # fires while EVALUATING the guard. `.exit_status` is never reached, the
+        # `if` never runs, postflight aborts, and brew unlinks and purges a cask
+        # whose (correct, ELF) binary was already staged. The guard that was
+        # supposed to skip the call is the call that dies.
+        #
+        # Asking the OS is also the honest question: quarantine is a macOS
+        # concept, not "an xattr binary that happens to be on PATH". A
+        # File.executable? test would pass on a Linux box with attr(1) installed
+        # at that path and hand it flags it does not have.
+        #
+        # `OS` is a top-level Homebrew module and it IS in scope here — probed
+        # 2026-08-17 by loading a cask carrying this exact block and running
+        # Cask::Artifact::PostflightBlock#install_phase (Homebrew 4.x). Worth
+        # stating, because getting that wrong trades a Linux-only failure for a
+        # NameError on every platform, discovered only at release time.
         install: |
-          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+          if OS.mac?
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/den"]
           end
     commit_author:
