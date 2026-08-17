@@ -105,14 +105,30 @@ func (s execShape) addFlag(name, value string) execShape {
 // validator would staple advice under a line already refused for something else.
 func upArgs(cmd *cobra.Command, args []string) error {
 	path := cmd.CommandPath()
-	if len(args) == 0 {
+	s := execRewrite(cmd, args)
+	// The shape is taken ONCE, at the top, and the name branch reads IT rather
+	// than len(args) — which is what makes this function agree with enterArgs
+	// (exec.go), where the identical test is `s.name == ""`.
+	//
+	// Counting arguments answered the wrong question. It missed the shape
+	// execShape.haveName exists for: `den up "$NEST" ~/dev/hotfix` with the
+	// variable unset arrives as an empty first token, so len(args) is 2 and the
+	// repo branch fired — proposing `den up --repo /dev/hotfix` followed by the
+	// nest spelled as a quoted empty word. A legal line naming a nest the user
+	// never typed, which remedy.go calls worse than no proposal. `den nest show`
+	// inherited it through this same validator.
+	//
+	// It sits ABOVE the separator branch, not below, and that ordering is the
+	// fix rather than an accident of writing: `den up -- --repo /a` reaches the
+	// separator branch with no name at all, and remedyLine would spell the
+	// missing name as a quoted empty word there too.
+	if s.name == "" {
 		return fmt.Errorf("%s: a nest expected — usage: %s", path, cmd.UseLine())
 	}
 	// Branch 2 is the DISCRIMINANT and runs before the repo branch: the user
 	// wrote a separator, which in the old grammar meant "a command follows".
 	// That reading beats the repo one.
 	if cmd.ArgsLenAtDash() >= 0 {
-		s := execRewrite(cmd, args)
 		// The discriminant is the SHAPE's command, not the positional count, and
 		// that distinction is the whole branch (fixed 2026-08-16, found on the
 		// built binary). `len(args) > 1` reads args[0] as the nest and args[1:]
@@ -181,7 +197,10 @@ func upArgs(cmd *cobra.Command, args []string) error {
 		// positionals ARE repos, so they come back as --repo pairs through the
 		// shared builder — never re-joined by hand, so this line enters
 		// TestRunRemediesAreThemselvesLegal like every refusal.
-		s := execRewrite(cmd, args)
+		//
+		// The shape is the one taken at the top; it carries args[1:] in
+		// s.command, which is why remedyLine is handed nil rather than s.command
+		// — those tokens are becoming --repo pairs, not a command.
 		for _, p := range args[1:] {
 			s = s.addFlag("repo", p)
 		}

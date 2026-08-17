@@ -665,6 +665,50 @@ func TestUpNamesTheRepoFlagOnASecondPositional(t *testing.T) {
 	}
 }
 
+// The unset shell variable: `den up "$NEST" ~/dev/hotfix` hands den an empty
+// first token, and until 2026-08-16 upArgs branched on len(args) and never on
+// the shape, so it proposed a line naming a nest spelled as a quoted empty word
+// — a nest the user never typed, which remedy.go calls worse than no proposal.
+// `den run` refused the same shape with the usage line all along; this is the
+// divergence closing.
+//
+// The last row is why the check sits ABOVE the separator branch rather than
+// beside the old count: there the name is missing entirely, and the remedy
+// spelled it as an empty word too.
+//
+// `den nest show` has its own row because it shares the validator: root_test.go
+// makes the same argument for its own table, and a shared validator is exactly
+// where one caller's coverage stops meaning anything about the other.
+func TestUpRefusesAnEmptyNestRatherThanProposeOne(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{"an empty name and a repo", []string{"up", "", "/dev/hotfix"},
+			"den up: a nest expected — usage: den up <nest> [flags]"},
+		{"an empty name and a separator", []string{"up", "", "--"},
+			"den up: a nest expected — usage: den up <nest> [flags]"},
+		{"an empty name on nest show", []string{"nest", "show", "", "/a"},
+			"den nest show: a nest expected — usage: den nest show <nest> [flags]"},
+		{"no name at all behind a separator", []string{"up", "--", "--repo", "/a"},
+			"den up: a nest expected — usage: den up <nest> [flags]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateArgs(t, tc.argv...)
+			if err == nil {
+				t.Fatalf("%v must be refused", tc.argv)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("message = %q, want %q", err.Error(), tc.want)
+			}
+			if strings.Contains(err.Error(), "write `") {
+				t.Errorf("den must propose no line when it has no name; got %q", err.Error())
+			}
+		})
+	}
+}
+
 // A shell pattern: --repo binds the first match, the rest arrive as positionals,
 // and den cannot say which one is the nest. It must NOT build a remedy from
 // them — branch 4 would take /dev/proj-b for the nest and propose mounting the
