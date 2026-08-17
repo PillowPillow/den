@@ -135,7 +135,7 @@ type enterOptions struct {
 //
 // command EMPTY means the login shell, and the default is NOT applied here: it
 // lives in spawn.Command.Argv (internal/spawn/enter.go:85), one layer down,
-// where `den spawn` reads it too.
+// where `den up`/`den run` reads it too.
 func enterSandbox(cmd *cobra.Command, ref string, command []string, tty bool,
 	workdir string, o enterOptions) error {
 
@@ -163,7 +163,7 @@ func enterSandbox(cmd *cobra.Command, ref string, command []string, tty bool,
 		}
 		return fmt.Errorf("sandbox %q not found (live: %v)", name, names)
 	}
-	// Same guard as `den spawn`, through the same helper: both paths end in an
+	// Same guard as `den up`/`den run`, through the same helper: both paths end in an
 	// `sbx exec`. A STOPPED VM passes, `sbx exec` restarts it.
 	if err := b.CheckAttachable(); err != nil {
 		return err
@@ -197,7 +197,7 @@ func enterSandbox(cmd *cobra.Command, ref string, command []string, tty bool,
 	// The workdir comes from the workspaces REPORTED BY THE VM, never from a
 	// path recomputed from the config: without them the user lands in the VM's
 	// home, not in their code. Which of them, and how --workdir and the cwd
-	// rank, is spawn.StartDir's verdict — `den spawn` calls the same judge, so
+	// rank, is spawn.StartDir's verdict — `den up`/`den run` calls the same judge, so
 	// the sibling commands cannot open a shell in two different places (#69).
 	//
 	// The cwd is read HERE, at the caller's edge, and handed in: the judge stays
@@ -330,7 +330,7 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 // user is about to re-enter would inherit an SSH agent holding no key.
 //
 // Why `den exec` warns at all: `spawn.WarnEmptySSHAgentOnReentry` holds that
-// argument, and the divergence from `den spawn`'s preflight (an absent socket
+// argument, and the divergence from `den up`/`den run`'s preflight (an absent socket
 // says nothing here) with it. This function is the part that belongs to the
 // CLI: finding ssh.mode without letting the search cost anything.
 //

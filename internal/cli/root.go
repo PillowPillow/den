@@ -135,7 +135,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
 	// `den exec` gets the SSH probe and the OS too: re-entering a sandbox whose
 	// forwarded agent has been emptied fails `git push` exactly as a fresh
-	// `den spawn` would, and this is the surface that re-enters most often.
+	// `den up`/`den run` would, and this is the surface that re-enters most often.
 	// runtime.GOOS is named here, at the wiring site, like the spawn's below.
 	root.AddCommand(newExecCmd(&denHome, deps.Sbx, deps.SSHAgent, runtime.GOOS, deps.Freshness, deps.IsTTY))
 	// `den shell` gets what `den exec` gets, minus deps.IsTTY, and for the same
@@ -207,8 +207,8 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 // cancellation chain — Run reads ctx.Err() itself because a killed process's
 // own error otherwise hides it — so any command that shells out through
 // Runner.Run already "recognizes a Ctrl-C" instead of just dying with it. And
-// Runner.Attach (the interactive `exec -it` path used by `den spawn` and `den
-// exec`) deliberately sets cmd.Cancel = nil, so this context ending
+// Runner.Attach (the interactive `exec -it` path used by `den up`, `den run`,
+// `den exec` and `den shell`) deliberately sets cmd.Cancel = nil, so this context ending
 // does nothing to an attached shell — the tty driver delivers a Ctrl-C typed
 // inside it directly to the sandbox's foreground process, not through here.
 // Checked, not assumed: in both callers (internal/cli/exec.go, spawn.Spawn at

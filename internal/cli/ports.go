@@ -198,8 +198,8 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 // remedy (#16). A refusal would name both, but the only thing the user could do
 // with it is run a command that starts the VM, which is the one thing den was
 // refusing to do for them. That is a chore, not a safeguard. And F2 already
-// settled the precedent in the other direction: `den exec` and `den spawn` take
-// a stopped sandbox back without asking, because `sbx exec` restarts it
+// settled the precedent in the other direction: `den exec`, `den shell`, `den up`
+// and `den run` take a stopped sandbox back without asking, because `sbx exec` restarts it
 // transparently — the surface `sbx ports` conspicuously does not share.
 // Measured: a bare `sbx exec <name> true` restarts a stopped sandbox in ~1.4 s.
 //
@@ -210,7 +210,7 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 // and den would republish a window that is already bound. Hence the SECOND
 // read below, after the wake — not a precaution, the whole point.
 //
-// WHY THE OTHER HALF IS NOT A WAKE. The same principle applied to `den spawn
+// WHY THE OTHER HALF IS NOT A WAKE. The same principle applied to `den up
 // --detach` (#17) gives the opposite gesture: --detach on a live-but-stopped
 // sandbox restarts nothing, so den must stop calling it "ready" — see
 // internal/spawn/spawn.go. Waking there would buy a truth with a measured

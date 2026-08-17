@@ -7,6 +7,18 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## Unreleased
+
+### Changed
+- **Breaking:** `den spawn` is gone, with no alias. `den up <nest>` creates or re-attaches and
+  opens a shell; `den run <nest> <cmd> [args...]` does the same and runs a command instead,
+  exiting with its status. Ad-hoc repos move from trailing positionals to a repeatable
+  `--repo <path>` — a shell glob expands before den sees it, so `den spawn scratch ~/dev/proj-*`
+  becomes `repos=(~/dev/proj-*); den up --repo=${^repos} scratch` (zsh) or a loop building
+  `--repo` pairs (portable). `--` leaves the family: `den run`'s own flags sit left of the nest
+  name, and everything from the command on is passed through verbatim, the way `den exec`
+  already worked.
+
 ## v1.6.0 — 2026-08-11
 
 ### Added

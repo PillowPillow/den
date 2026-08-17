@@ -7,7 +7,7 @@ import (
 
 // ListenScanner is the real Scanner, and the ONLY file of this package that
 // touches the network. It is isolated here for the same reason the TTY probe
-// of `den spawn <nest> -i` is a one-liner behind Deps: what cannot be tested without
+// of `den up <nest> -i` is a one-liner behind Deps: what cannot be tested without
 // leaving the hermetic suite must be the smallest possible surface, so that
 // everything AROUND it stays tested. The rest of the package — window, offsets,
 // shift, refusals — never sees a socket.

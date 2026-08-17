@@ -482,7 +482,7 @@ func newMountGuard(home, self string) mountGuard {
 // name under WorktreeRoot (or a `.den/<wt>` suffix, per-repo layout) is
 // derived from it. That reading stopped being universally true the day `--as`
 // shipped: component 2 can now be an arbitrary instance LABEL that never
-// named a worktree at all (`den spawn api --as reco`, no `-w`). This function
+// named a worktree at all (`den up api --as reco`, no `-w`). This function
 // only ever runs when there is NO creation record (see cleanWorktrees above)
 // — a `--as` sandbox always has one, written before `sbx create` — so the
 // only way to reach here with a label in `wt` is a record deleted by hand.

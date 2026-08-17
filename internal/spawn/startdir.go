@@ -10,7 +10,7 @@ import (
 // StartDir decides the directory the attached shell — or the command of `den
 // exec` — starts in. It is a PURE judge: cwd is a parameter, read with
 // os.Getwd() at the caller's edge and handed in, the same doctrine already
-// written where `den spawn scratch .` resolves its positionals. Nothing here
+// written where `den up scratch --repo .` resolves its ad-hoc repos. Nothing here
 // touches the world except symlink resolution, which is a read of paths the
 // caller already named.
 //
