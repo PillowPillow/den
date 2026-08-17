@@ -44,7 +44,7 @@ directory, and guessing wrong moves a live VM's workspace to the trash; `agent.R
 the mixin den itself generated under `cache/`.
 
 **Every system access is injected through `cli.Deps`** (`internal/cli/root.go`), and `deps.Sbx` is
-the *single* `sbx.Runner` shared by `ls`, `sh`, `ports` and spawn — structurally there is no second
+the *single* `sbx.Runner` shared by `ls`, `shell`, `ports`, `up` and `run` — structurally there is no second
 runner to keep in sync. The other fields are injected because the real implementations touch the
 machine: `Scanner` binds host sockets, `Open` spawns a browser, `SSHAgent` forks `ssh-add`, `IsTTY`
 reads the terminal. Hard-wiring any of them breaks the suite's hermeticity.
