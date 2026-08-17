@@ -32,7 +32,8 @@ func newRunCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 		Use:   "run <nest> <cmd> [args...]",
 		Short: "Spawn or attach a nest's sandbox, then run a command",
 		Args: func(cmd *cobra.Command, args []string) error {
-			return enterArgs(cmd, args, "nest", "den up")
+			return enterArgs(cmd, args, "nest", "den up",
+				refusableFlags{detach: o.Detach, noTTY: o.NoTTY})
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// enterArgs has refused every other shape, so args[1:] is a real
@@ -46,14 +47,16 @@ func newRunCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 			// tee log` must carry the command's output and nothing else, and
 			// `den run` always has a command, so it has no interactive branch
 			// handing stdout back to den.
-			warnFirstCommandTokenIsADirectory(cmd, args)
+			warnFirstCommandTokenIsADirectory(cmd, args,
+				refusableFlags{detach: o.Detach, noTTY: o.NoTTY})
 			return spawnNest(cmd, denHome, o, deps)
 		},
 	}
 
 	registerSpawnFlags(cmd, &o)
-	// REGISTERED and always refused; see newUpCmd for why the refusal is not
-	// spelled here but in spawn.go's step 0, and for why the usage string
+	// REGISTERED and always refused; see newUpCmd for why the verdict is not
+	// spelled here but in spawn.CommandLineContradiction — which this command's
+	// validator ASKS rather than copies (#76) — and for why the usage string
 	// carries no backtick (cobra reads the first backquoted span as the flag's
 	// value placeholder — `den run --help` rendered `--detach den run`).
 	cmd.Flags().BoolVar(&o.Detach, "detach", false,
@@ -106,7 +109,7 @@ func newRunCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 // `--repo /Users/x/dev/hotfix` to someone who wrote `~/dev/hotfix` hands back a
 // line they do not recognize, and parseRepoArg will redo the expansion anyway.
 // The normalized path serves the stat and nothing else.
-func warnFirstCommandTokenIsADirectory(cmd *cobra.Command, args []string) {
+func warnFirstCommandTokenIsADirectory(cmd *cobra.Command, args []string, refused refusableFlags) {
 	raw := args[1]
 	expanded, err := config.ExpandPath(raw)
 	if err != nil {
@@ -135,6 +138,22 @@ func warnFirstCommandTokenIsADirectory(cmd *cobra.Command, args []string) {
 	target, tail := "den run", args[2:]
 	if len(tail) == 0 {
 		target = "den up"
+	}
+	// #76 reaches the ADVISORY too, and here it costs the proposal rather than a
+	// refusal: `den run -T api hotfix` would have the `den up` target above, whose
+	// shape has no command, so the line would carry a -T `den up` always refuses.
+	//
+	// The FACT is still worth saying — the directory is a directory, and --repo is
+	// still where it goes — so the warning keeps its first half and loses the
+	// "write `…`" clause alone. It never refuses and never changes what runs
+	// (spawn.go's "Warn, never refuse"), so the alternative is not a refusal here
+	// but a proposal den knows is wrong, and a wrong proposal in an advisory costs
+	// the same round trip as a wrong one in a refusal.
+	if refused.refusesLine(s, len(tail) > 0) != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"! %s is a directory on this host, and den is passing it to the sandbox as the "+
+				"first word of the command — ad-hoc repos go behind `--repo` now\n", raw)
+		return
 	}
 	// s.command was set by execRewrite from args[1:]; the shape is respelled
 	// with the tail alone, which is what replacing the command means here.

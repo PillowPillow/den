@@ -1,21 +1,42 @@
 package cli
 
 import (
+	"strconv"
 	"strings"
 
+	"github.com/PillowPillow/den/internal/spawn"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
 // denFlag is one flag den owns, as the DERIVED table carries it: the long
-// name, and whether it takes a value.
+// name, and pflag's NoOptDefVal.
 //
-// takes comes from NoOptDefVal being empty, which is pflag's own encoding of
-// "this flag needs a value" — the exact fact the hand-written `placeholder`
-// field encoded until 2026-08-16, and the one a hand list gets wrong first.
+// noOpt is pflag's own encoding of two facts at once, which is why it is stored
+// raw rather than reduced to a boolean: EMPTY means the flag needs a value (the
+// exact fact the hand-written `placeholder` field encoded until 2026-08-16, and
+// the one a hand list gets wrong first), and NON-EMPTY is the value a bare
+// spelling sets — "true" for every boolean den owns. #76 needs the second half:
+// a lifted `-T` is refused on `den up` and a lifted `-T=false` is not, so the
+// classifier cannot throw the value away.
 type denFlag struct {
 	name  string
-	takes bool
+	noOpt string
+}
+
+// takes says the flag needs a value in the NEXT token or after an `=`.
+func (d denFlag) takes() bool { return d.noOpt == "" }
+
+// flagUse is one den flag a token sets, and the value it sets it to.
+//
+// The value is what #76 added, and it is meaningful for BOOLEANS: `-T` sets
+// no-tty to NoOptDefVal ("true"), `-T=false` to "false", `--no-tty=false` to
+// "false". For a flag that takes a value it is the value or "" when the value
+// is in the next token — nothing reads it there, because only the booleans
+// -T/--detach can make a proposed line refused.
+type flagUse struct {
+	name  string
+	value string
 }
 
 // denFlags walks the command's merged FlagSet and returns the two lookups the
@@ -44,7 +65,7 @@ func denFlags(cmd *cobra.Command) (map[string]denFlag, map[byte]denFlag) {
 		if f.Name == "help" {
 			return
 		}
-		d := denFlag{name: f.Name, takes: f.NoOptDefVal == ""}
+		d := denFlag{name: f.Name, noOpt: f.NoOptDefVal}
 		long[f.Name] = d
 		if f.Shorthand != "" {
 			short[f.Shorthand[0]] = d
@@ -75,8 +96,9 @@ func denFlags(cmd *cobra.Command) (map[string]denFlag, map[byte]denFlag) {
 //   - ok == true, consumes == true: den's, and its value is the NEXT token.
 //     placeholder is what to write when there is no next token.
 //
-// names lists every den flag the token sets, which the caller needs for the
-// duplicate rule of Task 2 — a cluster sets several.
+// uses lists every den flag the token sets AND the value it sets it to, which
+// the caller needs for the duplicate rule of Task 2 — a cluster sets several —
+// and, since #76, to know whether a lifted `-T` is true.
 //
 // `--` is NOT handled here: the caller strips it first (it is the separator,
 // not a flag), and `--` would otherwise fall into the long branch with an empty
@@ -86,44 +108,55 @@ func denFlags(cmd *cobra.Command) (map[string]denFlag, map[byte]denFlag) {
 // measured status quo: `den exec api -Tv go build` is accepted today and stays
 // accepted, `-Tv` reaching the VM. It is also the only right answer — `-Tv` is
 // not a legal den spelling, so den cannot lift it into a remedy.
-func classifyToken(tok string, long map[string]denFlag, short map[byte]denFlag) ([]string, bool, string, bool) {
+func classifyToken(tok string, long map[string]denFlag, short map[byte]denFlag) ([]flagUse, bool, string, bool) {
 	if len(tok) < 2 || tok[0] != '-' {
 		return nil, false, "", false // "", "-", "api", "/tmp/x", "go"
 	}
 	if strings.HasPrefix(tok, "--") {
-		name, _, hasEq := strings.Cut(tok[2:], "=")
+		name, val, hasEq := strings.Cut(tok[2:], "=")
 		f, known := long[name]
 		if !known {
 			return nil, false, "", false // --nope, --help
 		}
-		if f.takes && !hasEq {
-			return []string{f.name}, true, "<" + f.name + ">", true
+		if f.takes() && !hasEq {
+			return []flagUse{{f.name, ""}}, true, "<" + f.name + ">", true
 		}
-		return []string{f.name}, false, "", true
+		// A bare `--detach` sets NoOptDefVal; `--detach=false` sets what follows
+		// the `=`. The distinction is the whole of #76's value-awareness on the
+		// long side.
+		if !hasEq {
+			val = f.noOpt
+		}
+		return []flagUse{{f.name, val}}, false, "", true
 	}
 	body := tok[1:]
-	var names []string
+	var uses []flagUse
 	for i := 0; i < len(body); i++ {
 		f, known := short[body[i]]
 		if !known {
 			return nil, false, "", false
 		}
-		names = append(names, f.name)
-		// This test FIRST, whatever f.takes says: pflag binds the `=` to the
+		// Appended with the BARE value first, then corrected by the two branches
+		// below when the token carries one. A letter reached without either is a
+		// bare boolean, and NoOptDefVal is exactly its value.
+		uses = append(uses, flagUse{f.name, f.noOpt})
+		// This test FIRST, whatever f.takes() says: pflag binds the `=` to the
 		// preceding letter and ends the token there.
 		if i+1 < len(body) && body[i+1] == '=' {
-			return names, false, "", true
+			uses[len(uses)-1].value = body[i+2:] // -T=false, -iT=true
+			return uses, false, "", true
 		}
-		if !f.takes {
+		if !f.takes() {
 			continue // a boolean; walk on to the next letter (-iT, -Ti)
 		}
 		if i+1 < len(body) {
-			return names, false, "", true // attached value: -wfeat, -wi, -wT
+			uses[len(uses)-1].value = body[i+1:]
+			return uses, false, "", true // attached value: -wfeat, -wi, -wT
 		}
-		return names, true, "<" + f.name + ">", true // -w feat
+		return uses, true, "<" + f.name + ">", true // -w feat
 	}
 	// Every letter was a known boolean: -iT, -Ti.
-	return names, false, "", true
+	return uses, false, "", true
 }
 
 // execShape is the LEGAL command line den reads out of a refused one: the
@@ -155,6 +188,77 @@ type execShape struct {
 	// it: a flag typed after the name is the last one typed, so it wins over the
 	// same flag read back from the FlagSet.
 	lifted map[string]bool
+	// liftedValue is what each lifted flag was set TO, and #76 is why it exists
+	// beside the set. A lifted flag never reaches the FlagSet — pflag either
+	// stopped at the first positional or ate a leading `--` — so refusableFlags has
+	// no other way to learn that `den up -- -iT api` carries a true -T. The name
+	// alone cannot answer it: `-T=false` carries a false one, and the fused `-iT`
+	// cannot be read by looking at s.flags.
+	liftedValue map[string]string
+}
+
+// refusableFlags carries the two flags spawn's judge — the single owner of the
+// two command-line contradictions — can refuse, as the command's own options
+// hold them. It is what lets a validator ask about a line den has not written
+// yet, which is #76's whole mechanism.
+//
+// The values come from the SPAWN OPTIONS the command bound its flags to, never
+// re-read off the FlagSet, and that is load-bearing: on `den up` a `--no-tty`
+// bound to the wrong variable would otherwise change nothing observable (spawn
+// forces tty=true when there is no command, and step 0's verdict is unreachable
+// from the CLI now), so TestUpRefusesNoTTY would go green over an unwired flag.
+// Reading the options keeps that arrow tested.
+//
+// The command's CONTRACT — whether its lines carry a command — is NOT a field
+// here, deliberately. It is a constant of the shared validator that asks the
+// question (`upArgs`: none, `enterArgs`: one), so a field would restate per
+// command a fact stated once per validator, and a probe carried but never
+// consulted is the first half of a second verdict (enterOptions, exec.go).
+//
+// A zero value means "this command owns neither flag", which is `den nest show`.
+type refusableFlags struct {
+	detach bool
+	noTTY  bool
+}
+
+// effective resolves what the line den is about to spell actually carries, and
+// it mirrors readBackFlags's SCALAR DUPLICATES rule exactly: a LIFTED flag is
+// the last one the user typed, so it wins over the option value cobra parsed.
+// `den run --no-tty api -T=false go test` proposes a line carrying `-T=false`
+// alone, and its verdict must follow that line, not the FlagSet.
+func (r refusableFlags) effective(s execShape) (detach, noTTY bool) {
+	detach, noTTY = r.detach, r.noTTY
+	if s.lifted["detach"] {
+		detach = liftedTrue(s, "detach")
+	}
+	if s.lifted["no-tty"] {
+		noTTY = liftedTrue(s, "no-tty")
+	}
+	return detach, noTTY
+}
+
+// liftedTrue reads one lifted boolean. An unparseable value is FALSE rather than
+// an error: pflag would refuse `-T=maybe` on the replay anyway, and this
+// function's only job is deciding whether to name a contradiction — guessing
+// "true" here would refuse a line den has no verdict on.
+func liftedTrue(s execShape, name string) bool {
+	v, err := strconv.ParseBool(s.liftedValue[name])
+	return err == nil && v
+}
+
+// refusesLine returns the verdict den would give the line the builder is about
+// to spell for a target whose contract is hasCommand — nil when that line is
+// legal.
+//
+// hasCommand is the TARGET's, and it is the parameter #76 turns on: three of the
+// four shapes the issue reports cross commands. `den up --detach api -- go test`
+// proposes a `den run` line, whose shape carries a command even though `den up`'s
+// never does, and only asking about the TARGET catches it. The caller passes
+// len(command) > 0 for the line it is building, which is the same fact
+// remedyLine already receives.
+func (r refusableFlags) refusesLine(s execShape, hasCommand bool) error {
+	detach, noTTY := r.effective(s)
+	return spawn.CommandLineContradiction(detach, noTTY, hasCommand)
 }
 
 // execRewrite reads the positionals cobra handed over and returns that shape.
@@ -172,14 +276,14 @@ type execShape struct {
 // same flags, and each must classify against its own.
 func execRewrite(cmd *cobra.Command, args []string) execShape {
 	long, short := denFlags(cmd)
-	s := execShape{lifted: map[string]bool{}}
+	s := execShape{lifted: map[string]bool{}, liftedValue: map[string]string{}}
 	for i := 0; i < len(args); i++ {
 		tok := args[i]
 		if tok == "--" {
 			s.sawDash = true
 			continue
 		}
-		names, consumes, placeholder, ok := classifyToken(tok, long, short)
+		uses, consumes, placeholder, ok := classifyToken(tok, long, short)
 		if !ok {
 			if !s.haveName {
 				s.name, s.haveName = tok, true
@@ -188,8 +292,9 @@ func execRewrite(cmd *cobra.Command, args []string) execShape {
 			s.command = args[i:]
 			return s
 		}
-		for _, n := range names {
-			s.lifted[n] = true
+		for _, u := range uses {
+			s.lifted[u.name] = true
+			s.liftedValue[u.name] = u.value
 		}
 		s.flags = append(s.flags, tok)
 		if consumes {

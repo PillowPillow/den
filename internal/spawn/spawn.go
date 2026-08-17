@@ -169,6 +169,76 @@ type Options struct {
 	NoTTY bool
 }
 
+// CommandLineContradiction is the verdict on the two contradictions that depend
+// on the command line ALONE — the pair step 0 of Spawn has refused since
+// 2026-08-10, and nothing else. The third one, `-i` against `--only`/`--without`,
+// is NOT here: its message names the flag it tells the user to keep and that
+// flag depends on the nest, so it stays at step 0bis, below the nest load.
+//
+// It is EXPORTED, and that is the answer to #76 rather than a convenience.
+// Every refusal in the `up`/`run`/`exec` family ends in "write `…`", and the
+// property that makes those refusals answerable is that den itself accepts the
+// line it proposes. Until 2026-08-17 the builder could not check: the verdict
+// lived past RunE, so `den up -T api /dev/hotfix` proposed
+// `den up --no-tty=true --repo /dev/hotfix api` — refused one round trip later
+// by this very function. internal/cli asks it BEFORE spelling a line.
+//
+// The alternative was a target-keyed table of always-refused names in
+// internal/cli, and it is wrong twice over, measured on the 2026-08-16 binary:
+//
+//   - It cannot key on the NAME. `--detach=false` is typeable and legal —
+//     `den run --detach=false api go test` runs — because this function tests the
+//     VALUE. A filter deleting the name `detach` drops a flag the user typed,
+//     which is the silent normalization spec §2 forbids.
+//   - It would be a SECOND source for this verdict. Two sources for one verdict
+//     is how they drift, the argument enterOptions made in the #73 slice; a
+//     shared function is what makes the CLI's answer and the spawn path's answer
+//     the same answer by construction.
+//
+// hasCommand rather than the Options' own Command, so a CALLER can ask about a
+// line it has not built: `den run`'s "no command given" refusal proposes a
+// `den up` line, whose shape is "no command" whatever the refused invocation
+// carried.
+func CommandLineContradiction(detach, noTTY, hasCommand bool) error {
+	// --detach says "do not enter the VM", a command says "run this in it".
+	//
+	// It cannot be honoured by delegating to `sbx exec -d`. That flag documents
+	// "run command in the background" and DOES NOT detach: measured 2026-08-10
+	// on sbx v0.38.0 (spec §14.0), it blocks for the command's whole duration,
+	// relays its stdout and returns its status — indistinguishable from a
+	// foreground run. Honouring it would mean den backgrounding the process
+	// itself: a fifth Runner method, orphan and log handling, and no status to
+	// return, which is precisely what #60 exists to deliver.
+	if detach && hasCommand {
+		return fmt.Errorf(
+			"--detach and a command contradict each other — drop one: --detach spawns " +
+				"without entering the sandbox, and `den run` runs a command inside it — " +
+				"use `den up --detach <nest>`")
+	}
+	// -T asks for no terminal, and with no command that is a login shell asked to
+	// give up the one thing that makes it worth opening.
+	//
+	// `den shell` (internal/cli/shell.go) refuses -T too, and MUST keep doing
+	// so: leaving it unrefused on either side is the silent normalization spec
+	// §2 forbids — -T would simply do nothing, on a sibling command that does
+	// refuse it. Its message is its own, and stays its own: `den shell` has no
+	// command form to fill in, so it names `den exec` where this one names
+	// `den run`. internal/cli asks THIS function whether a proposed `den shell`
+	// line would be refused, and never quotes the answer's words.
+	//
+	// The two messages are no longer identical, and that is deliberate since
+	// 2026-08-14. The rule that settles them since 2026-08-16: the remedy each
+	// command names is the one that exists ON it — `den up` sends the user to
+	// `den run`, `den shell` sends them to `den exec`, and neither mentions a
+	// separator den refuses.
+	if noTTY && !hasCommand {
+		return fmt.Errorf(
+			"-T asks for no terminal and no command asks for a shell, which needs one — " +
+				"give a command with `den run -T <nest> <cmd>`, or drop -T")
+	}
+	return nil
+}
+
 // Spawn runs the spec §6 sequence in order: resolve → select repos →
 // worktrees → agent profile → mixin → sbx create (or attach if the
 // sandbox is already live) → settle-loop → attach.
@@ -217,47 +287,19 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	// 0. The first contradiction, `-i` against `--only`/`--without`, is NOT here:
 	// it moved to step 0bis, below the nest load, because its message names the
 	// flag it tells the user to keep and that flag depends on the nest. The two
-	// that follow depend on the command line alone and stay.
-
-	// The second contradiction, refused in the same place and for the same
-	// reason as the first: --detach says "do not enter the VM", a command says
-	// "run this in it".
+	// that depend on the command line alone stay, and they live in
+	// CommandLineContradiction (above) because internal/cli must be able to ask
+	// the SAME judge before it proposes a line — see #76 and that function's
+	// comment.
 	//
-	// It cannot be honoured by delegating to `sbx exec -d`. That flag documents
-	// "run command in the background" and DOES NOT detach: measured 2026-08-10
-	// on sbx v0.38.0 (spec §14.0), it blocks for the command's whole duration,
-	// relays its stdout and returns its status — indistinguishable from a
-	// foreground run. Honouring it would mean den backgrounding the process
-	// itself: a fifth Runner method, orphan and log handling, and no status to
-	// return, which is precisely what #60 exists to deliver.
-	if o.Detach && len(o.Command) > 0 {
-		return fmt.Errorf(
-			"--detach and a command contradict each other — drop one: --detach spawns " +
-				"without entering the sandbox, and `den run` runs a command inside it — " +
-				"use `den up --detach <nest>`")
-	}
-
-	// The third contradiction, refused for the same reason and in the same
-	// place: -T asks for no terminal, and with no command that is a login
-	// shell asked to give up the one thing that makes it worth opening.
-	//
-	// `den shell` (internal/cli/shell.go) refuses -T too, and MUST keep doing
-	// so: leaving it unrefused on either side is the silent normalization spec
-	// §2 forbids — -T would simply do nothing, on a sibling command that does
-	// refuse it.
-	//
-	// The two messages are no longer identical, and that is deliberate since
-	// 2026-08-14. This comment used to promise `den exec` an identical string;
-	// `den exec` requires a command now and contradicts nothing, and the
-	// remedies of the two surviving refusals genuinely differ. The rule that
-	// settles them since 2026-08-16: the remedy each command names is the one
-	// that exists ON it — `den up` sends the user to `den run`, `den shell`
-	// sends them to `den exec`, and neither mentions a separator den refuses.
-	// Keep the refusal on both; keep each remedy true of its own command.
-	if o.NoTTY && len(o.Command) == 0 {
-		return fmt.Errorf(
-			"-T asks for no terminal and no command asks for a shell, which needs one — " +
-				"give a command with `den run -T <nest> <cmd>`, or drop -T")
+	// Kept here even though `den up` and `den run` — the only callers of Spawn —
+	// now ask that judge in their own validators, which makes these two verdicts
+	// unreachable through the CLI. Spawn is exported and refuses what it cannot
+	// honour on its own: a future caller that skips the validators must not get a
+	// half-honoured --detach, and internal/spawn's own tests exercise the
+	// sequence from here, not from cobra.
+	if err := CommandLineContradiction(o.Detach, o.NoTTY, len(o.Command) > 0); err != nil {
+		return err
 	}
 
 	// 1. Resolve the cascade.

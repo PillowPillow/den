@@ -348,8 +348,17 @@ func TestWorkdirReachesSpawnOptions(t *testing.T) {
 // -T/--no-tty must reach spawn.Options. Proven by the contradiction it is the
 // only thing that can raise, the same idiom as -i and --detach above: `den up`
 // opens a login shell, and -T asks it to give up the one thing that makes it
-// worth opening, so spawn.Spawn refuses it. Unwired, o.NoTTY would stay false
-// and this spawn would succeed instead.
+// worth opening, so den refuses it. Unwired, o.NoTTY would stay false and this
+// spawn would succeed instead.
+//
+// The refuser is `den up`'s VALIDATOR since #76 (2026-08-17), not spawn.Spawn's
+// step 0 — it asks spawn.CommandLineContradiction before any branch can propose
+// a line carrying this flag. The message is the same function's, byte for byte,
+// which is why the `want` below did not move. The arrow this test guards did not
+// move either, and refusableFlags's comment says why it reads o rather than the
+// FlagSet: on this command the validator's question is now the ONLY thing
+// o.NoTTY can change, so a FlagSet read would leave the binding write-only and
+// this test green over an unwired flag.
 //
 // The message is asserted WHOLE, not with a Contains on "-T": the remedy is
 // half of it, and a Contains on the flag passes on any sentence naming it —

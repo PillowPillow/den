@@ -74,10 +74,20 @@ func TestRunKeepsItsChatterOnStdoutWithATty(t *testing.T) {
 	}
 }
 
-// The command REACHES spawn.Options, and --detach is refused against it. Two
-// properties in one line, because the contradiction is the only thing an
-// unwired o.Command can be proven by: unwired, `--detach` alone is a perfectly
-// ordinary spawn and nothing is refused.
+// --detach REACHES spawn.Options, proven by the contradiction refused against
+// it: unwired, o.Detach stays false and this is an ordinary spawn.
+//
+// It carried a SECOND property until #76 — that o.Command reaches spawn.Options
+// too, because the verdict tested len(o.Command) — and it no longer can: the
+// refusal now comes from `den run`'s validator, whose shape is the command's
+// CONTRACT rather than o.Command. TestTheCommandReachesRunOptions (below) is
+// where that arrow lives now.
+//
+// The wiring it proves is the flag reaching o, which IS the spawn.Options
+// spawnNest hands over whole — the Args closure reads o.Detach, so a flag bound
+// to any other variable leaves this line unrefused. What it no longer proves is
+// that the value travels PAST the validator; nothing needs it to, since the
+// struct is the same one.
 //
 // The message is asserted WHOLE, and its remedy must be `den up --detach` — the
 // command that detaches. It used to promise "a command after `--`", a shape
@@ -457,11 +467,14 @@ func TestRunRemediesAreThemselvesLegal(t *testing.T) {
 // green over it. Syntactically legal, semantically false. The `want` is the
 // whole assertion here; the replay is the second half, not the first.
 //
-// Named, so nobody reads more into the last row than it says: `den up -T api` is
-// legal to the VALIDATOR and refused one layer down, in spawn.Spawn's step 0.
-// That is the deferred always-refused-flag remedy class (ledger ruling 3),
-// parked for the whole-branch review; this row asserts the SHAPE of the line,
-// not that it runs.
+// The replay half is no longer blind to the flags spawn refuses, and that is
+// #76's answer (2026-08-17): validateArgs now asks spawn.CommandLineContradiction
+// before any branch writes a line, so a remedy naming an always-refused flag
+// fails HERE rather than shipping. The row that used to carry the parked class —
+// `up -- -T api`, whose remedy `den up -T api` the validator accepted and step 0
+// refused — moved to TestValidatorsRefuseAnAlwaysRefusedFlagInsteadOfProposingItBack
+// (remedy_test.go), where the whole class lives. `-i` keeps the property that row
+// was ALSO covering: a shorthand eaten by a leading `--` is lifted back out.
 func TestUpRemediesAreThemselvesLegal(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -480,8 +493,8 @@ func TestUpRemediesAreThemselvesLegal(t *testing.T) {
 		// the nest. The remedy must lift the flag and name the nest ONCE.
 		{"a leading separator before a flag", []string{"up", "--", "--repo", "/a", "api"},
 			"den up --repo /a api"},
-		{"a leading separator before a shorthand", []string{"up", "--", "-T", "api"},
-			"den up -T api"},
+		{"a leading separator before a shorthand", []string{"up", "--", "-i", "api"},
+			"den up -i api"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateArgs(t, tc.argv...)
@@ -598,4 +611,68 @@ func TestRunDoesNotWarnOnAFileOrAPlainWord(t *testing.T) {
 			}
 		})
 	}
+}
+
+// #76 in the ADVISORY: with -T the `den up` target the tail-less shape chooses
+// would refuse the line, so the warning keeps its fact and drops its proposal.
+//
+// It still WARNS — the directory is a directory, and --repo is still where it
+// goes — because this line never refuses and never changes what runs. What it
+// must not do is hand back a line den rejects, which is the same round trip a
+// wrong refusal costs.
+//
+// Through a real Execute(), like the other advisory tests: it comes out of RunE.
+func TestRunAdvisoryProposesNoLineTheTargetWouldRefuse(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Mkdir(filepath.Join(dir, "hotfix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := denHomeSpawnable(t)
+	_, d := fakeSpawnDeps()
+	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newRunCmd(&home, d))
+	_, stderr, err := executeCmdSeparateStreams(t, root, "run", "-T", "api", "hotfix")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Contains, not equality: the spawn continues past the advisory and puts its
+	// own chatter on the same stream. The two assertions are the whole property —
+	// the fact is said, and no line is proposed.
+	const want = "! hotfix is a directory on this host, and den is passing it to the sandbox " +
+		"as the first word of the command — ad-hoc repos go behind `--repo` now\n"
+	if !strings.Contains(stderr, want) {
+		t.Errorf("stderr = %q, want it to contain %q", stderr, want)
+	}
+	if strings.Contains(stderr, "write `") {
+		t.Errorf("no line can carry a -T the target refuses, so none must be proposed; got %q",
+			stderr)
+	}
+}
+
+// o.Command REACHES spawn.Options, asserted on what den actually asked sbx to
+// run.
+//
+// It used to be proven by TestRunRefusesDetach's contradiction, and that proof
+// was real: an unwired o.Command left len(o.Command) == 0, so `--detach` was an
+// ordinary spawn and nothing was refused. #76 moved that verdict into the
+// validator, where the shape is `den run`'s CONTRACT — a constant true — rather
+// than o.Command, so the arrow lost its only test. This is it.
+func TestTheCommandReachesRunOptions(t *testing.T) {
+	home := denHomeSpawnable(t)
+	f, d := fakeSpawnDeps()
+	d.IsTTY = func() bool { return false }
+	if _, err := runRun(t, home, d, "api", "go", "build"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The TAIL alone, never the whole argv: what precedes it carries the workdir,
+	// which is spawn.StartDir's verdict with its own tests, and pinning it here
+	// would make this test fail for that reason instead of this one.
+	want := []string{"api", "go", "build"}
+	for _, argv := range f.Pipes {
+		if len(argv) >= len(want) && slices.Equal(argv[len(argv)-len(want):], want) {
+			return
+		}
+	}
+	t.Errorf("the command must reach sbx exec; pipes: %v", f.Pipes)
 }
