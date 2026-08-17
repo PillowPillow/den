@@ -396,6 +396,55 @@ func TestWrongArgumentCountNamesTheUsageLine(t *testing.T) {
 	}
 }
 
+// A flag's usage string is RENDERED, not printed: cobra's UnquoteUsage takes
+// the FIRST backquoted span in it as that flag's value placeholder and strips
+// that pair from the text. Three of den's booleans opened with one, so
+// `den up --help` read `-T, --no-tty den up`, advertising an argument named
+// `den up` on a flag that takes none — and `den shell`'s span sat mid-sentence,
+// pulling two words out of the sentence they belonged to.
+//
+// One row per COMMAND rather than one per usage string, for the reason the
+// table above gives: `den run` and `den shell` copied the pattern from each
+// other, so a single row would leave the copies uncovered.
+//
+// The assertion is an ABSENCE — the placeholder cannot be spelled out in a
+// positive compare, because a usage string that regrew its backticks renders
+// its TEXT identically (only the first pair is stripped). The `present` half
+// guards the absence from going vacuous if the sentence is ever deleted.
+func TestHelpDoesNotAdvertiseABooleanFlagAsTakingAValue(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		absent  string
+		present string
+	}{
+		{"up", []string{"up", "--help"}, "--no-tty den",
+			"refused here — den up opens a login shell, which needs a terminal; " +
+				"use den run -T <nest> <cmd>"},
+		{"run", []string{"run", "--help"}, "--detach den",
+			"refused here — den run runs a command inside the sandbox; " +
+				"use den up --detach <nest>"},
+		{"shell", []string{"shell", "--help"}, "--no-tty den",
+			"refused here — a login shell needs a terminal; use den exec for a command"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("DEN_HOME", t.TempDir())
+
+			out, err := run(t, tc.args...)
+			if err != nil {
+				t.Fatalf("%v must print help: %v", tc.args, err)
+			}
+			if strings.Contains(out, tc.absent) {
+				t.Errorf("a boolean flag is rendered with a value placeholder (%q); got:\n%s",
+					tc.absent, out)
+			}
+			if !strings.Contains(out, tc.present) {
+				t.Errorf("the usage sentence %q is missing; got:\n%s", tc.present, out)
+			}
+		})
+	}
+}
+
 // testTree builds a throwaway root with two subcommands, for the tests of
 // unknownCommandError below.
 //

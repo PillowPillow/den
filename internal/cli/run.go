@@ -53,9 +53,11 @@ func newRunCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 
 	registerSpawnFlags(cmd, &o)
 	// REGISTERED and always refused; see newUpCmd for why the refusal is not
-	// spelled here but in spawn.go's step 0.
+	// spelled here but in spawn.go's step 0, and for why the usage string
+	// carries no backtick (cobra reads the first backquoted span as the flag's
+	// value placeholder — `den run --help` rendered `--detach den run`).
 	cmd.Flags().BoolVar(&o.Detach, "detach", false,
-		"refused here — `den run` runs a command inside the sandbox; use `den up --detach <nest>`")
+		"refused here — den run runs a command inside the sandbox; use den up --detach <nest>")
 	cmd.Flags().BoolVarP(&o.NoTTY, "no-tty", "T", false,
 		"do not allocate a terminal (for pipes and CI)")
 	cmd.Flags().SetInterspersed(false)

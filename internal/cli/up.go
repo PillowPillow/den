@@ -229,7 +229,14 @@ func newUpCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 	// step 0 of Spawn, before a single config file is read. A second check on
 	// the cobra side would be two sources for one verdict, which is what
 	// enterOptions refused in slice 1.
+	//
+	// NO BACKTICKS in the usage string, and that is not a matter of taste:
+	// cobra's UnquoteUsage takes the FIRST backquoted span as the flag's VALUE
+	// PLACEHOLDER and strips that pair from the text. `den up --help` therefore
+	// rendered `-T, --no-tty den up`, telling the reader a boolean takes an
+	// argument named `den up`. Relocating the pair does not help — any pair
+	// anywhere becomes the placeholder — so there is none.
 	cmd.Flags().BoolVarP(&o.NoTTY, "no-tty", "T", false,
-		"refused here — `den up` opens a login shell, which needs a terminal; use `den run -T <nest> <cmd>`")
+		"refused here — den up opens a login shell, which needs a terminal; use den run -T <nest> <cmd>")
 	return cmd
 }

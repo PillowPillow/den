@@ -88,8 +88,14 @@ func newShellCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Re
 
 	cmd.Flags().StringVar(&workdir, "workdir", "",
 		"working directory for the shell (default: the directory you ran den from, when the sandbox mounts it; otherwise the first workspace it reports)")
+	// NO BACKTICKS, for the reason newUpCmd spells out: cobra's UnquoteUsage
+	// takes the first backquoted span as the flag's value placeholder and strips
+	// that pair. Here the span sat MID-SENTENCE, so `den shell --help` rendered
+	// `-T, --no-tty den exec   refused here — … use den exec for a command`:
+	// a boolean advertised as taking an argument, and the words pulled out of
+	// the sentence they belonged to.
 	cmd.Flags().BoolVarP(&noTTY, "no-tty", "T", false,
-		"refused here — a login shell needs a terminal; use `den exec` for a command")
+		"refused here — a login shell needs a terminal; use den exec for a command")
 	// NO SetInterspersed(false) here, unlike `den exec`, and that is a decision
 	// rather than an omission: `den shell` takes no command, so it has no second
 	// side for a flag to belong to, and interspersing costs nothing. It buys one
