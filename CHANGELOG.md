@@ -7,6 +7,16 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.8.1 — 2026-08-17
+
+### Fixed
+- `brew install --cask PillowPillow/tap/den` installs on Linux. The cask is not macOS-only —
+  goreleaser emits a Linux archive beside the darwin one — but its postflight probed macOS
+  `xattr`, and in cask context that probe raises instead of reporting an exit status: brew
+  aborted the hook and purged a binary it had already staged correctly, with exit 127. The
+  hook now asks `OS.mac?`, which runs nothing. `install.sh` was the workaround and stays
+  available.
+
 ## v1.8.0 — 2026-08-17
 
 ### Added
