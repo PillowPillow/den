@@ -123,7 +123,7 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 			// spellings — the user may equally have typed `corp:api` or the
 			// `corp-api` that `den ls` prints and that den's own --detach
 			// message recommends.
-			n, err := nestOfSandbox(home, args[0], name)
+			n, _, err := nestOfSandbox(home, args[0], name)
 			if err != nil {
 				return err
 			}

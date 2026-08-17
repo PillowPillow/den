@@ -3,6 +3,7 @@ package sbx
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -144,5 +145,65 @@ func TestFakePipeReturnsTheScriptedError(t *testing.T) {
 	f := &Fake{PipeErr: want}
 	if err := f.Pipe(context.Background(), "exec", "api", "false"); !errors.Is(err, want) {
 		t.Errorf("Pipe = %v, want %v", err, want)
+	}
+}
+
+// The redaction lives on BOTH sides of the boundary, and this is the half a
+// test can see: a value passed to RunSensitive must not appear in what the
+// fake records, or every redaction assertion in den would be checking a
+// property production has and the double does not.
+func TestFakeRedactsSensitiveArguments(t *testing.T) {
+	f := &Fake{}
+	if _, err := f.RunSensitive(context.Background(), []int{5},
+		"secret", "set-custom", "-g", "--env", "GITLAB_TOKEN", "sentinel-secret"); err != nil {
+		t.Fatalf("RunSensitive: %v", err)
+	}
+	if len(f.Sensitive) != 1 {
+		t.Fatalf("Sensitive = %v", f.Sensitive)
+	}
+	for _, recorded := range [][][]string{f.Calls, f.Sensitive} {
+		for _, call := range recorded {
+			for _, arg := range call {
+				if arg == "sentinel-secret" {
+					t.Fatalf("the secret was recorded verbatim: %v", call)
+				}
+			}
+		}
+	}
+	if f.Sensitive[0][5] != RedactedArg {
+		t.Errorf("argument 5 = %q, want %q", f.Sensitive[0][5], RedactedArg)
+	}
+}
+
+// A piped secret never reaches argv at all, and the fake keeps no copy of it.
+func TestFakeRecordsPipedInputByArgvOnly(t *testing.T) {
+	f := &Fake{}
+	if _, err := f.RunInput(context.Background(), []byte("sentinel-secret"),
+		"secret", "set", "-g", "--registry", "registry.example.test:443", "--password-stdin"); err != nil {
+		t.Fatalf("RunInput: %v", err)
+	}
+	if len(f.Inputs) != 1 || len(f.Calls) != 1 {
+		t.Fatalf("Inputs = %v, Calls = %v", f.Inputs, f.Calls)
+	}
+	for _, arg := range f.Inputs[0] {
+		if arg == "sentinel-secret" {
+			t.Fatal("the piped value must never be in argv")
+		}
+	}
+}
+
+// The real runner redacts the same positions, in the one place a secret could
+// escape: the error a failing command produces.
+func TestExecRunSensitiveRedactsTheErrorArgv(t *testing.T) {
+	e := &Exec{Bin: "false"} // exits 1, whatever the arguments
+	_, err := e.RunSensitive(context.Background(), []int{1}, "arg", "sentinel-secret")
+	if err == nil {
+		t.Fatal("expected the failure of `false`")
+	}
+	if strings.Contains(err.Error(), "sentinel-secret") {
+		t.Fatalf("the error leaks the secret: %v", err)
+	}
+	if !strings.Contains(err.Error(), RedactedArg) {
+		t.Errorf("error = %q, expected the redacted marker", err.Error())
 	}
 }

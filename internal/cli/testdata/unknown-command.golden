@@ -8,7 +8,7 @@ Commands:
   doctor      Diagnose den's configuration and environment
   exec        Run a command in an existing sandbox
   help        Help about any command
-  init        Create a den home from the shipped example
+  init        Create a den home, from the shipped example or from a team source
   lint        Validate a source checkout (stacks, nests, references, confinement)
   ls          List live sandboxes
   nest        Inspect the declared nests

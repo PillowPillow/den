@@ -42,6 +42,33 @@ func TestValidateAcceptsTheSSHModesFromTheSpec(t *testing.T) {
 	}
 }
 
+// `defaults.stack` is OPTIONAL since the source-aware den home
+// (examples/den-home-source): that home ships no local stack and no local
+// nest — every nest it will ever resolve comes from a team source and
+// declares its own `stack:` (spawn.ResolveStack refuses a source nest that
+// does not). Requiring the key here would have made `den init --source`
+// write a config.yaml pointing at a stack directory it deliberately does not
+// create.
+//
+// The blank spellings are accepted for the same reason they are refused
+// elsewhere: "   " is not a stack name anybody can look up, so it means the
+// same thing as absent. What used to be this check now lives in
+// nest.Resolve, which is the only judge that also sees the nest's own
+// `stack:` — see TestResolveNamesMissingNestAndGlobalStack.
+func TestValidateAcceptsAnAbsentDefaultStack(t *testing.T) {
+	for _, value := range []string{"", "   ", "\t", "\n"} {
+		t.Run(strconv.Quote(value), func(t *testing.T) {
+			g := validGlobal()
+			g.Defaults.Stack = value
+			for _, err := range g.Validate() {
+				if strings.Contains(err.Error(), "defaults.stack") {
+					t.Fatalf("defaults.stack = %q was rejected: %v", value, err)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateDetectsFaults(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -50,7 +77,6 @@ func TestValidateDetectsFaults(t *testing.T) {
 	}{
 		{"default agent missing from registry", func(g *Global) { g.Defaults.Agent = "codex" }, "codex"},
 		{"default agent empty", func(g *Global) { g.Defaults.Agent = "" }, "defaults.agent"},
-		{"default stack empty", func(g *Global) { g.Defaults.Stack = "" }, "defaults.stack"},
 		{"empty agent registry", func(g *Global) { g.Agents = nil }, "agents"},
 		{"unknown ssh mode", func(g *Global) { g.SSH.Mode = "vpn" }, "ssh.mode"},
 		{"unknown worktree layout", func(g *Global) { g.WorktreeLayout = "scattered" }, "worktree_layout"},
@@ -223,8 +249,14 @@ func TestValidateRefusesABlankRequiredField(t *testing.T) {
 		// see TestValidateRefusesABlankConfigDir and
 		// TestValidateRefusesABlankWorktreeRoot below, which check their own
 		// wording.
+		// defaults.stack left this table on 2026-08-14, with the same
+		// reasoning as config_dir and worktree_root above: it no longer says
+		// "required", because a source-aware den home legitimately ships no
+		// local stack at all. Its blank case moved to
+		// TestValidateAcceptsAnAbsentDefaultStack below, and the refusal it
+		// used to carry moved to nest.Resolve, which alone knows whether the
+		// NEST supplied one.
 		{"defaults.agent", func(g *Global, v string) { g.Defaults.Agent = v }},
-		{"defaults.stack", func(g *Global, v string) { g.Defaults.Stack = v }},
 		{"ssh.dir", func(g *Global, v string) { g.SSH.Mode = "mount"; g.SSH.Dir = v }},
 	}
 	for _, c := range cases {

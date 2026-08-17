@@ -216,9 +216,23 @@ func (g *Global) Validate() []error {
 		}
 	}
 
-	if strings.TrimSpace(g.Defaults.Stack) == "" {
-		errs = append(errs, fmt.Errorf("defaults.stack: required"))
-	}
+	// defaults.stack is deliberately NOT checked here, and this comment is what
+	// stops it from being re-added beside defaults.agent above.
+	//
+	// It stopped being "required" with the source-aware den home
+	// (examples/den-home-source, `den init --source`): that home ships no
+	// stacks/ and no nests/ at all. Every nest it resolves comes from a team
+	// source, and a source nest may never fall back on this key anyway —
+	// spawn.ResolveStack refuses one that omits `stack:`, because a personal
+	// default would spawn a different stack on each teammate's machine. So
+	// requiring the key would have forced `den init --source` to write a
+	// config.yaml naming a stack directory it does not create, and `den doctor`
+	// to fail on a home that is exactly right.
+	//
+	// The refusal is not lost, it MOVED to nest.Resolve, which is the only
+	// judge that sees both halves of the cascade: a local nest with no `stack:`
+	// and no global default is still refused there, by a message naming both
+	// files. Judging here could only ever see one half.
 
 	if !slices.Contains(sshModes, g.SSH.Mode) {
 		errs = append(errs, fmt.Errorf("ssh.mode: %q unknown (expected: %v)", g.SSH.Mode, sshModes))

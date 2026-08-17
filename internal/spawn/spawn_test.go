@@ -22,6 +22,7 @@ import (
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
 )
@@ -4857,4 +4858,127 @@ func readNestRepo(t *testing.T, denHome string) string {
 		t.Fatalf("no repo path in %s", b)
 	}
 	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(after), "}"))
+}
+
+// installManifestedSource writes a source that carries den-source.yaml, plus
+// the personal configuration and receipt a finished convergence leaves. The
+// repo key is mapped to repoPath in the SOURCE's own file — never in
+// config.yaml.
+func installManifestedSource(t *testing.T, denHome, name, version, repoKey, repoPath string) {
+	t.Helper()
+	root := filepath.Join(denHome, "sources", name)
+	write(t, filepath.Join(root, "stacks", "teamstack", "stack.yaml"), "image: teamstack:v1\n")
+	write(t, filepath.Join(root, "nests", "api.yaml"),
+		"stack: teamstack\nrepos:\n  - { key: "+repoKey+" }\n")
+	write(t, filepath.Join(root, "den-source.yaml"), `schema_version: 1
+kind: source
+metadata: { name: `+name+`, version: `+version+` }
+exports:
+  nests:
+    - { name: api, path: nests/api.yaml }
+  stacks:
+    - { name: teamstack, path: stacks/teamstack/stack.yaml }
+`)
+	if err := source.WritePersonal(denHome, name, source.Personal{
+		Version: version,
+		Repos:   map[string]string{repoKey: repoPath},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.WriteReceipt(denHome, name, source.Receipt{
+		Status:  source.StatusReady,
+		Version: version,
+		Nests:   map[string]source.ReceiptNest{"api": {Status: source.NestReady}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A manifested source's nest resolves its `key:` through the source's own
+// mapping. The global config.yaml.repos deliberately maps the SAME key to
+// another directory: that is the collision the per-source mapping exists for,
+// and the spawn must mount the source's answer (spec §6).
+func TestSpawnResolvesRepoKeysThroughTheSourceMapping(t *testing.T) {
+	denHome, _ := denTest(t)
+	sourceRepo := filepath.Join(t.TempDir(), "api")
+	createRepo(t, sourceRepo)
+	globalRepo := filepath.Join(t.TempDir(), "other-api")
+	createRepo(t, globalRepo)
+	write(t, filepath.Join(denHome, "config.yaml"), `agents:
+  claude:
+    config_dir: `+filepath.Join(denHome, "agents", "claude")+`
+    env: { CLAUDE_CONFIG_DIR: "{config_dir}" }
+    bin_dirs: ["$HOME/.local/bin"]
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+ssh:
+  mode: agent-forward
+worktree_layout: central
+worktree_root: `+filepath.Join(denHome, "worktrees")+`
+egress:
+  - github.com
+repos:
+  api: `+globalRepo+`
+`)
+	installManifestedSource(t, denHome, "corp", "1.0.0", "api", sourceRepo)
+
+	f, d := fakeDeps()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	// The workspace is a POSITIONAL of `sbx create`, so the assertion is on
+	// the path's presence in that argv, not on a flag.
+	mounted := false
+	for _, c := range f.Calls {
+		if len(c) > 0 && c[0] == "create" && slices.Contains(c, sourceRepo) {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Errorf("expected the SOURCE's mapping (%s) in the create argv; calls: %v", sourceRepo, f.Calls)
+	}
+	for _, c := range f.Calls {
+		for _, arg := range c {
+			if arg == globalRepo {
+				t.Fatalf("the global config.yaml.repos answered for a manifested source: %v", c)
+			}
+		}
+	}
+}
+
+// A source whose checkout, configured version and receipt disagree is
+// half-converged: the spawn refuses before any side effect, naming the version
+// and the command that finishes the job.
+func TestSpawnRefusesADivergingManifestedSource(t *testing.T) {
+	denHome, _ := denTest(t)
+	repo := filepath.Join(t.TempDir(), "api")
+	createRepo(t, repo)
+	installManifestedSource(t, denHome, "corp", "1.0.0", "api", repo)
+	// The team pushed 1.1.0 and the checkout advanced; this machine never
+	// converged it.
+	write(t, filepath.Join(denHome, "sources", "corp", "den-source.yaml"), `schema_version: 1
+kind: source
+metadata: { name: corp, version: 1.1.0 }
+exports:
+  nests:
+    - { name: api, path: nests/api.yaml }
+  stacks:
+    - { name: teamstack, path: stacks/teamstack/stack.yaml }
+`)
+
+	f, d := fakeDeps()
+	err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d)
+	if err == nil {
+		t.Fatal("expected a refusal on a half-converged source")
+	}
+	for _, want := range []string{"1.1.0", "den source configure corp"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected a mention of %q", err.Error(), want)
+		}
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("the refusal must come before any sbx call; calls: %v", f.Calls)
+	}
 }

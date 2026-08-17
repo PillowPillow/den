@@ -62,6 +62,19 @@ func newBuildCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 				if stacksRoot, _, bareTarget, err = source.Locate(home, target); err != nil {
 					return err
 				}
+				// A stack that comes from a manifested source passes the same
+				// usability gate as its nests: building the image of a version
+				// this machine never finished converging would produce an
+				// image the source's own resources do not match (spec §11.3).
+				//
+				// The GUARD only — no repo mapping is read here, and that
+				// asymmetry with spawn is deliberate: a stack declares no
+				// `repos:`, so there is nothing for a mapping to resolve.
+				if src, _ := config.SplitSourceRef(target); src != "" {
+					if _, err = source.RequireUsable(home, src); err != nil {
+						return err
+					}
+				}
 				planTarget = build.Target{Name: bareTarget, Ref: target}
 				target = bareTarget
 			}

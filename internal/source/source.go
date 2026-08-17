@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/lint"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -36,16 +35,30 @@ func Locate(denHome, ref string) (root, src, name string, err error) {
 	if src == "" {
 		return denHome, "", name, nil
 	}
-	if err := config.ValidateSourceName(src); err != nil {
+	dir, err := requireInstalled(denHome, src)
+	if err != nil {
 		return "", "", "", err
 	}
-	dir := Dir(denHome, src)
-	if fi, statErr := os.Stat(dir); statErr != nil || !fi.IsDir() {
-		return "", "", "", fmt.Errorf(
-			"source %q: not installed — expected %s; run `den source add <url> --name %s`",
-			src, dir, src)
-	}
 	return dir, src, name, nil
+}
+
+// requireInstalled validates a source name and returns its checkout
+// directory, or the ONE refusal den gives for a source that is not there.
+//
+// Extracted so RequireUsable (version.go) cannot answer that same question in
+// a second dialect: a user who typed `corp:api` and a user running `den build
+// corp:base` must be told the same thing, with the same remedy.
+func requireInstalled(denHome, name string) (string, error) {
+	if err := config.ValidateSourceName(name); err != nil {
+		return "", err
+	}
+	dir := Dir(denHome, name)
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf(
+			"source %q: not installed — expected %s; run `den source add <url> --name %s`",
+			name, dir, name)
+	}
+	return dir, nil
 }
 
 // StaleAfter is the age past which the spawn hints at `den source update`.
@@ -78,7 +91,7 @@ func Stale(denHome, name string, now time.Time) bool {
 // sources/ directory is an empty list, not an error, the same doctrine List
 // documents above.
 //
-// This exists because List is not free: `den source ls` pays a `lint.Run`
+// This exists because List is not free: `den source ls` pays a `source.Lint`
 // plus a `git remote get-url` and a `git rev-parse` PER installed source,
 // work that exists to answer "what is installed and is it healthy". A bare
 // `den source update` needs only the names to iterate over — source.Update
@@ -129,7 +142,7 @@ func List(ctx context.Context, git worktree.Git, denHome string) ([]Info, error)
 		}
 		name := e.Name()
 		dir := Dir(denHome, name)
-		info := Info{Name: name, LintErrs: lint.Run(dir)}
+		info := Info{Name: name, LintErrs: Lint(dir)}
 		if raw, err := git.Run(ctx, dir, "remote", "get-url", "origin"); err == nil {
 			info.URL = strings.TrimSpace(string(raw))
 		} else {
