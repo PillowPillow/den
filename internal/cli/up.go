@@ -103,7 +103,11 @@ func (s execShape) addFlag(name, value string) execShape {
 // A validator NEVER writes to a stream. `den run`'s directory warning lives in
 // its RunE for that reason (run.go): first-defect-wins means a printing
 // validator would staple advice under a line already refused for something else.
-func upArgs(cmd *cobra.Command, args []string) error {
+//
+// refused carries the two flags spawn's step 0 can refuse, and it is what stops
+// this function from proposing a line den itself rejects (#76). `den nest show`
+// passes the zero value: it registers neither flag.
+func upArgs(cmd *cobra.Command, args []string, refused refusableFlags) error {
 	path := cmd.CommandPath()
 	s := execRewrite(cmd, args)
 	// The shape is taken ONCE, at the top, and the name branch reads IT rather
@@ -124,6 +128,26 @@ func upArgs(cmd *cobra.Command, args []string) error {
 	// missing name as a quoted empty word there too.
 	if s.name == "" {
 		return fmt.Errorf("%s: a nest expected — usage: %s", path, cmd.UseLine())
+	}
+	// #76, and it sits here for two reasons. BELOW the name check, because what is
+	// MISSING outranks what contradicts — `den up -T` answers "a nest expected",
+	// enterArgs's own ordering — and ABOVE every branch that builds a line,
+	// because a flag this command always refuses must be NAMED, never carried into
+	// a proposal. `den up -T api /dev/hotfix` proposed
+	// `den up --no-tty=true --repo /dev/hotfix api`, refused one round trip later
+	// by the judge asked here.
+	//
+	// false is `den up`'s contract, not this line's shape: `den up api -- go test`
+	// carries a command in s.command, and the sandbox `den up` would spawn still
+	// has none. That branch asks the judge again, about `den run`, below.
+	//
+	// No remedy line accompanies this refusal, deliberately, and the precedent is
+	// the --repo-ambiguity branch further down: there is no legal line carrying
+	// everything the user typed, so den names the flag and proposes nothing rather
+	// than dropping a flag (the silent normalization spec §2 forbids) or inventing
+	// a command they never gave. The judge's own message names both ways out.
+	if err := refused.refusesLine(s, false); err != nil {
+		return err
 	}
 	// Branch 2 is the DISCRIMINANT and runs before the repo branch: the user
 	// wrote a separator, which in the old grammar meant "a command follows".
@@ -160,6 +184,17 @@ func upArgs(cmd *cobra.Command, args []string) error {
 			// the user typed a command, and commands go to `den run`. Naming
 			// `den nest show api` instead would drop `foo` in silence, which is
 			// the normalization §2 refuses.
+			//
+			// The judge is asked a SECOND time here, with true, and this is the
+			// cross-command shape #76 exists for: --detach is perfectly legal on
+			// `den up`, so the check above passed, and only the `den run` line this
+			// branch is about to write refuses it. `den up --detach api -- go test`
+			// proposed `den run --detach=true api go test`. Keying on the source
+			// command's own flags cannot see it; keying on the TARGET's contract
+			// can.
+			if err := refused.refusesLine(s, true); err != nil {
+				return err
+			}
 			return fmt.Errorf("%s: %s takes no command — write `%s`",
 				path, path, remedyLine(cmd, "den run", s, s.command))
 		}
@@ -230,7 +265,13 @@ func newUpCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "up <nest>",
 		Short: "Spawn or attach a nest's sandbox, then open a shell",
-		Args:  upArgs,
+		// The shape is read out of o, and out of o only: the validator asking
+		// spawn's judge (#76) is now the only thing o.NoTTY can change on this
+		// command, so reading the FlagSet instead would leave `BoolVarP(&o.NoTTY,
+		// …)` write-only and TestUpRefusesNoTTY green over an unwired flag.
+		Args: func(cmd *cobra.Command, args []string) error {
+			return upArgs(cmd, args, refusableFlags{detach: o.Detach, noTTY: o.NoTTY})
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// o.Command stays empty: an empty spawn.Command.Argv IS `bash -l`,
 			// one layer down (internal/spawn/enter.go), where `den run` reads
@@ -243,11 +284,20 @@ func newUpCmd(denHome *string, deps spawn.Deps) *cobra.Command {
 	registerSpawnFlags(cmd, &o)
 	cmd.Flags().BoolVar(&o.Detach, "detach", false, "do not open a shell after the sandbox is up")
 	// REGISTERED and always refused, like -T on `den shell`: a named refusal
-	// beats cobra's `unknown flag: -T`. The refusal itself is NOT here — it is
-	// spawn.go's existing Detach×Command / NoTTY×no-command contradiction, at
-	// step 0 of Spawn, before a single config file is read. A second check on
-	// the cobra side would be two sources for one verdict, which is what
-	// enterOptions refused in slice 1.
+	// beats cobra's `unknown flag: -T`. The verdict itself is NOT here and never
+	// will be — it is spawn's Detach×Command / NoTTY×no-command contradiction,
+	// spawn.CommandLineContradiction, which step 0 of Spawn still calls before a
+	// single config file is read.
+	//
+	// Since #76 (2026-08-17) this command's VALIDATOR calls that same function,
+	// and the doctrine enterOptions set in slice 1 is why it is a call and not a
+	// copy: asking the owner is one source, re-deriving the verdict beside it
+	// would be two, and two is how they drift. The validator has to ask, because
+	// every refusal it writes ends in "write `…`" and the line it proposes must be
+	// one den accepts — `den up -T api /dev/hotfix` proposed
+	// `den up --no-tty=true --repo /dev/hotfix api`, refused one round trip later
+	// by step 0. Do NOT move the message here to "save the round trip"; that is
+	// the second source.
 	//
 	// NO BACKTICKS in the usage string, and that is not a matter of taste:
 	// cobra's UnquoteUsage takes the FIRST backquoted span as the flag's VALUE

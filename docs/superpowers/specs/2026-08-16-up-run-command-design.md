@@ -351,10 +351,38 @@ que `unknown flag`.
 | `-w` / `--worktree`, `--as`, `--agent` | ✓ | ✓ | inchangés |
 | `--only`, `--without`, `-i` | ✓ | ✓ | la contradiction `-i` × `--only`/`--without` est inchangée (`spawn.go:325`) |
 | `--workdir` | ✓ | ✓ | reste épelé long, définitivement — `-w` est la worktree |
-| `--detach` | ✓ (= `up -d` de compose) | enregistré, refusé | atteint la contradiction EXISTANTE `spawn.go:231` |
-| `-T` / `--no-tty` | enregistré, refusé | ✓ | atteint la contradiction EXISTANTE `spawn.go:254` |
+| `--detach` | ✓ (= `up -d` de compose) | enregistré, refusé | atteint la contradiction EXISTANTE, `spawn.CommandLineContradiction` |
+| `-T` / `--no-tty` | enregistré, refusé | ✓ | atteint la contradiction EXISTANTE, `spawn.CommandLineContradiction` |
 | `SetInterspersed(false)` | **non** | **oui** | |
 | `Args` | un validateur à lui, QUATRE branches ordonnées (voir plus bas) | ≥ 2 positionnels | |
+
+**Où le refus tombe (corrigé le 2026-08-17, issue #76).** Les deux contradictions ne vivent plus en
+ligne dans `spawn.Spawn` : elles sont dans `spawn.CommandLineContradiction`, une fonction pure et
+EXPORTÉE, que le step 0 appelle toujours *et* que les validateurs de `up`/`run`/`exec` appellent
+**avant** d'écrire un remède. La raison est une propriété que cette tranche a introduite et n'a pas
+tenue : tout refus finit par ``write `…` ``, et la ligne proposée doit être une ligne que den
+accepte. Elle ne l'était pas pour un drapeau enregistré-et-toujours-refusé — `den up -T api
+/dev/hotfix` proposait `den up --no-tty=true --repo /dev/hotfix api`, refusé un aller-retour plus
+tard par cette même contradiction.
+
+Trois règles en sortent, et elles sont normatives :
+
+1. **Un seul juge.** Le CLI ne redérive jamais le verdict ; il pose la question à la fonction que
+   `spawn.Spawn` appelle. Une table de noms « toujours refusés » côté CLI serait une seconde source,
+   et elle serait fausse : `--detach=false` est une orthographe légale, le verdict porte sur la
+   VALEUR, pas sur le nom.
+2. **La question porte sur la CIBLE.** Trois des cinq formes traversent les commandes — `den up
+   --detach api -- go test` propose une ligne `den run`, dont la forme porte une commande alors que
+   celle d'`up` n'en porte jamais. Le paramètre est le contrat de la commande visée
+   (`up`/`nest show` : aucune commande ; `run`/`exec` : une commande obligatoire).
+3. **Aucune ligne quand aucune n'est légale.** den nomme le drapeau et ne propose rien — précédent :
+   la branche `--repo` ambiguë de `upArgs`. Retirer le drapeau du remède serait la normalisation
+   silencieuse que le §2 de la spec 2026-07-27 interdit ; inventer une commande que l'utilisateur n'a
+   pas donnée est pire. Le message du juge nomme déjà les deux sorties.
+
+Le message à deux moitiés (« no command given ») perd la moitié que la cible refuse, et cela ne
+tombe pas sous le §2 : aucun drapeau ne quitte une LIGNE, c'est une ALTERNATIVE qui quitte le
+MESSAGE, et une que den ne peut pas honorer.
 
 **`up` n'arme pas `SetInterspersed(false)`**, et c'est une décision, pas un oubli : le
 raisonnement de `internal/cli/shell.go:93-100` s'applique mot pour mot. `up` ne prend aucune

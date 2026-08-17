@@ -136,12 +136,20 @@ func newNestShowCmd(denHome *string) *cobra.Command {
 		// word the grievance §5 raises against exactlyOneArg on `den up`, and the
 		// dry-run cannot be the one place the migration goes unnamed.
 		//
-		// It costs NO parameter: a cobra validator already receives
+		// It costs almost NO parameter: a cobra validator already receives
 		// *cobra.Command, hence cmd.CommandPath() ("den nest show") and
 		// cmd.Flags() (Changed("repo"), and the derived table). The
 		// inter-command TARGET is the remedy builder's need, not the
 		// validator's — two distinct needs that must not be fused.
-		Args: upArgs,
+		//
+		// The one it does cost is the ZERO refusableFlags (#76): this command
+		// registers neither --detach nor -T, so no line it proposes can carry one
+		// and spawn's judge has nothing to refuse. Written out rather than
+		// defaulted, because a silent zero is how the day `den nest show` grows one
+		// of them would go unnoticed.
+		Args: func(cmd *cobra.Command, args []string) error {
+			return upArgs(cmd, args, refusableFlags{})
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {

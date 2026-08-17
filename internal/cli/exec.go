@@ -21,6 +21,13 @@ import (
 // sibling that opens a shell without a command: `den shell` for exec, `den up`
 // for run.
 //
+// refused carries the two flags spawn's judge can refuse, as the command's own
+// options hold them, and it is what stops this function from proposing a line den
+// itself rejects (#76). `den exec` passes only -T; it registers no --detach. The
+// command's CONTRACT is not in it: BOTH callers require a command, so the `true`
+// this function passes the judge is written once, here, rather than restated per
+// command — refusableFlags's own comment holds the argument.
+//
 // One function rather than two, because these are the two commands this slice
 // exists to reconcile: `den exec api go test` and `den run api go test` must
 // read identically, and a second copy is where they would drift apart.
@@ -57,9 +64,19 @@ import (
 // what the user typed can propose a line the NEXT check refuses. Read execShape
 // for the cases; the property is pinned by TestExecRemediesAreThemselvesLegal,
 // which feeds every remedy back through this function.
-func enterArgs(cmd *cobra.Command, args []string, noun, shellCmd string) error {
+func enterArgs(cmd *cobra.Command, args []string, noun, shellCmd string, refused refusableFlags) error {
 	s := execRewrite(cmd, args)
 	path := cmd.CommandPath()
+	// #76: the verdict on a flag this command always refuses, taken BEFORE any
+	// branch writes a line. true is the contract of both callers — `den exec` and
+	// `den run` require a command — so it is `--detach` that this catches, and
+	// `den run --detach api` now answers the contradiction instead of "no command
+	// given" followed by `den run --detach=true api go test`, refused in turn.
+	//
+	// Taken here rather than inside the switch because a case cannot hold a
+	// statement, and calling the judge twice to use it as a condition would be two
+	// answers to one question.
+	verdict := refused.refusesLine(s, true)
 	// FIRST-DEFECT-WINS, and the order is the order the user can act on. What is
 	// MISSING outranks what is misplaced: `den exec api --` has both a stray
 	// separator and no command, and telling it to drop the `--` would only earn
@@ -74,6 +91,22 @@ func enterArgs(cmd *cobra.Command, args []string, noun, shellCmd string) error {
 		// rather than borrowing a name from the command.
 		return fmt.Errorf("%s: a %s name and a command expected, none received — usage: %s",
 			path, noun, cmd.UseLine())
+	case verdict != nil:
+		// BELOW the name check — what is MISSING outranks what contradicts, so
+		// `den run --detach` answers "a nest name and a command expected" — and
+		// ABOVE every branch that writes a line. No remedy accompanies it: no legal
+		// line carries everything typed, and the judge's own message names both
+		// ways out. See upArgs for the same placement and the precedent.
+		//
+		// `den run --detach api` therefore answers "--detach and a command
+		// contradict each other" on a line carrying NO command, and that wording is
+		// deliberate rather than a leak: the contradiction is with the command
+		// `den run` is contracted to have, not with one the user typed, and the
+		// remedy the judge names — `den up --detach <nest>` — is the complete legal
+		// line for what they meant. Answering "no command given" first would propose
+		// `den run --detach=true api go test`, refused in turn. Do not "fix" the
+		// conjunction by dropping this case below the missing-command one.
+		return verdict
 	case len(s.command) == 0:
 		// The example command is den's, not the user's — they gave none. It
 		// carries their flags anyway: someone who typed `den exec api -T` gets
@@ -91,15 +124,25 @@ func enterArgs(cmd *cobra.Command, args []string, noun, shellCmd string) error {
 		// outside the replay property — remedyOf reads the FIRST backticked span
 		// only — hence it was free to rot, and it did.
 		//
-		// The cost is known and accepted rather than filtered. -T is
-		// registered-and-always-refused on both `den shell` and `den up`, so
-		// `den run -T api` now proposes `den up -T api`, which spawn.Spawn's
-		// step 0 refuses: one extra round trip on a line that was already wrong,
-		// where before the user got a line that WORKED and silently changed the
-		// sandbox. Dropping the flag here instead would be the silent
-		// normalization spec §2 refuses, and refusing it on the cobra side would
-		// be a second source for a verdict step 0 owns alone — which of the two
-		// the family should do is a spec question, not this call site's.
+		// The SHELL half is dropped when its target refuses the flag, and #76's
+		// answer is that this is not the §2 normalization it looks like: no flag
+		// leaves any LINE — an ALTERNATIVE leaves the MESSAGE, and it is one den
+		// cannot honour. -T is registered-and-always-refused on both `den shell`
+		// and `den up`, so `den run -T api` proposed `den up --no-tty=true api`
+		// and `den exec -T api` proposed `den shell --no-tty=true api`, each
+		// refused in turn — the second by shell.go's own RunE, which is why the
+		// judge is asked about the SHAPE (no command) and its words are never
+		// quoted here.
+		//
+		// The COMMAND half cannot be the refused one: with hasCommand true the only
+		// verdict left is --detach's, and the case above has already returned it. So
+		// the message names -T by that spelling — it is the only flag that can
+		// reach this branch — and a flag added to this class tomorrow needs this
+		// sentence widened, which is why it names the reason and not just the flag.
+		if refused.refusesLine(s, false) != nil {
+			return fmt.Errorf("%s: no command given, and -T rules out a shell — write `%s`",
+				path, remedyLine(cmd, path, s, []string{"go", "test"}))
+		}
 		return fmt.Errorf("%s: no command given — write `%s`, or `%s` for a shell",
 			path, remedyLine(cmd, path, s, []string{"go", "test"}),
 			remedyLine(cmd, shellCmd, s, nil))
@@ -293,7 +336,10 @@ func newExecCmd(denHome *string, runner sbx.Runner, sshAgent func() sshagent.Res
 		Use:   "exec <name> <cmd> [args...]",
 		Short: "Run a command in an existing sandbox",
 		Args: func(cmd *cobra.Command, args []string) error {
-			return enterArgs(cmd, args, "sandbox", "den shell")
+			// No detach on this command, and noTTY read out of the variable the
+			// flag binds to — the same reason newUpCmd gives for reading o.
+			return enterArgs(cmd, args, "sandbox", "den shell",
+				refusableFlags{noTTY: noTTY})
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// enterArgs has refused every other shape, so args[1:] is a real
