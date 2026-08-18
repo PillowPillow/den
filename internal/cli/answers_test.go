@@ -139,6 +139,25 @@ func TestCollectInitialAnswersRefusesWithoutATerminal(t *testing.T) {
 	}
 }
 
+// A terminal being present does not mean something is wired to ask ON it: a
+// caller that built Deps by hand (every test that does, and — until
+// SystemDeps runs — nothing else) can set IsTTY true and leave Prompt nil.
+// That must refuse legibly, not panic on a nil Prompter, and it must refuse
+// at THIS site (needsRoots, before any credential is even reached) exactly
+// as it does at the credential site below — one guard, both call sites
+// (M1 review fix, Task 4).
+func TestCollectInitialAnswersRefusesWithATerminalButNoPrompter(t *testing.T) {
+	cmd, _ := answersCmd("")
+	_, err := collectInitialAnswers(cmd, Deps{IsTTY: func() bool { return true }},
+		answersManifest(), "", false)
+	if err == nil {
+		t.Fatal("expected a refusal when no prompter is wired, even with a terminal")
+	}
+	if !strings.Contains(err.Error(), "no prompter is wired") {
+		t.Errorf("error = %q, expected the wiring defect to be named", err.Error())
+	}
+}
+
 // A fully-answered file needs no terminal at all: that is the whole point of
 // the automation path.
 func TestCollectInitialAnswersNeedsNoTerminalWhenTheFileIsComplete(t *testing.T) {
@@ -450,6 +469,23 @@ func TestConfirmNeverAsksWhenItDoesNotNeedTo(t *testing.T) {
 	}
 }
 
+// A nil Prompter must refuse the same way promptOptionalRepos does one
+// caller down — not panic on the Confirm call the moment a plan actually
+// has changes to apply (M1 review fix, Task 4: this was the one call site
+// still one nil-check short of that rule).
+func TestConfirmRefusesWithATerminalButNoPrompter(t *testing.T) {
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	_, err := confirm(cmd, Deps{IsTTY: func() bool { return true }}, false, true)
+	if err == nil {
+		t.Fatal("expected a refusal when no prompter is wired, even with a terminal")
+	}
+	if !strings.Contains(err.Error(), "no prompter is wired") {
+		t.Errorf("error = %q, expected the wiring defect to be named", err.Error())
+	}
+}
+
 // askRepositoryRoots reads ONE line and keeps the splitting, the ~ expansion
 // and the validation on den's side. The Prompter returns raw text: a prompter
 // that knew what a path is would be a second judge of den's config.
@@ -530,6 +566,12 @@ func TestConfirm(t *testing.T) {
 			}
 			if !got && !strings.Contains(out.String(), "nothing was applied") {
 				t.Errorf("a refused plan must say nothing happened:\n%s", out.String())
+			}
+			// The no-terminal refusal is the ONE message a human with no
+			// terminal has to act on: it must name the flag that gets them
+			// through next time, not just say no.
+			if !c.yes && !c.tty && !strings.Contains(out.String(), "`--yes`") {
+				t.Errorf("the no-terminal refusal must name --yes:\n%s", out.String())
 			}
 			if c.confirmAnswer == nil && len(f.Confirms) != 0 {
 				t.Errorf("this row must not ask, got %d question(s)", len(f.Confirms))

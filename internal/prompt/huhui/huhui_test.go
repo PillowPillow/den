@@ -157,3 +157,22 @@ func TestOptionsFor(t *testing.T) {
 		}
 	})
 }
+
+// Confirm's own comment (huhui.go) says den never defaults to yes on a plan
+// (spec §7.1) — Affirmative/Negative left at huh's defaults, the field built
+// with no explicit .Value(true). This pins ONLY that construction: the value
+// huh.NewConfirm() reports for a fresh, untouched field is false.
+//
+// It does NOT pin that a bare Enter in a real terminal submits this value
+// rather than activating the affirmative button — that half needs an actual
+// terminal to drive the form and stays untested here, same as every other
+// keystroke behavior this package's gate keeps out of a hermetic suite. If a
+// huh upgrade ever flips this constructed default to true, this test is the
+// one line that catches it before den's own suite would notice the drift.
+func TestConfirmDefaultsToNo(t *testing.T) {
+	var yes bool
+	c := huh.NewConfirm().Title("apply this plan?").Value(&yes)
+	if v, ok := c.GetValue().(bool); !ok || v {
+		t.Fatalf("huh's constructed confirm default must be false: %v (ok=%v)", v, ok)
+	}
+}

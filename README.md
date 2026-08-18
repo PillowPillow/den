@@ -681,7 +681,9 @@ backend            ready
 
 status: ready
 
-apply this plan? [y/N]
+apply this plan?
+
+  Yes    [No]
 ```
 
 `den init --source` writes a source-aware `config.yaml` — no `defaults.stack`, no example nest, no

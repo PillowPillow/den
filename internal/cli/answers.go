@@ -105,6 +105,20 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 		return converge.Answers{}, noTerminalRefusal(stillMissing, needsTerminal, needsRoots, obsErr)
 	}
 
+	// A terminal is present (we are past the no-terminal branch above), but
+	// nothing is wired to ask on it — that is a WIRING defect, not a user
+	// error, and it must refuse HERE, before askRepositoryRoots or the
+	// credential loop below ever call a nil Prompter. One guard above both
+	// call sites, not one per site: a nil-interface panic on the roots path
+	// would be the same defect the credential-only guard used to catch,
+	// expressed as a crash instead of a refusal (M1 review fix, Task 4).
+	if d.Prompt == nil && (needsRoots || len(missing) > 0) {
+		return converge.Answers{}, fmt.Errorf(
+			"this run has a terminal but no prompter is wired — this is a den defect; " +
+				"pass `--answers <file>` supplying `repository_roots:` and " +
+				"`credentials.<name>.from_env:` as a workaround")
+	}
+
 	if needsRoots {
 		roots, err := askRepositoryRoots(d.Prompt)
 		if err != nil {
@@ -116,11 +130,6 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 		label := m.Inputs.Credentials[name].Prompt
 		if strings.TrimSpace(label) == "" {
 			label = name
-		}
-		if d.Prompt == nil {
-			return converge.Answers{}, fmt.Errorf(
-				"credential %q must be typed, and no prompter is wired — this is a den defect; "+
-					"pass `--answers <file>` with `from_env:` as a workaround", name)
 		}
 		// Never echoed, and never carried in a flag: an argv is visible to
 		// every process on the machine (spec §5.3).
@@ -320,6 +329,15 @@ func confirm(cmd *cobra.Command, d Deps, yes, changes bool) (bool, error) {
 	}
 	if !changes {
 		return true, nil
+	}
+	// A nil Prompter is "no way to ask", never "assume the defaults": an
+	// unwired double must refuse here rather than let the caller apply a
+	// plan nobody confirmed. Same rule as promptOptionalRepos (internal/
+	// spawn/interactive.go), one caller down.
+	if d.Prompt == nil {
+		return false, fmt.Errorf(
+			"no prompter is wired to confirm this plan — this is a den defect; " +
+				"pass `--yes` as a workaround")
 	}
 	// The plan is ALREADY on screen, printed by the caller. The question names
 	// what it applies to and nothing else: internal/converge/render.go calls
