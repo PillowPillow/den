@@ -633,17 +633,21 @@ Add `"github.com/PillowPillow/den/internal/prompt"` to that file's imports; remo
 
 - [ ] **Step 6: Rewire `cli`**
 
-In `internal/cli/up.go`, replace line 35:
+In `internal/cli/up.go`, **delete** line 35 and add nothing in its place:
 
 ```go
 	d.In = cmd.InOrStdin()
 ```
 
-with:
+`d.Out` and `d.Err` stay. Do NOT write `d.Prompt = deps.Prompt` here: `spawnNest`'s `deps` parameter is already a `spawn.Deps`, so that line would assign a field to itself and wire nothing — `-i` would refuse on a nil Prompter for every real user while the suite stayed green on hand-built Deps.
+
+The real cli→spawn wiring site is the `spawnDeps := spawn.Deps{...}` literal at `internal/cli/root.go:205`. Add to it, next to `IsTTY: deps.IsTTY,`:
 
 ```go
-	d.Prompt = deps.Prompt
+		Prompt:    deps.Prompt,
 ```
+
+That literal's own comment says why it is the right place: a field wired on one command and forgotten on the other is silent.
 
 In `internal/cli/root.go`, add to `Deps` (next to `IsTTY`):
 
@@ -743,6 +747,18 @@ For `TestInteractiveProducesTheSameArgvAsTheEquivalentWithout` specifically, lin
 ```
 
 **Its argv comparison at lines 273-285 does not change.** If you find yourself editing an assertion about `Calls`, `Attaches`, a `--without` list, or a refusal message, STOP: invariant 1 or the terminal gate is broken, and the test is telling you so (spec §6, "signal d'arrêt").
+
+- [ ] **Step 7b: Rewrite the cli-level interactive test**
+
+`internal/cli/up_test.go:440`'s `TestInteractiveReadsTheCommandInput` fails after this change, and it should: its premise — "the checklist reads the COMMAND's input, not os.Stdin" — is exactly the wiring being deleted. Rewrite it, do not delete it; the mounting assertion inside is behavioural and must survive.
+
+- Drop `strings.Contains(out, "docs")`. Den no longer prints the checklist — the Prompter renders it. Rendered-bytes class, so it moves or goes.
+- **Keep** the loop asserting the unchecked repo is not among the create call's arguments. Behavioural — it must still pass.
+- Drive it with `&prompt.Fake{MultiSelectAnswers: [][]string{{...}}}` on the deps, and rename it to `TestInteractivePrompterReachesSpawn` with a comment saying what it now proves: the Prompter reaches spawn's checklist and its answer decides what is mounted.
+- Read the `denHomeWithOptionalRepo` fixture (up_test.go around :390) for which repos are optional before scripting the Fake — it differs from `interactive_test.go`'s fixtures.
+- `TestInteractiveRefusesWithoutATerminalProbe` (up_test.go:463) stays as it is: no `IsTTY` probe still refuses, naming `--without`.
+- `runUpWithInput` (up_test.go:410) becomes vestigial once nothing needs a scripted stdin — simplify or remove it, whichever leaves the file honest.
+- `fakeSpawnDeps()` may need a `Prompt` for tests that reach the checklist; leave it nil for tests that must refuse.
 
 - [ ] **Step 8: Run the spawn suite**
 
