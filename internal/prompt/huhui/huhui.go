@@ -83,9 +83,34 @@ func (p *Prompter) run(field huh.Field) error {
 	if errors.Is(err, huh.ErrUserAborted) {
 		// ctrl+c is an answer, and the answer is no. Callers turn this into
 		// their own "nothing was spawned" / "nothing was applied" refusal.
-		return fmt.Errorf("cancelled")
+		return errors.New("cancelled")
 	}
 	return err
+}
+
+// optionsFor builds huh's option list from a request. Extracted out of
+// MultiSelect, which sits behind the gate, so this — the one piece of this
+// package's logic that isn't "call huh and return" — is reachable by a test
+// that never touches a terminal.
+//
+// huh v1.0.0's Option[T] carries no per-option description (option.go:6-10:
+// Key, Value, and an unexported selected — nothing else), so a Description
+// with nowhere else to go is folded into the Key. Dropping it instead would
+// take the one thing it exists to say off the screen: promptOptionalRepos
+// (internal/spawn/interactive.go) fills it with the config file to fix for a
+// repo key with no host mapping, and den names the file to fix and the
+// remedy (spec §2) — silently losing that string here would violate that on
+// every render, with nothing failing to say so.
+func optionsFor(r prompt.MultiSelectRequest) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(r.Options))
+	for _, o := range r.Options {
+		key := o.Label
+		if o.Description != "" {
+			key += " " + o.Description
+		}
+		options = append(options, huh.NewOption(key, o.Value).Selected(r.Preselected))
+	}
+	return options
 }
 
 func (p *Prompter) MultiSelect(r prompt.MultiSelectRequest) ([]string, error) {
@@ -93,13 +118,9 @@ func (p *Prompter) MultiSelect(r prompt.MultiSelectRequest) ([]string, error) {
 		return nil, err
 	}
 	var chosen []string
-	options := make([]huh.Option[string], 0, len(r.Options))
-	for _, o := range r.Options {
-		options = append(options, huh.NewOption(o.Label, o.Value).Selected(r.Preselected))
-	}
 	field := huh.NewMultiSelect[string]().
 		Title(r.Title).
-		Options(options...).
+		Options(optionsFor(r)...).
 		Value(&chosen)
 	// No Limit call: a MultiSelect with no floor is what lets a `select:
 	// prompt` nest be confirmed empty (measured, spec §3.f), which is that

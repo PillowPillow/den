@@ -4,9 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/PillowPillow/den/internal/prompt"
+	"github.com/charmbracelet/huh"
 )
 
 // The gate refuses on a descriptor that is not a terminal, and it refuses
@@ -99,4 +101,70 @@ func TestNewBindsTheProcessDescriptors(t *testing.T) {
 	if p.In != os.Stdin || p.Out != os.Stdout {
 		t.Error("New must bind os.Stdin and os.Stdout")
 	}
+}
+
+// selectedOf reads huh.Option's unexported `selected` field through reflect.
+//
+// huh v1.0.0's Option has Selected(bool) as a fluent SETTER only — no getter
+// (option.go:29-32) — so there is no exported way to ask a built Option
+// whether it is selected. reflect.Value.Bool() can still read an unexported
+// bool field without going through Interface(), which is what would panic;
+// FieldByName itself returns a zero Value (and .Bool() then panics) if huh
+// ever renames the field, so this fails loudly on a library upgrade rather
+// than silently reporting "not selected" and passing a broken test.
+func selectedOf(o huh.Option[string]) bool {
+	return reflect.ValueOf(o).FieldByName("selected").Bool()
+}
+
+// optionsFor is extracted out of MultiSelect specifically so this test can
+// reach it without a terminal — otherwise the Description-folding fix it
+// covers would ship untested, which is testable logic hiding behind a gate
+// that only a real form could pass.
+func TestOptionsFor(t *testing.T) {
+	t.Run("an option's Description survives, folded into the Key", func(t *testing.T) {
+		got := optionsFor(prompt.MultiSelectRequest{
+			Options: []prompt.Option{
+				{Value: "api", Label: "api", Description: "(not mapped in /home/user/.den/config.yaml)"},
+			},
+		})
+		if len(got) != 1 {
+			t.Fatalf("got %d options, want 1", len(got))
+		}
+		if want := "api (not mapped in /home/user/.den/config.yaml)"; got[0].Key != want {
+			t.Errorf("Key = %q, want %q", got[0].Key, want)
+		}
+		if got[0].Value != "api" {
+			t.Errorf("Value = %q, want %q (untouched by the annotation)", got[0].Value, "api")
+		}
+	})
+
+	t.Run("an option with no Description is unchanged", func(t *testing.T) {
+		got := optionsFor(prompt.MultiSelectRequest{
+			Options: []prompt.Option{{Value: "web", Label: "web"}},
+		})
+		if len(got) != 1 {
+			t.Fatalf("got %d options, want 1", len(got))
+		}
+		if got[0].Key != "web" {
+			t.Errorf("Key = %q, want %q (no trailing space from an empty Description)", got[0].Key, "web")
+		}
+		if got[0].Value != "web" {
+			t.Errorf("Value = %q, want %q", got[0].Value, "web")
+		}
+	})
+
+	t.Run("Preselected reaches every option's Selected", func(t *testing.T) {
+		for _, preselected := range []bool{true, false} {
+			got := optionsFor(prompt.MultiSelectRequest{
+				Options:     []prompt.Option{{Value: "a", Label: "a"}, {Value: "b", Label: "b"}},
+				Preselected: preselected,
+			})
+			for _, o := range got {
+				if selectedOf(o) != preselected {
+					t.Errorf("Preselected=%v: option %q selected=%v, want %v",
+						preselected, o.Key, selectedOf(o), preselected)
+				}
+			}
+		}
+	})
 }
