@@ -147,6 +147,12 @@ func TestPromptAnnotatesUnmappedKeys(t *testing.T) {
 		map[string]string{"worker": "/dev/worker"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// The same guard its four siblings carry: an index panic IS a failure, but
+	// it names the line rather than the property, and the reader then has to
+	// work out that the checklist never opened.
+	if len(f.MultiSelects) != 1 {
+		t.Fatalf("the checklist must have been opened exactly once, got %d", len(f.MultiSelects))
+	}
 	var docs, worker prompt.Option
 	for _, o := range f.MultiSelects[0].Options {
 		switch o.Value {
@@ -215,10 +221,18 @@ func TestPromptRefusesWhenThePrompterCannotAnswer(t *testing.T) {
 // A nil Prompter is "no way to ask", never "take the defaults". An unwired
 // double must refuse here rather than let a caller mount a selection nobody
 // made.
+//
+// The message is held to the same clause as its error-path sibling above: this
+// refusal is the one a user meets while den is between wiring sites (nothing
+// fills spawn.Deps.Prompt until the real renderer lands), so it is the last
+// place that can hand over a command which works.
 func TestPromptRefusesANilPrompter(t *testing.T) {
 	_, err := promptOptionalRepos(nil, promptMappingPath, "api", optionalRepos(), false, nil)
 	if err == nil {
 		t.Fatal("a nil prompter must refuse")
+	}
+	if !strings.Contains(err.Error(), "--only") || !strings.Contains(err.Error(), "--without") {
+		t.Errorf("the refusal must name the non-interactive equivalents: %v", err)
 	}
 }
 

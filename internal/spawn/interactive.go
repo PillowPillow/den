@@ -15,9 +15,9 @@ import (
 // ONE LINE-ish, on purpose, and exported so the wiring site names it: this is
 // the part of `-i` (and, since #60, of the `-it` decision in `den exec`/`den
 // run <cmd>`) that binds den to the process's actual descriptors.
-// Everything around it — the checklist, the toggles, the refusals — takes an
-// io.Reader and is tested. Growing this function is how that boundary gets
-// lost.
+// Everything around it — the checklist and its refusals — takes a
+// prompt.Prompter and is tested, which is what confines the untested claim to
+// this function. Growing this function is how that boundary gets lost.
 //
 // It says "reports whether", not "appears to": #66 replaced a heuristic with a
 // test. Until then this read `info.Mode()&os.ModeCharDevice != 0` on each
@@ -49,9 +49,12 @@ import (
 // BOTH descriptors are still required, and that is #60's rule, not a
 // consequence of #66. With stdout redirected, LooksInteractive answers false
 // even when stdin is a real terminal, so the checklist takes its clean refusal
-// (interactiveWithout, below) instead of drawing a prompt nobody can see — a
-// checklist the user cannot see is worse than a refusal that names the
-// non-interactive equivalent.
+// (interactiveWithout, below) instead of handing the Prompter a question
+// nobody can see — a checklist the user cannot see is worse than a refusal
+// that names the non-interactive equivalent. den draws none of it any more,
+// which makes this gate carry MORE than it did: the library behind the
+// Prompter fails open (spec §3.d), so a probe that answered true here on a
+// redirected stdout would get a default selection nobody chose.
 func LooksInteractive() bool {
 	return isTerminal(os.Stdin) && isTerminal(os.Stdout)
 }
