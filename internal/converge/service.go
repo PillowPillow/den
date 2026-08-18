@@ -577,8 +577,11 @@ func (s Service) resumeCommand(req Request) string {
 
 // retryCommand names the command that starts this convergence OVER, for a
 // refusal raised BEFORE Apply ran — where resumeCommand names the one that
-// picks up a convergence interrupted halfway. The two differ on ModeInit, and
-// the difference is load-bearing.
+// picks up a convergence interrupted halfway. The two differ on ModeInit and
+// on ModeUpdate, and both differences are load-bearing — same cause each time:
+// what Apply does on its way in has not happened yet when this refusal fires.
+// It writes the fresh config.yaml on ModeInit, and it moves the checkout onto
+// the candidate on ModeUpdate.
 //
 // resumeCommand can name `den source add` on ModeInit because it only ever
 // speaks from inside Apply, which writes the fresh config.yaml as its very
@@ -595,6 +598,13 @@ func (s Service) retryCommand(req Request) string {
 		return fmt.Sprintf("den init --source %s --name %s", s.candidateURL(req), req.Name)
 	case ModeAdd:
 		return fmt.Sprintf("den source add %s --name %s", s.candidateURL(req), req.Name)
+	case ModeUpdate:
+		// `den source configure` would be a lie here: fastForward only runs
+		// inside Apply, so at refusal time the checkout still carries the OLD
+		// version — configure would converge it, report success, and the
+		// published update would silently never land. The retry must restart
+		// the update itself.
+		return fmt.Sprintf("den source update %s", req.Name)
 	default:
 		return fmt.Sprintf("den source configure %s", req.Name)
 	}
