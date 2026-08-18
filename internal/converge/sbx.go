@@ -81,8 +81,7 @@ func ReadSbxState(ctx context.Context, runner sbx.Runner) (*SbxState, error) {
 	if err != nil {
 		return nil, err
 	}
-	policies, err := runner.Run(ctx,
-		"policy", "ls", "--type", "network", "--source", "local", "--decision", "allow", "--json")
+	policies, err := sbx.LocalNetworkPolicy(ctx, runner)
 	if err != nil {
 		return nil, fmt.Errorf("reading the local sbx network policy: %w", err)
 	}

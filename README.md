@@ -56,10 +56,20 @@ is what names nothing: it answers `dev`, the documented tell that the build skip
 ## Bootstrapping
 
 ```bash
+sbx policy init balanced   # once per machine — see below
 den init
 $EDITOR ~/.den/nests/example.yaml
 den doctor
 ```
+
+**`sbx policy init` is a one-time step den does not perform for you.** sbx answers no policy
+command — and starts no sandbox — until a global network policy exists, so on a machine that never
+ran it every den command touching the network fails: `den source add` refuses before it asks
+anything ("den could not observe this machine"), and `den up` fails in the settle loop. den does not
+choose the profile for you, because `allow-all`, `balanced` and `deny-all` are a machine-wide
+security posture: `balanced` allows typical development traffic (AI services, package registries),
+`deny-all` blocks everything until you allow hosts one by one. `sbx policy reset` is the only way
+back. `den doctor` reports the missing policy as `[FAIL] sbx policy`.
 
 `den init` copies the shipped example into the den home, refusing only on the presence of
 `config.yaml` itself (`already initialized: <path>`) — a home with no `config.yaml` counts as

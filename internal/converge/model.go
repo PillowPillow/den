@@ -200,6 +200,19 @@ type Plan struct {
 	RepoMatches []RepoMatch
 	Nests       []NestReadiness
 	Status      Status
+	// Unobserved is the failure of the ONE sbx read every resource driver
+	// shares (ReadSbxState). Non-nil means no resource line below is a real
+	// observation: they are all `unknown`, and the plan describes what the
+	// SOURCE declares, never what this machine holds.
+	//
+	// Carried as a field rather than returned as an error because the two
+	// callers need opposite things from it: `den source status` and `den
+	// doctor` must still RENDER an unobservable machine (spec §12.2), while a
+	// converging command must REFUSE before it asks anything — the plan cannot
+	// be applied, and a confirmation prompt on it is uninformed consent. A
+	// reader that only checks Status would not see the difference: `unknown`
+	// is also what a plan reads as when one single driver failed to inspect.
+	Unobserved error
 }
 
 // UnconfirmedRepoMatches are the discovery results a human still has to

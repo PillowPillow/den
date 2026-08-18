@@ -111,7 +111,9 @@ func (s Service) Plan(ctx context.Context, req Request) (*Plan, error) {
 	// than an exception (see the godoc above).
 	state, observeErr := ReadSbxState(ctx, s.Sbx)
 	if observeErr != nil {
-		plan.Resources = unobservedResources(m, observeErr)
+		plan.Unobserved = observeErr
+		plan.Warnings = append(plan.Warnings, unobservedWarning(observeErr))
+		plan.Resources = unobservedResources(m)
 	} else {
 		for _, d := range s.drivers(req, m, state) {
 			o, err := d.Inspect(ctx)
@@ -168,7 +170,9 @@ func (s Service) Status(ctx context.Context, denHome, name string) (*Plan, error
 	plan := &Plan{Source: name, Version: m.Metadata.Version}
 	state, observeErr := ReadSbxState(ctx, s.Sbx)
 	if observeErr != nil {
-		plan.Resources = unobservedResources(m, observeErr)
+		plan.Unobserved = observeErr
+		plan.Warnings = append(plan.Warnings, unobservedWarning(observeErr))
+		plan.Resources = unobservedResources(m)
 	} else {
 		for _, d := range s.drivers(Request{DenHome: denHome, Name: name, Candidate: c}, m, state) {
 			o, err := d.Inspect(ctx)
@@ -240,20 +244,52 @@ func (s Service) checkCompatibility(ctx context.Context, m *source.Manifest, req
 // needs the state that is precisely what is missing. Everything the source
 // declares is listed — a plan that shrank when observation failed would let a
 // user confirm an installation whose scope they cannot see.
-func unobservedResources(m *source.Manifest, cause error) []ResourcePlan {
-	detail := cause.Error()
+//
+// The CAUSE is deliberately not copied onto each line. It used to be, and the
+// colleague's report (2026-08-18) is what that costs: sbx's refusal is four
+// lines long, so a source declaring three credentials, an allowlist and a
+// build printed the same paragraph five times and the plan became unreadable.
+// The cause is one fact about the machine, not about each resource — it is
+// carried by Plan.Unobserved and printed once, as a warning.
+func unobservedResources(m *source.Manifest) []ResourcePlan {
 	var out []ResourcePlan
 	for _, c := range m.Resources.Credentials {
-		out = append(out, ResourcePlan{ID: c.ID, Kind: KindCredential, Action: ActionCreate, Observed: detail})
+		out = append(out, ResourcePlan{ID: c.ID, Kind: KindCredential, Action: ActionCreate})
 	}
 	if len(m.Resources.BuildNetwork.Allow) > 0 {
-		out = append(out, ResourcePlan{
-			ID: KindBuildNetwork, Kind: KindBuildNetwork, Action: ActionCreate, Observed: detail})
+		out = append(out, ResourcePlan{ID: KindBuildNetwork, Kind: KindBuildNetwork, Action: ActionCreate})
 	}
 	for _, b := range m.Resources.Builds {
-		out = append(out, ResourcePlan{ID: b.Stack, Kind: KindStackBuild, Action: ActionCreate, Observed: detail})
+		out = append(out, ResourcePlan{ID: b.Stack, Kind: KindStackBuild, Action: ActionCreate})
 	}
 	return out
+}
+
+// unobservedWarning is the ONE wording of a failed shared read, and it travels
+// as a WARNING so every renderer already carries it: `den source status` prints
+// the first warning under a non-ready status, `den doctor` quotes it in that
+// source's line (sourceDetail), and the plan lists it above the resources.
+// Without it the cause was visible in the plan only — a status printed a bare
+// `unknown` and left the user to guess which read failed.
+func unobservedWarning(cause error) string {
+	return fmt.Sprintf("den could not observe this machine: %v", cause)
+}
+
+// Unobservable reports why this plan must not be applied, or nil.
+//
+// The refusal belongs to the SERVICE, not to the CLI: it names the resume
+// command, and spec §12.3 wants the exact one — which only the mode knows.
+// Every converging command asks it before it confirms anything (see
+// runConvergence): an unobservable machine cannot be converged, and a plan
+// whose every line is `unknown` is not something a human can consent to.
+func (s Service) Unobservable(req Request, plan *Plan) error {
+	if plan == nil || plan.Unobserved == nil {
+		return nil
+	}
+	return fmt.Errorf(
+		"source %q: %w — den will not converge a machine it cannot see; fix that read "+
+			"(`den doctor` reports it), then run `%s`. Nothing was applied",
+		req.Name, plan.Unobserved, s.retryCommand(req))
 }
 
 func buildList(m *source.Manifest) string {
@@ -503,15 +539,23 @@ func (s Service) failed(req Request, applying source.Receipt, applied []Resource
 // function must not repeat that clause itself, or the rendered message says
 // it twice (caught in review: the doubled sentence was untested because only
 // the ModeUpdate branch had a test).
+// Since the CLI refuses an unobservable machine BEFORE confirming
+// (Service.Unobservable), reaching this point means the machine stopped
+// answering between the plan and the apply — a race, not the state a fresh
+// laptop is in. The remedy therefore leads with the read: "run it again" alone
+// describes a retry that fails identically until the cause is fixed, which is
+// what the 2026-08-18 report showed a user doing twice.
 func (s Service) stateUnreadable(req Request, applying source.Receipt, cause error) error {
 	if req.Mode == ModeInit || req.Mode == ModeAdd {
 		return fmt.Errorf(
-			"source %q: cannot read sbx state to apply version %s (%w) — %s",
+			"source %q: cannot read sbx state to apply version %s (%w) — fix that read "+
+				"(`den doctor` reports it), then %s",
 			req.Name, applying.TargetVersion, cause, s.resumeCommand(req))
 	}
 	return fmt.Errorf(
 		"source %q: cannot read sbx state to apply version %s (%w) — the checkout under "+
-			"sources/%s/ is already at that version while its resources are not yet applied; %s",
+			"sources/%s/ is already at that version while its resources are not yet applied; "+
+			"fix that read (`den doctor` reports it), then %s",
 		req.Name, applying.TargetVersion, cause, req.Name, s.resumeCommand(req))
 }
 
@@ -524,14 +568,47 @@ func (s Service) stateUnreadable(req Request, applying source.Receipt, cause err
 // `den source add`. Spec §12.3 asks for the exact command, not a plausible one.
 func (s Service) resumeCommand(req Request) string {
 	if req.Mode == ModeInit || req.Mode == ModeAdd {
-		url := req.Candidate.URL
-		if url == "" {
-			url = "<url>"
-		}
 		return fmt.Sprintf("run `den source add %s --name %s` again — nothing is installed yet, and "+
-			"the resources that did converge are recorded, so the retry skips them", url, req.Name)
+			"the resources that did converge are recorded, so the retry skips them",
+			s.candidateURL(req), req.Name)
 	}
 	return fmt.Sprintf("run `den source configure %s`", req.Name)
+}
+
+// retryCommand names the command that starts this convergence OVER, for a
+// refusal raised BEFORE Apply ran — where resumeCommand names the one that
+// picks up a convergence interrupted halfway. The two differ on ModeInit, and
+// the difference is load-bearing.
+//
+// resumeCommand can name `den source add` on ModeInit because it only ever
+// speaks from inside Apply, which writes the fresh config.yaml as its very
+// first step (see Apply's ordering): the home LOADS by then, and `den init`
+// would answer "already initialized". Service.Unobservable refuses earlier
+// than that first step — nothing has been written, the home may not exist at
+// all — so `den source add` would be handed to a user with no den home, and
+// what they typed, `den init --source`, is also what recreates it. It stays
+// correct on an already-initialized home too: `den init --source` reaches this
+// same convergence with no fresh config to write.
+func (s Service) retryCommand(req Request) string {
+	switch req.Mode {
+	case ModeInit:
+		return fmt.Sprintf("den init --source %s --name %s", s.candidateURL(req), req.Name)
+	case ModeAdd:
+		return fmt.Sprintf("den source add %s --name %s", s.candidateURL(req), req.Name)
+	default:
+		return fmt.Sprintf("den source configure %s", req.Name)
+	}
+}
+
+// candidateURL is the remote a retry has to be given again, or a placeholder.
+// Empty is possible — ModeConfigure works from the installed checkout — and a
+// message reading `den source add  --name dg` would be a command that cannot
+// be pasted.
+func (s Service) candidateURL(req Request) string {
+	if req.Candidate == nil || req.Candidate.URL == "" {
+		return "<url>"
+	}
+	return req.Candidate.URL
 }
 
 // fastForward moves the installed checkout onto the candidate's commit.

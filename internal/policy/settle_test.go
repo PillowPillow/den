@@ -299,6 +299,28 @@ func TestSettleFailsWhenSbxFailsWithoutAVerdict(t *testing.T) {
 	if !strings.Contains(err.Error(), "github.com") || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("the message must name the probed host and the underlying failure; got: %v", err)
 	}
+	// A check that could not run at all has one common cause den can name
+	// without guessing: sbx answers no policy command before its one-time
+	// `sbx policy init`. On a fresh laptop (reported 2026-08-18) this message
+	// was the wall the user hit at their first `den up`, and it sent them
+	// looking at an allowlist that was not the problem.
+	if !strings.Contains(err.Error(), "sbx policy init") {
+		t.Errorf("the message names no cause the user can act on; got: %v", err)
+	}
+
+	// And a long allowlist does not multiply it: the per-host pass returns the
+	// FIRST error in allowlist order, so the remedy is one sentence whatever the
+	// nest declares. A message repeating it per host would be the shape this
+	// change removed from the plan.
+	many := &sbx.Fake{Default: sbx.Response{Err: errors.New("boom")}}
+	err = Settle(context.Background(), many, "api",
+		[]string{"github.com", "gitlab.com", "registry.example.test"}, o)
+	if err == nil {
+		t.Fatal("an sbx that fails without returning anything usable must fail Settle")
+	}
+	if n := strings.Count(err.Error(), "sbx policy init"); n != 1 {
+		t.Errorf("the remedy appears %d times, want once; got: %v", n, err)
+	}
 }
 
 // C-1 — sbx's exit code is NOT the verdict. Nobody here can confirm that

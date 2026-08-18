@@ -1057,6 +1057,112 @@ func TestStatusReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {
 	if strings.Contains(rendered.String(), "absent") {
 		t.Errorf("an unobserved resource was rendered as absent:\n%s", rendered.String())
 	}
+	// A bare `unknown` sends the user looking: WHICH read failed is the only
+	// thing that tells them whether to fix a keychain, a daemon or a policy.
+	if !strings.Contains(rendered.String(), "keychain access denied") {
+		t.Errorf("the status does not name the read that failed:\n%s", rendered.String())
+	}
+}
+
+// The cause of a failed shared read is printed ONCE, whatever the source
+// declares.
+//
+// The regression is the colleague's report of 2026-08-18: sbx's refusal
+// ("global network policy has not been initialized", plus its two-line
+// remedy) was copied onto every resource line, so the plan repeated the same
+// paragraph five times and the one sentence that mattered drowned in it.
+func TestPlanNamesAFailedSharedReadOnce(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	const cause = "ERROR: global network policy has not been initialized"
+	f.Fail["policy ls --type network --source local --decision allow --json"] = errors.New(cause)
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+
+	plan := planFor(t, s, req)
+	if plan.Unobserved == nil {
+		t.Fatal("a plan built on a failed shared read must carry it: a caller cannot tell " +
+			"`unknown` from one driver apart from `unknown` from all of them")
+	}
+	var out strings.Builder
+	RenderPlan(&out, plan)
+	if n := strings.Count(out.String(), cause); n != 1 {
+		t.Errorf("the cause is printed %d times, want once:\n%s", n, out.String())
+	}
+	if len(plan.Resources) != 5 {
+		t.Errorf("resources = %+v, want every declared resource still listed", plan.Resources)
+	}
+}
+
+// The refusal a converging command returns names the cause AND the command
+// that retries — never the resume sentence of an interrupted apply, which
+// would promise recorded progress that does not exist.
+func TestUnobservableRefusalNamesTheCauseAndTheRetry(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	f.Fail["policy ls --type network --source local --decision allow --json"] = errors.New(
+		"global network policy has not been initialized")
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+	req.Mode = ModeAdd
+
+	err := s.Unobservable(req, planFor(t, s, req))
+	if err == nil {
+		t.Fatal("a machine den cannot observe must not be convergeable")
+	}
+	for _, want := range []string{
+		"global network policy has not been initialized", // the cause
+		"den doctor",          // where the same read is reported
+		"den source add",      // the retry
+		"Nothing was applied", // what the machine holds
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not carry %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "the resources that did converge are recorded") {
+		t.Errorf("the refusal promises recorded progress from a run that never started:\n%v", err)
+	}
+	// An observable machine is not refused: the guard must be a state, not a
+	// blanket veto.
+	clean := sbx.NewMachine()
+	s2, req2, cleanup2 := requestFor(t, denHome, remote, root, clean)
+	defer cleanup2()
+	if err := s2.Unobservable(req2, planFor(t, s2, req2)); err != nil {
+		t.Errorf("an observable machine was refused: %v", err)
+	}
+}
+
+// `den init --source` is retried with `den init --source`, never with
+// `den source add`.
+//
+// The distinction only appeared once the refusal moved ahead of Apply: Apply
+// writes the fresh config.yaml first, so its own resume message can name
+// `den source add` and be right. This refusal fires before ANY write — the den
+// home can be empty, or not exist — and `den source add` would then be a
+// command run against a home with no config.yaml.
+func TestUnobservableRefusalOnInitNamesInit(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	f.Fail["policy ls --type network --source local --decision allow --json"] = errors.New(
+		"global network policy has not been initialized")
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	defer cleanup()
+	req.Mode = ModeInit
+	req.FreshGlobalConfig = []byte("agents: {}\n")
+
+	err := s.Unobservable(req, planFor(t, s, req))
+	if err == nil {
+		t.Fatal("a machine den cannot observe must not be convergeable")
+	}
+	if !strings.Contains(err.Error(), "den init --source") {
+		t.Errorf("the retry does not name the command that also creates the den home:\n%v", err)
+	}
+	// And nothing was written: the refusal's premise is that the home is
+	// untouched, so a config.yaml here would make its message wrong.
+	if _, statErr := os.Stat(filepath.Join(denHome, "config.yaml")); statErr == nil {
+		t.Error("planning wrote the fresh global configuration")
+	}
 }
 
 // A legacy source has no contract to report on, and the refusal says which

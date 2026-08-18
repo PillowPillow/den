@@ -11,6 +11,7 @@ import (
 	den "github.com/PillowPillow/den"
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -732,5 +733,57 @@ func TestDoctorReportsAReadySource(t *testing.T) {
 	}
 	if !strings.Contains(out, "[ok  ] source dg") {
 		t.Errorf("the source check is missing or not ok:\n%s", out)
+	}
+}
+
+// A machine den could not OBSERVE is refused before the confirmation, not
+// after it.
+//
+// The regression this pins was reported from a colleague's fresh laptop: sbx
+// requires a one-time `sbx policy init <profile>` before any policy command
+// answers, so `policy ls` failed, every resource line read `observed: unknown
+// (…)`, and den STILL printed the plan, prompted `apply this plan? [y/N]`, took
+// the `y` and only refused inside Apply — after the applying receipt was
+// written. den held the fatal fact before the prompt: asking anyway is the bug,
+// and the sbx error is only its cause.
+//
+// Interactive on purpose (IsTTY true, `y` on stdin): the non-interactive path
+// refuses earlier, for a different reason — no terminal to collect a credential
+// on — which would leave the confirmation itself untested.
+func TestSourceAddRefusesAnUnobservableMachineBeforeConfirming(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	f := convergedSbx()
+	f.Fail["policy ls --type network --source local --decision allow --json"] = errors.New(
+		"ERROR: global network policy has not been initialized")
+	d := convergeDeps(f)
+	d.IsTTY = func() bool { return true }
+
+	root := NewRootCmdWith(d)
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetIn(strings.NewReader("y\n"))
+	root.SetArgs([]string{"source", "add", makeManifestedSourceRepo(t),
+		"--answers", writeAnswerFile(t, work), "--den-home", home})
+	err := root.Execute()
+	out := buf.String()
+
+	if err == nil {
+		t.Fatalf("den converged a machine it could not observe:\n%s", out)
+	}
+	if strings.Contains(out, "apply this plan?") {
+		t.Errorf("den asked to confirm a plan it already knew it could not apply:\n%s", out)
+	}
+	msg := err.Error() + "\n" + out
+	if !strings.Contains(msg, "global network policy has not been initialized") {
+		t.Errorf("the refusal hides the cause it was refused for:\n%s", msg)
+	}
+	if f.HasCalled("secret", "set") || f.HasCalled("policy", "allow") || f.HasCalled("create") {
+		t.Errorf("den mutated a machine it could not observe: %v", f.Calls)
+	}
+	if exists(t, source.ReceiptPath(home, "dg")) {
+		t.Errorf("den opened the applying window on a machine it could not observe")
 	}
 }

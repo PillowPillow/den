@@ -94,6 +94,21 @@ func runConvergence(cmd *cobra.Command, d Deps, mode converge.Mode, home, name s
 	if err != nil {
 		return err
 	}
+	// An unobservable machine stops the command HERE — before the repository
+	// questions below, before the plan is printed, before the confirmation.
+	//
+	// Plan itself does not refuse (its godoc says why: `den source status` and
+	// `den doctor` must still render such a machine), so this is the one place
+	// that turns that state into a refusal. It used to be absent, and the shape
+	// reported on 2026-08-18 is what that cost: sbx demands a one-time
+	// `sbx policy init <profile>`, a laptop that never ran it answered nothing
+	// to `policy ls`, and den asked for a GitLab token, printed a plan whose
+	// every line read `unknown`, prompted `apply this plan? [y/N]`, accepted
+	// the `y` — and only then refused, from inside Apply, with the applying
+	// receipt already written. den knew before the prompt.
+	if err := svc.Unobservable(req, plan); err != nil {
+		return err
+	}
 	// A second planning pass, and only when discovery left something open: the
 	// choices are written into the SAME Answers the first pass read, so the plan
 	// the user confirms is the plan den would compute from an answer file

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/converge"
@@ -79,6 +80,7 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 					"its sandbox is gone\n", b.Path, b.Err)
 			}
 			checks = append(checks, doctor.OrphanCheck(live, manifests))
+			checks = append(checks, networkPolicyChecks(cmd.Context(), deps, runner)...)
 			checks = append(checks, sourceChecks(cmd.Context(), home, runner, g)...)
 
 			failures, warnings := 0, 0
@@ -154,6 +156,45 @@ func reclaimOrphans(ctx context.Context, home string, orphans []doctor.Orphan,
 		}
 	}
 	return nil
+}
+
+// networkPolicyChecks answers one question: does this machine's sbx policy
+// answer at all?
+//
+// It is a FAIL, not a warning: sbx requires a one-time
+// `sbx policy init <allow-all|balanced|deny-all>` before any policy command
+// works, and until it is run den cannot converge a source (the shared state
+// read fails) nor spawn anything (the settle loop's `policy check` fails). A
+// machine in that state is not degraded, it is unusable — and it used to pass
+// `den doctor` with "all good" (reported 2026-08-18).
+//
+// Run HERE and not in internal/doctor, like the live list and the source
+// checks above: that package promises "no side effects, no network" and runs
+// no sbx. cli owns the runner; doctor owns the verdict shape.
+//
+// Skipped entirely when sbx is not on the PATH: the `sbx` check already failed
+// on that, and a second FAIL saying the same thing in other words only makes
+// the report harder to act on. Same rule as the live list, which degrades to
+// "unknown" rather than accusing every sandbox.
+//
+// den does NOT run `sbx policy init` itself, here or anywhere: allow-all,
+// balanced and deny-all are a machine-wide security posture, and choosing one
+// for the user is exactly the silent normalization spec §2 forbids.
+func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runner) []doctor.Check {
+	if _, err := deps.LookPath("sbx"); err != nil {
+		return nil
+	}
+	if _, err := sbx.LocalNetworkPolicy(ctx, runner); err != nil {
+		// Flattened onto one line: sbx's refusal is a four-line paragraph
+		// (message, blank line, "Initialize it with:", the command), and the
+		// report is a column of one-line checks. strings.Fields collapses every
+		// run of whitespace, so the remedy survives — it is the only part the
+		// user acts on — while the layout of the column does too.
+		return []doctor.Check{{Name: "sbx policy", Level: doctor.LevelFail,
+			Detail: strings.Join(strings.Fields(err.Error()), " ")}}
+	}
+	return []doctor.Check{{Name: "sbx policy", Level: doctor.LevelOK,
+		Detail: "local network policy readable"}}
 }
 
 // sourceChecks diagnoses every manifested source installed in this home.
