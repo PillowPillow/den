@@ -14,13 +14,21 @@ import (
 // whole sequence is exercised through this double — the real HTTPFetcher stays
 // the smallest untested surface, exactly like ports.ListenScanner.
 type fakeFetcher struct {
-	tag      string
-	tagErr   error
-	bodies   map[string][]byte
-	requests []string
+	tag            string
+	tagErr         error
+	bodies         map[string][]byte
+	requests       []string
+	resolveLatestN int
 }
 
+// ResolveLatest counts its own calls separately from Get's: HTTPFetcher's
+// ResolveLatest is a real network call too (it follows the /releases/latest
+// redirect), so a reordering bug that moved it ahead of the three early
+// refusals must be visible to a test — but the up-to-date path legitimately
+// calls ResolveLatest and must NOT call Get, so the two cannot share one
+// counter without breaking that distinction.
 func (f *fakeFetcher) ResolveLatest(context.Context) (string, error) {
+	f.resolveLatestN++
 	if f.tagErr != nil {
 		return "", f.tagErr
 	}
@@ -105,6 +113,9 @@ func TestRunRefusesBeforeAnyRequest(t *testing.T) {
 			err := Run(context.Background(), f, c.req, &bytes.Buffer{})
 			if err == nil {
 				t.Fatal("want a refusal")
+			}
+			if f.resolveLatestN != 0 {
+				t.Fatalf("the refusal came AFTER ResolveLatest was reached (%d call(s))", f.resolveLatestN)
 			}
 			if len(f.requests) != 0 {
 				t.Fatalf("the refusal came AFTER a download: %v", f.requests)
