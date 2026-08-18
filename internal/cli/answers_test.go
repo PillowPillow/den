@@ -160,6 +160,33 @@ func TestCollectInitialAnswersRefusesWithATerminalButNoPrompter(t *testing.T) {
 	}
 }
 
+// The guard's condition is `needsRoots || len(missing) > 0`: the test above
+// reaches it with needsRoots true (and, incidentally, a credential missing
+// too), so it never requires the `len(missing) > 0` half to be true on its
+// own — a bare `needsRoots` would pass that test just as well. THIS is the
+// only test that reaches the guard through the len(missing) > 0 half alone:
+// the answer file below supplies repository_roots (needsRoots false) but not
+// the credential. Deleting it would let that half of the condition rot
+// silently, the exact shape of the #79 dead-grep this review round exists to
+// close — so a future reader removing this test should know that is what
+// they are giving up.
+func TestCollectInitialAnswersRefusesACredentialWithATerminalButNoPrompter(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(t.TempDir(), "answers.yaml")
+	if err := os.WriteFile(path, []byte("repository_roots: ["+root+"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _ := answersCmd("")
+	_, err := collectInitialAnswers(cmd, Deps{IsTTY: func() bool { return true }},
+		answersManifest(), path, false)
+	if err == nil {
+		t.Fatal("expected a refusal when no prompter is wired, even with a terminal")
+	}
+	if !strings.Contains(err.Error(), "no prompter is wired") {
+		t.Errorf("error = %q, expected the wiring defect to be named", err.Error())
+	}
+}
+
 // A fully-answered file needs no terminal at all: that is the whole point of
 // the automation path.
 func TestCollectInitialAnswersNeedsNoTerminalWhenTheFileIsComplete(t *testing.T) {
