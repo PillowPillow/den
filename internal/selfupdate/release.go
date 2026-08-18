@@ -13,8 +13,8 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-// Repo is the single place the download host is spelled. install.sh spells it
-// too; the CI smoke of §8 is what keeps the two honest.
+// releasesBase is the single place the download host is spelled. install.sh
+// spells it too; the CI smoke of §8 is what keeps the two honest.
 const releasesBase = "https://github.com/PillowPillow/den/releases"
 
 // LatestURL is the redirect den reads the newest tag from. NOT api.github.com:
