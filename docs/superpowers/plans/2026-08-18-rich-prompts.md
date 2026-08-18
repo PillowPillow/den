@@ -576,7 +576,13 @@ func promptOptionalRepos(p prompt.Prompter, mappingPath, nestName string, repos 
 		Preselected: !prompts,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("-i: reading the selection: %w", err)
+		// The refusal names the non-interactive equivalents, exactly as the
+		// EOF refusal it replaces did. A Prompter error is the last thing a
+		// user sees before den gives up on asking, and "reading the selection
+		// failed" without the flag that does the same job is a dead end — den
+		// names the file to fix and the remedy (spec §2).
+		return nil, fmt.Errorf("-i: reading the selection: %w; %s",
+			err, nonInteractiveEquivalents(prompts))
 	}
 
 	// The answer names what STAYS; den's flag names what goes. Inverting here,
@@ -666,6 +672,69 @@ In `internal/spawn/interactive_test.go`, every `d.In = strings.NewReader(...)` b
 | `strings.NewReader("")` (nothing is asked) | — | `&prompt.Fake{}` — an empty script, which REFUSES if anything asks. That is the assertion. |
 
 Read each test's own fixture before translating: the repo names differ between `denTestOptional` and `denTestPromptingRepos`, and a number referred to a position in that test's list.
+
+**First, rename the helper.** `internal/spawn/interactive_test.go:34` declares `func prompt(t *testing.T, input string)`, which shadows the `prompt` PACKAGE this task imports — every `prompt.Fake` in the file would fail to compile. Rename it to `runChecklist` and update its 7 call sites (lines 145, 155, 165, 178, 190, 206, 219). Its new body:
+
+```go
+// runChecklist drives the -i checklist (boxes start full) with a scripted
+// answer, and hands back the --without list plus the request den built.
+//
+// checked is what the human leaves ticked. It replaces the old input string:
+// the numbered protocol is gone, so a test says which repos survive rather
+// than which keys were typed.
+func runChecklist(t *testing.T, checked []string) ([]string, prompt.MultiSelectRequest, error) {
+	t.Helper()
+	return promptWith(t, checked, false, nil)
+}
+```
+
+**Then dispose of its seven tests.** Four port, two go, one is load-bearing and must be rewritten rather than dropped:
+
+| Test | Disposition |
+|---|---|
+| `TestPromptKeepsEverythingWhenConfirmedAsIs` | **Delete.** `TestPromptStartingStateFollowsTheMode`'s `-i` case asserts exactly this, and now asserts `Preselected` besides. |
+| `TestPromptExcludesEverythingUnchecked` | **Port:** `runChecklist(t, nil)` → `--without` `[worker docs]`. |
+| `TestPromptExcludesOnlyWhatWasUnchecked` | **Port:** `runChecklist(t, []string{"worker"})` → `--without` `[docs]`. |
+| `TestPromptTogglesBackAndForth` | **Delete.** It pins `parseToggles`' toggle semantics — a mechanism this task removes. huh owns toggling now, and den does not test its dependency's key handling. |
+| `TestPromptRejectsAnInvalidEntryAndAsksAgain` | **Delete.** Same reason: it pins the all-or-nothing parsing of a typed line, and there is no typed line any more. |
+| `TestPromptRefusesAnInputThatEndsBeforeConfirmation` | **REWRITE, never delete.** See below — it carries the fail-closed property. |
+| `TestPromptOffersOptionalReposOnly` | **Port:** assert on the request instead of the rendered bytes — no option has `Value` or `Label` `"backend"`, and `runChecklist(t, []string{"docs"})` gives `--without` `[worker]`. |
+
+The rewrite, which replaces the EOF test:
+
+```go
+// A Prompter that cannot answer is a REFUSAL, never a confirmation — and the
+// refusal names the flag that makes the same selection without asking.
+//
+// This test is the descendant of the EOF-before-confirmation case, and it
+// guards the same property under a new mechanism. It matters more now, not
+// less: the bufio reader refused on EOF by itself, whereas huh hands back the
+// default selection with a nil error and then never lets the process exit
+// (spec §3.d). den's fail-closed behaviour is no longer inherited from the
+// reader — it is this code, and this test.
+func TestPromptRefusesWhenThePrompterCannotAnswer(t *testing.T) {
+	f := &prompt.Fake{Err: errors.New("no terminal")}
+	_, err := promptOptionalRepos(f, promptMappingPath, "api", optionalRepos(), false, nil)
+	if err == nil {
+		t.Fatal("a prompter error must be an error, never a silent confirmation")
+	}
+	if !strings.Contains(err.Error(), "--only") || !strings.Contains(err.Error(), "--without") {
+		t.Errorf("the refusal must name the non-interactive equivalents: %v", err)
+	}
+}
+
+// A nil Prompter is "no way to ask", never "take the defaults". An unwired
+// double must refuse here rather than let a caller mount a selection nobody
+// made.
+func TestPromptRefusesANilPrompter(t *testing.T) {
+	_, err := promptOptionalRepos(nil, promptMappingPath, "api", optionalRepos(), false, nil)
+	if err == nil {
+		t.Fatal("a nil prompter must refuse")
+	}
+}
+```
+
+Add `"errors"` to the test file's imports.
 
 For `TestInteractiveProducesTheSameArgvAsTheEquivalentWithout` specifically, line 260 becomes:
 
