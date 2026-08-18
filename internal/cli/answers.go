@@ -105,20 +105,6 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 		return converge.Answers{}, noTerminalRefusal(stillMissing, needsTerminal, needsRoots, obsErr)
 	}
 
-	// A terminal is present (we are past the no-terminal branch above), but
-	// nothing is wired to ask on it — that is a WIRING defect, not a user
-	// error, and it must refuse HERE, before askRepositoryRoots or the
-	// credential loop below ever call a nil Prompter. One guard above both
-	// call sites, not one per site: a nil-interface panic on the roots path
-	// would be the same defect the credential-only guard used to catch,
-	// expressed as a crash instead of a refusal (M1 review fix, Task 4).
-	if d.Prompt == nil && (needsRoots || len(missing) > 0) {
-		return converge.Answers{}, fmt.Errorf(
-			"this run has a terminal but no prompter is wired — this is a den defect; " +
-				"pass `--answers <file>` supplying `repository_roots:` and " +
-				"`credentials.<name>.from_env:` as a workaround")
-	}
-
 	if needsRoots {
 		roots, err := askRepositoryRoots(d.Prompt)
 		if err != nil {
@@ -130,6 +116,11 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 		label := m.Inputs.Credentials[name].Prompt
 		if strings.TrimSpace(label) == "" {
 			label = name
+		}
+		if d.Prompt == nil {
+			return converge.Answers{}, fmt.Errorf(
+				"credential %q must be typed, and no prompter is wired — this is a den defect; "+
+					"pass `--answers <file>` with `from_env:` as a workaround", name)
 		}
 		// Never echoed, and never carried in a flag: an argv is visible to
 		// every process on the machine (spec §5.3).
@@ -282,6 +273,16 @@ func noTerminalRefusal(missing, needsTerminal []string, needsRoots bool, obsErr 
 // knew what a path is would be a second judge of den's config, and there is one
 // judge (config.ExpandPath).
 func askRepositoryRoots(p prompt.Prompter) ([]string, error) {
+	// A nil Prompter is "no way to ask", never "assume none": guarded HERE,
+	// in the callee, not at the call site — the same rule and the same
+	// reason as promptOptionalRepos (internal/spawn/interactive.go). A guard
+	// at the call site can be forgotten by a future one; a guard inside
+	// askRepositoryRoots itself cannot.
+	if p == nil {
+		return nil, fmt.Errorf(
+			"the repository roots must be typed, and no prompter is wired — this is a den defect; " +
+				"pass `--answers <file>` with `repository_roots:` as a workaround")
+	}
 	line, err := p.Line(prompt.LineRequest{
 		Question: "Where do your working repositories live? (space-separated directories, " +
 			"empty line to skip — den only looks, it never clones)",
