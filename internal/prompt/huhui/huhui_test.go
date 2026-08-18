@@ -1,0 +1,102 @@
+package huhui
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/PillowPillow/den/internal/prompt"
+)
+
+// The gate refuses on a descriptor that is not a terminal, and it refuses
+// BEFORE building a form. This is the one part of this package a hermetic
+// suite can exercise, and it is the part that matters.
+//
+// Measured 2026-08-18 (spec §3.d): handed /dev/null, huh does not refuse. It
+// confirms the default selection nobody chose, returns a nil error, and then
+// the process never exits — a 5 s timeout kills it while a control binary
+// without huh exits 0 instantly. `< /dev/null` is the canonical CI and cron
+// stdin, so without this gate a scheduled `den up -i` would create a microVM
+// with a phantom repo set and hang the job that asked for it.
+//
+// Every method is covered, not just MultiSelect: a gate on three methods out of
+// four is a gate on none.
+func TestEveryMethodRefusesWithoutATerminal(t *testing.T) {
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("opening %s: %v", os.DevNull, err)
+	}
+	t.Cleanup(func() { devNull.Close() })
+
+	regular, err := os.Create(filepath.Join(t.TempDir(), "not-a-terminal"))
+	if err != nil {
+		t.Fatalf("creating a regular file: %v", err)
+	}
+	t.Cleanup(func() { regular.Close() })
+
+	for _, f := range []struct {
+		name string
+		file *os.File
+	}{
+		{"/dev/null", devNull},
+		{"a regular file", regular},
+	} {
+		t.Run(f.name, func(t *testing.T) {
+			p := &Prompter{In: f.file, Out: f.file}
+
+			if _, err := p.MultiSelect(prompt.MultiSelectRequest{
+				Title:   "pick",
+				Options: []prompt.Option{{Value: "web", Label: "web"}},
+			}); !errors.Is(err, prompt.ErrNoTerminal) {
+				t.Errorf("MultiSelect must refuse with ErrNoTerminal, got %v", err)
+			}
+			if _, err := p.Confirm(prompt.ConfirmRequest{Question: "apply?"}); !errors.Is(err, prompt.ErrNoTerminal) {
+				t.Errorf("Confirm must refuse with ErrNoTerminal, got %v", err)
+			}
+			if _, err := p.Line(prompt.LineRequest{Question: "where?"}); !errors.Is(err, prompt.ErrNoTerminal) {
+				t.Errorf("Line must refuse with ErrNoTerminal, got %v", err)
+			}
+			if _, err := p.Secret(prompt.SecretRequest{Prompt: "token"}); !errors.Is(err, prompt.ErrNoTerminal) {
+				t.Errorf("Secret must refuse with ErrNoTerminal, got %v", err)
+			}
+		})
+	}
+}
+
+// Both descriptors are required, and this is the residual shape #60 closed for
+// `-i`: a real terminal on one side and a redirect on the other must still
+// refuse. A form the user cannot see is worse than a refusal that names the
+// flag doing the same job.
+//
+// Only the negative half is testable here — a suite that acquired a tty would
+// stop being hermetic (CLAUDE.md) — so this asserts that a non-terminal on
+// EITHER side is enough to refuse.
+func TestOneNonTerminalDescriptorIsEnoughToRefuse(t *testing.T) {
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("opening %s: %v", os.DevNull, err)
+	}
+	t.Cleanup(func() { devNull.Close() })
+
+	// os.Stdin under `go test` is not a terminal either, so this pairs two
+	// non-terminals; the assertion is that the AND is what decides, not that
+	// one particular side did.
+	for _, p := range []*Prompter{
+		{In: devNull, Out: os.Stdout},
+		{In: os.Stdin, Out: devNull},
+	} {
+		if _, err := p.Confirm(prompt.ConfirmRequest{Question: "apply?"}); !errors.Is(err, prompt.ErrNoTerminal) {
+			t.Errorf("a non-terminal on either side must refuse, got %v", err)
+		}
+	}
+}
+
+// New() binds the process's real descriptors. Asserted structurally, never by
+// running a form: this test must not touch a terminal.
+func TestNewBindsTheProcessDescriptors(t *testing.T) {
+	p := New()
+	if p.In != os.Stdin || p.Out != os.Stdout {
+		t.Error("New must bind os.Stdin and os.Stdout")
+	}
+}

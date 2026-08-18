@@ -18,6 +18,7 @@ import (
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/ports"
 	"github.com/PillowPillow/den/internal/prompt"
+	"github.com/PillowPillow/den/internal/prompt/huhui"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
 	"github.com/PillowPillow/den/internal/sshagent"
@@ -102,6 +103,7 @@ func SystemDeps() Deps {
 		Open:      ports.OpenURL,
 		SSHAgent:  sshagent.System(),
 		IsTTY:     spawn.LooksInteractive,
+		Prompt:    huhui.New(),
 		Getenv:    os.Getenv,
 		// os.Stdin's descriptor, not cmd.InOrStdin(): term.ReadPassword needs
 		// the real terminal to disable echo on, and an io.Reader cannot be put

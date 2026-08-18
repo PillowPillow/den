@@ -1,0 +1,150 @@
+// Package huhui renders den's prompts with charmbracelet/huh.
+//
+// It is the ONLY package in den that imports charmbracelet, and
+// internal/prompt/hermeticity_test.go holds that line. Everything else in den
+// speaks to prompt.Prompter, so the 26 modules this dependency brings stay
+// behind one door and the deletion test on them stays cheap.
+//
+// It is also the only package in den with no behavioural test coverage worth
+// the name, on the same terms as ports.ListenScanner and ports.OpenURL: a test
+// that drove a real form would need a terminal, and no test in this repo
+// acquires one (CLAUDE.md). What IS tested is the gate below — the half that
+// decides whether a form is built at all.
+package huhui
+
+import (
+	"errors"
+	"fmt"
+	"os"
+
+	"github.com/PillowPillow/den/internal/prompt"
+	"github.com/charmbracelet/huh"
+	"golang.org/x/term"
+)
+
+// Prompter renders on a pair of descriptors.
+//
+// They are fields rather than package-level os.Stdin/os.Stdout reads so the
+// gate is testable: huhui_test.go builds one over /dev/null and asserts the
+// refusal, which is the only way this file's most important behaviour can be
+// exercised without a tty.
+type Prompter struct {
+	In  *os.File
+	Out *os.File
+}
+
+// New binds the process's real descriptors. It is what SystemDeps wires.
+func New() *Prompter {
+	return &Prompter{In: os.Stdin, Out: os.Stdout}
+}
+
+// gate refuses before any form exists, and it is the reason this package can be
+// trusted at all.
+//
+// huh FAILS OPEN (measured 2026-08-18, spec §3.d): given /dev/null on stdin it
+// prints its escape sequences into whatever is there, returns the default
+// selection with a nil error, and then the process never exits. den's callers
+// each check Deps.IsTTY and refuse in their own words before reaching this
+// package — this second check exists because after this change that gate is the
+// only thing between a cron job and a microVM built from a selection nobody
+// made. A safety property that depends on every caller remembering is not a
+// safety property.
+//
+// BOTH descriptors are required, which is #60's rule: with stdout redirected,
+// a form nobody can see is worse than a refusal naming the flag that does the
+// same job without asking.
+func (p *Prompter) gate() error {
+	if p.In == nil || p.Out == nil {
+		return fmt.Errorf("%w: no descriptors are bound", prompt.ErrNoTerminal)
+	}
+	if !term.IsTerminal(int(p.In.Fd())) || !term.IsTerminal(int(p.Out.Fd())) {
+		return prompt.ErrNoTerminal
+	}
+	return nil
+}
+
+// run executes one single-field form, in line, on den's descriptors.
+//
+// WithAccessible is never called, and that is a decision, not an omission
+// (spec §8): accessible mode replaces the form with a plaintext question, and
+// den does not have a degraded mode — it has refusals that name the flag doing
+// the same job.
+//
+// No alt-screen: measured 2026-08-18, huh's default emits no ^[[?1049h, so
+// den's own output — above all the converge plan a human is being asked to
+// consent to — stays on screen above the form. internal/converge/render.go
+// calls that plan the trust boundary; a form that scrolled it away would make
+// the confirmation uninformed consent.
+func (p *Prompter) run(field huh.Field) error {
+	err := huh.NewForm(huh.NewGroup(field)).
+		WithInput(p.In).
+		WithOutput(p.Out).
+		Run()
+	if errors.Is(err, huh.ErrUserAborted) {
+		// ctrl+c is an answer, and the answer is no. Callers turn this into
+		// their own "nothing was spawned" / "nothing was applied" refusal.
+		return fmt.Errorf("cancelled")
+	}
+	return err
+}
+
+func (p *Prompter) MultiSelect(r prompt.MultiSelectRequest) ([]string, error) {
+	if err := p.gate(); err != nil {
+		return nil, err
+	}
+	var chosen []string
+	options := make([]huh.Option[string], 0, len(r.Options))
+	for _, o := range r.Options {
+		options = append(options, huh.NewOption(o.Label, o.Value).Selected(r.Preselected))
+	}
+	field := huh.NewMultiSelect[string]().
+		Title(r.Title).
+		Options(options...).
+		Value(&chosen)
+	// No Limit call: a MultiSelect with no floor is what lets a `select:
+	// prompt` nest be confirmed empty (measured, spec §3.f), which is that
+	// mode's entire contract.
+	if err := p.run(field); err != nil {
+		return nil, err
+	}
+	return chosen, nil
+}
+
+func (p *Prompter) Confirm(r prompt.ConfirmRequest) (bool, error) {
+	if err := p.gate(); err != nil {
+		return false, err
+	}
+	var yes bool
+	// Affirmative/Negative are left at their defaults, and the field starts on
+	// the negative: den never defaults to yes on a plan (spec §7.1).
+	if err := p.run(huh.NewConfirm().Title(r.Question).Value(&yes)); err != nil {
+		return false, err
+	}
+	return yes, nil
+}
+
+func (p *Prompter) Line(r prompt.LineRequest) (string, error) {
+	if err := p.gate(); err != nil {
+		return "", err
+	}
+	var line string
+	if err := p.run(huh.NewInput().Title(r.Question).Value(&line)); err != nil {
+		return "", err
+	}
+	return line, nil
+}
+
+func (p *Prompter) Secret(r prompt.SecretRequest) (string, error) {
+	if err := p.gate(); err != nil {
+		return "", err
+	}
+	var secret string
+	field := huh.NewInput().
+		Title(r.Prompt).
+		EchoMode(huh.EchoModePassword).
+		Value(&secret)
+	if err := p.run(field); err != nil {
+		return "", err
+	}
+	return secret, nil
+}
