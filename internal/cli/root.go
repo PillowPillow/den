@@ -24,7 +24,6 @@ import (
 	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 // Version is injected at build time (-ldflags "-X .../internal/cli.Version=...").
@@ -78,11 +77,6 @@ type Deps struct {
 	// developer happens to have exported — the same hermeticity rule as Sbx
 	// and Git, applied to the one input that carries secrets.
 	Getenv func(string) string
-	// ReadSecret prompts for a credential WITHOUT echoing it. The real
-	// implementation reads the terminal directly (golang.org/x/term), which is
-	// exactly why it cannot be hard-wired: a test that inherited it would try
-	// to put the suite's stdin into raw mode. Tests inject a recorder.
-	ReadSecret func(prompt string) (string, error)
 	// DenVersion is this binary's own version, for the `requires.den` floor a
 	// source manifest declares. A function, not a string, and injected: the
 	// real one reads build info (displayVersion), and tests pin exact
@@ -94,27 +88,17 @@ type Deps struct {
 // default patience of policy's settle loop, and a real SSH-agent probe.
 func SystemDeps() Deps {
 	return Deps{
-		Doctor:    doctor.SystemDeps(),
-		Sbx:       sbx.NewExec(""),
-		Git:       worktree.NewGit(),
-		Policy:    policy.DefaultOptions(),
-		Freshness: agent.DefaultGateOptions(),
-		Scanner:   ports.ListenScanner{},
-		Open:      ports.OpenURL,
-		SSHAgent:  sshagent.System(),
-		IsTTY:     spawn.LooksInteractive,
-		Prompt:    huhui.New(),
-		Getenv:    os.Getenv,
-		// os.Stdin's descriptor, not cmd.InOrStdin(): term.ReadPassword needs
-		// the real terminal to disable echo on, and an io.Reader cannot be put
-		// into raw mode. The refusal path above (no tty) is what covers every
-		// caller that has no such descriptor.
-		ReadSecret: func(prompt string) (string, error) {
-			fmt.Fprint(os.Stderr, prompt)
-			value, err := term.ReadPassword(int(os.Stdin.Fd()))
-			fmt.Fprintln(os.Stderr)
-			return string(value), err
-		},
+		Doctor:     doctor.SystemDeps(),
+		Sbx:        sbx.NewExec(""),
+		Git:        worktree.NewGit(),
+		Policy:     policy.DefaultOptions(),
+		Freshness:  agent.DefaultGateOptions(),
+		Scanner:    ports.ListenScanner{},
+		Open:       ports.OpenURL,
+		SSHAgent:   sshagent.System(),
+		IsTTY:      spawn.LooksInteractive,
+		Prompt:     huhui.New(),
+		Getenv:     os.Getenv,
 		DenVersion: displayVersion,
 	}
 }
