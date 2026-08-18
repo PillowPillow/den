@@ -581,7 +581,19 @@ func hostAllowed(ctx context.Context, r sbx.Runner, sandbox, host string) (allow
 		if verdict != nil && !*verdict {
 			return false, runErr, nil // explicit refusal: it's a verdict, loop again
 		}
-		return false, nil, fmt.Errorf("sandbox %s: checking %s: %w", sandbox, host, runErr)
+		// The remedy is CONDITIONAL and says so ("if…"): den does not read
+		// sbx's stderr to classify this failure, and claiming a cause it did
+		// not verify would send the user to run a machine-wide policy command
+		// for what may be a stopped daemon. It is named anyway because it is
+		// the one cause a user cannot deduce from this message: sbx refuses
+		// every policy command until `sbx policy init` has been run once, so a
+		// fresh laptop fails here with nothing pointing at the missing step
+		// (reported 2026-08-18).
+		return false, nil, fmt.Errorf(
+			"sandbox %s: checking %s: %w — if `sbx policy init "+
+				"<allow-all|balanced|deny-all>` was never run on this machine, run it: sbx "+
+				"answers no policy command before it (`den doctor` reports that state)",
+			sandbox, host, runErr)
 	}
 	if readErr != nil {
 		return false, nil, fmt.Errorf("sandbox %s: checking %s: %w", sandbox, host, readErr)
