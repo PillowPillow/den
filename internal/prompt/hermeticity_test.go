@@ -133,7 +133,19 @@ const moduleRootLabel = "."
 // entry here to have contributed at least one package. That mismatch then
 // fails BY NAME instead of being absorbed into the overall scanned<10 floor,
 // where it would show up only as a smaller-than-expected number, not a
-// named root nobody is checking any more.
+// named root nobody is checking any more. A single shared list would defeat
+// this on its own: dropping a root from it would remove the root from the
+// walk AND from the floor check in the same edit, so the floor would never
+// notice anything missing.
+//
+// The protection this buys is ONE-DIRECTIONAL, not a general reconciliation
+// between the two lists: a root added to the walk's list without a matching
+// entry here is scanned and still gets both assertions applied, but
+// perRootScanned carries an entry this floor never reads, so a later,
+// silent break of that root's walk would go uncaught. Not live today — both
+// lists hold the same two literals, and no third top-level directory in
+// this module carries Go files — but whoever adds a third root must add it
+// to BOTH lists, and nothing here will remind them to touch this one.
 var requiredRoots = []string{"internal", "cmd"}
 
 func TestOnlyTheAdapterKnowsTheLibrary(t *testing.T) {
