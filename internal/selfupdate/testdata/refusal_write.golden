@@ -1,0 +1,1 @@
+cannot write to /usr/local/bin — pick a writable destination and reinstall with `curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | DEN_INSTALL_DIR=~/.local/bin sh`: permission denied

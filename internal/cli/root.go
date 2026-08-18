@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/ports"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/selfupdate"
 	"github.com/PillowPillow/den/internal/spawn"
 	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
@@ -80,6 +82,16 @@ type Deps struct {
 	// real one reads build info (displayVersion), and tests pin exact
 	// versions rather than depending on how the test binary was built.
 	DenVersion func() string
+	// Updater fetches release metadata and archives for `den update`. Injected
+	// for the reason Scanner is: the real one SPEAKS HTTP, so a suite that
+	// inherited it would reach github.com on every run, and its verdict would
+	// depend on whatever release is public that day.
+	Updater selfupdate.Fetcher
+	// Executable answers where the running binary lives, so `den update` can
+	// tell a Homebrew install from an archive one. Injected because the real
+	// one (os.Executable + EvalSymlinks) answers the TEST BINARY's path under
+	// `go test`, which classifies as neither of the cases worth testing.
+	Executable func() (string, error)
 }
 
 // SystemDeps wires the real system accesses: sbx from PATH, real git, the
@@ -107,6 +119,18 @@ func SystemDeps() Deps {
 			return string(value), err
 		},
 		DenVersion: displayVersion,
+		Updater:    selfupdate.NewHTTPFetcher(),
+		// EvalSymlinks is not optional: on darwin os.Executable answers the
+		// SYMLINK (measured 2026-08-18), and /opt/homebrew/bin/den is a symlink
+		// into the Caskroom — without the resolution a brew install would be
+		// classified as an archive one and overwritten.
+		Executable: func() (string, error) {
+			exe, err := os.Executable()
+			if err != nil {
+				return "", err
+			}
+			return filepath.EvalSymlinks(exe)
+		},
 	}
 }
 
@@ -193,6 +217,12 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	// confinement. Deliberately den-home-agnostic, so a CI runner needs no
 	// den home at all.
 	root.AddCommand(newLintCmd())
+
+	// `den update` gets its fetcher and its own path from Deps, for the same
+	// reason `den ports` gets Scanner and Open: both real implementations touch
+	// the machine — one speaks HTTP, the other reads where this process came
+	// from.
+	root.AddCommand(newUpdateCmd(deps))
 
 	// `den up` and `den run` are ASSEMBLED here from the very fields newLsCmd
 	// just got: deps.Sbx is the single source. Out/Err/In are left unset —

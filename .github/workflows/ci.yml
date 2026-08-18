@@ -66,3 +66,62 @@ jobs:
             echo "expected a refusal for a nonexistent tag"; exit 1
           fi
           test ! -e "$RUNNER_TEMP/neg/den"
+
+  # The network twin of `install-script`, from the other side: that job proves
+  # install.sh can still read the release layout, this one proves `den update`
+  # can. Both would break on a change to .goreleaser.yaml's
+  # archives.name_template, and nothing offline can catch that.
+  update-command:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: build a binary that calls itself v1.0.0, then update it
+        run: |
+          # NOT `install.sh DEN_VERSION=v1.0.0`: the published v1.0.0 predates
+          # `den update` and would answer `unknown command`. The stamp is the
+          # only thing this job needs from an old release — a version that
+          # sorts below whatever is latest — and the code under test has to be
+          # the PR's own. install.sh keeps its own coverage in `install-script`.
+          mkdir -p "$RUNNER_TEMP/upd"
+          go build -ldflags "-X github.com/PillowPillow/den/internal/cli.Version=v1.0.0" \
+            -o "$RUNNER_TEMP/upd/den" ./cmd/den
+          test "$("$RUNNER_TEMP/upd/den" version)" = "den v1.0.0"
+          # Resolved on both sides of the update, like the install-script job:
+          # a release landing mid-run must not fail the assert. `before` has to
+          # be read BEFORE `den update` runs, or it is not the other side of
+          # anything — both lookups would see the new tag while the binary
+          # correctly installed the preceding one, and the job would go red on
+          # a release that worked.
+          before=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/PillowPillow/den/releases/latest)
+          before="${before##*/}"
+          "$RUNNER_TEMP/upd/den" update
+          got=$("$RUNNER_TEMP/upd/den" version)
+          after=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/PillowPillow/den/releases/latest)
+          after="${after##*/}"
+          if [ "$got" != "den $before" ] && [ "$got" != "den $after" ]; then
+            echo "den version answered '$got', expected 'den $before' or 'den $after'"
+            exit 1
+          fi
+      - name: refusal leaves the binary untouched
+        run: |
+          # A go-install-shaped path: the refusal must fire and change nothing.
+          # Built fresh rather than copied from the step above, whose binary is
+          # now the DOWNLOADED release — which may not carry `den update` yet.
+          mkdir -p "$RUNNER_TEMP/go/bin"
+          go build -ldflags "-X github.com/PillowPillow/den/internal/cli.Version=v1.0.0" \
+            -o "$RUNNER_TEMP/go/bin/den" ./cmd/den
+          before=$(sha256sum "$RUNNER_TEMP/go/bin/den" | cut -d' ' -f1)
+          if GOPATH="$RUNNER_TEMP/go" "$RUNNER_TEMP/go/bin/den" update; then
+            echo "expected a refusal for a go-install path"; exit 1
+          fi
+          after=$(sha256sum "$RUNNER_TEMP/go/bin/den" | cut -d' ' -f1)
+          test "$before" = "$after"
+          # `test ! -e "<dir>/.den.new."*` would be a trap: an unmatched glob
+          # reaches test unexpanded and PASSES for the wrong reason, and two
+          # matches make it an argument error. ls decides on the exit status.
+          if ls "$RUNNER_TEMP"/go/bin/.den.new.* >/dev/null 2>&1; then
+            echo "a staging file survived the refusal"; exit 1
+          fi
