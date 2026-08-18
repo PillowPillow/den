@@ -4,7 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/PillowPillow/den/internal/prompt"
@@ -103,23 +103,21 @@ func TestNewBindsTheProcessDescriptors(t *testing.T) {
 	}
 }
 
-// selectedOf reads huh.Option's unexported `selected` field through reflect.
-//
-// huh v1.0.0's Option has Selected(bool) as a fluent SETTER only — no getter
-// (option.go:29-32) — so there is no exported way to ask a built Option
-// whether it is selected. reflect.Value.Bool() can still read an unexported
-// bool field without going through Interface(), which is what would panic;
-// FieldByName itself returns a zero Value (and .Bool() then panics) if huh
-// ever renames the field, so this fails loudly on a library upgrade rather
-// than silently reporting "not selected" and passing a broken test.
-func selectedOf(o huh.Option[string]) bool {
-	return reflect.ValueOf(o).FieldByName("selected").Bool()
-}
-
 // optionsFor is extracted out of MultiSelect specifically so this test can
 // reach it without a terminal — otherwise the Description-folding fix it
 // covers would ship untested, which is testable logic hiding behind a gate
 // that only a real form could pass.
+//
+// Every case compares whole huh.Option[string] values with slices.Equal
+// (==), not field by field. huh.Option[string] is comparable — Key, Value
+// and an unexported `selected` field, all comparable types — and == reaches
+// the unexported field too. Building the expected value with huh's own
+// NewOption/Selected and comparing therefore asserts Key, Value AND selected
+// in one line, through huh's public API only: this test never names the
+// `selected` field itself, so it stays correct even if huh renames it. That
+// is what covers "a field silently got dropped" — exactly the Description
+// bug this test exists to catch — for every field at once, including any
+// huh adds later.
 func TestOptionsFor(t *testing.T) {
 	t.Run("an option's Description survives, folded into the Key", func(t *testing.T) {
 		got := optionsFor(prompt.MultiSelectRequest{
@@ -127,14 +125,9 @@ func TestOptionsFor(t *testing.T) {
 				{Value: "api", Label: "api", Description: "(not mapped in /home/user/.den/config.yaml)"},
 			},
 		})
-		if len(got) != 1 {
-			t.Fatalf("got %d options, want 1", len(got))
-		}
-		if want := "api (not mapped in /home/user/.den/config.yaml)"; got[0].Key != want {
-			t.Errorf("Key = %q, want %q", got[0].Key, want)
-		}
-		if got[0].Value != "api" {
-			t.Errorf("Value = %q, want %q (untouched by the annotation)", got[0].Value, "api")
+		want := []huh.Option[string]{huh.NewOption("api (not mapped in /home/user/.den/config.yaml)", "api")}
+		if !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v", got, want)
 		}
 	})
 
@@ -142,14 +135,9 @@ func TestOptionsFor(t *testing.T) {
 		got := optionsFor(prompt.MultiSelectRequest{
 			Options: []prompt.Option{{Value: "web", Label: "web"}},
 		})
-		if len(got) != 1 {
-			t.Fatalf("got %d options, want 1", len(got))
-		}
-		if got[0].Key != "web" {
-			t.Errorf("Key = %q, want %q (no trailing space from an empty Description)", got[0].Key, "web")
-		}
-		if got[0].Value != "web" {
-			t.Errorf("Value = %q, want %q", got[0].Value, "web")
+		want := []huh.Option[string]{huh.NewOption("web", "web")}
+		if !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v (no trailing space from an empty Description)", got, want)
 		}
 	})
 
@@ -159,11 +147,12 @@ func TestOptionsFor(t *testing.T) {
 				Options:     []prompt.Option{{Value: "a", Label: "a"}, {Value: "b", Label: "b"}},
 				Preselected: preselected,
 			})
-			for _, o := range got {
-				if selectedOf(o) != preselected {
-					t.Errorf("Preselected=%v: option %q selected=%v, want %v",
-						preselected, o.Key, selectedOf(o), preselected)
-				}
+			want := []huh.Option[string]{
+				huh.NewOption("a", "a").Selected(preselected),
+				huh.NewOption("b", "b").Selected(preselected),
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("Preselected=%v: got %v, want %v", preselected, got, want)
 			}
 		}
 	})
