@@ -53,6 +53,26 @@ release tag (`v1.0.0`) via Homebrew, `go install …/cmd/den@v1.0.0` and release
 Building from a checkout without the runner — a plain `go build`, or a `go install ./cmd/den` —
 is what names nothing: it answers `dev`, the documented tell that the build skipped `task`.
 
+## Updating
+
+Update the way you installed:
+
+| Installed with | Update with |
+|---|---|
+| Homebrew | `brew upgrade --cask den` |
+| `go install` | `go install github.com/PillowPillow/den/cmd/den@latest` |
+| `install.sh`, or a release archive | `den update` — or re-run the same `curl … \| sh`, which updates in place |
+| `task build` from a checkout | `git pull && task build` |
+
+`den update` replaces the running binary with the latest release: it resolves the tag, verifies the
+published sha256 (refusing on a mismatch, like `install.sh`), and swaps the binary through a single
+atomic rename, so an update while den is running cannot leave a half-written file on your PATH.
+
+It refuses, naming the right command, when another package manager owns the binary — Homebrew or the
+go toolchain — because overwriting their file would leave them managing a version they no longer
+manage. It also refuses to overwrite a build from a checkout. There are no flags: pin a version or
+roll back with `DEN_VERSION=v1.0.1` on `install.sh`, as above.
+
 ## Bootstrapping
 
 ```bash
@@ -106,6 +126,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den source ls` | lists installed sources: name, HEAD, last fetch, URL |
 | `den source rm <n> [--force]` | removes an installed source; refuses on a dirty working tree or commits unreachable from any remote-tracking ref, unless `--force` |
 | `den lint <path>` | validates a checkout (stacks, nests, references, path confinement) — what a team source's CI runs |
+| `den update` | updates den to the latest release; refuses when Homebrew or `go install` owns the binary, naming their command |
 | `den doctor` | diagnoses the configuration and the environment, and reports records whose sandbox is gone; `--fix` reclaims their worktrees (`--force` if one is dirty) |
 | `den version` | binary version |
 
