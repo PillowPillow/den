@@ -154,8 +154,8 @@ func TestFakePipeReturnsTheScriptedError(t *testing.T) {
 // property production has and the double does not.
 func TestFakeRedactsSensitiveArguments(t *testing.T) {
 	f := &Fake{}
-	if _, err := f.RunSensitive(context.Background(), []int{5},
-		"secret", "set-custom", "-g", "--env", "GITLAB_TOKEN", "sentinel-secret"); err != nil {
+	if _, err := f.RunSensitive(context.Background(), []int{4},
+		"secret", "set-custom", "--env", "GITLAB_TOKEN", "sentinel-secret"); err != nil {
 		t.Fatalf("RunSensitive: %v", err)
 	}
 	if len(f.Sensitive) != 1 {
@@ -170,8 +170,8 @@ func TestFakeRedactsSensitiveArguments(t *testing.T) {
 			}
 		}
 	}
-	if f.Sensitive[0][5] != RedactedArg {
-		t.Errorf("argument 5 = %q, want %q", f.Sensitive[0][5], RedactedArg)
+	if f.Sensitive[0][4] != RedactedArg {
+		t.Errorf("argument 4 = %q, want %q", f.Sensitive[0][4], RedactedArg)
 	}
 }
 
@@ -179,7 +179,7 @@ func TestFakeRedactsSensitiveArguments(t *testing.T) {
 func TestFakeRecordsPipedInputByArgvOnly(t *testing.T) {
 	f := &Fake{}
 	if _, err := f.RunInput(context.Background(), []byte("sentinel-secret"),
-		"secret", "set", "-g", "--registry", "registry.example.test:443", "--password-stdin"); err != nil {
+		"secret", "set", "--all-sandboxes", "--registry", "registry.example.test:443", "--password-stdin"); err != nil {
 		t.Fatalf("RunInput: %v", err)
 	}
 	if len(f.Inputs) != 1 || len(f.Calls) != 1 {

@@ -219,22 +219,26 @@ func TestCredentialApplyKeepsTheValueOutOfArgv(t *testing.T) {
 		}
 	}
 
-	if !f.HasCalled("secret", "set", "-g", "github") {
+	if !f.HasCalled("secret", "set", "github") {
 		t.Errorf("expected the github command; calls: %v", f.Calls)
 	}
 	// Through Attach specifically, never Run: Run leaves stdin nil, so on the
 	// real sbx the github prompt would read EOF and fail (Machine.Run
 	// simulates exactly that). Only Attach hands over a real terminal.
-	if !f.HasAttached("secret", "set", "-g", "github") {
+	if !f.HasAttached("secret", "set", "github") {
 		t.Errorf("expected the github credential to go through Attach, not Run; attaches: %v", f.Attaches)
 	}
-	if !f.HasCalled("secret", "set", "-g", "--registry", "registry.example.test:443", "--password-stdin") {
+	// --all-sandboxes, never a bare `secret set --registry`: a registry
+	// credential defaults to HOST ONLY, which `secret ls -g` does not list
+	// (measured 2026-08-18), so den would apply a credential its own Verify
+	// could never see and block the resource for good.
+	if !f.HasCalled("secret", "set", "--all-sandboxes", "--registry", "registry.example.test:443", "--password-stdin") {
 		t.Errorf("expected the registry password to travel on stdin; calls: %v", f.Calls)
 	}
 	if len(f.Inputs) != 1 {
 		t.Errorf("Inputs = %v, want exactly the registry password piped", f.Inputs)
 	}
-	if !f.HasCalled("secret", "set-custom", "-g", "--host", "gitlab.example.test",
+	if !f.HasCalled("secret", "set-custom", "--host", "gitlab.example.test",
 		"--env", "GITLAB_TOKEN", "--value", sbx.RedactedArg) {
 		t.Errorf("expected the custom secret with a redacted value; calls: %v", f.Calls)
 	}

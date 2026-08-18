@@ -313,11 +313,27 @@ func (d *credentialDriver) expected() string {
 //   - a custom secret has no stdin form on v0.38.0 (probed 2026-08-14): the
 //     value goes in argv, through RunSensitive, which redacts it from every
 //     error den can produce.
+//
+// None of the three passes `-g` any more. sbx deprecated that flag on both
+// `set` commands (measured 2026-08-18 — "Flag --global has been deprecated,
+// global is now the default for service secrets; omit --global, use --sandbox
+// to target one sandbox, or use --all-sandboxes with --registry"), and it
+// prints the warning on stderr in the middle of the github prompt, where a
+// human reads it as den failing. `secret ls -g` in ReadSbxState is a
+// DIFFERENT flag on a different command — still live, still documented — and
+// it stays.
+//
+// The registry call takes `--all-sandboxes`, not nothing. Dropping the flag
+// there is the one change that looks equivalent and is not: a registry
+// credential now defaults to HOST ONLY — used for the host's own template and
+// kit pulls, never injected into a sandbox — and `secret ls -g` does not list
+// it (both measured 2026-08-18). den would apply a credential its own Verify
+// could never observe, and block the resource for good.
 func (d *credentialDriver) Apply(ctx context.Context, answers Answers, out io.Writer) error {
 	switch d.res.Type {
 	case source.CredentialGitHub:
 		fmt.Fprintf(out, "configuring the sbx github credential (sbx will ask for it)\n")
-		return d.runner.Attach(ctx, "secret", "set", "-g", githubService)
+		return d.runner.Attach(ctx, "secret", "set", githubService)
 
 	case source.CredentialRegistry:
 		value, err := d.value(answers)
@@ -326,7 +342,7 @@ func (d *credentialDriver) Apply(ctx context.Context, answers Answers, out io.Wr
 		}
 		fmt.Fprintf(out, "configuring the sbx registry credential for %s\n", d.res.Host)
 		_, err = d.secrets.RunInput(ctx, []byte(value),
-			"secret", "set", "-g", "--registry", d.res.Host, "--password-stdin")
+			"secret", "set", "--all-sandboxes", "--registry", d.res.Host, "--password-stdin")
 		return err
 
 	case source.CredentialHTTPSubstitution:
@@ -335,7 +351,7 @@ func (d *credentialDriver) Apply(ctx context.Context, answers Answers, out io.Wr
 			return err
 		}
 		fmt.Fprintf(out, "configuring the sbx http substitution for %s (%s)\n", d.res.Host, d.res.Environment)
-		args := []string{"secret", "set-custom", "-g", "--host", d.res.Host,
+		args := []string{"secret", "set-custom", "--host", d.res.Host,
 			"--env", d.res.Environment, "--value", value}
 		// The value is the LAST argument; its index is computed rather than
 		// written, so reordering the argv cannot silently unredact it.

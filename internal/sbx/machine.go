@@ -134,7 +134,7 @@ func (m *Machine) Run(_ context.Context, args ...string) ([]byte, error) {
 		return []byte(m.renderImages()), nil
 	case joined == "ls --json":
 		return []byte(`{"sandboxes":[]}`), nil
-	case joined == "secret set -g github":
+	case joined == "secret set github":
 		// github is interactive on sbx's side (measured 2026-08-16, `sbx secret
 		// set --help` on v0.38.0): sbx reads the value from a prompt. Exec.Run
 		// leaves cmd.Stdin nil, so the real command's prompt would read EOF and
@@ -172,9 +172,17 @@ func (m *Machine) RunInput(_ context.Context, _ []byte, args ...string) ([]byte,
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// secret set -g --registry <host> --password-stdin
-	if len(args) >= 5 && args[3] == "--registry" {
-		m.Registries[args[4]] = true
+	// secret set --all-sandboxes --registry <host> --password-stdin
+	//
+	// The host is read by SCANNING for `--registry`, not from a fixed index:
+	// the index version survived the `-g` → `--all-sandboxes` rename only by
+	// luck (both sit at argv[2]), and the failure it would have produced is
+	// the silent one — the double records no registry, and every test that
+	// checks the credential landed passes against a state nothing wrote.
+	for i, a := range args {
+		if a == "--registry" && i+1 < len(args) {
+			m.Registries[args[i+1]] = true
+		}
 	}
 	return nil, nil
 }
@@ -190,7 +198,7 @@ func (m *Machine) RunSensitive(_ context.Context, redacted []int, args ...string
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// secret set-custom -g --host <host> --env <env> --value <secret>
+	// secret set-custom --host <host> --env <env> --value <secret>
 	var entry CustomSecret
 	for i, a := range args {
 		switch a {
@@ -231,13 +239,13 @@ func (m *Machine) Attach(_ context.Context, args ...string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// secret set -g github is the interactive credential
+	// secret set github is the interactive credential
 	// (internal/converge/sbx.go's credentialDriver.Apply) hands to Attach and
 	// nowhere else: Attach is the one method that wires a real terminal
 	// (runner.go's own doc), so it is the only method allowed to complete this
 	// the way a human at the keyboard would. Run's matching case, above,
 	// fails on purpose — that asymmetry is what a test can tell apart.
-	if joined := strings.Join(args, " "); joined == "secret set -g github" {
+	if joined := strings.Join(args, " "); joined == "secret set github" {
 		m.Services["github"] = true
 	}
 	return nil
