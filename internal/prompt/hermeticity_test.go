@@ -120,12 +120,81 @@ const (
 	libraryPrefix = "github.com/charmbracelet/"
 )
 
+// moduleRootLabel names the module's root package (embed.go, "package den")
+// in error messages below. It never collides with a walk-derived package
+// path — those are always filepath.Rel results at least one segment deep —
+// so a reader can tell at a glance which failure is the root package's.
+const moduleRootLabel = "."
+
+// requiredRoots names the top-level directories den's own packages live
+// under. Declared separately from the walk's own root list below — not
+// reused from it — so that if a future edit narrows what the walk actually
+// visits (drops "cmd" from that list, say), this list still expects every
+// entry here to have contributed at least one package. That mismatch then
+// fails BY NAME instead of being absorbed into the overall scanned<10 floor,
+// where it would show up only as a smaller-than-expected number, not a
+// named root nobody is checking any more.
+var requiredRoots = []string{"internal", "cmd"}
+
 func TestOnlyTheAdapterKnowsTheLibrary(t *testing.T) {
 	root := moduleRoot(t)
 	module := modulePath(t, root)
 	adapterImport := module + "/" + huhuiPackage
 
+	// huhuiImportsLibrary is the positive floor for assertion 1: it proves
+	// libraryPrefix still describes something real. Without it, if den ever
+	// moved off charmbracelet, assertion 1 would pass forever while
+	// protecting nothing — silently, unlike every other drift this file
+	// catches. Mirrors internal/ports/hermeticity_test.go's own anchor on
+	// internal/worktree (that file's TestSpawnDoesNotTransitivelyDependOnPorts).
+	huhuiImportsLibrary := false
+
+	// check applies both assertions to one package's imports, named by pkg
+	// (a module-relative slash path, or moduleRootLabel for the module root).
+	// Shared by the module-root check below and the internal/+cmd walk, so
+	// the module root gets the exact same two assertions as everything else.
+	check := func(pkg string, imports []string) {
+		for _, imp := range imports {
+			if strings.HasPrefix(imp, libraryPrefix) {
+				if pkg == huhuiPackage {
+					huhuiImportsLibrary = true
+				} else {
+					t.Errorf("%s imports %s: only %s may name the TUI library — "+
+						"speak to prompt.Prompter instead, and let %s render",
+						pkg, imp, huhuiPackage, huhuiPackage)
+				}
+			}
+			if imp == adapterImport && pkg != cliPackage {
+				t.Errorf("%s imports %s: only %s wires the adapter — "+
+					"importing it here drags 26 modules into a package that "+
+					"only needs the prompt.Prompter interface",
+					pkg, imp, cliPackage)
+			}
+		}
+	}
+
 	var scanned int
+
+	// The module root package sits above internal/ and cmd/, so the walk
+	// below never visits it — yet it is not a stray corner: go:embed cannot
+	// climb out of its own directory (embed.go's own comment explains why
+	// ExampleDenHome had to move there), and internal/cli/init.go imports it,
+	// putting it inside the dependency closure of the one package the design
+	// trusts with huhui. Checked once, non-recursively — importsOfDir already
+	// reads a single directory's files, never a subtree, so this is one call,
+	// not a root-anchored WalkDir (which would also sweep in the full shadow
+	// checkouts under .claude/worktrees/, per CLAUDE.md).
+	rootImports, rootFiles := importsOfDir(t, root)
+	if rootFiles > 0 {
+		scanned++
+		check(moduleRootLabel, rootImports)
+	}
+
+	// perRootScanned records how many packages the walk found under each
+	// root it actually visited. Checked below against requiredRoots — a
+	// SEPARATE list — rather than against whatever this range happened to
+	// iterate, on purpose (see requiredRoots's own comment).
+	perRootScanned := map[string]int{}
 	for _, top := range []string{"internal", "cmd"} {
 		err := filepath.WalkDir(filepath.Join(root, top), func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -144,30 +213,39 @@ func TestOnlyTheAdapterKnowsTheLibrary(t *testing.T) {
 				return nil
 			}
 			scanned++
+			perRootScanned[top]++
 			rel, relErr := filepath.Rel(root, path)
 			if relErr != nil {
 				t.Fatalf("relativizing %s: %v", path, relErr)
 			}
 			pkg := filepath.ToSlash(rel)
-			for _, imp := range imports {
-				if strings.HasPrefix(imp, libraryPrefix) && pkg != huhuiPackage {
-					t.Errorf("%s imports %s: only %s may name the TUI library — "+
-						"speak to prompt.Prompter instead, and let %s render",
-						pkg, imp, huhuiPackage, huhuiPackage)
-				}
-				if imp == adapterImport && pkg != cliPackage {
-					t.Errorf("%s imports %s: only %s wires the adapter — "+
-						"importing it here drags 26 modules into a package that "+
-						"only needs the prompt.Prompter interface",
-						pkg, imp, cliPackage)
-				}
-			}
+			check(pkg, imports)
 			return nil
 		})
 		if err != nil {
 			t.Fatalf("walking %s: %v", top, err)
 		}
 	}
+
+	// Guard on the guard, per root: the overall scanned<10 floor below only
+	// proves the walk found packages SOMEWHERE — it would still pass with,
+	// say, 19 packages under internal/ and zero under cmd/ if the cmd/
+	// iteration silently disappeared (a wrong path join, a typo, an edit
+	// that narrowed the walk's root list). Each entry in requiredRoots must
+	// have contributed at least one package on its own.
+	for _, top := range requiredRoots {
+		if perRootScanned[top] == 0 {
+			t.Fatalf("no packages scanned under %s — the walk over that root is not finding den's tree", top)
+		}
+	}
+
+	if !huhuiImportsLibrary {
+		t.Fatalf("%s does not import anything under %s — either the adapter "+
+			"stopped using the library, or libraryPrefix is stale and this "+
+			"guard is no longer protecting anything it claims to",
+			huhuiPackage, libraryPrefix)
+	}
+
 	// Guard on the guard: a walk that parsed nothing would make both
 	// assertions above vacuously true.
 	if scanned < 10 {
