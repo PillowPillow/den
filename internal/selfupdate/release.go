@@ -65,12 +65,18 @@ func ExpectedSum(checksums []byte, archive string) (string, error) {
 // truncated download and cannot catch a compromised release. The message claims
 // only what the check proves — the same wording discipline as install.sh.
 func VerifySum(archive []byte, expected string) error {
-	sum := sha256.Sum256(archive)
-	if got := hex.EncodeToString(sum[:]); got != expected {
+	if got := sha256Hex(archive); got != expected {
 		return fmt.Errorf("checksum mismatch: the download is corrupted or incomplete — "+
 			"re-run `den update`, and report it if this persists (expected %s, got %s)", expected, got)
 	}
 	return nil
+}
+
+// sha256Hex is VerifySum's digest, exported to the package so tests can build a
+// checksums.txt that matches a fixture archive without duplicating the hashing.
+func sha256Hex(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 // ExtractBinary pulls the `den` entry out of the release archive. Everything
