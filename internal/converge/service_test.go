@@ -1165,6 +1165,22 @@ func TestUnobservableRefusalOnInitNamesInit(t *testing.T) {
 	}
 }
 
+// `den source update` is retried with `den source update`, never with
+// `den source configure`.
+//
+// Same before-Apply/inside-Apply split as ModeInit above, from the other end:
+// the fast-forward that moves the checkout onto the new version runs INSIDE
+// Apply, so at refusal time the installed checkout still carries the OLD one.
+func TestRetryCommandNamesUpdateForModeUpdate(t *testing.T) {
+	s := Service{}
+	got := s.retryCommand(Request{Mode: ModeUpdate, Name: "dg"})
+	want := "den source update dg"
+	if got != want {
+		t.Fatalf("retryCommand(ModeUpdate) = %q, want %q — `den source configure` would "+
+			"converge the OLD version (fastForward only runs inside Apply), silently dropping the update", got, want)
+	}
+}
+
 // A legacy source has no contract to report on, and the refusal says which
 // command does apply to it.
 func TestStatusRefusesALegacySource(t *testing.T) {
