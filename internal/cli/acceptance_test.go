@@ -99,7 +99,7 @@ func mutationOrder(m *sbx.Machine) []string {
 // test's subject is the OTHER machinery a fresh laptop still needs — mutation
 // order, the source-aware home, the personal mapping, the receipt, nest
 // usability — so it starts from a machine on which a human already ran
-// `sbx secret set -g github` once, the way a real provisioned laptop would.
+// `sbx secret set github` once, the way a real provisioned laptop would.
 func TestAcceptanceFreshHomeConvergesEverythingTheSourceDeclares(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "den")
 	work := t.TempDir()

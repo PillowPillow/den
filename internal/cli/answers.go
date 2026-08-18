@@ -254,13 +254,13 @@ func noTerminalRefusal(missing, needsTerminal []string, needsRoots bool, obsErr 
 			msg += fmt.Sprintf(
 				"; den could not read sbx (%v), so it must assume the credential %q is absent — "+
 					"fix the read (e.g. `den doctor`), then run this command again from a terminal so "+
-					"sbx can collect it interactively (e.g. `sbx secret set -g github`)",
+					"sbx can collect it interactively (e.g. `sbx secret set github`)",
 				obsErr, id)
 			continue
 		}
 		msg += fmt.Sprintf(
 			"; the credential %q cannot be configured without a terminal — sbx collects it "+
-				"interactively (e.g. `sbx secret set -g github`); run this command again from one",
+				"interactively (e.g. `sbx secret set github`); run this command again from one",
 			id)
 	}
 	return errors.New(msg)

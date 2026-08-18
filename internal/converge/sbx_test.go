@@ -85,6 +85,45 @@ func TestParseSecretListRefusesAnUnknownTable(t *testing.T) {
 	}
 }
 
+// A SCOPE spanning two tokens is read like any other row. sbx renders a
+// host-only secret's scope as `(host only)`, and den takes TYPE, NAME,
+// TARGETS and ENV from the offsets the header gives them precisely so such a
+// row cannot fall through: read by field index, its TYPE would be `only)`,
+// the row would be dropped as an unknown kind, and den would report a
+// configured credential as missing on every run — re-applying forever and
+// never verifying.
+func TestParseSecretListReadsAMultiTokenScope(t *testing.T) {
+	state, err := parseSecretList(
+		"SCOPE        TYPE       NAME     SECRET\n" +
+			"(host only)  registry   ghcr.io  token-***\n" +
+			"(global)     service    github   (stored)\n" +
+			"\nCUSTOM SECRETS\n" +
+			"SCOPE        TARGETS       ENV        PLACEHOLDER  SECRET\n" +
+			"(host only)  api.example   API_TOKEN  sbx-cs-x     token-***\n")
+	if err != nil {
+		t.Fatalf("parseSecretList: %v", err)
+	}
+	if !state.Registries["ghcr.io"] {
+		t.Errorf("a (host only) row must be read, not dropped; registries = %v", state.Registries)
+	}
+	if !state.Services["github"] {
+		t.Errorf("services = %v", state.Services)
+	}
+	if !state.Customs[customKey("api.example", "API_TOKEN")] {
+		t.Errorf("customs = %v", state.Customs)
+	}
+}
+
+// A row with no header above it is refused for the same reason an unknown
+// header is: den places a row by the column offsets the header declares, and
+// a table it never saw the header of is a layout it cannot read.
+func TestParseSecretListRefusesARowWithoutAHeader(t *testing.T) {
+	_, err := parseSecretList("(global)   service    github   (stored)\n")
+	if err == nil || !strings.Contains(err.Error(), "header") {
+		t.Fatalf("parseSecretList = %v, expected a refusal naming the header", err)
+	}
+}
+
 // An inspection that FAILS is `unknown`, never "absent" (prototype 2026-08-14:
 // a restricted environment denied Keychain access and both commands exited 1
 // on a machine whose credentials were perfectly configured).
