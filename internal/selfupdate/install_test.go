@@ -83,3 +83,49 @@ func TestSwapBinaryLeavesNoResidueOnFailure(t *testing.T) {
 		t.Fatalf("a staging file survived the failure: %v", entries)
 	}
 }
+
+func TestSwapBinaryRefusesAPlantedStagingFile(t *testing.T) {
+	// The staging name is predictable and ProbeWritable creates then removes it
+	// long before the download finishes. Anyone able to write in the install
+	// directory can drop a symlink in that window; os.WriteFile would have
+	// FOLLOWED it and written the new binary — chmod 0755 and all — wherever it
+	// pointed. O_EXCL makes that an EEXIST refusal instead.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "den")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(elsewhere, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(dir, stagingName(os.Getpid()))
+	if err := os.Symlink(elsewhere, staging); err != nil {
+		t.Fatal(err)
+	}
+
+	err := SwapBinary(target, []byte("new"))
+	if err == nil {
+		t.Fatal("a staging path that already exists must be refused")
+	}
+	var se *StagingError
+	if !errors.As(err, &se) {
+		t.Fatalf("want a *StagingError naming the file to remove, got %T: %v", err, err)
+	}
+	got, readErr := os.ReadFile(elsewhere)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "untouched" {
+		t.Fatalf("den wrote through the planted symlink: %q", got)
+	}
+	// The refusal must not delete the planted file either: it is not den's, and
+	// the message tells the user to remove it. A cleanup armed before the
+	// exclusive create removed it and made that sentence a lie.
+	if _, statErr := os.Lstat(staging); statErr != nil {
+		t.Fatalf("den removed a staging file it did not create: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(target); readErr != nil || string(got) != "old" {
+		t.Fatalf("the target was touched despite the refusal: %q (%v)", got, readErr)
+	}
+}

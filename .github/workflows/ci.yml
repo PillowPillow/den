@@ -89,11 +89,15 @@ jobs:
           go build -ldflags "-X github.com/PillowPillow/den/internal/cli.Version=v1.0.0" \
             -o "$RUNNER_TEMP/upd/den" ./cmd/den
           test "$("$RUNNER_TEMP/upd/den" version)" = "den v1.0.0"
-          "$RUNNER_TEMP/upd/den" update
           # Resolved on both sides of the update, like the install-script job:
-          # a release landing mid-run must not fail the assert.
+          # a release landing mid-run must not fail the assert. `before` has to
+          # be read BEFORE `den update` runs, or it is not the other side of
+          # anything — both lookups would see the new tag while the binary
+          # correctly installed the preceding one, and the job would go red on
+          # a release that worked.
           before=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/PillowPillow/den/releases/latest)
           before="${before##*/}"
+          "$RUNNER_TEMP/upd/den" update
           got=$("$RUNNER_TEMP/upd/den" version)
           after=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/PillowPillow/den/releases/latest)
           after="${after##*/}"

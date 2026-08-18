@@ -50,3 +50,22 @@ func (e *WriteError) Error() string {
 }
 
 func (e *WriteError) Unwrap() error { return e.Err }
+
+// StagingError reports a staging path that already exists, which O_EXCL turns
+// into a refusal rather than a followed symlink (see SwapBinary).
+//
+// It is NOT a WriteError: that message sends the user to reinstall elsewhere
+// with DEN_INSTALL_DIR, which is nonsense advice here — the directory is
+// writable, one specific file is in the way. den's errors name the remedy, and
+// the remedy is that file.
+type StagingError struct {
+	Path string
+	Err  error
+}
+
+func (e *StagingError) Error() string {
+	return fmt.Sprintf("%s already exists — another `den update` is running, or an earlier one was "+
+		"killed before it could clean up: remove the file and retry: %v", e.Path, e.Err)
+}
+
+func (e *StagingError) Unwrap() error { return e.Err }

@@ -70,8 +70,9 @@ atomic rename, so an update while den is running cannot leave a half-written fil
 
 It refuses, naming the right command, when another package manager owns the binary — Homebrew or the
 go toolchain — because overwriting their file would leave them managing a version they no longer
-manage. It also refuses to overwrite a build from a checkout. There are no flags: pin a version or
-roll back with `DEN_VERSION=v1.0.1` on `install.sh`, as above.
+manage. It also refuses a build from a checkout, which `git describe` stamps with a commit count or
+`-dirty`. There are no flags: pin a version or roll back with `DEN_VERSION=v1.0.1` on `install.sh`,
+as above.
 
 ## Bootstrapping
 

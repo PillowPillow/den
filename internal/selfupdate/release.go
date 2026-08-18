@@ -151,3 +151,14 @@ func typeflagName(flag byte) string {
 func NeedsUpdate(current, latest string) bool {
 	return semver.Compare(current, latest) < 0
 }
+
+// IsAhead answers whether the RUNNING binary is newer than the release channel.
+// It exists because NeedsUpdate answers false for two different situations —
+// equal and ahead — and `den update` says a different sentence for each.
+//
+// It happens on a yanked or re-tagged release, and on a binary built from a tag
+// that /releases/latest does not resolve to yet. den does nothing either way;
+// only the message differs.
+func IsAhead(current, latest string) bool {
+	return semver.Compare(current, latest) > 0
+}

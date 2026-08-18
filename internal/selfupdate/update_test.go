@@ -106,12 +106,6 @@ func TestRunRefusesBeforeAnyRequest(t *testing.T) {
 		{"go install", Request{ExecPath: "/Users/dev/go/bin/den", Current: "v1.8.0",
 			Env: Env{Gopath: "/Users/dev/go"}}},
 		{"local build", Request{ExecPath: "/Users/dev/.local/bin/den", Current: "v1.5.0-17-g0ec48d8-dirty"}},
-		// ProbeWritable is the one gate the spec argues for on its own —
-		// "cannot write here" must never be discovered after megabytes have
-		// been fetched — so its ordering needs a pin like the other three,
-		// not just the classification and version refusals above.
-		{"unwritable directory", Request{
-			ExecPath: filepath.Join(t.TempDir(), "missing", "den"), Current: "v1.8.0"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -128,6 +122,65 @@ func TestRunRefusesBeforeAnyRequest(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ProbeWritable keeps its pin, one step lower than the three above: it must
+// still fire before a single BYTE is downloaded, but after ResolveLatest, so
+// an already-current den is never refused for a directory it was not going to
+// write (TestRunSaysNothingToDoWhenCurrentAndUnwritable).
+func TestRunRefusesAnUnwritableDirectoryBeforeAnyDownload(t *testing.T) {
+	f := &fakeFetcher{tag: "v1.8.1"}
+	req := Request{ExecPath: filepath.Join(t.TempDir(), "missing", "den"), Current: "v1.8.0"}
+	err := Run(context.Background(), f, req, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("want a refusal")
+	}
+	var we *WriteError
+	if !errors.As(err, &we) {
+		t.Fatalf("want a *WriteError naming the remedy, got %T: %v", err, err)
+	}
+	if len(f.requests) != 0 {
+		t.Fatalf("the refusal came AFTER a download: %v", f.requests)
+	}
+}
+
+// The bug this pins: with ProbeWritable above the up-to-date check, a current
+// den in /usr/local/bin or on a read-only mount exited non-zero with "cannot
+// write to …", so a provisioning script running `den update` idempotently
+// failed on a machine that had nothing to do.
+func TestRunSaysNothingToDoWhenCurrentAndUnwritable(t *testing.T) {
+	f := &fakeFetcher{tag: "v1.8.1"}
+	var out bytes.Buffer
+	req := Request{ExecPath: filepath.Join(t.TempDir(), "missing", "den"), Current: "v1.8.1"}
+	if err := Run(context.Background(), f, req, &out); err != nil {
+		t.Fatalf("an up-to-date den must not be refused for a directory it will not write: %v", err)
+	}
+	// Shares update_uptodate.golden with TestRunSaysNothingToDoWhenCurrent on
+	// purpose: the point of this test is that the unwritable directory changes
+	// NOTHING about what den says, so a separate golden could drift into
+	// asserting a difference that must not exist.
+	assertGolden(t, "update_uptodate.golden", out.String())
+}
+
+// NeedsUpdate is false for equal AND for ahead, and one sentence used to cover
+// both: a den built from a tag /releases/latest has not caught up to — or one
+// whose release was yanked — was told it "is already the latest release".
+func TestRunSaysAheadWhenTheLocalBuildIsNewer(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "den")
+	if err := os.WriteFile(target, []byte("same"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeFetcher{tag: "v1.8.1"}
+	var out bytes.Buffer
+	req := Request{ExecPath: target, Current: "v1.9.0", GOOS: "linux", GOARCH: "amd64"}
+	if err := Run(context.Background(), f, req, &out); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(f.requests) != 0 {
+		t.Fatalf("a den ahead of the channel downloaded %v", f.requests)
+	}
+	assertGolden(t, "update_ahead.golden", out.String())
 }
 
 func TestRunRefusesAMismatchedChecksum(t *testing.T) {

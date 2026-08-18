@@ -127,9 +127,9 @@ L'ordre d'évaluation est celui de la table, et la première ligne qui matche d�
 | Condition | Verdict | Message |
 |---|---|---|
 | version courante non canonique (§2h) | refus | nomme la version observée ; remède `task build` ou une installation de release |
-| sous `$HOMEBREW_PREFIX` ou `$HOMEBREW_CELLAR` s'ils sont définis | refus | `den was installed by Homebrew (<path>); run 'brew upgrade --cask den'` |
+| sous `$HOMEBREW_PREFIX/Cellar` ou `$HOMEBREW_PREFIX/Caskroom`, ou sous `$HOMEBREW_CELLAR`, s'ils sont définis | refus | `den was installed by Homebrew (<path>); run 'brew upgrade --cask den'` |
 | un composant du chemin vaut `Caskroom` ou `Cellar`, ou le chemin est sous un préfixe brew par défaut (`/opt/homebrew`, `/usr/local/Homebrew`, `/home/linuxbrew/.linuxbrew`, `~/.linuxbrew`) | refus | idem |
-| sous `$GOBIN`, sinon `$GOPATH/bin`, sinon `~/go/bin` | refus | `run 'go install github.com/PillowPillow/den/cmd/den@latest'` |
+| sous **l'un quelconque** de `$GOBIN`, du `GOBIN`/`GOPATH` écrit par `go env -w`, de chaque entrée de `$GOPATH`/bin, et de `~/go/bin` | refus | `run 'go install github.com/PillowPillow/den/cmd/den@latest'` |
 | autre, dossier écrivable | **mise à jour** | — |
 | autre, dossier non écrivable | refus | nomme le dossier, et `install.sh` avec `DEN_INSTALL_DIR` |
 
@@ -145,9 +145,26 @@ tous un tag propre, donc aucun cas légitime ne tombe dans ce refus. Un futur ta
 mesurés.** Un faux négatif — un préfixe brew que la liste ignore — fait écraser un binaire que brew
 possède, c'est-à-dire exactement la corruption que cette table existe pour empêcher. Un faux positif
 — un dossier personnel nommé `Cellar` — produit un refus qui nomme une commande inutile, ce qui est
-gênant et rien de plus. C'est pourquoi `HOMEBREW_PREFIX` et `HOMEBREW_CELLAR` passent **avant** les
-chemins par défaut : brew les exporte dans tout shell passé par `brew shellenv`, et ils couvrent les
-préfixes personnalisés qu'aucune liste ne peut énumérer. C'est aussi pourquoi la comparaison porte
+gênant et rien de plus. C'est pourquoi `HOMEBREW_CELLAR` passe **avant** les
+chemins par défaut : brew l'exporte dans tout shell passé par `brew shellenv`, et il couvre un cellar
+déplacé qu'aucune liste ne peut énumérer. `HOMEBREW_PREFIX`, lui, n'est consulté que **borné à ses
+deux sous-dossiers d'installation** `Cellar/` et `Caskroom/` : testé en entier il classait
+`MethodHomebrew` une installation `install.sh` posée en `/usr/local/bin` sur un Mac Intel, où
+`brew shellenv` exporte `HOMEBREW_PREFIX=/usr/local`. Le bornage ne perd aucune couverture brew — un
+den brew résout sous `Cellar/` ou `Caskroom/`, que le scan de composants attrape sous n'importe quel
+préfixe — et il rend son chemin à un utilisateur que le refus envoyait dans un mur (§11).
+
+**La liste des dossiers `go` est une union, pas la précédence du toolchain.** La précédence répond
+« où un `go install` poserait den maintenant » ; la classification doit répondre « un `go install`
+a-t-il pu poser CE den ici », et les deux divergent dès que l'environnement a bougé depuis
+l'installation : un `go env -w GOBIN=~/bin` d'aujourd'hui ne déplace pas le den déjà posé dans
+`~/go/bin`. L'union ne fait que refuser davantage, la direction sûre. Elle inclut le fichier de
+configuration du toolchain, que `os.Getenv` ne voit pas. Mesuré le 2026-08-18 dans un `GOENV` isolé,
+donc sans rien déplacer sur la machine : `go env -w GOBIN=/tmp/somewhere-else` y écrit la ligne
+`GOBIN=/tmp/somewhere-else`, `go env GOBIN` répond ensuite `/tmp/somewhere-else`, et `$GOBIN` dans
+l'environnement du processus reste **vide** tout du long. Le fichier peut ne pas exister — c'est le
+cas sur cette machine — et alors `go env GOPATH` répond le `~/go` par défaut, que l'union couvre déjà
+par `Env.Home`. C'est aussi pourquoi la comparaison porte
 sur des **composants de chemin** (`Caskroom`, `Cellar`) et non sur des sous-chaînes : `~/dev/MyCellar`
 n'est pas une installation brew.
 
@@ -175,18 +192,25 @@ mise à jour.
 L'ordre suit celui du spawn (spec §6) : tout ce qui est refusable l'est **avant le premier effet de
 bord**, pour qu'un refus ne laisse jamais de résidu.
 
-1. **Classer** l'installation (§4), **puis sonder l'écriture** : créer et supprimer
-   `<dossier cible>/.den.new.<pid>` avant tout téléchargement. La sonde répond à deux questions d'un
-   coup — le dossier est-il écrivable, et le fichier d'attente vivra-t-il bien sur le même système de
-   fichiers que la cible (§6 de cette liste) — et elle les répond du bon côté du premier effet de
-   bord. Sans elle, « dossier non écrivable » se découvre après plusieurs mégaoctets téléchargés.
-   Un refus ici n'a rien téléchargé.
+1. **Classer** l'installation (§4), et refuser sur la version non canonique. Les deux refus qui ne
+   demandent rien au réseau sont pris ici.
 2. **Résoudre le tag** : requête `HEAD` sur `https://github.com/PillowPillow/den/releases/latest`,
    le tag est le dernier segment de l'URL finale (§2f).
 3. **Comparer** avec `semver.Compare` (§2e), la version courante ayant déjà passé le prédicat
-   strict du §4 — la comparaison ne voit donc que des versions canoniques des deux côtés. Si la
-   version courante est supérieure ou égale :
-   `den v1.8.1 is already the latest release`, sortie 0, aucun téléchargement.
+   strict du §4 — la comparaison ne voit donc que des versions canoniques des deux côtés. Égalité :
+   `den v1.8.1 is already the latest release`, sortie 0, aucun téléchargement. Version courante
+   **strictement supérieure** — une release retirée, ou un binaire construit depuis un tag que
+   `/releases/latest` ne sert pas encore : `den v1.9.0 is ahead of the latest release v1.8.1 —
+   nothing to do`, sortie 0 également. Les deux cas ne font rien ; une seule phrase pour les deux
+   disait au second qu'il était « à jour », ce qui cache la seule chose intéressante.
+3bis. **Sonder l'écriture** : créer et supprimer `<dossier cible>/.den.new.<pid>`, avant tout
+   téléchargement mais **après** l'étape 3. La sonde répond à deux questions d'un coup — le dossier
+   est-il écrivable, et le fichier d'attente vivra-t-il sur le même système de fichiers que la cible
+   (§6 de cette liste). Sans elle, « dossier non écrivable » se découvre après plusieurs mégaoctets.
+   Sous l'étape 3 et non au-dessus : un den déjà à jour dans `/usr/local/bin` ou sur un montage en
+   lecture seule sortait en erreur non nulle alors qu'il n'avait rien à écrire, ce qui casse tout
+   script d'installation qui appelle `den update` de façon idempotente. Refuser d'écrire n'est une
+   nouvelle que quand den a quelque chose à écrire.
 4. **Télécharger** `den_<version>_<os>_<arch>.tar.gz` et `checksums.txt`, le nom d'archive étant
    recomposé depuis `runtime.GOOS`/`runtime.GOARCH` et le tag sans le `v` initial.
 5. **Vérifier** le sha256 (`crypto/sha256`) contre la ligne de `checksums.txt`. Une entrée absente
@@ -196,10 +220,19 @@ bord**, pour qu'un refus ne laisse jamais de résidu.
    comme celui d'`install.sh`.
 6. **Extraire** l'entrée `den` (`archive/tar` + `compress/gzip`) vers `<dossier cible>/.den.new.<pid>`,
    mode 0755. Le fichier d'attente est dans le **dossier cible**, pas dans `os.TempDir()` : un
-   `rename(2)` ne traverse pas un système de fichiers, et `/tmp` en est souvent un autre.
-7. **Échanger** par `os.Rename` par-dessus le binaire courant. C'est ce qui rend l'opération sûre
-   pendant que den tourne : le lecteur obtient l'ancien ou le nouveau, jamais la moitié d'un des
-   deux.
+   `rename(2)` ne traverse pas un système de fichiers, et `/tmp` en est souvent un autre. Il est
+   créé en `O_EXCL`, jamais en `O_CREATE|O_TRUNC` : le nom est prévisible et l'étape 3bis vient de
+   le libérer, donc quiconque écrit dans ce dossier peut y poser un lien symbolique dans la fenêtre
+   — que `os.WriteFile` aurait suivi, y compris pour le `chmod 0755`. `O_EXCL` transforme la course
+   en refus nommant le fichier à supprimer. Le `chmod` passe par le **descripteur**, pas par le
+   chemin, pour ne pas rouvrir cette même fenêtre.
+7. **Échanger** par `os.Rename` par-dessus le binaire courant, après un `Sync()` du fichier
+   d'attente et suivi d'un `Sync()` du dossier. C'est ce qui rend l'opération sûre pendant que den
+   tourne : le lecteur obtient l'ancien ou le nouveau, jamais la moitié d'un des deux. Les deux
+   `Sync` étendent cette garantie à la coupure de courant, où le `rename` peut être journalisé avant
+   les blocs de données — sinon le seul den du `PATH` est un fichier vide. Celui du dossier est en
+   meilleur effort : `fsync` sur un dossier est légal sur darwin et linux, mais un binaire durable
+   que den n'a pas pu confirmer n'est pas une raison d'échouer une mise à jour réussie.
 8. **Nettoyer** : un `defer` supprime `.den.new.<pid>` sur tout chemin d'échec, pour la raison qui a
    fait écrire le `trap` d'`install.sh` — sinon un signal reçu dans cette fenêtre laisse un résidu
    pour toujours dans le `bin` de l'utilisateur.
@@ -319,7 +352,7 @@ Nommé explicitement, pour qu'aucune de ces absences ne se lise comme un oubli :
 ## 11. Écarts assumés à l'implémentation
 
 Cette section est écrite **après** l'implémentation (2026-08-18). Le repo tient qu'une divergence
-spec/code est un bug dans l'un des deux, jamais une phase ; ces deux-là sont donc actées ici plutôt
+spec/code est un bug dans l'un des deux, jamais une phase ; celles-ci sont donc actées ici plutôt
 que laissées silencieuses.
 
 - **§4, l'ordre des lignes de la matrice.** La table dit « la première ligne qui matche décide » et
@@ -328,9 +361,25 @@ que laissées silencieuses.
   seul change le message que voit un build de dev installé par brew — et lui nommer
   `brew upgrade --cask den` est plus actionnable que lui dire que sa version n'est pas une release.
   Le code garde son ordre ; la table décrit l'ensemble des refus, pas leur précédence.
-- **§4, `HOMEBREW_PREFIX=/usr/local` sur un Mac Intel.** Une installation `install.sh` posée en
-  `DEN_INSTALL_DIR=/usr/local/bin` y est classée `MethodHomebrew` et renvoyée vers
-  `brew upgrade --cask den`, qui répondra « not installed ». C'est exactement l'asymétrie que §4
-  accepte par écrit : un faux positif est un refus qui nomme une commande inutile, un faux négatif
-  corromprait l'état de brew. Rien n'est corrigé ; le cas est nommé pour qu'il ne soit pas
-  rediagnostiqué.
+- **~~§4, `HOMEBREW_PREFIX=/usr/local` sur un Mac Intel.~~ Corrigé le 2026-08-18.** Une
+  installation `install.sh` posée en `DEN_INSTALL_DIR=/usr/local/bin` était classée
+  `MethodHomebrew` et renvoyée vers `brew upgrade --cask den`, qui répond « not installed ». L'écart
+  a d'abord été acté au titre de l'asymétrie du §4 — un faux positif ne coûte qu'un refus inutile.
+  Une revue a montré que le coût n'était pas nul : sans `--force`, cet utilisateur n'a **aucun**
+  chemin de mise à jour, et l'asymétrie ne justifie un faux positif que s'il achète une couverture.
+  Celui-ci n'en achetait aucune : `HOMEBREW_PREFIX` en entier est redondant avec le scan de
+  composants `Cellar`/`Caskroom`. Le test est désormais borné à `$HOMEBREW_PREFIX/{Cellar,Caskroom}`
+  (§4), ce qui supprime le faux positif sans perdre un seul vrai positif.
+- **§4, un `task build` fait sur un tag exact et un arbre propre.** `git describe --tags --always
+  --dirty` répond alors `v1.5.0` tout court, que `IsUpdatableVersion` accepte, et le chemin d'un
+  checkout ordinaire est classé `MethodArchive` : `den update` écrase ce binaire local, alors que
+  l'aide de la commande dit refuser un build de checkout. Rien ne distingue ce binaire d'une
+  release — goreleaser et le Taskfile visent le même symbole `cli.Version`, et
+  `debug.ReadBuildInfo().Main.Version` répond `(devel)` pour les deux. Le distinguer demanderait un
+  second ldflag posé par le seul `.goreleaser.yaml`, ce qui ferait échouer le job CI
+  `update-command` (il construit son binaire en `go build` dans le job, donc sans ce marqueur)
+  jusqu'à la première release qui le porte. Le coût du bug est un `./den` **gitignoré**, que
+  `task build` régénère en deux secondes ; le coût du mécanisme est une CI rouge et un
+  chicken-and-egg de release. Rien n'est corrigé. L'aide de la commande ne promet plus l'inverse :
+  elle dit refuser « a build from a checkout, which `git describe` stamps with a commit count or
+  `-dirty` », ce qui est exactement ce que le prédicat mesure.

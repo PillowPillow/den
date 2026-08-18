@@ -41,7 +41,14 @@ type Env struct {
 	HomebrewCellar string
 	Gobin          string
 	Gopath         string
-	Home           string
+	// GoenvGobin and GoenvGopath are the same two settings as written by
+	// `go env -w`, which the toolchain keeps in a config file and NOT in the
+	// process environment. goenv.go says why reading them matters; here they
+	// are two more strings, so this struct stays a value a test can build by
+	// hand without touching a filesystem.
+	GoenvGobin  string
+	GoenvGopath string
+	Home        string
 }
 
 // Classify reads a RESOLVED executable path — the caller passes
@@ -49,9 +56,27 @@ type Env struct {
 // os.Executable answers the symlink itself (measured 2026-08-18), and
 // /opt/homebrew/bin/den is a symlink into the Caskroom: without the resolution
 // a brew install would be classified MethodArchive and overwritten.
-func Classify(execPath string, env Env) Method {
-	if env.HomebrewPrefix != "" && underDir(execPath, env.HomebrewPrefix) {
-		return MethodHomebrew
+//
+// resolve resolves a CANDIDATE DIRECTORY's symlinks, and is injected for the
+// same reason every other system access in den is (cli.Deps): the comparison
+// below needs the filesystem, and this package's tests must not. A nil resolve
+// compares lexically, which is what the pure tests do.
+func Classify(execPath string, env Env, resolve func(string) (string, error)) Method {
+	// Bounded to the two directories brew actually installs into, NOT the
+	// prefix as a whole. `brew shellenv` exports HOMEBREW_PREFIX=/usr/local on
+	// an Intel Mac, so the whole-prefix test refused an install.sh install at
+	// DEN_INSTALL_DIR=/usr/local/bin and sent that user to
+	// `brew upgrade --cask den`, which answers "not installed" — a dead end,
+	// since `den update` has no --force. Narrowing loses no brew coverage: a
+	// real brew den resolves under Cellar/ or Caskroom/, which the component
+	// scan below catches under any prefix. Spec §11 recorded the false
+	// positive as accepted; it is now fixed, and §11 says so.
+	if env.HomebrewPrefix != "" {
+		for _, dir := range []string{"Cellar", "Caskroom"} {
+			if underDir(execPath, filepath.Join(env.HomebrewPrefix, dir)) {
+				return MethodHomebrew
+			}
+		}
 	}
 	if env.HomebrewCellar != "" && underDir(execPath, env.HomebrewCellar) {
 		return MethodHomebrew
@@ -68,12 +93,44 @@ func Classify(execPath string, env Env) Method {
 			return MethodHomebrew
 		}
 	}
+	execDir := filepath.Dir(execPath)
 	for _, dir := range goBinDirs(env) {
-		if filepath.Dir(execPath) == filepath.Clean(dir) {
+		if sameDir(execDir, dir, resolve) {
 			return MethodGoInstall
 		}
 	}
 	return MethodArchive
+}
+
+// sameDir reports whether execDir IS dir, comparing the lexical forms first and
+// then the symlink-resolved one.
+//
+// The resolved comparison is not decoration: execPath arrives already
+// EvalSymlinks'd while a configured GOBIN does not, so `GOBIN=~/bin` pointing
+// at /Volumes/tools/bin left a go-install binary at /Volumes/tools/bin/den
+// classified MethodArchive — a false negative, the direction that corrupts
+// another manager's state.
+// Only the candidate needs resolving, never execDir: EvalSymlinks resolves
+// EVERY component, ancestors included, so filepath.Dir of an already-resolved
+// executable is itself fully resolved (measured 2026-08-18 — a den reached
+// through a symlinked parent directory answers the same directory on both
+// sides). One resolution per candidate is therefore enough.
+func sameDir(execDir, dir string, resolve func(string) (string, error)) bool {
+	if execDir == filepath.Clean(dir) {
+		return true
+	}
+	if resolve == nil {
+		return false
+	}
+	// EvalSymlinks fails on a path that does not exist — ~/go/bin on a machine
+	// with no Go at all, which is the common case for a candidate den never
+	// installed into. That is not a classification failure and not a match: it
+	// means there was nothing to resolve, so the lexical answer above stands.
+	resolved, err := resolve(dir)
+	if err != nil {
+		return false
+	}
+	return execDir == filepath.Clean(resolved)
 }
 
 // defaultBrewPrefixes lists the documented install prefixes. They are
@@ -88,34 +145,52 @@ func defaultBrewPrefixes(home string) []string {
 	return prefixes
 }
 
-// goBinDirs mirrors the go toolchain's own precedence: GOBIN wins, then
-// GOPATH/bin, then the default ~/go/bin.
+// goBinDirs lists every directory a `go install` of den could plausibly have
+// written to. It is a UNION, deliberately not the go toolchain's precedence
+// (GOBIN wins, then GOPATH/bin, then ~/go/bin).
 //
-// GOPATH is os.PathListSeparator-separated, not a single path — `go env
-// GOPATH` can legitimately answer `/a:/b`. filepath.Join(env.Gopath, "bin") on
-// that string produced the nonsense path "/a:/b/bin", which matched nothing:
-// a go-install binary living under the SECOND entry then classified
-// MethodArchive and got overwritten, which is exactly the harm this feature
-// exists to prevent. Splitting and contributing a bin dir per entry only ever
-// makes the classification stricter, which is the fail-safe direction.
+// Precedence answers "where would a go install put den NOW"; classification
+// must answer "could a go install have put THIS den here", and those differ
+// whenever the environment changed after the install. `go env -w GOBIN=~/bin`
+// run today does not move the den already sitting in ~/go/bin, and the old code
+// — returning GOBIN alone — stopped covering it the moment GOBIN was set. A
+// union only ever refuses MORE, which is the fail-safe direction: a false
+// positive names a `go install` command that reinstalls a working den, a false
+// negative corrupts the toolchain's state.
+//
+// GOPATH is os.PathListSeparator-separated, not a single path — `go env GOPATH`
+// can legitimately answer `/a:/b`. filepath.Join(env.Gopath, "bin") on that
+// string produced the nonsense path "/a:/b/bin", which matched nothing: a
+// go-install binary living under the SECOND entry then classified
+// MethodArchive and got overwritten.
+//
+// The tradeoff this widening accepts: a deliberate
+// `DEN_INSTALL_DIR=~/go/bin sh install.sh` is now classified MethodGoInstall
+// and sent to `go install`, which does reinstall a working den — the wrong
+// remedy for that user, but a refusal rather than a corruption. The previous
+// code already did this whenever GOBIN and GOPATH were both unset.
 func goBinDirs(env Env) []string {
-	if env.Gobin != "" {
-		return []string{env.Gobin}
-	}
-	if env.Gopath != "" {
-		var dirs []string
-		for _, entry := range filepath.SplitList(env.Gopath) {
-			if entry == "" {
-				continue
-			}
-			dirs = append(dirs, filepath.Join(entry, "bin"))
+	var dirs []string
+	add := func(dir string) {
+		if dir != "" {
+			dirs = append(dirs, dir)
 		}
-		return dirs
 	}
+	addGopath := func(gopath string) {
+		for _, entry := range filepath.SplitList(gopath) {
+			if entry != "" {
+				add(filepath.Join(entry, "bin"))
+			}
+		}
+	}
+	add(env.Gobin)
+	add(env.GoenvGobin)
+	addGopath(env.Gopath)
+	addGopath(env.GoenvGopath)
 	if env.Home != "" {
-		return []string{filepath.Join(env.Home, "go", "bin")}
+		add(filepath.Join(env.Home, "go", "bin"))
 	}
-	return nil
+	return dirs
 }
 
 // underDir reports whether path sits inside dir. It compares cleaned paths with
@@ -140,21 +215,4 @@ func underDir(path, dir string) bool {
 // A future pre-release tag would: that is assumed in the spec §10.
 func IsUpdatableVersion(v string) bool {
 	return semver.IsValid(v) && semver.Prerelease(v) == "" && semver.Build(v) == ""
-}
-
-// EnvFromOS builds the Env from a getenv function, so the CLI never has to know
-// which variables matter. A nil getenv answers an environment holding nothing —
-// the same rule Deps.Getenv follows, so a test that wired nothing gets the
-// documented defaults rather than the developer's own shell.
-func EnvFromOS(getenv func(string) string) Env {
-	if getenv == nil {
-		getenv = func(string) string { return "" }
-	}
-	return Env{
-		HomebrewPrefix: getenv("HOMEBREW_PREFIX"),
-		HomebrewCellar: getenv("HOMEBREW_CELLAR"),
-		Gobin:          getenv("GOBIN"),
-		Gopath:         getenv("GOPATH"),
-		Home:           getenv("HOME"),
-	}
 }

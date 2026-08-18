@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 
 	"github.com/PillowPillow/den/internal/selfupdate"
@@ -25,7 +26,8 @@ func newUpdateCmd(d Deps) *cobra.Command {
 			"half-written file on your PATH.\n\n" +
 			"It refuses, naming the right command, when another package manager owns the binary — " +
 			"Homebrew or the go toolchain — because overwriting their file would leave them managing a " +
-			"version they no longer manage. It also refuses to overwrite a build from a checkout. There " +
+			"version they no longer manage. It also refuses a build from a checkout, which `git describe` " +
+			"stamps with a commit count or `-dirty`. There " +
 			"are no flags: pin a version or roll back with `DEN_VERSION=v1.0.1 sh install.sh`.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -50,6 +52,11 @@ func newUpdateCmd(d Deps) *cobra.Command {
 				GOOS:     runtime.GOOS,
 				GOARCH:   runtime.GOARCH,
 				Env:      selfupdate.EnvFromOS(d.Getenv),
+				// The same resolution root.go applies to the executable, applied
+				// to the candidate directories: a GOBIN that is itself a symlink
+				// otherwise never matches the resolved executable path, and a
+				// go-install binary classifies as an archive one.
+				Resolve: filepath.EvalSymlinks,
 			}
 			return selfupdate.Run(cmd.Context(), d.Updater, req, cmd.OutOrStdout())
 		},
