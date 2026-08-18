@@ -233,8 +233,9 @@ Cinq invariants, et chacun est ce qu'une réécriture perd en premier :
 
 1. **`-i` reste une traduction vers `--without`.** `interactiveWithout` garde sa signature et rend
    toujours une liste de noms courts dans `nest.Resolve`. Seul le rendu interne change.
-   `TestInteractiveProducesTheSameArgvAsTheEquivalentWithout` reste vert **sans être touché** — c'est
-   la preuve qu'aucun second chemin de sélection n'est né.
+   `TestInteractiveProducesTheSameArgvAsTheEquivalentWithout` reste vert, **sa comparaison d'argv
+   inchangée** — seule sa ligne d'entrée passe du `strings.Reader` au `Fake` (§6). C'est cette
+   comparaison qui prouve qu'aucun second chemin de sélection n'est né, pas la façon de saisir.
 2. **`-i` démarre tout coché, `select: prompt` démarre vide.** Porté par UN champ
    `MultiSelectRequest.Preselected bool`. Un paramètre, un fait : la décision 8 du 2026-08-11 survit
    telle quelle, et sa raison écrite (deux paramètres portant un seul fait sont deux choses à tenir
@@ -257,10 +258,29 @@ Hermétique intégralement, comme le reste : aucun socket, aucun process, **aucu
   `cli`, `spawn` et `converge` en ont tous besoin. Réponses scriptées **et** requêtes enregistrées,
   pour qu'un test affirme *ce que den a demandé*, pas seulement ce qu'il a fait — l'état initial des
   cases (invariant 2) ne se lit que là.
-- **Tests portés** : ceux qui aujourd'hui poussent une chaîne dans `cmd.InOrStdin()` (`confirm`,
-  `askRepositoryRoots`) scriptent le `Fake`. Leur assertion de sortie ne change pas.
-- **Tests intouchés** : `TestInteractiveProducesTheSameArgvAsTheEquivalentWithout` et tous les tests
-  de refus sans terminal. S'ils demandaient à être réécrits, l'invariant 1 ou le §5.2 serait cassé.
+- **Tests portés — 18 sites, tous dans `internal/spawn/interactive_test.go`.** Ils scriptent
+  aujourd'hui le protocole numéroté à travers `Deps.In` (`strings.NewReader("2\n\n")`). Ils
+  scripteront le `Fake`. Leurs entrées changent toutes ; leurs assertions se répartissent en deux
+  classes, et la frontière est le contrôle de régression de la tranche 2 :
+  - **Assertions de COMPORTEMENT — intouchées.** Liste `--without` rendue, argv comparé, refus sans
+    terminal, dépôts effectivement montés. `TestInteractiveProducesTheSameArgvAsTheEquivalentWithout`
+    est de cette classe : sa ligne d'entrée devient un `Fake` scripté, sa comparaison d'argv ne bouge
+    pas d'un caractère. C'est elle qui porte l'invariant 1, pas la façon de saisir. (Une première
+    rédaction de cette spec annonçait ce test « intouché » tout court : faux, il lit `In`.)
+  - **Assertions sur les OCTETS RENDUS — déplacées, pas supprimées.** Celles qui lisent le texte
+    imprimé (`TestPromptHeaderAlwaysNamesRequiredRepos`, `TestPromptAnnotatesUnmappedKeys`) lisent
+    désormais la **requête enregistrée** par le `Fake` : le titre et la description de l'option
+    portent ce que la ligne imprimée portait. Rien n'est perdu — c'est la raison pour laquelle le
+    `Fake` enregistre les requêtes au lieu de ne rendre que des réponses.
+
+  **Signal d'arrêt** : si une assertion de la PREMIÈRE classe doit bouger pour qu'un test repasse,
+  l'invariant 1 ou le §5.2 est cassé. On arrête et on relit, on n'ajuste pas le test.
+- **`Deps.In` disparaît.** Un seul lecteur (`interactive.go:128`) et un seul écrivain
+  (`cli/up.go:35`) : une fois la checklist derrière le `Prompter`, le champ est mort. Le supprimer
+  fait partie de la tranche 2 — un champ `io.Reader` laissé sur `spawn.Deps` inviterait un futur
+  appelant à relire stdin sous la porte.
+- **Tests portés (2)** : `confirm` et `askRepositoryRoots` poussent aujourd'hui une chaîne dans
+  `cmd.InOrStdin()` ; ils scriptent le `Fake`. Leurs assertions de sortie ne changent pas.
 - **`huhui`** : non testé par la suite, isolé derrière l'interface — même doctrine que
   `ports.ListenScanner`, `ports.OpenURL` et `spawn.LooksInteractive` (CLAUDE.md). **Sauf sa porte** :
   le refus `ErrNoTerminal` EST testable contre `/dev/null`, un fichier régulier et un fichier fermé,
