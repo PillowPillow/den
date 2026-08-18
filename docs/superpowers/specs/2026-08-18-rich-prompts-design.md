@@ -47,17 +47,28 @@ fausse : la règle s'appuie sur une section qui ne la porte pas.
 secret sans écho, `internal/cli/root.go:105`). `internal/ports/hermeticity_test.go:26` écrit la
 liste à cinq, pas à deux, et nomme la raison de chaque ajout.
 
-**c) `isterminal_darwin.go` a payé `unsafe` et un ioctl brut pour éviter une dépendance déjà
-présente.** Son godoc dit, en justifiant trois premières fois dans ce dépôt (fichier
-plateforme-spécifique, `unsafe`, syscall brut) :
+**c) `isterminal_darwin.go` justifie son ioctl par une prémisse qui a cessé d'être vraie deux jours
+plus tard, sans que personne y revienne.** Son godoc dit, en justifiant trois premières fois dans ce
+dépôt (fichier plateforme-spécifique, `unsafe`, syscall brut) :
 
 > this module allows stdlib + cobra + yaml.v3 only, which rules out `golang.org/x/term` and
 > `golang.org/x/sys`
 
-`golang.org/x/term v0.45.0` est un `require` direct de `go.mod`, importé par `internal/cli/root.go`.
-La phrase était déjà fausse le jour où elle a été écrite. C'est le fait le plus dur de cette spec :
-la contrainte invoquée pour interdire la TUI avait déjà été levée **dans cette même zone de code**,
-pour rendre `-i` correct.
+**CORRECTION du 2026-08-18.** Une première rédaction de cette spec écrivait ici que « la phrase était
+déjà fausse le jour où elle a été écrite », et en faisait « le fait le plus dur » du dossier. **C'est
+faux, et la vérification vient d'un implémenteur de la tranche 6 qui a refusé d'écrire la correction
+avant de contrôler ma source.** La chronologie réelle, lue dans `git` :
+
+| date | commit | état |
+|---|---|---|
+| 2026-08-14 | `a98aee9` | `git show a98aee9:go.mod` requiert cobra, pflag, yaml.v3 — **et rien d'autre**. La prémisse est VRAIE, et les trois premières fois sont justifiées. |
+| 2026-08-16 | `369187d` (#74) | l'onboarding de sources ajoute `golang.org/x/term` et `golang.org/x/mod`, pour la lecture de secret de `internal/cli/root.go`. La prémisse devient fausse — ailleurs, et sans que ce fichier soit relu. |
+| 2026-08-18 | cette branche | `root.go` n'importe plus `x/term` du tout (tranche 4 l'a remplacé) ; `x/term` survit par `internal/prompt/huhui`, qui l'appelle pour `term.IsTerminal` — la capacité même que ce fichier réimplémente à la main. |
+
+Ce que ce fait établit est donc plus étroit que ce que j'avais écrit, et suffit : l'interdit
+s'appuyait sur une prémisse **périmée depuis le 2026-08-16**, pas sur un mensonge d'origine. Personne
+n'a mal agi en écrivant ce fichier ; c'est la façon ordinaire dont un commentaire vrai pourrit —
+invalidé par un changement fait ailleurs, dans un fichier que rien n'obligeait à relire.
 
 L'interdit n'est donc pas renversé par confort. Il est renversé parce que son fondement écrit
 n'existe pas.
@@ -320,17 +331,23 @@ Tranches verticales, chacune laissant l'arbre vert :
 4. Portage de `confirm`, `askRepositoryRoots` et `ReadSecret`. `Deps.ReadSecret` retiré.
 5. Garde d'import.
 6. Documentation : amendement de la décision 4 du 2026-08-11 (renvoi vers cette spec) ; correction de
-   la citation fausse de HANDOFF §8 dans `interactive.go` ; correction de l'affirmation fausse sur
-   `golang.org/x/term` dans `isterminal_darwin.go` et `isterminal_linux.go`.
+   la citation fausse de HANDOFF §8 dans `interactive.go` ; correction de la prémisse périmée sur
+   `golang.org/x/term` dans `isterminal_darwin.go` **seul** — `isterminal_linux.go` n'en porte pas de
+   copie et ne doit pas en recevoir une (§8).
 
 ## 8. Hors périmètre, nommé pour ne pas être redécouvert
 
 **L'ioctl brut de `isterminal_{darwin,linux}.go`.** Ces deux fichiers portent `unsafe` et un syscall
-brut (`TIOCGETA` / `TCGETS`) parce que leur godoc affirmait que `golang.org/x/term` était interdit
-— affirmation fausse le jour où elle a été écrite (§2.c). `term.IsTerminal` supprimerait les deux
-fichiers, l'import `unsafe` et le premier syscall brut du dépôt. Le §7.6 corrige le **commentaire**,
-pas le code : remplacer le mécanisme est un autre changement, avec sa propre mesure à refaire sur les
-deux plateformes. Ticket séparé.
+brut (`TIOCGETA` / `TCGETS`) parce que `golang.org/x/term` était hors du périmètre du module **au
+2026-08-14** — vrai ce jour-là, périmé depuis le 2026-08-16 (§2.c). `term.IsTerminal` supprimerait
+les deux fichiers, l'import `unsafe` et le premier syscall brut du dépôt. Le §7.6 corrige le
+**commentaire**, pas le code : remplacer un mécanisme mesuré est un autre changement, avec sa propre
+mesure à refaire sur les deux plateformes. Ticket séparé.
+
+Et la correction ne touche que `isterminal_darwin.go` : `isterminal_linux.go` ne porte PAS le
+raisonnement, il y renvoie — « written once, in `isterminal_darwin.go`, and is not repeated here:
+two copies of one argument are two things to keep in agreement ». Y écrire la correction créerait la
+seconde copie que ce fichier existe pour éviter. Le §7.6 le disait mal ; il est corrigé.
 
 **Le mode `WithAccessible` de `huh`.** Jamais activé par den, et la raison est écrite ici pour qu'on
 ne l'active pas « pour aider » : c'est un repli en clair, et den n'a pas de repli — il a un refus qui
@@ -343,8 +360,10 @@ nomme le drapeau équivalent.
    posée sur la table avec ses chiffres, et écartée : den n'écrit pas son propre décodeur de touches
    et sa propre boucle de redessin, avec le resize et la restauration de `ctrl+c` à tenir, quand
    quatre invites doivent vivre.
-2. **26 modules et ≈ +4 Mo sont acceptés**, chiffres mesurés en main au moment du choix, pas estimés.
-   Le binaire reste statique et sans cgo : c'est la propriété que den annonce, et elle est intacte.
+2. **26 modules sont acceptés.** Le surcoût annoncé au moment du choix — « ≈ +4 Mo » — était une
+   borne haute dérivée, et le binaire livré mesure **+1,96 Mo** (§3.b). La décision a donc été prise
+   sur un chiffre deux fois trop gros, et la correction va dans le sens du choix déjà fait : elle est
+   écrite quand même. Le binaire reste statique et sans cgo — la propriété que den annonce, intacte.
 3. **Rendu en ligne, jamais en plein écran**, pour les quatre invites. La frontière de confiance de
    `den converge` est la raison, et elle vaut aussi pour les trois autres : den écrit au-dessus, il
    n'efface pas.
