@@ -385,3 +385,54 @@ func TestDoctorSkipsTheOrphanCheckWhenSbxCannotAnswer(t *testing.T) {
 			"sandboxes; got:\n%s", out)
 	}
 }
+
+// A machine whose sbx network policy den cannot READ fails `den doctor`, and
+// the line carries sbx's own remedy.
+//
+// This is the check the 2026-08-18 report had nothing to offer: sbx demands a
+// one-time `sbx policy init <profile>`, and on a laptop that never ran it every
+// den command touching policy died — `den source add` while converging, `den
+// up` in the settle loop — while `den doctor` reported a healthy install. A
+// diagnostic that stays green on a machine den cannot use is worse than none:
+// it sends the user looking somewhere else.
+func TestDoctorFailsWhenTheNetworkPolicyCannotBeRead(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+		Err: errors.New("ERROR: global network policy has not been initialized\n\n" +
+			"Initialize it with:\n  sbx policy init <allow-all|balanced|deny-all>"),
+	}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err == nil {
+		t.Fatalf("den doctor reported a machine den cannot converge as healthy:\n%s", out)
+	}
+	if !strings.Contains(out, "[FAIL] sbx policy") {
+		t.Errorf("the failing read has no line of its own:\n%s", out)
+	}
+	// One line, whatever sbx's stderr looks like: the report is a column of
+	// checks, and a four-line paragraph in the middle of it breaks the reading.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "[FAIL] sbx policy") && !strings.Contains(line, "sbx policy init") {
+			t.Errorf("the check does not carry sbx's own remedy on its line:\n%s", out)
+		}
+	}
+}
+
+// The check is a READ, not an assumption: a machine that answers is not
+// reported as broken, and `den doctor` stays green.
+func TestDoctorPassesWhenTheNetworkPolicyAnswers(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+		Output: []byte(`{"rules":[]}`),
+	}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("a readable policy must not fail den doctor: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[ok  ] sbx policy") {
+		t.Errorf("the check is missing from a healthy report:\n%s", out)
+	}
+}
