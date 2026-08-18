@@ -142,11 +142,10 @@ func TestCollectInitialAnswersRefusesWithoutATerminal(t *testing.T) {
 // A terminal being present does not mean something is wired to ask ON it: a
 // caller that built Deps by hand (every test that does, and — until
 // SystemDeps runs — nothing else) can set IsTTY true and leave Prompt nil.
-// That must refuse legibly, not panic on a nil Prompter. This exercises the
-// ROOTS site: answersManifest() with no answer file needs both roots and a
-// credential, and askRepositoryRoots runs first — its OWN guard
-// (M2 review fix, Task 4: guarded in the callee, not hoisted to the call
-// site, so no future caller can bypass it) is what must catch this.
+// That must refuse legibly, not panic on a nil Prompter, and the one guard
+// above both askRepositoryRoots and the credential loop names BOTH remedies
+// at once — answersManifest() with no answer file needs both roots and a
+// credential, so both must appear (M1/M2 review, Task 4).
 func TestCollectInitialAnswersRefusesWithATerminalButNoPrompter(t *testing.T) {
 	cmd, _ := answersCmd("")
 	_, err := collectInitialAnswers(cmd, Deps{IsTTY: func() bool { return true }},
@@ -154,37 +153,10 @@ func TestCollectInitialAnswersRefusesWithATerminalButNoPrompter(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a refusal when no prompter is wired, even with a terminal")
 	}
-	if !strings.Contains(err.Error(), "no prompter is wired") {
-		t.Errorf("error = %q, expected the wiring defect to be named", err.Error())
-	}
-	if !strings.Contains(err.Error(), "repository_roots:") {
-		t.Errorf("error = %q, expected the roots remedy to be named", err.Error())
-	}
-}
-
-// The CREDENTIAL site's own guard (answers.go, inside the missing-credentials
-// loop) is a separate guard from askRepositoryRoots' — this answer file
-// already supplies repository_roots, so needsRoots is false and the only
-// thing left to ask is the credential. Its message must name `from_env:`,
-// never `repository_roots:`: a user who hit this refusal needs the remedy
-// for the question that actually stopped them.
-func TestCollectInitialAnswersRefusesACredentialWithATerminalButNoPrompter(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(t.TempDir(), "answers.yaml")
-	if err := os.WriteFile(path, []byte("repository_roots: ["+root+"]\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{IsTTY: func() bool { return true }},
-		answersManifest(), path, false)
-	if err == nil {
-		t.Fatal("expected a refusal when no prompter is wired, even with a terminal")
-	}
-	if !strings.Contains(err.Error(), "no prompter is wired") {
-		t.Errorf("error = %q, expected the wiring defect to be named", err.Error())
-	}
-	if !strings.Contains(err.Error(), `"gitlab_token"`) || !strings.Contains(err.Error(), "from_env:") {
-		t.Errorf("error = %q, expected the credential and its remedy to be named", err.Error())
+	for _, want := range []string{"no prompter is wired", "repository_roots:", "credentials.<name>.from_env:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected a mention of %q", err.Error(), want)
+		}
 	}
 }
 
@@ -516,16 +488,17 @@ func TestConfirmRefusesWithATerminalButNoPrompter(t *testing.T) {
 	}
 }
 
-// The guard lives INSIDE askRepositoryRoots, not at its call site — a nil
-// Prompter must refuse the same way promptOptionalRepos does, and guarding
-// the callee is what makes it impossible for a future caller to bypass
-// (M2 review fix, Task 4).
+// Deliberate redundancy with collectInitialAnswers' own guard: this one
+// lives INSIDE askRepositoryRoots itself, not at its call site, so a future
+// caller reaching it directly (it is exported to this package) cannot
+// bypass a guard that lives only at today's one call site
+// (M1/M2 review, Task 4).
 func TestAskRepositoryRootsRefusesWithNilPrompter(t *testing.T) {
 	_, err := askRepositoryRoots(nil)
 	if err == nil {
 		t.Fatal("expected a refusal when no prompter is wired")
 	}
-	if !strings.Contains(err.Error(), "no prompter is wired") {
+	if !strings.Contains(err.Error(), "no prompter to ask on") {
 		t.Errorf("error = %q, expected the wiring defect to be named", err.Error())
 	}
 	if !strings.Contains(err.Error(), "repository_roots:") {
