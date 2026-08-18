@@ -315,3 +315,22 @@ Nommé explicitement, pour qu'aucune de ces absences ne se lise comme un oubli :
 - **Modification du texte du plancher `requires.den`** : ce message couvre aussi `sbx`, que den
   n'installe pas. Le rapprocher de `den update` demanderait de distinguer les deux outils dans un
   message aujourd'hui générique — une tranche à part, si le besoin se confirme.
+
+## 11. Écarts assumés à l'implémentation
+
+Cette section est écrite **après** l'implémentation (2026-08-18). Le repo tient qu'une divergence
+spec/code est un bug dans l'un des deux, jamais une phase ; ces deux-là sont donc actées ici plutôt
+que laissées silencieuses.
+
+- **§4, l'ordre des lignes de la matrice.** La table dit « la première ligne qui matche décide » et
+  place « version courante non canonique » en premier. `selfupdate.Run` classe la **méthode
+  d'installation avant** la version. Les deux issues sont un refus sans le moindre effet de bord :
+  seul change le message que voit un build de dev installé par brew — et lui nommer
+  `brew upgrade --cask den` est plus actionnable que lui dire que sa version n'est pas une release.
+  Le code garde son ordre ; la table décrit l'ensemble des refus, pas leur précédence.
+- **§4, `HOMEBREW_PREFIX=/usr/local` sur un Mac Intel.** Une installation `install.sh` posée en
+  `DEN_INSTALL_DIR=/usr/local/bin` y est classée `MethodHomebrew` et renvoyée vers
+  `brew upgrade --cask den`, qui répondra « not installed ». C'est exactement l'asymétrie que §4
+  accepte par écrit : un faux positif est un refus qui nomme une commande inutile, un faux négatif
+  corromprait l'état de brew. Rien n'est corrigé ; le cas est nommé pour qu'il ne soit pas
+  rediagnostiqué.
