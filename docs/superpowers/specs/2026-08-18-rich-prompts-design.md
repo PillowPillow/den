@@ -81,35 +81,56 @@ rivo/uniseg · xo/terminfo · golang.org/x/{sync,sys,text}
 
 `golang.org/x/sys` est déjà indirect chez den : **26 modules nouveaux**.
 
-**b) Le binaire grossit d'environ 4 Mo.** `task build` sur `v1.8.1-1-g153a1a3` rend un `den` de
-**7 291 330 octets**. Un `main` qui ne fait qu'un `huh.NewForm(...MultiSelect...)` et l'exécute rend
-**5 740 162 octets**. den + huh ≈ 11 Mo, soit ≈ +55 %. Le binaire reste statique et sans cgo — aucun
-des 26 modules n'en introduit.
+**b) Le binaire grossit de moins de 4 Mo — borne haute, pas mesure directe.** `task build` sur
+`v1.8.1-1-g153a1a3` rend un `den` de **7 291 330 octets**. Un `main` qui ne fait qu'un
+`huh.NewForm(...MultiSelect...)` et l'exécute rend **5 740 162 octets**. Ces deux chiffres sont
+mesurés ; leur somme ne l'est pas, et **surestime** : les deux binaires portent chacun le runtime Go.
+La borne honnête est « den + huh < 11 Mo », le surcoût réel étant inférieur d'environ 1,5 à 2 Mo. La
+mesure directe se fait à la tranche 3, quand `huhui` existe. Le binaire reste statique et sans cgo —
+aucun des 26 modules n'en introduit.
 
 **c) `huh` est en ligne par défaut, pas en plein écran.** La trace d'échappement de la sonde contient
 `^[[?25l` (curseur caché), `^[[?2004h` (collage encadré), `^[[?1004h` (rapport de focus) et **aucun
 `^[[?1049h`** (écran alterné). Le rendu choisi — le plan de `den converge` reste à l'écran au-dessus
 de la confirmation — s'obtient sans rien demander.
 
-**d) `huh` échoue OUVERT sans terminal, et c'est la mesure qui gouverne le §5.** Sonde lancée avec
-`/dev/null` sur stdin et un tube sur stdout :
+**d) `huh` échoue OUVERT sans terminal, PUIS ne rend pas la main. C'est la mesure qui gouverne le
+§5.** Sonde lancée avec `/dev/null` sur stdin et `/dev/null` sur stdout, marqueurs sur stderr :
 
 ```
-$ ./probe < /dev/null | cat -v
-^[[?25l^[[?2004h^[[?1004h... nest api: optional repos ...
-  > [x] web
-    [x] worker
-kept: [web worker]
-rc=0
+$ timeout 5 ./probe3 < /dev/null > /dev/null
+MARK before-run
+MARK after-run ERR=<nil> LEN=0 VAL=[]
+MARK before-return
+rc=124        # 124 = tué par timeout, 5 s écoulées
 ```
 
-Aucun refus. `huh` déverse ses séquences ANSI brutes dans le tube, **confirme tout seul la sélection
-par défaut que personne n'a faite, et sort en 0**.
+Deux pannes, pas une :
+
+1. **Aucun refus.** `huh` déverse ses séquences ANSI brutes dans la sortie, `Run()` rend `nil`, et la
+   sélection par défaut — celle que personne n'a faite — devient la réponse.
+2. **Le processus ne se termine pas.** Le dernier marqueur de `main` s'imprime, et le processus est
+   toujours vivant 5 s plus tard. Une variante avec `os.Exit(0)` explicite après le marqueur pend
+   identiquement. Un témoin de même forme sans `huh` sort en `rc=0` instantanément : la pendaison
+   vient bien de la bibliothèque. Sa cause n'a pas été cherchée — elle ne change rien au §5, qui
+   n'appelle jamais `huh` sans terminal.
+
+**Correction d'une mesure antérieure de cette même sonde :** une première lecture annonçait `rc=0`.
+Ce `0` était le code de `head` en fin de tube, pas celui de la sonde. Le code de la sonde n'avait
+jamais été mesuré. Il l'est ci-dessus, sans tube.
 
 C'est exactement la forme de panne que l'issue #66 a été ouverte pour tuer, et que le godoc de
 `isterminal_darwin.go` décrit : « a data-loss path with a clean exit code ». `< /dev/null` est le
-stdin canonique d'une CI et d'un cron. Ici la conséquence n'est pas une sortie perdue : c'est une
-microVM créée avec un jeu de dépôts que personne n'a choisi, sous un code de retour propre.
+stdin canonique d'une CI et d'un cron. Ici la conséquence est double, et la seconde est la pire :
+une microVM créée avec un jeu de dépôts que personne n'a choisi, puis un job qui ne rend jamais la
+main. Le refus que den rend aujourd'hui dit mot pour mot ce que cette pendaison ferait — « reading
+anyway would block a pipe or a CI job forever ».
+
+**f) Une `MultiSelect` sans rien de présélectionné se soumet vide.** Même sonde, options construites
+sans `.Selected(true)` : `ERR=<nil> LEN=0 VAL=[]`. Il n'y a pas de plancher à une sélection ;
+`(*MultiSelect).Limit(n)` existe et den ne l'appelle pas. C'est ce qui rend l'invariant 2 tenable :
+un nest `select: prompt`, dont le contrat est de n'avoir aucune sélection par défaut, peut être
+confirmé vide.
 
 Le chemin `bufio` d'aujourd'hui échoue FERMÉ tout seul : sur EOF avant confirmation, il refuse en
 nommant l'équivalent non interactif. Cette propriété est native aujourd'hui ; après `huh`, elle
@@ -129,9 +150,17 @@ validé.
 | # | Site | Forme actuelle | Après |
 |---|---|---|---|
 | 1 | `spawn.promptOptionalRepos` | checklist numérotée, `bufio.Scanner` | `MultiSelect` |
-| 2 | `cli.askRepositoryRoots` (`answers.go:272`) | ligne libre, `bufio.Reader` | `Line` |
+| 2 | `cli.askRepositoryRoots` (`answers.go:272`) | ligne libre, `bufio.Reader` | `Line` (voir ci-dessous) |
 | 3 | `Deps.ReadSecret` (`root.go:105`) | `term.ReadPassword` | `Secret` |
 | 4 | `cli.confirm` (`answers.go:291`) | `apply this plan? [y/N]`, `bufio.Reader` | `Confirm` |
+
+**Le site 2 lit une LISTE sur une ligne.** `askRepositoryRoots` rend `[]string` : plusieurs
+répertoires, séparés, expansés (`~`) puis validés, sur une seule saisie. `huh.Input` rend une
+`string`. La découpe et l'expansion restent donc **chez l'appelant**, exactement où elles sont
+aujourd'hui : `Prompter.Line` rend la ligne brute, et `askRepositoryRoots` garde son traitement mot
+pour mot. Écrit ici pour que le plan ne le redécouvre pas et ne soit pas tenté de pousser la découpe
+dans `internal/prompt` — un `Prompter` qui connaîtrait les chemins ne serait plus une couche
+d'affichage.
 
 Le précédent est déjà là et il porte le design entier : `ReadSecret` est **déjà** une fonction
 injectée dans `cli.Deps`, et son godoc dit pourquoi — « the real implementation reads the terminal
@@ -187,7 +216,8 @@ bibliothèque n'a pas à la réécrire.
 
 **À l'intérieur — nouveau.** Chaque méthode de `huhui` **revérifie les deux descripteurs elle-même**
 et rend `prompt.ErrNoTerminal` **avant de construire le moindre formulaire**. Un appelant qui
-oublierait la porte échoue alors fermé, au lieu de créer une VM avec une sélection fantôme.
+oublierait la porte échoue alors fermé, au lieu de créer une VM avec une sélection fantôme **puis de
+pendre le job qui l'a lancée**.
 
 Ce n'est pas de la ceinture-bretelles décorative : la porte du dessus est aujourd'hui un confort
 (le `bufio` refuserait de lui-même sur EOF), et elle devient après `huh` la seule chose entre une CI
@@ -208,7 +238,9 @@ Cinq invariants, et chacun est ce qu'une réécriture perd en premier :
 2. **`-i` démarre tout coché, `select: prompt` démarre vide.** Porté par UN champ
    `MultiSelectRequest.Preselected bool`. Un paramètre, un fait : la décision 8 du 2026-08-11 survit
    telle quelle, et sa raison écrite (deux paramètres portant un seul fait sont deux choses à tenir
-   d'accord) vaut encore plus ici.
+   d'accord) vaut encore plus ici. Tenable parce que la mesure (f) le dit : `huh` accepte une
+   soumission vide et n'impose aucun plancher. Si un plancher existait, `select: prompt` serait
+   inspawnable et cet invariant demanderait un contournement — il n'en demande pas.
 3. **`unmappedNote` devient la description de l'option**, et nomme toujours le chemin denHome
    **résolu**, jamais le `config.yaml` nu. Annotation seulement : cocher une clé non mappée reste
    possible, et le refus qui suit reste celui de `resolveRepoKeys`, juge unique du mapping.
@@ -235,9 +267,16 @@ Hermétique intégralement, comme le reste : aucun socket, aucun process, **aucu
   exactement comme `internal/spawn/isterminal_test.go`. C'est la moitié qui compte, et c'est la
   mesure (d) transformée en test.
 - **Garde d'import** : nouveau test à la manière d'`internal/ports/hermeticity_test.go` — analyse
-  syntaxique (`go/build` + `go/parser`) des imports directs, affirmant que **seul
-  `internal/prompt/huhui` importe `github.com/charmbracelet/*`**. Échec avec un message de graphe
-  d'imports, comme l'existant. Limite documentée identique : `build.ImportDir` applique le
+  syntaxique (`go/build` + `go/parser`) des imports directs. Elle affirme **deux** choses, et la
+  seconde n'est pas facultative :
+  1. Seul `internal/prompt/huhui` importe `github.com/charmbracelet/*`.
+  2. Seul `internal/cli` importe `internal/prompt/huhui`.
+
+  La (1) seule ne protège rien de ce que le §5.1 promet : elle laisserait `internal/spawn` importer
+  `huhui` et rendrait fausse, sans qu'aucun test bronche, la phrase « `internal/spawn` et
+  `internal/converge` n'importent que `internal/prompt` ». La raison d'être de `internal/prompt`
+  comme paquet feuille est de tenir `spawn` propre ; c'est la (2) qui la tient. Échec avec un message
+  de graphe d'imports, comme l'existant. Limite documentée identique : `build.ImportDir` applique le
   GOOS/GOARCH de la machine.
 
 ## 7. Ordre de livraison
@@ -280,5 +319,8 @@ nomme le drapeau équivalent.
 3. **Rendu en ligne, jamais en plein écran**, pour les quatre invites. La frontière de confiance de
    `den converge` est la raison, et elle vaut aussi pour les trois autres : den écrit au-dessus, il
    n'efface pas.
-4. **La porte `IsTTY` reste au-dessus ET dans l'adaptateur.** Mesure (d).
+4. **La porte `IsTTY` reste au-dessus ET dans l'adaptateur.** Mesure (d) : sans terminal, `huh`
+   confirme une sélection fantôme *et* ne rend pas la main. Le `bufio` d'aujourd'hui refusait de
+   lui-même ; après cette spec, la porte est la seule chose qui tienne cette propriété, et une
+   propriété de sûreté ne repose pas sur la discipline de l'appelant.
 5. **Un seul paquet importe `charmbracelet`**, et un test le tient.
