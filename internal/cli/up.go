@@ -19,11 +19,14 @@ import (
 // o.Nest and leaves o.Command empty (an empty Argv means `bash -l`, one layer
 // down in spawn.Command); `run` sets o.Nest and o.Command = args[1:].
 //
-// Out, Err and In are decided HERE, at run time, because they alone depend on
-// the command and hence on a test's SetOut/SetErr/SetIn. The terminal probe
-// stays in deps — it describes the machine, not the command. Out set here is
-// not the last word on it: on a non-tty command spawn.Spawn aliases it to Err
-// itself, so den's own log never joins a pipe the command owns.
+// Out and Err are decided HERE, at run time, because they alone depend on the
+// command and hence on a test's SetOut/SetErr. The terminal probe stays in
+// deps — it describes the machine, not the command — and so does the Prompter
+// that succeeded the checklist's io.Reader: it takes over the terminal rather
+// than reading whatever cobra hands down, so there is nothing per-invocation
+// left to decide about it. Out set here is not the last word on it: on a
+// non-tty command spawn.Spawn aliases it to Err itself, so den's own log never
+// joins a pipe the command owns.
 func spawnNest(cmd *cobra.Command, denHome *string, o spawn.Options, deps spawn.Deps) error {
 	home, err := config.Home(*denHome)
 	if err != nil {
@@ -32,7 +35,6 @@ func spawnNest(cmd *cobra.Command, denHome *string, o spawn.Options, deps spawn.
 	d := deps
 	d.Out = cmd.OutOrStdout()
 	d.Err = cmd.ErrOrStderr()
-	d.In = cmd.InOrStdin()
 	return spawn.Spawn(cmd.Context(), home, o, d)
 }
 

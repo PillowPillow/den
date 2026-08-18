@@ -22,6 +22,7 @@ import (
 	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/policy"
+	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/sshagent"
@@ -66,16 +67,20 @@ type Deps struct {
 	//
 	// Defaults to io.Discard when unset.
 	Err io.Writer
-	// In is what the `-i` checklist reads. Injected like every other side
-	// effect of this package, so the selection is exercised without a tty
-	// (interactive_test.go feeds it a strings.Reader).
+	// Prompt is how the `-i` checklist asks. Injected like every other side
+	// effect of this package: the real one (internal/prompt/huhui) takes over
+	// the terminal, so a suite that inherited it would fight the test runner
+	// for stdin.
 	//
-	// Only `-i` reads it: every other path of Spawn leaves it untouched, which
-	// is why the dozens of hand-built Deps in this package can keep ignoring it.
-	In io.Reader
-	// IsTTY reports whether In is a terminal. It is isolated into a one-liner
-	// (LooksInteractive) precisely so that it, and not the selection logic, is
-	// what carries whatever stays untested.
+	// Nil is NOT "use the default": promptOptionalRepos refuses on a nil
+	// Prompter. The field it replaces was an io.Reader with an os.Stdin
+	// fallback, and that fallback is deliberately gone — a checklist that can
+	// silently reach for the process's real stdin is a checklist that can be
+	// answered by a pipe nobody meant to point at it.
+	Prompt prompt.Prompter
+	// IsTTY reports whether den's input is a terminal. It is isolated into a
+	// one-liner (LooksInteractive) precisely so that it, and not the selection
+	// logic, is what carries whatever stays untested.
 	//
 	// Since #66 that is one claim, not the whole probe: LooksInteractive asks
 	// the kernel through isTerminal, whose negative verdicts ARE tested

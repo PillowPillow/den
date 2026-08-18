@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +13,7 @@ import (
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/nest"
+	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/sbx"
 )
 
@@ -31,9 +31,15 @@ func optionalRepos() []nest.Repo {
 	}
 }
 
-func prompt(t *testing.T, input string) ([]string, string, error) {
+// runChecklist drives the -i checklist (boxes start full) with a scripted
+// answer, and hands back the --without list plus the request den built.
+//
+// checked is what the human leaves ticked. It replaces the old input string:
+// the numbered protocol is gone, so a test says which repos survive rather
+// than which keys were typed.
+func runChecklist(t *testing.T, checked []string) ([]string, prompt.MultiSelectRequest, error) {
 	t.Helper()
-	return promptWith(t, input, false, nil)
+	return promptWith(t, checked, false, nil)
 }
 
 // promptHome is the den home these unit-level checklist tests render under. A
@@ -50,37 +56,57 @@ const promptHome = "/fixture/den-home"
 
 var promptMappingPath = config.GlobalPath(promptHome)
 
+// promptWith drives the checklist through a scripted Fake and hands back both
+// the --without list and the request den built.
+//
+// checked is what the human leaves ticked — the Fake's answer. It replaces the
+// old input string ("2\n\n"): the numbered protocol is gone, and a test now
+// says which repos survive rather than which keys were typed.
+//
 // prompts is the nest's `select: prompt` mode, the single parameter
 // promptOptionalRepos takes: false is `-i` (boxes start full, both flags
 // offered), true is a prompting nest (boxes start empty, `--only` alone).
-func promptWith(t *testing.T, input string, prompts bool,
-	mapping map[string]string) ([]string, string, error) {
+func promptWith(t *testing.T, checked []string, prompts bool,
+	mapping map[string]string) ([]string, prompt.MultiSelectRequest, error) {
 	t.Helper()
-	var out bytes.Buffer
-	without, err := promptOptionalRepos(&out, strings.NewReader(input), promptMappingPath, "api",
+	f := &prompt.Fake{MultiSelectAnswers: [][]string{checked}}
+	without, err := promptOptionalRepos(f, promptMappingPath, "api",
 		optionalRepos(), prompts, mapping)
-	return without, out.String(), err
+	if len(f.MultiSelects) == 0 {
+		return without, prompt.MultiSelectRequest{}, err
+	}
+	return without, f.MultiSelects[0], err
 }
 
 // Decision 9: a `select: prompt` checklist starts EMPTY, and confirming it
 // as-is excludes every optional repo. The -i checklist keeps starting full —
 // the two answer different questions, and both readings live in this one test.
+//
+// Since the move to the Prompter, "confirming as-is" is expressed as the
+// answer the renderer would return for an untouched form: everything for -i,
+// nothing for a prompting nest. Preselected is asserted alongside, so the test
+// pins the STARTING STATE too and not only its consequence.
 func TestPromptStartingStateFollowsTheMode(t *testing.T) {
 	for _, c := range []struct {
-		name    string
-		prompts bool
-		want    []string
+		name        string
+		prompts     bool
+		asIs        []string
+		wantWithout []string
 	}{
-		{"-i starts full", false, nil},
-		{"select: prompt starts empty", true, []string{"worker", "docs"}},
+		{"-i starts full", false, []string{"worker", "docs"}, nil},
+		{"select: prompt starts empty", true, nil, []string{"worker", "docs"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			without, _, err := promptWith(t, "\n", c.prompts, nil)
+			without, req, err := promptWith(t, c.asIs, c.prompts, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !slices.Equal(without, c.want) {
-				t.Errorf("confirming as-is gave --without %v, want %v", without, c.want)
+			if !slices.Equal(without, c.wantWithout) {
+				t.Errorf("confirming as-is gave --without %v, want %v", without, c.wantWithout)
+			}
+			if req.Preselected == c.prompts {
+				t.Errorf("prompts=%v must build Preselected=%v, got %v",
+					c.prompts, !c.prompts, req.Preselected)
 			}
 		})
 	}
@@ -89,70 +115,65 @@ func TestPromptStartingStateFollowsTheMode(t *testing.T) {
 // The header keeps its "required repos are always mounted" clause in BOTH
 // modes: a select: prompt nest may declare required repos, and "none selected"
 // alone would then be a lie.
+//
+// It is read off the REQUEST now, not off a rendered buffer — the renderer
+// owns the pixels, den owns the words (spec §6).
 func TestPromptHeaderAlwaysNamesRequiredRepos(t *testing.T) {
 	for _, prompts := range []bool{true, false} {
-		_, out, err := promptWith(t, "\n", prompts, nil)
+		_, req, err := promptWith(t, nil, prompts, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(out, "required repos are always mounted") {
-			t.Errorf("prompts=%v: header lost its required-repos clause:\n%s", prompts, out)
+		if !strings.Contains(req.Title, "required repos are always mounted") {
+			t.Errorf("prompts=%v: title lost its required-repos clause: %q", prompts, req.Title)
 		}
 	}
 }
 
 // Decision 10: an unmapped key is ANNOTATED, never hidden and never refused.
 // Refusing the tick here would make the checklist a second judge of the repo
-// mapping, whose single judge is resolveRepoKeys — and it would be a mute
-// refusal on the one surface where the user cannot yet see what they asked
-// for.
+// mapping, whose single judge is resolveRepoKeys.
 //
-// The annotation names the FILE, path included: see the sub-assertion below and
-// unmappedNote for why the bare "config.yaml" it used to print was a remedy
-// nobody could follow under DEN_HOME.
+// The annotation names the FILE, path included: the bare "config.yaml" this
+// line used to print was a remedy nobody could follow under DEN_HOME.
 func TestPromptAnnotatesUnmappedKeys(t *testing.T) {
 	repos := []nest.Repo{
 		{Path: "/dev/backend"},
 		{Key: "worker", Optional: true},
 		{Key: "docs", Optional: true},
 	}
-	var out bytes.Buffer
-	if _, err := promptOptionalRepos(&out, strings.NewReader("\n"), promptMappingPath, "api", repos, true,
+	f := &prompt.Fake{MultiSelectAnswers: [][]string{nil}}
+	if _, err := promptOptionalRepos(f, promptMappingPath, "api", repos, true,
 		map[string]string{"worker": "/dev/worker"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	rendered := out.String()
-	if !strings.Contains(rendered, "docs") || !strings.Contains(rendered, "not mapped") {
-		t.Errorf("an unmapped key must be annotated:\n%s", rendered)
+	var docs, worker prompt.Option
+	for _, o := range f.MultiSelects[0].Options {
+		switch o.Value {
+		case "docs":
+			docs = o
+		case "worker":
+			worker = o
+		}
+	}
+	if !strings.Contains(docs.Description, "not mapped") {
+		t.Errorf("an unmapped key must be annotated, got %q", docs.Description)
 	}
 	// config.GlobalPath, not filepath.Join here: that function is the sole
 	// definition of where the file lives, and this assertion exists to keep the
 	// message and the reader agreeing on ONE string.
-	if want := config.GlobalPath(promptHome); !strings.Contains(rendered, want) {
-		t.Errorf("the annotation must name %s, the file this den home would map the key in:\n%s",
-			want, rendered)
+	if !strings.Contains(docs.Description, config.GlobalPath(promptHome)) {
+		t.Errorf("the annotation must name the mapping file: %q", docs.Description)
 	}
-	for _, line := range strings.Split(rendered, "\n") {
-		if strings.Contains(line, "worker") && strings.Contains(line, "not mapped") {
-			t.Errorf("a MAPPED key must carry no annotation: %q", line)
-		}
-	}
-}
-
-// Everything checked is the DEFAULT: confirming without touching anything
-// mounts the nest as declared, i.e. the same thing as passing no flag at all.
-func TestPromptKeepsEverythingWhenConfirmedAsIs(t *testing.T) {
-	without, _, err := prompt(t, "\n")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(without) != 0 {
-		t.Errorf("confirming as-is must exclude nothing, got %v", without)
+	// A mapped key carries NO annotation: an annotation on every line annotates
+	// nothing.
+	if worker.Description != "" {
+		t.Errorf("a mapped key must not be annotated, got %q", worker.Description)
 	}
 }
 
 func TestPromptExcludesEverythingUnchecked(t *testing.T) {
-	without, _, err := prompt(t, "1 2\n\n")
+	without, _, err := runChecklist(t, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +183,7 @@ func TestPromptExcludesEverythingUnchecked(t *testing.T) {
 }
 
 func TestPromptExcludesOnlyWhatWasUnchecked(t *testing.T) {
-	without, _, err := prompt(t, "2\n\n")
+	without, _, err := runChecklist(t, []string{"worker"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,60 +192,51 @@ func TestPromptExcludesOnlyWhatWasUnchecked(t *testing.T) {
 	}
 }
 
-// A toggle is a TOGGLE: the same number twice returns to the initial state.
-// Without this, a mis-typed number is unrecoverable and the only way out is
-// Ctrl-C — after which the user reruns the whole command.
-func TestPromptTogglesBackAndForth(t *testing.T) {
-	without, _, err := prompt(t, "2\n2\n\n")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(without) != 0 {
-		t.Errorf("toggling twice must return to the initial selection, got %v", without)
-	}
-}
-
-// An unreadable line changes NOTHING and asks again: applying the valid part of
-// "2 zzz" would silently act on half of what the user typed.
-func TestPromptRejectsAnInvalidEntryAndAsksAgain(t *testing.T) {
-	without, out, err := prompt(t, "zzz\n4\n2\n\n")
-	if err != nil {
-		t.Fatalf("an invalid entry must be recoverable, not fatal: %v", err)
-	}
-	if !slices.Equal(without, []string{"docs"}) {
-		t.Errorf("got %v, want [docs]: only the valid entry may take effect", without)
-	}
-	if !strings.Contains(out, "zzz") || !strings.Contains(out, "4") {
-		t.Errorf("both rejected entries must be named back to the user:\n%s", out)
-	}
-}
-
-// The pipe case. The read returns nothing and will never return anything: say
-// so rather than confirm a selection the user never made — this one creates a
-// microVM.
-func TestPromptRefusesAnInputThatEndsBeforeConfirmation(t *testing.T) {
-	_, _, err := prompt(t, "")
+// A Prompter that cannot answer is a REFUSAL, never a confirmation — and the
+// refusal names the flag that makes the same selection without asking.
+//
+// This test is the descendant of the EOF-before-confirmation case, and it
+// guards the same property under a new mechanism. It matters more now, not
+// less: the bufio reader refused on EOF by itself, whereas huh hands back the
+// default selection with a nil error and then never lets the process exit
+// (spec §3.d). den's fail-closed behaviour is no longer inherited from the
+// reader — it is this code, and this test.
+func TestPromptRefusesWhenThePrompterCannotAnswer(t *testing.T) {
+	f := &prompt.Fake{Err: errors.New("no terminal")}
+	_, err := promptOptionalRepos(f, promptMappingPath, "api", optionalRepos(), false, nil)
 	if err == nil {
-		t.Fatal("EOF before confirmation must be an error, never a silent confirmation")
+		t.Fatal("a prompter error must be an error, never a silent confirmation")
 	}
 	if !strings.Contains(err.Error(), "--only") || !strings.Contains(err.Error(), "--without") {
-		t.Errorf("the error must name the non-interactive equivalents: %v", err)
+		t.Errorf("the refusal must name the non-interactive equivalents: %v", err)
 	}
 }
 
-// Required repos are always mounted (spec §6.2): they are not offered, and
-// their numbers are not in the user's namespace either — otherwise "1" would
-// designate different repos depending on how many required ones precede it.
+// A nil Prompter is "no way to ask", never "take the defaults". An unwired
+// double must refuse here rather than let a caller mount a selection nobody
+// made.
+func TestPromptRefusesANilPrompter(t *testing.T) {
+	_, err := promptOptionalRepos(nil, promptMappingPath, "api", optionalRepos(), false, nil)
+	if err == nil {
+		t.Fatal("a nil prompter must refuse")
+	}
+}
+
+// Required repos are always mounted (spec §6.2): they are not offered at all,
+// so no option carries the required repo's name — and the answer inverts
+// against the OFFERED list alone.
 func TestPromptOffersOptionalReposOnly(t *testing.T) {
-	without, out, err := prompt(t, "1\n\n")
+	without, req, err := runChecklist(t, []string{"docs"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if strings.Contains(out, "backend") {
-		t.Errorf("a required repo must not appear in the checklist:\n%s", out)
+	for _, o := range req.Options {
+		if o.Value == "backend" || o.Label == "backend" {
+			t.Errorf("a required repo must not appear in the checklist: %+v", req.Options)
+		}
 	}
 	if !slices.Equal(without, []string{"worker"}) {
-		t.Errorf("got %v, want [worker]: 1 must designate the first OPTIONAL repo", without)
+		t.Errorf("got %v, want [worker]: only the offered repos may be inverted", without)
 	}
 }
 
@@ -257,7 +269,7 @@ func TestInteractiveProducesTheSameArgvAsTheEquivalentWithout(t *testing.T) {
 	denHome, _ := denTestOptional(t)
 
 	interactiveFake, interactiveDeps := fakeDeps()
-	interactiveDeps.In = strings.NewReader("2\n\n") // uncheck "docs"
+	interactiveDeps.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{{"worker"}}} // leave "docs" out
 	interactiveDeps.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "api", Interactive: true}, interactiveDeps); err != nil {
@@ -300,7 +312,9 @@ func TestSpawnRefusesInteractiveWithASelectionFlag(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			denHome, _ := denTestOptional(t)
 			f, d := fakeDeps()
-			d.In = strings.NewReader("\n")
+			// An empty script REFUSES: the contradiction is caught before
+			// anything asks.
+			d.Prompt = &prompt.Fake{}
 			d.IsTTY = func() bool { return true }
 
 			err := Spawn(context.Background(), denHome, c.o, d)
@@ -322,7 +336,7 @@ func TestSpawnRefusesInteractiveWithASelectionFlag(t *testing.T) {
 func TestSpawnRefusesInteractiveWithoutATerminal(t *testing.T) {
 	denHome, _ := denTestOptional(t)
 	f, d := fakeDeps()
-	d.In = strings.NewReader("\n") // readable, but nobody is there to type
+	d.Prompt = &prompt.Fake{} // an empty script REFUSES: with no terminal nothing may ask
 	d.IsTTY = func() bool { return false }
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "api", Interactive: true}, d)
@@ -345,7 +359,7 @@ func TestSpawnRefusesInteractiveWithoutATerminal(t *testing.T) {
 func TestSpawnTreatsAnUnwiredTerminalProbeAsNoTerminal(t *testing.T) {
 	denHome, _ := denTestOptional(t)
 	_, d := fakeDeps()
-	d.In = strings.NewReader("\n")
+	d.Prompt = &prompt.Fake{} // an empty script REFUSES: an unwired probe must ask nothing
 
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "api", Interactive: true}, d); err == nil {
@@ -360,7 +374,10 @@ func TestSpawnContinuesWhenTheNestHasNoOptionalRepo(t *testing.T) {
 	f, d := fakeDeps()
 	var out bytes.Buffer
 	d.Out = &out
-	d.In = strings.NewReader("") // nothing to read: nothing is asked
+	// An empty script REFUSES if asked. It cannot tell "nothing was asked"
+	// apart from "the terminal gate refused first" on its own — the create
+	// asserted below is what discriminates, since a refusal creates nothing.
+	d.Prompt = &prompt.Fake{}
 	d.IsTTY = func() bool { return false }
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Interactive: true}, d); err != nil {
@@ -374,21 +391,32 @@ func TestSpawnContinuesWhenTheNestHasNoOptionalRepo(t *testing.T) {
 	}
 }
 
-// The checklist is written where the user can see it while typing, and read
-// from the injected stream — never from os.Stdin, which no test can supply.
-func TestSpawnPromptsOnTheInjectedStreams(t *testing.T) {
+// The checklist asks through the INJECTED Prompter — never through os.Stdin,
+// which no test can supply and which a nil Prompter must not fall back on.
+//
+// The list it offers is read off the recorded request rather than off a
+// buffer: den no longer draws it, and what it puts in the request is what a
+// renderer has to show. The length guard comes first because a checklist that
+// never opened records nothing, and an assertion on nothing passes.
+func TestSpawnPromptsThroughTheInjectedPrompter(t *testing.T) {
 	denHome, _ := denTestOptional(t)
-	var out bytes.Buffer
 	_, d := fakeDeps()
-	d.Out = &out
-	d.In = strings.NewReader("\n")
+	p := &prompt.Fake{MultiSelectAnswers: [][]string{{"worker", "docs"}}}
+	d.Prompt = p
 	d.IsTTY = func() bool { return true }
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Interactive: true}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(out.String(), "worker") || !strings.Contains(out.String(), "docs") {
-		t.Errorf("the checklist must list the optional repos:\n%s", out.String())
+	if len(p.MultiSelects) != 1 {
+		t.Fatalf("the checklist must have been opened exactly once, got %d", len(p.MultiSelects))
+	}
+	var offered []string
+	for _, o := range p.MultiSelects[0].Options {
+		offered = append(offered, o.Value)
+	}
+	if !slices.Equal(offered, []string{"worker", "docs"}) {
+		t.Errorf("the checklist must offer the optional repos, got %v", offered)
 	}
 }
 
@@ -413,7 +441,7 @@ func TestPromptModeProducesTheSameArgvAsTheEquivalentOnly(t *testing.T) {
 	denHome := denTestPrompting(t)
 
 	promptFake, promptDeps := fakeDeps()
-	promptDeps.In = strings.NewReader("1 2\n\n") // tick api and worker
+	promptDeps.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{{"api", "worker"}}} // tick api and worker
 	promptDeps.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, promptDeps); err != nil {
 		t.Fatalf("prompting spawn: %v", err)
@@ -465,24 +493,24 @@ func TestPromptModeRefusesWithoutATerminal(t *testing.T) {
 // "simplification" that drops the mode would silence one half or the other with
 // every existing test still passing.
 func TestTheOfferedFlagsFollowTheNestMode(t *testing.T) {
-	// The checklist footer, read off the rendered output — the message a user
-	// with a terminal actually meets.
-	_, prompting, err := promptWith(t, "\n", true, nil)
+	// The checklist's own offer, read off the request's title — the words den
+	// hands the renderer, which is all den still owns of that message.
+	_, prompting, err := promptWith(t, nil, true, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(prompting, "--only") {
-		t.Errorf("a prompting checklist must name the flag that works on it:\n%s", prompting)
+	if !strings.Contains(prompting.Title, "--only") {
+		t.Errorf("a prompting checklist must name the flag that works on it: %q", prompting.Title)
 	}
-	if strings.Contains(prompting, "--without") {
-		t.Errorf("a prompting checklist must not offer a flag den refuses on that nest:\n%s", prompting)
+	if strings.Contains(prompting.Title, "--without") {
+		t.Errorf("a prompting checklist must not offer a flag den refuses on that nest: %q", prompting.Title)
 	}
-	_, interactive, err := promptWith(t, "\n", false, nil)
+	_, interactive, err := promptWith(t, []string{"worker", "docs"}, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(interactive, "--only") || !strings.Contains(interactive, "--without") {
-		t.Errorf("-i keeps both equivalents: they both work on an ordinary nest:\n%s", interactive)
+	if !strings.Contains(interactive.Title, "--only") || !strings.Contains(interactive.Title, "--without") {
+		t.Errorf("-i keeps both equivalents: they both work on an ordinary nest: %q", interactive.Title)
 	}
 
 	// The no-terminal refusal, which is the message a pipe or a CI job meets
@@ -522,14 +550,14 @@ func TestPromptModeAcceptsRedundantInteractiveFlag(t *testing.T) {
 	denHome := denTestPrompting(t)
 
 	bare, bareDeps := fakeDeps()
-	bareDeps.In = strings.NewReader("1\n\n")
+	bareDeps.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{{"api"}}}
 	bareDeps.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, bareDeps); err != nil {
 		t.Fatalf("bare spawn: %v", err)
 	}
 
 	withI, withIDeps := fakeDeps()
-	withIDeps.In = strings.NewReader("1\n\n")
+	withIDeps.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{{"api"}}}
 	withIDeps.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "generic", Interactive: true}, withIDeps); err != nil {
@@ -545,13 +573,37 @@ func TestPromptModeAcceptsRedundantInteractiveFlag(t *testing.T) {
 // repos that cannot be mounted is the silence §2 forbids — and the question
 // would be put to somebody with no way to guess it is pointless.
 //
-// The input is a reader that FAILS if read: an assertion on the rendered
-// output would pass on a prompt that was drawn and then ignored.
-type failingReader struct{ t *testing.T }
+// The Prompter FAILS if asked: an assertion on the recorded request — or on
+// the rendered output, when the checklist still drew one — would pass on a
+// prompt that was opened and then ignored.
+//
+// All four methods, though only MultiSelect is reachable from spawn: the
+// interface is the contract, and a method left to answer would be a hole the
+// day another question moves into this package.
+type failingPrompter struct{ t *testing.T }
 
-func (r failingReader) Read([]byte) (int, error) {
-	r.t.Fatal("the checklist was opened on a live sandbox: nothing it collects can be mounted")
-	return 0, io.EOF
+func (p failingPrompter) refuse() {
+	p.t.Fatal("the checklist was opened on a live sandbox: nothing it collects can be mounted")
+}
+
+func (p failingPrompter) MultiSelect(prompt.MultiSelectRequest) ([]string, error) {
+	p.refuse()
+	return nil, nil
+}
+
+func (p failingPrompter) Confirm(prompt.ConfirmRequest) (bool, error) {
+	p.refuse()
+	return false, nil
+}
+
+func (p failingPrompter) Line(prompt.LineRequest) (string, error) {
+	p.refuse()
+	return "", nil
+}
+
+func (p failingPrompter) Secret(prompt.SecretRequest) (string, error) {
+	p.refuse()
+	return "", nil
 }
 
 func TestPromptModeDoesNotPromptWhenAttaching(t *testing.T) {
@@ -559,7 +611,7 @@ func TestPromptModeDoesNotPromptWhenAttaching(t *testing.T) {
 
 	// Create it once, with a selection.
 	_, first := fakeDeps()
-	first.In = strings.NewReader("1\n\n")
+	first.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{{"api"}}}
 	first.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, first); err != nil {
 		t.Fatalf("first spawn: %v", err)
@@ -567,7 +619,7 @@ func TestPromptModeDoesNotPromptWhenAttaching(t *testing.T) {
 
 	// Attach it. Same name, no flags — the checklist must stay shut.
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	d.Out = &out
@@ -604,7 +656,7 @@ func TestInteractiveDoesNotPromptWhenAttaching(t *testing.T) {
 	denHome, repos := denTestOptional(t)
 
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	d.Out = &out
@@ -656,7 +708,7 @@ func TestAttachSaysNothingAboutASelectionThatCannotExist(t *testing.T) {
 	denHome, repo := denTest(t)
 
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	d.Out = &out
@@ -724,14 +776,16 @@ func TestPromptModeAttachRebuildsTheSelectionFromTheRecord(t *testing.T) {
 	// Create it, declining the unmapped key — the checklist starts empty, so
 	// confirming as-is is exactly that.
 	_, first := fakeDeps()
-	first.In = strings.NewReader("\n")
+	// The boxes start empty on a prompting nest, so an empty answer IS
+	// "confirming as-is" — the unmapped key is declined.
+	first.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{nil}}
 	first.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, first); err != nil {
 		t.Fatalf("first spawn: %v", err)
 	}
 
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	d.Out = &out
@@ -792,7 +846,7 @@ func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 	denHome, _ := denTestPromptingRepos(t)
 
 	_, first := fakeDeps()
-	first.In = strings.NewReader("1\n\n") // tick api, decline worker and docs
+	first.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{{"api"}}} // tick api, decline worker and docs
 	first.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "generic", Worktree: "feat"}, first); err != nil {
@@ -809,7 +863,7 @@ func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 	}
 
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	d.Out = &out
@@ -841,7 +895,7 @@ func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 	// must fire — and name exactly the recorded repo. Without this, every
 	// assertion above passes on a spawn that resolved nothing at all.
 	mismatched, md := fakeDeps()
-	md.In = failingReader{t}
+	md.Prompt = failingPrompter{t}
 	md.IsTTY = func() bool { return true }
 	var mismatchedOut bytes.Buffer
 	md.Out = &mismatchedOut
@@ -880,7 +934,7 @@ func TestPromptModeAttachWithoutARecordStillAttaches(t *testing.T) {
 	denHome := denTestPrompting(t)
 
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	d.Out = &out
@@ -941,7 +995,7 @@ func TestInteractiveAttachRebuildsTheSelectionFromTheRecord(t *testing.T) {
 	}
 
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	d.Out = &out
@@ -977,7 +1031,7 @@ func TestPromptModeAttachNamesARecordItCouldNotRead(t *testing.T) {
 	write(t, path, "schema: 9999\nsandbox: generic\n")
 
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	d.Out = &out
@@ -1143,7 +1197,7 @@ func TestAttachRefusalOnAnUnmappedKeyNamesTheRemedyThatWorks(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			denHome := c.denHome(t)
 			f, d := fakeDeps()
-			d.In = failingReader{t}
+			d.Prompt = failingPrompter{t}
 			d.IsTTY = func() bool { return true }
 			f.Responses["ls --json"] = sbx.Response{
 				Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
@@ -1192,7 +1246,7 @@ func TestAttachRefusalOnAnUnmappedKeyNamesTheRemedyThatWorks(t *testing.T) {
 func TestOnlyAttachesAPromptingNestWithNoRecord(t *testing.T) {
 	denHome := denTestPromptingKeys(t)
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	f.Responses["ls --json"] = sbx.Response{
 		Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
@@ -1221,7 +1275,7 @@ func TestOnlyStandsOverTheRecordOnAPromptingAttach(t *testing.T) {
 	denHome := denTestPrompting(t)
 
 	_, first := fakeDeps()
-	first.In = strings.NewReader("1\n\n") // tick api alone
+	first.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{{"api"}}} // tick api alone
 	first.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, first); err != nil {
 		t.Fatalf("first spawn: %v", err)
@@ -1235,7 +1289,7 @@ func TestOnlyStandsOverTheRecordOnAPromptingAttach(t *testing.T) {
 	}
 
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	d.Out = &out
@@ -1277,7 +1331,7 @@ func TestPromptModeAttachIgnoresAdHocMountsWhenRebuilding(t *testing.T) {
 	}
 
 	_, first := fakeDeps()
-	first.In = strings.NewReader("\n") // starts empty: `key: crm` is declined
+	first.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{nil}} // starts empty: `key: crm` is declined
 	first.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "crm", Repos: []string{adHoc}}, first); err != nil {
@@ -1300,7 +1354,7 @@ func TestPromptModeAttachIgnoresAdHocMountsWhenRebuilding(t *testing.T) {
 	}
 
 	f, d := fakeDeps()
-	d.In = failingReader{t}
+	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	f.Responses["ls --json"] = sbx.Response{
 		Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
@@ -1329,7 +1383,7 @@ func TestPromptModeComposesWithAnInstanceLabel(t *testing.T) {
 	denHome := denTestPrompting(t)
 
 	f, d := fakeDeps()
-	d.In = strings.NewReader("1\n\n") // tick api only
+	d.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{{"api"}}} // tick api only
 	d.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "generic", Instance: "leo-fix"}, d); err != nil {
@@ -1350,7 +1404,7 @@ func TestPromptModeComposesWithAnInstanceLabel(t *testing.T) {
 
 	// Re-attach it: same nest, same label, no checklist, selection rebuilt.
 	attachFake, attachDeps := fakeDeps()
-	attachDeps.In = failingReader{t}
+	attachDeps.Prompt = failingPrompter{t}
 	attachDeps.IsTTY = func() bool { return true }
 	var out bytes.Buffer
 	attachDeps.Out = &out
@@ -1389,7 +1443,7 @@ func TestPromptModeRefusesACheckedUnmappedKey(t *testing.T) {
 	denHome := denTestPromptingKeys(t)
 
 	f, d := fakeDeps()
-	d.In = strings.NewReader("1\n\n") // tick `crm`, which nothing maps here
+	d.Prompt = &prompt.Fake{MultiSelectAnswers: [][]string{{"crm"}}} // tick `crm`, which nothing maps here
 	d.IsTTY = func() bool { return true }
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, d)
@@ -1428,16 +1482,30 @@ func TestPromptAnnotationNamesTheRunningDenHomesConfig(t *testing.T) {
 	denHome := denTestPromptingKeys(t)
 
 	_, d := fakeDeps()
-	d.In = strings.NewReader("\n") // confirm as-is: `crm` stays unticked, nothing refuses
+	// Confirm as-is: the nest prompts, so the boxes start empty and `crm`
+	// stays unticked — nothing refuses.
+	p := &prompt.Fake{MultiSelectAnswers: [][]string{nil}}
+	d.Prompt = p
 	d.IsTTY = func() bool { return true }
-	var out bytes.Buffer
-	d.Out = &out
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, d); err != nil {
 		t.Fatalf("declining the unmapped key must spawn: %v", err)
 	}
-	if want := config.GlobalPath(denHome); !strings.Contains(out.String(), want) {
-		t.Errorf("the checklist annotation must name %s, not a bare filename:\n%s", want, out.String())
+	// The guard before the assertion: a checklist that never opened records no
+	// option, and "no option names the wrong file" is a test that cannot fail.
+	if len(p.MultiSelects) != 1 {
+		t.Fatalf("the checklist must have been opened exactly once, got %d", len(p.MultiSelects))
+	}
+	want := config.GlobalPath(denHome)
+	var annotated bool
+	for _, o := range p.MultiSelects[0].Options {
+		if strings.Contains(o.Description, want) {
+			annotated = true
+		}
+	}
+	if !annotated {
+		t.Errorf("the checklist annotation must name %s, not a bare filename: %+v",
+			want, p.MultiSelects[0].Options)
 	}
 }
 
@@ -1465,16 +1533,25 @@ func TestInteractiveAnnotatesNothingForAMappedLocalKey(t *testing.T) {
 			"  - { key: docs, optional: true }\n")
 
 	fake, d := fakeDeps()
-	out := &bytes.Buffer{}
-	d.Out = out
-	d.In = strings.NewReader("\n") // accept the default selection
+	// Accept the default selection: `-i` starts full, so the one optional repo
+	// stays ticked.
+	p := &prompt.Fake{MultiSelectAnswers: [][]string{{"docs"}}}
+	d.Prompt = p
 	d.IsTTY = func() bool { return true }
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "api", Interactive: true}, d); err != nil {
-		t.Fatalf("interactive spawn: %v\n%s", err, out.String())
+		t.Fatalf("interactive spawn: %v", err)
 	}
-	if strings.Contains(out.String(), "not mapped") {
-		t.Errorf("the checklist calls a mapped key unmapped:\n%s", out.String())
+	// The guard the negative assertion below needs: a checklist that never
+	// opened annotates nothing, and "nothing says not mapped" would pass on a
+	// spawn that asked no question at all.
+	if len(p.MultiSelects) != 1 {
+		t.Fatalf("the checklist must have been opened exactly once, got %d", len(p.MultiSelects))
+	}
+	for _, o := range p.MultiSelects[0].Options {
+		if strings.Contains(o.Description, "not mapped") {
+			t.Errorf("the checklist calls a mapped key unmapped: %+v", o)
+		}
 	}
 	// And the spawn really did mount it, so the assertion above is about the
 	// annotation and not about a repo that was dropped.

@@ -17,6 +17,7 @@ import (
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/ports"
+	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
 	"github.com/PillowPillow/den/internal/sshagent"
@@ -64,6 +65,12 @@ type Deps struct {
 	// Deps by hand, leave it nil, and `-i` then takes its clean refusal instead
 	// of depending on whether the suite happens to run under a terminal.
 	IsTTY func() bool
+	// Prompt is den's single question-asking surface, shared by the `-i`
+	// checklist, `den converge`'s confirmation, the repository-roots question
+	// and every credential read. Injected for the reason ReadSecret was, which
+	// this field absorbs: the real one puts the terminal in raw mode, and a
+	// test that inherited it would do that to the suite's own stdin.
+	Prompt prompt.Prompter
 	// Getenv reads the environment an answer file's `from_env:` references
 	// point into. Injected, and nil means "an environment holding nothing":
 	// a suite that read the real one would pass or fail on whatever the
@@ -195,7 +202,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	root.AddCommand(newLintCmd())
 
 	// `den up` and `den run` are ASSEMBLED here from the very fields newLsCmd
-	// just got: deps.Sbx is the single source. Out/Err/In are left unset —
+	// just got: deps.Sbx is the single source. Out/Err are left unset —
 	// spawnNest overwrites them on every run from the command itself, the only
 	// way to follow a test's SetOut.
 	//
@@ -209,6 +216,10 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 		Freshness: deps.Freshness,
 		SSHAgent:  deps.SSHAgent,
 		IsTTY:     deps.IsTTY,
+		// The checklist's Prompter travels with the terminal probe, not with the
+		// command's streams: both describe the machine den runs on, and the two
+		// are read one after the other by the same refusal (interactiveWithout).
+		Prompt: deps.Prompt,
 		// The real OS, named at the wiring site like every other system access.
 		GOOS: runtime.GOOS,
 		// The real clock for the source-staleness hint (spawn.Deps.Now): nil is

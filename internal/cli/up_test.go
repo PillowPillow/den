@@ -9,6 +9,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/doctor"
 	"github.com/PillowPillow/den/internal/policy"
+	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/spawn"
 	"github.com/PillowPillow/den/internal/worktree"
@@ -405,17 +406,6 @@ func denHomeWithOptionalRepo(t *testing.T) string {
 	return dir
 }
 
-// runUpWithInput is runUp with a stdin the test controls: `-i` is the
-// only flag whose behavior depends on what cobra hands down as the command's
-// input.
-func runUpWithInput(t *testing.T, home string, deps spawn.Deps, input string, args ...string) (string, error) {
-	t.Helper()
-	root := &cobra.Command{Use: "den", SilenceUsage: true, SilenceErrors: true}
-	root.AddCommand(newUpCmd(&home, deps))
-	root.SetIn(strings.NewReader(input))
-	return executeCmd(t, root, append([]string{"up"}, args...)...)
-}
-
 // -i must reach spawn.Options. Proven by the contradiction it is the only
 // thing that can raise: unwired, the flag falls back to false and the spawn
 // succeeds on `--only docs` alone.
@@ -435,18 +425,37 @@ func TestInteractiveFlagReachesSpawnOptions(t *testing.T) {
 	}
 }
 
-// The checklist reads the COMMAND's input, not os.Stdin: that is what makes it
-// scriptable in a test, and what makes cobra's SetIn meaningful here.
-func TestInteractiveReadsTheCommandInput(t *testing.T) {
+// The checklist asks through the INJECTED Prompter, not os.Stdin: that is what
+// makes it scriptable in a test, and what makes this wiring assertion possible
+// without a terminal.
+//
+// It replaces a test that scripted cobra's SetIn. The stream is no longer the
+// checklist's input — the Prompter is — so what has to reach spawn is the
+// field, and the proof is that the scripted answer is the one the create
+// obeys.
+func TestInteractiveAsksThroughTheInjectedPrompter(t *testing.T) {
 	f, d := fakeSpawnDeps()
 	d.IsTTY = func() bool { return true }
+	// The nest's one optional repo is `docs`, and `-i` starts full: leaving it
+	// out of the answer is what unticks it.
+	p := &prompt.Fake{MultiSelectAnswers: [][]string{nil}}
+	d.Prompt = p
 
-	out, err := runUpWithInput(t, denHomeWithOptionalRepo(t), d, "1\n\n", "api", "-i")
+	_, err := runUp(t, denHomeWithOptionalRepo(t), d, "api", "-i")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(out, "docs") {
-		t.Errorf("the checklist must be printed on the command's output:\n%s", out)
+	// The guard before the assertion: a checklist that never opened offers
+	// nothing, and every assertion on nothing passes.
+	if len(p.MultiSelects) != 1 {
+		t.Fatalf("the checklist must have been opened exactly once, got %d", len(p.MultiSelects))
+	}
+	var offered []string
+	for _, o := range p.MultiSelects[0].Options {
+		offered = append(offered, o.Value)
+	}
+	if !slices.Equal(offered, []string{"docs"}) {
+		t.Errorf("the checklist must offer the nest's optional repo, got %v", offered)
 	}
 	// "docs" unchecked: it must not be among the workspaces of the create.
 	for _, call := range f.Calls {
@@ -463,8 +472,11 @@ func TestInteractiveReadsTheCommandInput(t *testing.T) {
 // machine running them.
 func TestInteractiveRefusesWithoutATerminalProbe(t *testing.T) {
 	_, d := fakeSpawnDeps()
+	// An empty script REFUSES if asked: the refusal under test must come from
+	// the missing probe, before any question is put.
+	d.Prompt = &prompt.Fake{}
 
-	_, err := runUpWithInput(t, denHomeWithOptionalRepo(t), d, "\n", "api", "-i")
+	_, err := runUp(t, denHomeWithOptionalRepo(t), d, "api", "-i")
 	if err == nil {
 		t.Fatal("-i without a terminal probe must be refused")
 	}
