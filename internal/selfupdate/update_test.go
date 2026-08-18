@@ -106,6 +106,12 @@ func TestRunRefusesBeforeAnyRequest(t *testing.T) {
 		{"go install", Request{ExecPath: "/Users/dev/go/bin/den", Current: "v1.8.0",
 			Env: Env{Gopath: "/Users/dev/go"}}},
 		{"local build", Request{ExecPath: "/Users/dev/.local/bin/den", Current: "v1.5.0-17-g0ec48d8-dirty"}},
+		// ProbeWritable is the one gate the spec argues for on its own —
+		// "cannot write here" must never be discovered after megabytes have
+		// been fetched — so its ordering needs a pin like the other three,
+		// not just the classification and version refusals above.
+		{"unwritable directory", Request{
+			ExecPath: filepath.Join(t.TempDir(), "missing", "den"), Current: "v1.8.0"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

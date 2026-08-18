@@ -1,6 +1,9 @@
 package selfupdate
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestClassify(t *testing.T) {
 	// The macOS Caskroom path is the one MEASURED on 2026-08-18
@@ -25,6 +28,14 @@ func TestClassify(t *testing.T) {
 		{"gobin wins over gopath", "/opt/bin/den",
 			Env{Gobin: "/opt/bin", Gopath: "/Users/dev/go"}, MethodGoInstall},
 		{"gopath bin", "/Users/dev/go/bin/den", env, MethodGoInstall},
+		// GOPATH is os.PathListSeparator-separated, not a single path — `go
+		// env GOPATH` can answer a multi-entry list. A binary living under the
+		// SECOND entry's bin dir must still classify MethodGoInstall; before
+		// the fix, filepath.Join(env.Gopath, "bin") on the raw multi-entry
+		// string produced a path that matched nothing.
+		{"multi-entry gopath, second entry", "/Users/dev/gopath2/bin/den",
+			Env{Gopath: "/Users/dev/gopath1" + string(os.PathListSeparator) + "/Users/dev/gopath2"},
+			MethodGoInstall},
 		{"default go bin", "/Users/dev/go/bin/den", Env{Home: "/Users/dev"}, MethodGoInstall},
 		{"local bin", "/Users/dev/.local/bin/den", env, MethodArchive},
 		{"exotic install dir", "/srv/tools/den", env, MethodArchive},

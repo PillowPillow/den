@@ -90,12 +90,27 @@ func defaultBrewPrefixes(home string) []string {
 
 // goBinDirs mirrors the go toolchain's own precedence: GOBIN wins, then
 // GOPATH/bin, then the default ~/go/bin.
+//
+// GOPATH is os.PathListSeparator-separated, not a single path — `go env
+// GOPATH` can legitimately answer `/a:/b`. filepath.Join(env.Gopath, "bin") on
+// that string produced the nonsense path "/a:/b/bin", which matched nothing:
+// a go-install binary living under the SECOND entry then classified
+// MethodArchive and got overwritten, which is exactly the harm this feature
+// exists to prevent. Splitting and contributing a bin dir per entry only ever
+// makes the classification stricter, which is the fail-safe direction.
 func goBinDirs(env Env) []string {
 	if env.Gobin != "" {
 		return []string{env.Gobin}
 	}
 	if env.Gopath != "" {
-		return []string{filepath.Join(env.Gopath, "bin")}
+		var dirs []string
+		for _, entry := range filepath.SplitList(env.Gopath) {
+			if entry == "" {
+				continue
+			}
+			dirs = append(dirs, filepath.Join(entry, "bin"))
+		}
+		return dirs
 	}
 	if env.Home != "" {
 		return []string{filepath.Join(env.Home, "go", "bin")}

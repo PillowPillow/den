@@ -54,6 +54,14 @@ func SwapBinary(target string, body []byte) error {
 	if err := os.WriteFile(staging, body, 0o755); err != nil {
 		return &WriteError{Dir: dir, Err: err}
 	}
+	// WriteFile's mode is a REQUEST, not a guarantee: the process umask
+	// subtracts from it. Under a umask of 0111 the file above lands 0644, and
+	// after the rename that is a non-executable den on PATH with no error
+	// reported anywhere — install.sh does not have this bug because `install
+	// -m 755` is not masked. Spec §5.6 says 0755 flatly, so pin it explicitly.
+	if err := os.Chmod(staging, 0o755); err != nil {
+		return &WriteError{Dir: dir, Err: err}
+	}
 	if err := os.Rename(staging, target); err != nil {
 		return &WriteError{Dir: dir, Err: err}
 	}

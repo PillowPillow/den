@@ -19,7 +19,15 @@ func newUpdateCmd(d Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "update",
 		Short: "Update den to the latest release (not for Homebrew or go install)",
-		Args:  noArgs,
+		Long: "`den update` replaces the running binary with the latest release: it resolves the tag, " +
+			"verifies the published sha256 (refusing on a mismatch, like `install.sh`), and swaps the " +
+			"binary through a single atomic rename, so an update while den is running cannot leave a " +
+			"half-written file on your PATH.\n\n" +
+			"It refuses, naming the right command, when another package manager owns the binary — " +
+			"Homebrew or the go toolchain — because overwriting their file would leave them managing a " +
+			"version they no longer manage. It also refuses to overwrite a build from a checkout. There " +
+			"are no flags: pin a version or roll back with `DEN_VERSION=v1.0.1 sh install.sh`.",
+		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if d.Updater == nil {
 				return fmt.Errorf("`den update` was wired without a fetcher — this is a den defect")
