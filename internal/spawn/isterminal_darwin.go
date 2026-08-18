@@ -14,10 +14,23 @@ import (
 // repo at once — the first platform-specific file, the first `unsafe` import,
 // and the first raw syscall (`syscall` appeared only for errno constants in
 // config/file.go and worktree/worktree.go). All three were weighed and accepted
-// on 2026-08-14, because there is no fourth option: this module allows stdlib +
-// cobra + yaml.v3 only, which rules out `golang.org/x/term` and
-// `golang.org/x/sys`, and no stdlib route to a real terminal test avoids the
-// ioctl.
+// on 2026-08-14. That premise held the day it was written: `git show
+// a98aee9:go.mod` requires cobra, pflag and yaml.v3, and nothing else, so
+// ruling out `golang.org/x/term` and `golang.org/x/sys` was correct then.
+//
+// It stopped holding two days later, on 2026-08-16, when #74 (source
+// onboarding) added `golang.org/x/term` (and `golang.org/x/mod`) to go.mod
+// for a credential read in internal/cli/root.go. Nobody revisited this file
+// — the ordinary way a true comment rots. That root.go usage is itself gone
+// now, replaced by the Prompter on this branch, but `golang.org/x/term`
+// stays a direct require: internal/prompt/huhui imports it for
+// `term.IsTerminal`, the same capability this file hand-rolls with the ioctl
+// below.
+//
+// The ioctl is kept anyway, ON PURPOSE: replacing a measured mechanism on
+// two platforms is its own change, with its own measurement to redo on both,
+// and it is a separate ticket rather than something folded into a
+// documentation fix.
 //
 // What it replaces, and why the replacement was worth those firsts:
 // `os.ModeCharDevice` answers true for EVERY character device — `/dev/null`,
