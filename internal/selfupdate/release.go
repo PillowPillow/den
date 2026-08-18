@@ -96,6 +96,16 @@ func ExtractBinary(targz []byte) ([]byte, error) {
 		if hdr.Name != "den" {
 			continue
 		}
+		// A directory or a symlink named exactly `den` must be refused, not
+		// silently matched: without this check a hand-crafted (or corrupted)
+		// archive can carry a non-regular `den` entry with Size > 0, and
+		// io.ReadAll below would then hand back that entry's data as if it
+		// were the binary — den refuses rather than normalizing in silence.
+		if hdr.Typeflag != tar.TypeReg {
+			return nil, fmt.Errorf("the release archive's `den` entry is %s, not a regular file — "+
+				"the release layout changed; report this at https://github.com/PillowPillow/den/issues",
+				typeflagName(hdr.Typeflag))
+		}
 		body, err := io.ReadAll(tr)
 		if err != nil {
 			return nil, fmt.Errorf("the downloaded archive is truncated (%v) — re-run `den update`", err)
@@ -104,6 +114,28 @@ func ExtractBinary(targz []byte) ([]byte, error) {
 	}
 	return nil, fmt.Errorf("the release archive carries no `den` entry — the release layout changed; " +
 		"report this at https://github.com/PillowPillow/den/issues")
+}
+
+// typeflagName renders a tar.Header.Typeflag for an error message. It only
+// needs to name what a hand-crafted or corrupted archive could plausibly put
+// in a `den` entry's place — the default branch covers everything else.
+func typeflagName(flag byte) string {
+	switch flag {
+	case tar.TypeDir:
+		return "a directory"
+	case tar.TypeSymlink:
+		return "a symlink"
+	case tar.TypeLink:
+		return "a hard link"
+	case tar.TypeChar:
+		return "a character device"
+	case tar.TypeBlock:
+		return "a block device"
+	case tar.TypeFifo:
+		return "a FIFO"
+	default:
+		return fmt.Sprintf("tar entry type %q", flag)
+	}
 }
 
 // NeedsUpdate compares two CANONICAL versions. The caller has already refused a

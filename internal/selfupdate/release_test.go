@@ -82,6 +82,30 @@ func TestVerifySum(t *testing.T) {
 	}
 }
 
+// tarGzTypedEntry builds a single-entry .tar.gz archive whose header carries an
+// arbitrary Typeflag — archive/tar refuses a body on a non-regular entry
+// (verified: Write on a TypeDir or TypeSymlink header with Size > 0 fails with
+// "write too long"), so a hand-crafted directory or symlink entry necessarily
+// carries no data. That is exactly the shape ExtractBinary must still refuse:
+// without the Typeflag check it would return (nil, nil) instead of an error.
+func tarGzTypedEntry(t *testing.T, name string, typeflag byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(zw)
+	hdr := &tar.Header{Name: name, Mode: 0o755, Typeflag: typeflag}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func TestExtractBinary(t *testing.T) {
 	body, err := ExtractBinary(tarGz(t, map[string]string{"den": "ELF", "LICENSE": "x"}))
 	if err != nil || string(body) != "ELF" {
@@ -93,6 +117,12 @@ func TestExtractBinary(t *testing.T) {
 	if _, err := ExtractBinary([]byte("not a gzip stream")); err == nil {
 		t.Fatal("a truncated archive must be refused")
 	}
+	if body, err := ExtractBinary(tarGzTypedEntry(t, "den", tar.TypeDir)); err == nil {
+		t.Fatalf("a den entry that is a directory must be refused, got body %q", body)
+	}
+	if body, err := ExtractBinary(tarGzTypedEntry(t, "den", tar.TypeSymlink)); err == nil {
+		t.Fatalf("a den entry that is a symlink must be refused, got body %q", body)
+	}
 }
 
 func TestNeedsUpdate(t *testing.T) {
@@ -103,6 +133,10 @@ func TestNeedsUpdate(t *testing.T) {
 		{"v1.8.0", "v1.8.1", true},
 		{"v1.8.1", "v1.8.1", false},
 		{"v1.9.0", "v1.8.1", false},
+		// An unparseable remote tag sorts lowest under semver.Compare, so this
+		// is the fail-safe answer: den never overwrites the running binary on
+		// a garbage tag. Pinned so a refactor cannot silently flip it.
+		{"v1.8.1", "not-a-version", false},
 	}
 	for _, c := range cases {
 		if got := NeedsUpdate(c.current, c.latest); got != c.want {
