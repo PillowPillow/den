@@ -910,6 +910,13 @@ func SwapBinary(target string, body []byte) error {
 Run: `go test ./internal/selfupdate/ -count=1`
 Expected: PASS.
 
+**Not tested, and deliberately so:** a read-only mount and a full filesystem both reach
+`ProbeWritable`'s `O_CREATE|O_EXCL` and surface as `EROFS` / `ENOSPC` inside `WriteError`, which
+reports the system error verbatim (spec §7). Neither condition can be created inside a hermetic test
+— mounting is a machine operation — so the coverage stops at "the error is wrapped and named", which
+`TestProbeWritableRefusesAMissingDir` proves. This paragraph exists so a reviewer reads the gap as a
+decision, not an omission.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -1398,7 +1405,9 @@ func TestUpdateTakesNoArguments(t *testing.T) {
 - [ ] **Step 2: Run the tests and verify they fail**
 
 Run: `go test ./internal/cli/ -run TestUpdate -count=1`
-Expected: FAIL — `unknown field Updater in struct literal`.
+Expected: a **compile** failure, not a test failure — `unknown field Updater in struct literal` (and
+the same for `Executable`). The whole package fails to build, so no individual test result is
+printed. That is the expected state at this step; the fields arrive in Step 3.
 
 - [ ] **Step 3: Add the two Deps fields**
 
@@ -1658,7 +1667,12 @@ After the existing `install-script` job (keep its indentation style), add:
           fi
           after=$(sha256sum "$RUNNER_TEMP/go/bin/den" | cut -d' ' -f1)
           test "$before" = "$after"
-          test ! -e "$RUNNER_TEMP/go/bin/.den.new."*
+          # `test ! -e "<dir>/.den.new."*` would be a trap: an unmatched glob
+          # reaches test unexpanded and PASSES for the wrong reason, and two
+          # matches make it an argument error. ls decides on the exit status.
+          if ls "$RUNNER_TEMP"/go/bin/.den.new.* >/dev/null 2>&1; then
+            echo "a staging file survived the refusal"; exit 1
+          fi
 ```
 
 - [ ] **Step 2: Check the workflow parses**
