@@ -126,3 +126,20 @@ func underDir(path, dir string) bool {
 func IsUpdatableVersion(v string) bool {
 	return semver.IsValid(v) && semver.Prerelease(v) == "" && semver.Build(v) == ""
 }
+
+// EnvFromOS builds the Env from a getenv function, so the CLI never has to know
+// which variables matter. A nil getenv answers an environment holding nothing —
+// the same rule Deps.Getenv follows, so a test that wired nothing gets the
+// documented defaults rather than the developer's own shell.
+func EnvFromOS(getenv func(string) string) Env {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	return Env{
+		HomebrewPrefix: getenv("HOMEBREW_PREFIX"),
+		HomebrewCellar: getenv("HOMEBREW_CELLAR"),
+		Gobin:          getenv("GOBIN"),
+		Gopath:         getenv("GOPATH"),
+		Home:           getenv("HOME"),
+	}
+}

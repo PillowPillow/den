@@ -18,6 +18,7 @@ Commands:
   shell       Open a login shell in an existing sandbox
   source      Manage team source repositories (stacks/nests shared over git)
   up          Spawn or attach a nest's sandbox, then open a shell
+  update      Update den to the latest release (not for Homebrew or go install)
   version     Print den's version
 
 `den <nest>` and `den spawn <nest>` no longer spawn: use `den up <nest>`, or `den run <nest> <cmd>`.
