@@ -81,13 +81,22 @@ rivo/uniseg · xo/terminfo · golang.org/x/{sync,sys,text}
 
 `golang.org/x/sys` est déjà indirect chez den : **26 modules nouveaux**.
 
-**b) Le binaire grossit de moins de 4 Mo — borne haute, pas mesure directe.** `task build` sur
-`v1.8.1-1-g153a1a3` rend un `den` de **7 291 330 octets**. Un `main` qui ne fait qu'un
-`huh.NewForm(...MultiSelect...)` et l'exécute rend **5 740 162 octets**. Ces deux chiffres sont
-mesurés ; leur somme ne l'est pas, et **surestime** : les deux binaires portent chacun le runtime Go.
-La borne honnête est « den + huh < 11 Mo », le surcoût réel étant inférieur d'environ 1,5 à 2 Mo. La
-mesure directe se fait à la tranche 3, quand `huhui` existe. Le binaire reste statique et sans cgo —
-aucun des 26 modules n'en introduit.
+**b) Le binaire grossit de 1,96 Mo — mesuré sur le vrai binaire, tranche 3 livrée.**
+
+| | octets |
+|---|---|
+| `den` avant (`v1.8.1-1-g153a1a3`) | 7 291 330 |
+| `den` après (`huhui` câblé, commit `f281f8b`) | **9 253 394** |
+| surcoût réel | **+1 962 064 (+26,9 %)** |
+
+La borne haute que cette section portait avant la mesure — « den + huh < 11 Mo », dérivée en
+additionnant `den` et une sonde `huh` autonome — **surestimait de près de 1,8 Mo**, exactement pour
+la raison qu'elle nommait : les deux binaires additionnés portaient chacun le runtime Go. Le chiffre
+annoncé au moment de la décision (« ≈ +4 Mo ») était donc le double du coût réel. Écrit ici parce
+qu'une décision prise sur un chiffre mérite de porter le chiffre vrai, même quand la correction va
+dans le sens du choix déjà fait.
+
+Le binaire reste statique et sans cgo — aucun des 26 modules n'en introduit.
 
 **c) `huh` est en ligne par défaut, pas en plein écran.** La trace d'échappement de la sonde contient
 `^[[?25l` (curseur caché), `^[[?2004h` (collage encadré), `^[[?1004h` (rapport de focus) et **aucun
