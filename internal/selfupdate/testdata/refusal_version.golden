@@ -1,0 +1,1 @@
+den version "v1.5.0-17-g0ec48d8-dirty" is not a released build — `den update` replaces a release with a release; run `git pull && task build` for a checkout, or install a release with install.sh

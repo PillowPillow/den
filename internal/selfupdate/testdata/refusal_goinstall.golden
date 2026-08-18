@@ -1,0 +1,1 @@
+den was installed by the go toolchain (/Users/dev/go/bin/den) — run `go install github.com/PillowPillow/den/cmd/den@latest`; den does not touch a binary another package manager owns
