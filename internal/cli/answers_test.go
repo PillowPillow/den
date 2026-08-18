@@ -460,6 +460,14 @@ func TestConfirmAsksWithoutSwallowingThePrintedPlan(t *testing.T) {
 	if !strings.Contains(f.Confirms[0].Question, "apply this plan") {
 		t.Errorf("the question must still name what is being applied: %q", f.Confirms[0].Question)
 	}
+	// The name promises the printed plan is not SWALLOWED into the question —
+	// only the caller's own Fprintln puts it on screen. Assert the negative
+	// half directly, or the name and the assertions above disagree: a
+	// question carrying the plan's own text would still pass every check
+	// above it.
+	if f.Confirms[0].Question != "apply this plan?" {
+		t.Errorf("the question must carry ONLY the question, no plan text: %q", f.Confirms[0].Question)
+	}
 }
 
 // --yes and the no-terminal branch both answer WITHOUT asking. The gate stays

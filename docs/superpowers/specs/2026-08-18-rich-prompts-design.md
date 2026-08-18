@@ -164,8 +164,34 @@ une invite en clair.
 
 ## 4. La surface concernée : quatre invites, pas une
 
-den n'a que quatre endroits qui lisent un humain. Ils passent tous les quatre, et c'est le périmètre
-validé.
+**CORRECTION du 2026-08-18 (revue finale).** Une première rédaction de cette section ouvrait sur
+« den n'a que quatre endroits qui lisent un humain ». C'est faux : den en a **cinq**, et cette tranche
+en déplace **quatre**.
+
+Le cinquième est `cli.resolveRepoChoices` (`internal/cli/answers.go:415-433`) : une boucle par
+candidat qui imprime une liste numérotée sur `cmd.OutOrStdout()` et la lit avec
+`bufio.NewReader(cmd.InOrStdin())` — verbatim le geste que ce travail existe pour supprimer. Elle vit
+dans le **même flux** que trois des quatre invites qui bougent : un `den source add` interactif
+enchaîne `askRepositoryRoots` (huh), la boucle d'identifiants (huh), **`resolveRepoChoices` (liste
+numérotée `bufio`)**, puis `confirm` (huh). Un utilisateur qui installe une source croise donc deux
+formulaires riches, une liste numérotée, puis un formulaire riche.
+
+Elle porte aussi une **troisième politique de porte**, ce qui est la preuve qu'elle n'a jamais été
+conçue comme faisant partie de cet ensemble. Les quatre invites ci-dessous n'en ont qu'une entre
+elles : sans terminal, refuser en nommant le drapeau équivalent. `resolveRepoChoices`
+(`answers.go:403-413`) ne fait ni l'un ni l'autre — sans terminal elle imprime `repo %s: not confirmed
+(%s) — name it under 'repos:' in the answer file to map it` et rend `nil`, dégradant en silence.
+Prompt, refus, dégradation silencieuse : trois politiques pour cinq invites, et celle qui manque au
+compte est celle que cette section oubliait de nommer.
+
+Elle n'est **pas portée ici**. `prompt.Prompter` n'a aucun type de requête pour « choisir un parmi N
+ou taper le sien » — c'est pourtant le contrat exact de cette boucle (une réponse numérique, un
+chemin tapé, ou une ligne vide pour laisser non mappé). Lui en ajouter un est une décision de design à
+part entière, avec sa propre mesure et son propre ticket ; ce n'est pas quelque chose qu'un correctif
+documentaire peut porter au passage.
+
+Le tableau ci-dessous reste le périmètre **de cette tranche** — les quatre invites qu'elle porte
+effectivement derrière `Prompter`. `resolveRepoChoices` n'y figure pas, par le choix qui précède.
 
 | # | Site | Forme actuelle | Après |
 |---|---|---|---|
@@ -244,7 +270,13 @@ Ce n'est pas de la ceinture-bretelles décorative : la porte du dessus est aujou
 et la mesure (d). Une seule couche ferait dépendre une propriété de sûreté de la discipline de
 l'appelant.
 
+**CORRECTION du 2026-08-18 (revue finale).** Une première rédaction disait ici que
 `huh.ErrUserAborted` (ctrl+c) se traduit en le refus « nothing was spawned » que den rend déjà.
+Faux, vérifié : cette chaîne n'existe nulle part dans den, et `confirm()` n'imprime « nothing was
+applied » que sur un Non explicite, jamais sur ctrl+c (`internal/cli/answers.go:361-366`, la branche
+`err` rend avant le `if !ok` qui imprime cette ligne). Ce qui se passe réellement : l'appelant
+enveloppe l'erreur `"cancelled"` dans son propre refus (par exemple `-i: reading the selection:
+cancelled; ...` dans `internal/spawn`) ; den sort en erreur et n'applique rien.
 `WithAccessible` n'est jamais activé.
 
 ### 5.3 Ce qui ne bouge pas
@@ -352,6 +384,15 @@ seconde copie que ce fichier existe pour éviter. Le §7.6 le disait mal ; il es
 **Le mode `WithAccessible` de `huh`.** Jamais activé par den, et la raison est écrite ici pour qu'on
 ne l'active pas « pour aider » : c'est un repli en clair, et den n'a pas de repli — il a un refus qui
 nomme le drapeau équivalent.
+
+**`cli.resolveRepoChoices` (`internal/cli/answers.go:415-433`), la cinquième invite nommée en §4 et
+non portée.** Une boucle par candidat qui imprime une liste numérotée et lit avec
+`bufio.NewReader(cmd.InOrStdin())` — le geste exact que ce travail existe pour supprimer. Elle vit
+dans le même flux `den source add` que trois des quatre invites portées ici, et dégrade en silence
+sans terminal au lieu de refuser (`answers.go:403-413`), une troisième politique de porte qui prouve
+qu'elle n'a jamais été conçue comme faisant partie de cet ensemble. Non portée parce que
+`prompt.Prompter` n'a pas de type de requête pour « choisir un parmi N ou taper le sien » —
+lui en ajouter un est sa propre décision de design, avec sa propre mesure. Ticket séparé.
 
 ## 9. Décisions
 

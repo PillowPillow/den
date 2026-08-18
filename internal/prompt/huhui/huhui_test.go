@@ -159,7 +159,7 @@ func TestOptionsFor(t *testing.T) {
 }
 
 // Confirm's own comment (huhui.go) says den never defaults to yes on a plan
-// (spec §7.1) — Affirmative/Negative left at huh's defaults, the field built
+// (spec 2026-08-14 §7.1) — Affirmative/Negative left at huh's defaults, the field built
 // with no explicit .Value(true). This pins ONLY that construction: the value
 // huh.NewConfirm() reports for a fresh, untouched field is false.
 //

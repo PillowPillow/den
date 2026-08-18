@@ -748,9 +748,10 @@ func TestDoctorReportsAReadySource(t *testing.T) {
 // written. den held the fatal fact before the prompt: asking anyway is the bug,
 // and the sbx error is only its cause.
 //
-// Interactive on purpose (IsTTY true, `y` on stdin): the non-interactive path
-// refuses earlier, for a different reason — no terminal to collect a credential
-// on — which would leave the confirmation itself untested.
+// Interactive on purpose (IsTTY true, `d.Prompt` a `prompt.Fake`): the
+// non-interactive path refuses earlier, for a different reason — no terminal
+// to collect a credential on — which would leave the confirmation itself
+// untested.
 func TestSourceAddRefusesAnUnobservableMachineBeforeConfirming(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "den")
 	work := t.TempDir()
@@ -771,7 +772,6 @@ func TestSourceAddRefusesAnUnobservableMachineBeforeConfirming(t *testing.T) {
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetIn(strings.NewReader("y\n"))
 	root.SetArgs([]string{"source", "add", makeManifestedSourceRepo(t),
 		"--answers", writeAnswerFile(t, work), "--den-home", home})
 	err := root.Execute()

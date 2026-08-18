@@ -1,16 +1,26 @@
 package prompt
 
-// This guard holds den's dependency shape for the huh work, and it asserts TWO
-// things because either alone is worthless:
+// This guard holds den's dependency shape for the huh work, and it asserts
+// THREE things because none alone is worthless:
 //
 //  1. Only internal/prompt/huhui imports github.com/charmbracelet/*.
 //  2. Only internal/cli imports internal/prompt/huhui.
+//  3. internal/prompt itself imports nothing outside the standard library and
+//     the module's own path.
 //
 // Without (2), internal/spawn could import the adapter directly and the whole
 // reason internal/prompt exists as a leaf — keeping the checklist's package
 // free of a 26-module graph — would be an aspiration no test defends. The
 // promise in the design is "one package in den knows the name huh"; (1) alone
 // promises only "one package says it out loud".
+//
+// (3) is the one spec §5.1 states in words ("aucun import tiers") that (1) and
+// (2) do not cover: they both police OTHER packages' relationship to huhui,
+// and neither would notice internal/prompt itself growing an import of, say,
+// golang.org/x/term — nothing charmbracelet, nothing huhui, so both assertions
+// above stay green while the leaf stops being a leaf. (3) is what actually
+// holds the promise a caller reads in prompt.go's own package doc ("no
+// third-party import").
 //
 // SYNTAX ANALYSIS (go/build + go/parser), not a shell-out to `go list`, and the
 // same documented limit as internal/ports/hermeticity_test.go: build.ImportDir
@@ -117,8 +127,25 @@ func importsOfDir(t *testing.T, dir string) (imports []string, filesParsed int) 
 const (
 	huhuiPackage  = "internal/prompt/huhui"
 	cliPackage    = "internal/cli"
+	promptPackage = "internal/prompt"
 	libraryPrefix = "github.com/charmbracelet/"
 )
+
+// isStdlibOrModule reports whether imp is either a standard-library import
+// (no dot in its first path segment — the same heuristic cmd/go itself uses
+// to tell a remote module path from a local one, since a domain requires a
+// dot and stdlib import paths never carry one) or rooted under the module's
+// own path (module itself, or module+"/...").
+func isStdlibOrModule(imp, module string) bool {
+	if imp == module || strings.HasPrefix(imp, module+"/") {
+		return true
+	}
+	first := imp
+	if i := strings.Index(imp, "/"); i >= 0 {
+		first = imp[:i]
+	}
+	return !strings.Contains(first, ".")
+}
 
 // moduleRootLabel names the module's root package (embed.go, "package den")
 // in error messages below. It never collides with a walk-derived package
@@ -161,10 +188,18 @@ func TestOnlyTheAdapterKnowsTheLibrary(t *testing.T) {
 	// internal/worktree (that file's TestSpawnDoesNotTransitivelyDependOnPorts).
 	huhuiImportsLibrary := false
 
-	// check applies both assertions to one package's imports, named by pkg
-	// (a module-relative slash path, or moduleRootLabel for the module root).
-	// Shared by the module-root check below and the internal/+cmd walk, so
-	// the module root gets the exact same two assertions as everything else.
+	// promptPackageScanned guards assertion 3 the same way huhuiImportsLibrary
+	// guards assertion 1's positive floor: without it, a walk that silently
+	// stopped visiting internal/prompt would make the loop below vacuously
+	// true, the same failure mode requiredRoots exists to catch for the walk
+	// as a whole.
+	promptPackageScanned := false
+
+	// check applies all three assertions to one package's imports, named by
+	// pkg (a module-relative slash path, or moduleRootLabel for the module
+	// root). Shared by the module-root check below and the internal/+cmd
+	// walk, so the module root gets the exact same assertions as everything
+	// else.
 	check := func(pkg string, imports []string) {
 		for _, imp := range imports {
 			if strings.HasPrefix(imp, libraryPrefix) {
@@ -181,6 +216,17 @@ func TestOnlyTheAdapterKnowsTheLibrary(t *testing.T) {
 					"importing it here drags 26 modules into a package that "+
 					"only needs the prompt.Prompter interface",
 					pkg, imp, cliPackage)
+			}
+		}
+		if pkg == promptPackage {
+			promptPackageScanned = true
+			for _, imp := range imports {
+				if !isStdlibOrModule(imp, module) {
+					t.Errorf("%s imports %s: this is the leaf package spec §5.1 "+
+						"promises carries no third-party import — move whatever "+
+						"needs %s behind %s instead, and speak to prompt.Prompter",
+						pkg, imp, imp, huhuiPackage)
+				}
 			}
 		}
 	}
@@ -256,6 +302,11 @@ func TestOnlyTheAdapterKnowsTheLibrary(t *testing.T) {
 			"stopped using the library, or libraryPrefix is stale and this "+
 			"guard is no longer protecting anything it claims to",
 			huhuiPackage, libraryPrefix)
+	}
+
+	if !promptPackageScanned {
+		t.Fatalf("%s was never scanned — the walk over internal/ is not finding "+
+			"it, and assertion 3 above would be vacuously true", promptPackage)
 	}
 
 	// Guard on the guard: a walk that parsed nothing would make both

@@ -81,8 +81,12 @@ func (p *Prompter) run(field huh.Field) error {
 		WithOutput(p.Out).
 		Run()
 	if errors.Is(err, huh.ErrUserAborted) {
-		// ctrl+c is an answer, and the answer is no. Callers turn this into
-		// their own "nothing was spawned" / "nothing was applied" refusal.
+		// ctrl+c is an answer, and the answer is no. Callers wrap this error
+		// into their own refusal (e.g. "-i: reading the selection: cancelled;
+		// ..." in internal/spawn); den exits non-zero and applies nothing.
+		// This does NOT print a cancel-specific line of its own — confirm()
+		// only prints "nothing was applied" when the answer is an explicit
+		// No, not on ctrl+c (internal/cli/answers.go).
 		return errors.New("cancelled")
 	}
 	return err
@@ -137,7 +141,7 @@ func (p *Prompter) Confirm(r prompt.ConfirmRequest) (bool, error) {
 	}
 	var yes bool
 	// Affirmative/Negative are left at their defaults, and the field starts on
-	// the negative: den never defaults to yes on a plan (spec §7.1).
+	// the negative: den never defaults to yes on a plan (spec 2026-08-14 §7.1).
 	if err := p.run(huh.NewConfirm().Title(r.Question).Value(&yes)); err != nil {
 		return false, err
 	}
