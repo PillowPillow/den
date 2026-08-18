@@ -95,15 +95,27 @@ func ReadSbxState(ctx context.Context, runner sbx.Runner) (*SbxState, error) {
 
 // parseSecretList reads the two tables `sbx secret ls -g` prints. sbx has no
 // JSON output for this command (probed on v0.38.0, 2026-08-14), so den parses
-// text — strictly at the FIELD level, and tolerantly about layout: column
-// widths and the number of rows may change without breaking den, but a header
-// den does not recognize is an error rather than an empty result.
+// text — anchored on the HEADER's own column positions, and tolerant about
+// widths: column widths and the number of rows may change without breaking
+// den, but a header den does not recognize is an error rather than an empty
+// result.
 //
-// den reads SCOPE, TYPE and NAME from the first table, and SCOPE, TARGETS and
-// ENV from the optional `CUSTOM SECRETS` one. It never reads the masked value
-// or the placeholder: neither is needed to decide whether a credential is
-// present, and reading them would put fragments of secrets into den's memory
-// and its errors.
+// den reads TYPE and NAME from the first table, and TARGETS and ENV from the
+// optional `CUSTOM SECRETS` one — each of them from the offset the header's
+// SECOND column starts at, never from a field index. SCOPE is the column den
+// never reads and the only one that can hold whitespace: sbx renders a
+// host-only secret's scope as `(host only)`, two tokens, and a field-index
+// parser then reads that row's TYPE as `only)`, matches neither kind, and
+// drops the row through the unknown-TYPE branch below — reporting a
+// configured credential as missing for good, which is exactly the permanent
+// block Apply's `--all-sandboxes` exists to prevent. Reading from the offset
+// removes the dependency on how many tokens SCOPE spans: sbx aligns a table
+// and its header in one pass (observed on v0.38.0, 2026-08-18), so a wider
+// SCOPE moves both together.
+//
+// den never reads the masked value or the placeholder: neither is needed to
+// decide whether a credential is present, and reading them would put
+// fragments of secrets into den's memory and its errors.
 func parseSecretList(text string) (*SbxState, error) {
 	state := &SbxState{
 		Services:   map[string]bool{},
@@ -112,6 +124,10 @@ func parseSecretList(text string) (*SbxState, error) {
 	}
 	lines := strings.Split(text, "\n")
 	section := ""
+	// Where the second column starts, in bytes. Reset at every header — the
+	// two tables are aligned independently — and -1 means "no header seen for
+	// this section yet".
+	second := -1
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
@@ -119,6 +135,7 @@ func parseSecretList(text string) (*SbxState, error) {
 		}
 		if trimmed == "CUSTOM SECRETS" {
 			section = "custom"
+			second = -1
 			continue
 		}
 		fields := strings.Fields(trimmed)
@@ -132,26 +149,39 @@ func parseSecretList(text string) (*SbxState, error) {
 						"and guessing on a layout it does not know could report a configured "+
 						"credential as missing", trimmed)
 			}
+			// Neither "TYPE" nor "TARGETS" occurs inside "SCOPE", so the
+			// first match is the second column's own start.
+			second = strings.Index(line, fields[1])
 			continue
+		}
+		if second < 0 {
+			return nil, fmt.Errorf(
+				"sbx secret ls: the row %q arrives before any table header — den reads this "+
+					"output from the header's column positions, and cannot place a row whose "+
+					"table it never saw", trimmed)
+		}
+		var cells []string
+		if second < len(line) {
+			cells = strings.Fields(line[second:])
 		}
 		if section == "custom" {
-			// SCOPE TARGETS ENV PLACEHOLDER SECRET — the two trailing columns
-			// are deliberately not read.
-			if len(fields) < 3 {
+			// TARGETS ENV PLACEHOLDER SECRET — the two trailing columns are
+			// deliberately not read.
+			if len(cells) < 2 {
 				return nil, fmt.Errorf("sbx secret ls: unreadable custom secret row %q", trimmed)
 			}
-			state.Customs[customKey(fields[1], fields[2])] = true
+			state.Customs[customKey(cells[0], cells[1])] = true
 			continue
 		}
-		// SCOPE TYPE NAME SECRET
-		if len(fields) < 3 {
+		// TYPE NAME SECRET
+		if len(cells) < 2 {
 			return nil, fmt.Errorf("sbx secret ls: unreadable row %q", trimmed)
 		}
-		switch fields[1] {
+		switch cells[0] {
 		case "service":
-			state.Services[fields[2]] = true
+			state.Services[cells[1]] = true
 		case "registry":
-			state.Registries[fields[2]] = true
+			state.Registries[cells[1]] = true
 		}
 		// An unknown TYPE is ignored rather than refused: sbx may grow a kind
 		// den does not manage, and a source that does not declare it is
@@ -312,11 +342,36 @@ func (d *credentialDriver) expected() string {
 //   - a custom secret has no stdin form on v0.38.0 (probed 2026-08-14): the
 //     value goes in argv, through RunSensitive, which redacts it from every
 //     error den can produce.
+//
+// None of the three passes `-g` any more. sbx deprecated that flag on both
+// `set` commands (measured 2026-08-18 — "Flag --global has been deprecated,
+// global is now the default for service secrets; omit --global, use --sandbox
+// to target one sandbox, or use --all-sandboxes with --registry"), and it
+// prints the warning on stderr in the middle of the github prompt, where a
+// human reads it as den failing. `secret ls -g` in ReadSbxState is a
+// DIFFERENT flag on a different command — still live, still documented — and
+// it stays.
+//
+// The registry call takes `--all-sandboxes`, not nothing. Dropping the flag
+// there is the one change that looks equivalent and is not: a registry
+// credential now defaults to HOST ONLY — used for the host's own template and
+// kit pulls, never injected into a sandbox — and `secret ls -g` does not list
+// it (both measured 2026-08-18). den would apply a credential its own Verify
+// could never observe, and block the resource for good.
+//
+// That argv needs sbx >= 0.38.0: an older binary knows `-g` and not
+// `--all-sandboxes`, and answers cobra's bare `unknown flag:
+// --all-sandboxes`. den declares no sbx floor of its own, so the ONLY guard
+// is the source manifest's `requires.sbx` — which is optional, and
+// source.CheckCompatibility skips an undeclared one. A source that omits it
+// therefore fails HERE rather than at the compatibility check. Left that way
+// on purpose: a den-level floor would refuse machines that work today for
+// every source declaring no registry credential.
 func (d *credentialDriver) Apply(ctx context.Context, answers Answers, out io.Writer) error {
 	switch d.res.Type {
 	case source.CredentialGitHub:
 		fmt.Fprintf(out, "configuring the sbx github credential (sbx will ask for it)\n")
-		return d.runner.Attach(ctx, "secret", "set", "-g", githubService)
+		return d.runner.Attach(ctx, "secret", "set", githubService)
 
 	case source.CredentialRegistry:
 		value, err := d.value(answers)
@@ -325,7 +380,7 @@ func (d *credentialDriver) Apply(ctx context.Context, answers Answers, out io.Wr
 		}
 		fmt.Fprintf(out, "configuring the sbx registry credential for %s\n", d.res.Host)
 		_, err = d.secrets.RunInput(ctx, []byte(value),
-			"secret", "set", "-g", "--registry", d.res.Host, "--password-stdin")
+			"secret", "set", "--all-sandboxes", "--registry", d.res.Host, "--password-stdin")
 		return err
 
 	case source.CredentialHTTPSubstitution:
@@ -334,7 +389,7 @@ func (d *credentialDriver) Apply(ctx context.Context, answers Answers, out io.Wr
 			return err
 		}
 		fmt.Fprintf(out, "configuring the sbx http substitution for %s (%s)\n", d.res.Host, d.res.Environment)
-		args := []string{"secret", "set-custom", "-g", "--host", d.res.Host,
+		args := []string{"secret", "set-custom", "--host", d.res.Host,
 			"--env", d.res.Environment, "--value", value}
 		// The value is the LAST argument; its index is computed rather than
 		// written, so reordering the argv cannot silently unredact it.

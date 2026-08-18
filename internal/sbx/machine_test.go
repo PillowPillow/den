@@ -38,7 +38,7 @@ func TestNormalizeNetworkResource(t *testing.T) {
 // whole review cycle without a single test catching it.
 func TestMachineRefusesTheGithubCredentialThroughRun(t *testing.T) {
 	m := NewMachine()
-	if _, err := m.Run(t.Context(), "secret", "set", "-g", "github"); err == nil {
+	if _, err := m.Run(t.Context(), "secret", "set", "github"); err == nil {
 		t.Fatal("Run must fail: its stdin is nil, and sbx's prompt would read EOF")
 	}
 	if m.Services["github"] {
@@ -52,13 +52,13 @@ func TestMachineRefusesTheGithubCredentialThroughRun(t *testing.T) {
 // specifically, not just that SOME method with this argv ran.
 func TestMachineConfiguresTheGithubCredentialThroughAttach(t *testing.T) {
 	m := NewMachine()
-	if err := m.Attach(t.Context(), "secret", "set", "-g", "github"); err != nil {
+	if err := m.Attach(t.Context(), "secret", "set", "github"); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	if !m.Services["github"] {
 		t.Error("Attach must configure the credential")
 	}
-	if !m.HasAttached("secret", "set", "-g", "github") {
+	if !m.HasAttached("secret", "set", "github") {
 		t.Errorf("expected the call recorded as an attach; attaches: %v", m.Attaches)
 	}
 }
@@ -72,8 +72,8 @@ func TestMachineConfiguresTheGithubCredentialThroughAttach(t *testing.T) {
 func TestMachineRunSensitiveRefusesATruncatedArgv(t *testing.T) {
 	m := NewMachine()
 	for _, args := range [][]string{
-		{"secret", "set-custom", "-g", "--host"},
-		{"secret", "set-custom", "-g", "--host", "example.test", "--env"},
+		{"secret", "set-custom", "--host"},
+		{"secret", "set-custom", "--host", "example.test", "--env"},
 	} {
 		if _, err := m.RunSensitive(t.Context(), nil, args...); err == nil {
 			t.Errorf("RunSensitive(%v) = nil error, want a refusal naming the missing value", args)

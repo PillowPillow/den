@@ -289,7 +289,7 @@ func checkResources(p string, m *Manifest) error {
 		switch c.Type {
 		case CredentialGitHub:
 			// The github service credential is interactive on sbx's side
-			// (`sbx secret set -g github` opens its own flow), so it takes no
+			// (`sbx secret set github` opens its own flow), so it takes no
 			// host, no environment and no value: den only decides WHETHER to
 			// run it.
 			if err := refuseUnusedFields(where, c.Type, map[string]string{

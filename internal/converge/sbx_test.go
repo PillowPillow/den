@@ -85,6 +85,45 @@ func TestParseSecretListRefusesAnUnknownTable(t *testing.T) {
 	}
 }
 
+// A SCOPE spanning two tokens is read like any other row. sbx renders a
+// host-only secret's scope as `(host only)`, and den takes TYPE, NAME,
+// TARGETS and ENV from the offsets the header gives them precisely so such a
+// row cannot fall through: read by field index, its TYPE would be `only)`,
+// the row would be dropped as an unknown kind, and den would report a
+// configured credential as missing on every run — re-applying forever and
+// never verifying.
+func TestParseSecretListReadsAMultiTokenScope(t *testing.T) {
+	state, err := parseSecretList(
+		"SCOPE        TYPE       NAME     SECRET\n" +
+			"(host only)  registry   ghcr.io  token-***\n" +
+			"(global)     service    github   (stored)\n" +
+			"\nCUSTOM SECRETS\n" +
+			"SCOPE        TARGETS       ENV        PLACEHOLDER  SECRET\n" +
+			"(host only)  api.example   API_TOKEN  sbx-cs-x     token-***\n")
+	if err != nil {
+		t.Fatalf("parseSecretList: %v", err)
+	}
+	if !state.Registries["ghcr.io"] {
+		t.Errorf("a (host only) row must be read, not dropped; registries = %v", state.Registries)
+	}
+	if !state.Services["github"] {
+		t.Errorf("services = %v", state.Services)
+	}
+	if !state.Customs[customKey("api.example", "API_TOKEN")] {
+		t.Errorf("customs = %v", state.Customs)
+	}
+}
+
+// A row with no header above it is refused for the same reason an unknown
+// header is: den places a row by the column offsets the header declares, and
+// a table it never saw the header of is a layout it cannot read.
+func TestParseSecretListRefusesARowWithoutAHeader(t *testing.T) {
+	_, err := parseSecretList("(global)   service    github   (stored)\n")
+	if err == nil || !strings.Contains(err.Error(), "header") {
+		t.Fatalf("parseSecretList = %v, expected a refusal naming the header", err)
+	}
+}
+
 // An inspection that FAILS is `unknown`, never "absent" (prototype 2026-08-14:
 // a restricted environment denied Keychain access and both commands exited 1
 // on a machine whose credentials were perfectly configured).
@@ -219,22 +258,26 @@ func TestCredentialApplyKeepsTheValueOutOfArgv(t *testing.T) {
 		}
 	}
 
-	if !f.HasCalled("secret", "set", "-g", "github") {
+	if !f.HasCalled("secret", "set", "github") {
 		t.Errorf("expected the github command; calls: %v", f.Calls)
 	}
 	// Through Attach specifically, never Run: Run leaves stdin nil, so on the
 	// real sbx the github prompt would read EOF and fail (Machine.Run
 	// simulates exactly that). Only Attach hands over a real terminal.
-	if !f.HasAttached("secret", "set", "-g", "github") {
+	if !f.HasAttached("secret", "set", "github") {
 		t.Errorf("expected the github credential to go through Attach, not Run; attaches: %v", f.Attaches)
 	}
-	if !f.HasCalled("secret", "set", "-g", "--registry", "registry.example.test:443", "--password-stdin") {
+	// --all-sandboxes, never a bare `secret set --registry`: a registry
+	// credential defaults to HOST ONLY, which `secret ls -g` does not list
+	// (measured 2026-08-18), so den would apply a credential its own Verify
+	// could never see and block the resource for good.
+	if !f.HasCalled("secret", "set", "--all-sandboxes", "--registry", "registry.example.test:443", "--password-stdin") {
 		t.Errorf("expected the registry password to travel on stdin; calls: %v", f.Calls)
 	}
 	if len(f.Inputs) != 1 {
 		t.Errorf("Inputs = %v, want exactly the registry password piped", f.Inputs)
 	}
-	if !f.HasCalled("secret", "set-custom", "-g", "--host", "gitlab.example.test",
+	if !f.HasCalled("secret", "set-custom", "--host", "gitlab.example.test",
 		"--env", "GITLAB_TOKEN", "--value", sbx.RedactedArg) {
 		t.Errorf("expected the custom secret with a redacted value; calls: %v", f.Calls)
 	}
