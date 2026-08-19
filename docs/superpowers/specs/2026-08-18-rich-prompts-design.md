@@ -190,8 +190,22 @@ chemin tapé, ou une ligne vide pour laisser non mappé). Lui en ajouter un est 
 part entière, avec sa propre mesure et son propre ticket ; ce n'est pas quelque chose qu'un correctif
 documentaire peut porter au passage.
 
-Le tableau ci-dessous reste le périmètre **de cette tranche** — les quatre invites qu'elle porte
-effectivement derrière `Prompter`. `resolveRepoChoices` n'y figure pas, par le choix qui précède.
+**CORRECTION du 2026-08-19 (revue PR 82, finding F6).** Le report ci-dessus a été levé, et
+`resolveRepoChoices` passe désormais par `Prompter.Line`. Le raisonnement qui la laissait dehors
+supposait qu'il fallait un **nouveau** type de requête (« choisir un parmi N ou taper le sien ») ;
+c'est faux. La liste numérotée est du **contexte imprimé**, pas une question — exactement la
+séparation que le godoc de `ConfirmRequest` énonce déjà (« a yes/no on a plan the caller has ALREADY
+printed ») et que `confirm` applique. Ce que cette boucle lit est une ligne libre : un numéro, un
+chemin, ou du vide. `LineRequest` la porte telle quelle, sans rien ajouter à l'interface. La
+troisième politique de porte, elle, **reste** : sans terminal la boucle imprime toujours son rapport
+et rend `nil`, parce qu'une exécution scriptée doit installer ce qu'elle peut. La garde `nil`-`Prompt`
+est donc placée SOUS la branche non-TTY, jamais au-dessus. Ce que le report coûtait était réel : un
+`bufio` entre deux formulaires `huh` avalait la frappe anticipée destinée au second, son ctrl+c était
+un SIGINT brut, et `prompt.Fake` ne le voyait pas.
+
+Le tableau ci-dessous reste le périmètre **de cette tranche** — les quatre invites qu'elle a portées
+en premier derrière `Prompter`. `resolveRepoChoices` n'y figure pas : elle a suivi ensuite, par la
+correction ci-dessus.
 
 | # | Site | Forme actuelle | Après |
 |---|---|---|---|
@@ -393,6 +407,13 @@ sans terminal au lieu de refuser (`answers.go:403-413`), une troisième politiqu
 qu'elle n'a jamais été conçue comme faisant partie de cet ensemble. Non portée parce que
 `prompt.Prompter` n'a pas de type de requête pour « choisir un parmi N ou taper le sien » —
 lui en ajouter un est sa propre décision de design, avec sa propre mesure. Ticket séparé.
+
+**CORRECTION du 2026-08-19 (revue PR 82, finding F6).** Ce paragraphe décrit l'état au moment de la
+tranche, plus l'état du code : `resolveRepoChoices` passe par `Prompter.Line` et aucun type de
+requête n'a été ajouté. Le §4 porte le raisonnement complet ; en deux mots, la liste numérotée est du
+contexte imprimé et non une question, donc il ne restait qu'une ligne libre à lire. Seule la
+troisième politique de porte survit, et volontairement : sans terminal la boucle rapporte au lieu de
+refuser, et la garde `nil`-`Prompt` vit sous cette branche.
 
 ## 9. Décisions
 
