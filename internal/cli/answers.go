@@ -16,8 +16,40 @@ import (
 	"github.com/PillowPillow/den/internal/source"
 )
 
-// collectInitialAnswers produces the transient answers of ONE onboarding run,
-// from `--answers <file>` or from the terminal.
+// loadAnswerFile reads and validates `--answers <file>`, and answers the empty
+// Answers when no file was given.
+//
+// It is a HALF of what collectInitialAnswers used to be, split out so
+// runConvergence can run it before it touches the machine. den refuses on what
+// files alone decide before it observes anything (the spawn sequence's own
+// doctrine, spec §6): a malformed answer file is a fault den holds without
+// asking sbx a single question, and reporting the machine first would send the
+// user to fix sbx, re-run, and only then learn the file was wrong.
+//
+// Both halves stay one contract — the answers a file produces and the answers a
+// terminal produces are the same converge.Answers, which is what makes a CI
+// run a real rehearsal of a human one (spec §7.1).
+func loadAnswerFile(d Deps, m *source.Manifest, answersPath string) (converge.Answers, error) {
+	if answersPath == "" {
+		return converge.Answers{}, nil
+	}
+	a, err := converge.LoadAnswers(answersPath, d.getenv())
+	if err != nil {
+		return converge.Answers{}, err
+	}
+	if err := converge.ValidateAnswers(m, a); err != nil {
+		return converge.Answers{}, fmt.Errorf("%s: %w", answersPath, err)
+	}
+	return a, nil
+}
+
+// collectInitialAnswers completes the transient answers of ONE onboarding run:
+// it takes what loadAnswerFile already read and asks the terminal for the rest.
+//
+// a is that loaded file, empty when there was none, and fromFile says which —
+// the two are not the same thing, and only the caller still knows. A file that
+// carries no `repository_roots:` has ANSWERED that question with "none"; no
+// file at all leaves it open.
 //
 // Both paths end in the same converge.Answers, and that is the contract this
 // function exists for: a CI running `--answers` must exercise the same
@@ -42,6 +74,14 @@ import (
 // sbx already holds. That check costs an `sbx secret ls -g`/`policy ls`, paid
 // only on the branch that would otherwise refuse.
 //
+// runConvergence's own probe does NOT make that read redundant, and does not
+// make this branch unreachable either: the probe proves the machine answered
+// at one moment, and the daemon can stop answering before this read — the same
+// window argument that keeps a check on each planning pass. What the probe does
+// change is who reports a machine that was ALREADY blind when the command
+// started: that is the probe's refusal now, which names the read rather than
+// sending the user to find a terminal they do not need.
+//
 // yes is `--yes`, threaded in ONLY for that same refusal, and only for the
 // half of it a plan-only run does not need: a run without `--yes` never
 // applies anything even when confirmed (confirm() itself refuses without a
@@ -53,18 +93,7 @@ import (
 // before this parameter existed (TestCollectInitialAnswersRefusesWithoutATerminal
 // passes no `--yes` at all and still expects the refusal).
 func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
-	answersPath string, yes bool) (converge.Answers, error) {
-
-	var a converge.Answers
-	if answersPath != "" {
-		var err error
-		if a, err = converge.LoadAnswers(answersPath, d.getenv()); err != nil {
-			return converge.Answers{}, err
-		}
-		if err := converge.ValidateAnswers(m, a); err != nil {
-			return converge.Answers{}, fmt.Errorf("%s: %w", answersPath, err)
-		}
-	}
+	a converge.Answers, fromFile, yes bool) (converge.Answers, error) {
 
 	missing := converge.MissingCredentials(m, a)
 	// An answer FILE is the answer. A `repository_roots:` it does not carry
@@ -72,7 +101,7 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 	// make `--answers` mean "some of the answers", and would leave a source
 	// whose nests declare no repository at all impossible to install without a
 	// terminal, over roots den would never look in.
-	needsRoots := len(a.RepositoryRoots) == 0 && answersPath == ""
+	needsRoots := len(a.RepositoryRoots) == 0 && !fromFile
 
 	// Nothing left to ask FROM AN ANSWER, and there is a terminal standing by
 	// for the one credential no answer can ever supply (sbx_github: manifest.go

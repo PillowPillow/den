@@ -84,13 +84,32 @@ func runConvergence(cmd *cobra.Command, d Deps, mode converge.Mode, home, name s
 		FreshGlobalConfig: fresh,
 	}
 
-	// Ask the MACHINE before asking the human. collectInitialAnswers below
-	// prompts for the repository roots and for every declared credential, and
-	// on a machine den cannot observe all of that is collected only to be
+	// The order of these three is the whole point: the FILE, then the MACHINE,
+	// then the HUMAN.
+	//
+	// The file comes first because den refuses on what files alone decide
+	// before it observes anything — the same doctrine that puts every
+	// rejectable-from-config check ahead of the first side effect in the spawn
+	// sequence (spec §6). A malformed `--answers` reported after the machine
+	// would cost two round trips: fix sbx, re-run, and only then learn the file
+	// was wrong.
+	answers, err := loadAnswerFile(d, c.Manifest, f.Answers)
+	if err != nil {
+		return err
+	}
+
+	// Then ask the MACHINE, before asking the human. collectInitialAnswers
+	// below prompts for the repository roots and for every declared credential,
+	// and on a machine den cannot observe all of that is collected only to be
 	// thrown away by the refusal further down — a secret typed into a run that
 	// was already lost, which the human then retypes on the retry. That is the
 	// shape the 2026-08-18 report named, and it survived the refusal that was
 	// added for it because that refusal sits after the questions.
+	//
+	// Unconditional, including under `--answers --yes` where there is no
+	// question to protect: den's refusal to converge a machine it cannot see
+	// must not depend on whether an answer file happens to exist, and a scripted
+	// run also gains by failing before Apply writes the fresh config.yaml.
 	//
 	// The guards on the plans below STAY. This probe and they cover different
 	// windows: the sbx daemon can die between this read and the first Plan, or
@@ -100,8 +119,7 @@ func runConvergence(cmd *cobra.Command, d Deps, mode converge.Mode, home, name s
 		return err
 	}
 
-	answers, err := collectInitialAnswers(cmd, d, c.Manifest, f.Answers, f.Yes)
-	if err != nil {
+	if answers, err = collectInitialAnswers(cmd, d, c.Manifest, answers, f.Answers != "", f.Yes); err != nil {
 		return err
 	}
 	req.Answers = answers
