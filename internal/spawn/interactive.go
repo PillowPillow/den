@@ -199,8 +199,18 @@ func promptOptionalRepos(ctx context.Context, p prompt.Prompter, mappingPath, ne
 	// unwired double must refuse here rather than let the caller mount a
 	// selection nobody made. Same rule as a nil IsTTY, one layer down.
 	if p == nil {
+		// The prefix follows the entry point, the same rule interactiveWithout
+		// applies to its own refusal: a `select: prompt` nest reaches this
+		// checklist with no -i on the command line, and naming that flag would
+		// send its user hunting for something they never typed. The nest name
+		// takes its place, because a refusal that names neither is anonymous.
+		if prompts {
+			return nil, fmt.Errorf(
+				"nest %s selects its repos at spawn time and no prompter is wired — this is a den "+
+					"defect; %s", nestName, nonInteractiveEquivalents(true))
+		}
 		return nil, fmt.Errorf("-i: no prompter is wired — this is a den defect; %s",
-			nonInteractiveEquivalents(prompts))
+			nonInteractiveEquivalents(false))
 	}
 
 	optional := make([]nest.Repo, 0, len(repos))
@@ -235,8 +245,16 @@ func promptOptionalRepos(ctx context.Context, p prompt.Prompter, mappingPath, ne
 		// user sees before den gives up on asking, and "reading the selection
 		// failed" without the flag that does the same job is a dead end — den
 		// names the file to fix and the remedy (spec §2).
+		//
+		// Which prefix it carries is the OTHER fact, and it follows the entry
+		// point exactly as the nil guard above and interactiveWithout do: a
+		// `select: prompt` nest gets here with no -i typed anywhere.
+		if prompts {
+			return nil, fmt.Errorf("nest %s: reading the selection: %w; %s",
+				nestName, err, nonInteractiveEquivalents(true))
+		}
 		return nil, fmt.Errorf("-i: reading the selection: %w; %s",
-			err, nonInteractiveEquivalents(prompts))
+			err, nonInteractiveEquivalents(false))
 	}
 
 	// The answer names what STAYS; den's flag names what goes. Inverting here,

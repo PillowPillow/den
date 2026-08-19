@@ -236,6 +236,64 @@ func TestPromptRefusesANilPrompter(t *testing.T) {
 	}
 }
 
+// Both refusals of promptOptionalRepos follow the ENTRY POINT, which is the
+// rule interactiveWithout already applies to its own no-terminal refusal in
+// interactive.go: a `select: prompt` nest reaches this checklist with no `-i`
+// anywhere on the command line, and a message that names that flag sends its
+// user hunting for something they never typed.
+//
+// All four cells are asserted, because what must hold is the DIFFERENCE. The
+// `-i:` prefix on the ordinary-nest side was pinned by nothing until this test
+// — the two refusals above assert the equivalents alone — so a change that
+// dropped it would have left the suite green and the message unrecognisable.
+//
+// The equivalents are asserted beside the prefix: they are what the reader does
+// next, and `--without` is refused on a `select: prompt` nest (Spawn, step
+// 0bis), so naming it here would hand over a command den itself rejects.
+func TestTheChecklistRefusalPrefixFollowsTheEntryPoint(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// The two ways this checklist can fail to ask. The scripted error
+		// carries no `-i` of its own, so the assertions below read den's
+		// prefix rather than the fixture's text.
+		prompter prompt.Prompter
+	}{
+		{"a prompter that cannot answer", &prompt.Fake{Err: errors.New("no terminal")}},
+		{"no prompter at all", nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := promptOptionalRepos(context.Background(), c.prompter, promptMappingPath, "api",
+				optionalRepos(), true, nil)
+			if err == nil {
+				t.Fatal("a prompting nest that cannot ask must refuse")
+			}
+			if strings.Contains(err.Error(), "-i:") {
+				t.Errorf("a `select: prompt` nest never typed -i: %v", err)
+			}
+			// With the flag gone, the nest name is what tells the reader which
+			// spawn this is about — a refusal naming neither is anonymous.
+			if !strings.Contains(err.Error(), "api") {
+				t.Errorf("the refusal must name the nest it is about: %v", err)
+			}
+			if !strings.Contains(err.Error(), "--only") {
+				t.Errorf("the refusal must name the flag that works on this nest: %v", err)
+			}
+			if strings.Contains(err.Error(), "--without") {
+				t.Errorf("the refusal must not name a flag den refuses on this nest: %v", err)
+			}
+
+			_, err = promptOptionalRepos(context.Background(), c.prompter, promptMappingPath, "api",
+				optionalRepos(), false, nil)
+			if err == nil {
+				t.Fatal("an -i checklist that cannot ask must refuse")
+			}
+			if !strings.Contains(err.Error(), "-i:") {
+				t.Errorf("-i is what this user typed, and the refusal must name it: %v", err)
+			}
+		})
+	}
+}
+
 // Required repos are always mounted (spec §6.2): they are not offered at all,
 // so no option carries the required repo's name — and the answer inverts
 // against the OFFERED list alone.
