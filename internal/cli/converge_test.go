@@ -1090,8 +1090,14 @@ func reportLine(t *testing.T, out, name string) string {
 //
 // Every source's plan carries the same cause — one read feeds them all — so
 // printing it per source repeated sbx's four-line refusal down the report and
-// buried the verdicts (review PR82). doctor prints it on the `sbx policy`
-// line; each source line points there and still reports its own unknown.
+// buried the verdicts (review PR82). The FIRST source line states it; the rest
+// point at that line by name and still report their own unknown.
+//
+// Here both sbx reads fail the same way, so the `sbx policy` check states that
+// same text on its own line. That is not a duplicate the dedup owes anything:
+// it is a different check reporting what IT hit. The property is scoped to the
+// source lines below for that reason, and asserting a whole-report count of 1
+// would pin an accident of this fixture rather than the guarantee.
 func TestDoctorPrintsTheUnobservableCauseOnce(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "den")
 	work := t.TempDir()
@@ -1109,32 +1115,86 @@ func TestDoctorPrintsTheUnobservableCauseOnce(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an unobservable machine must exit non-zero:\n%s", out)
 	}
-	if n := strings.Count(out, "keychain access denied"); n != 1 {
-		t.Errorf("the cause is printed %d times, want exactly 1:\n%s", n, out)
+	corp, dg := reportLine(t, out, "source corp"), reportLine(t, out, "source dg")
+	if n := strings.Count(corp+"\n"+dg, "keychain access denied"); n != 1 {
+		t.Errorf("the cause is printed on %d source lines, want exactly 1:\n%s", n, out)
+	}
+	// corp sorts before dg, so corp states and dg points.
+	if !strings.Contains(corp, "keychain access denied") {
+		t.Errorf("the first source line does not state the cause: %q", corp)
+	}
+	if !strings.Contains(dg, "same cause as `source corp` above") {
+		t.Errorf("the second source line does not point at the line stating the cause: %q", dg)
 	}
 	// The dedup must not cost the verdict: each source still fails on its own
-	// line, and still names where the cause is.
-	for _, name := range []string{"source dg", "source corp"} {
-		line := reportLine(t, out, name)
+	// line.
+	for _, line := range []string{corp, dg} {
 		if !strings.Contains(line, "unknown") {
-			t.Errorf("%s no longer reports unknown: %q", name, line)
-		}
-		if !strings.Contains(line, "sbx") {
-			t.Errorf("%s points at no carrier of the cause: %q", name, line)
+			t.Errorf("a source line no longer reports unknown: %q", line)
 		}
 	}
 }
 
-// The other side of the dedup: den keeps repeating a cause NOTHING else in the
-// report states.
+// The regression I1 closed: the two sbx reads fail for DIFFERENT reasons, and
+// den still names the one it actually hit.
+//
+// ReadSbxState gives up on `secret ls -g` before it ever runs `policy ls`, so
+// the shared read's cause is the keychain refusal — while doctor's own `sbx
+// policy` check runs its OWN read and fails on the uninitialized policy. den
+// used to ask "did some other check fail?", and on that yes every source line
+// dropped the keychain refusal for a pointer at a check stating a different
+// cause: the report exited non-zero naming the cause den hit ZERO times
+// (review PR82, I1).
+//
+// The two lines are asserted by NAME, not by count alone: the dedup is only
+// honest when the line that points has the line it names above it.
+func TestDoctorNamesTheCauseWhenTheTwoSbxReadsFailDifferently(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--name", "corp", "--answers", writeAnswerFile(t, work), "--yes",
+		"--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	blind := &sbx.Fake{Responses: map[string]sbx.Response{
+		"secret ls -g": {Err: errors.New("keychain access denied")},
+		"policy ls --type network --source local --decision allow --json": {
+			Err: errors.New("global network policy has not been initialized")},
+	}}
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), blind)
+	if err == nil {
+		t.Fatalf("an unobservable machine must exit non-zero:\n%s", out)
+	}
+	if n := strings.Count(out, "keychain access denied"); n != 1 {
+		t.Errorf("the cause den hit is printed %d times, want exactly 1:\n%s", n, out)
+	}
+	// corp sorts before dg, so corp is the line that states the cause and dg
+	// the line that points at it.
+	if line := reportLine(t, out, "source corp"); !strings.Contains(line, "keychain access denied") {
+		t.Errorf("the first source line does not state the cause: %q", line)
+	}
+	if line := reportLine(t, out, "source dg"); !strings.Contains(line,
+		"same cause as `source corp` above") {
+		t.Errorf("the second source line does not point at the line stating the cause: %q", line)
+	}
+}
+
+// The same property on the exit NO other check can carry: den still names the
+// cause, on the first source line.
 //
 // ReadSbxState gives up in four places, and only one of them — `policy ls`
 // failing — also fails doctor's own `sbx policy` check. Here `secret ls -g`
 // ANSWERS, with a header den does not parse (what a newer sbx changing that
 // table looks like, per parseSecretList), so the policy check is a plain [ok]
-// and no other line says why den is blind. Pointing at it would have deleted
-// the cause from a report that exits 1 — worse than repeating it.
-func TestDoctorRepeatsTheCauseNoOtherCheckStates(t *testing.T) {
+// and nothing outside the source lines could say why den is blind. The dedup
+// runs among the source lines only, so this exit needs no special case — which
+// is the whole point of the shape: the count is one here for the same reason
+// it is one everywhere.
+func TestDoctorStatesTheCauseNoOtherCheckStates(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "den")
 	work := t.TempDir()
 	makeWorkRepo(t, work, "api")
@@ -1156,12 +1216,20 @@ func TestDoctorRepeatsTheCauseNoOtherCheckStates(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an unobservable machine must exit non-zero:\n%s", out)
 	}
-	if !strings.Contains(out, "unrecognized table header") {
-		t.Fatalf("the report exits 1 without ever naming the cause:\n%s", out)
+	if n := strings.Count(out, "unrecognized table header"); n != 1 {
+		t.Fatalf("a report that exits 1 names the cause %d times, want exactly 1:\n%s", n, out)
 	}
-	if strings.Contains(out, "the sbx check above carries the cause") {
-		t.Errorf("a source line points at a check that states nothing — "+
-			"`sbx policy` answered [ok] here:\n%s", out)
+	if line := reportLine(t, out, "source corp"); !strings.Contains(line, "unrecognized table header") {
+		t.Errorf("the first source line does not state the cause: %q", line)
+	}
+	if line := reportLine(t, out, "source dg"); !strings.Contains(line,
+		"same cause as `source corp` above") {
+		t.Errorf("the second source line does not point at the line stating the cause: %q", line)
+	}
+	// The [ok] policy check must not be read as a carrier: nothing above the
+	// source lines says a word about why den is blind here.
+	if line := reportLine(t, out, "sbx policy"); strings.Contains(line, "unrecognized table header") {
+		t.Errorf("the policy check states a cause it did not hit: %q", line)
 	}
 }
 
