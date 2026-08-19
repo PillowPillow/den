@@ -8,7 +8,10 @@
 // holds that line mechanically rather than by habit.
 package prompt
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // ErrNoTerminal is what a real Prompter returns when there is no terminal to
 // draw on. It is a BACKSTOP, never the message a user reads: every caller
@@ -77,10 +80,21 @@ type SecretRequest struct {
 // inherited it would try to take over the test runner's terminal. Deps.ReadSecret
 // was already this shape, and its godoc already said why; this interface
 // generalizes it to the other three.
+//
+// Every method takes a context, and that is the ONE thing a Prompter cannot be
+// asked for later. internal/cli/root.go builds a signal.NotifyContext over
+// os.Interrupt and SIGTERM and dispatches through ExecuteContext precisely so
+// a signal cancels the work in flight; a prompt outside that context makes the
+// promise false at the only moment den is guaranteed to be waiting on a human.
+// Measured in huh@v1.0.0: Form.Run() is RunWithContext(context.Background())
+// (form.go:657-658), so an interface without a ctx leaves the renderer no way
+// to be cancelled at all — den would keep a form on a terminal after the
+// signal that was supposed to end the process. Nothing here is third-party:
+// context is standard library, so the package doc's promise above still holds.
 type Prompter interface {
 	// MultiSelect returns the Values of the CHECKED options.
-	MultiSelect(MultiSelectRequest) ([]string, error)
-	Confirm(ConfirmRequest) (bool, error)
-	Line(LineRequest) (string, error)
-	Secret(SecretRequest) (string, error)
+	MultiSelect(ctx context.Context, r MultiSelectRequest) ([]string, error)
+	Confirm(ctx context.Context, r ConfirmRequest) (bool, error)
+	Line(ctx context.Context, r LineRequest) (string, error)
+	Secret(ctx context.Context, r SecretRequest) (string, error)
 }

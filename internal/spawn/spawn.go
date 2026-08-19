@@ -735,7 +735,7 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		}
 		without = recordedWithout(n, recorded)
 	case selectionOpen:
-		if without, err = interactiveWithout(d, repoMappingPath, n, repoMapping); err != nil {
+		if without, err = interactiveWithout(ctx, d, repoMappingPath, n, repoMapping); err != nil {
 			return err
 		}
 	}

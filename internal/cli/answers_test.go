@@ -444,6 +444,13 @@ func TestConfirmAsksWithoutSwallowingThePrintedPlan(t *testing.T) {
 	f := &prompt.Fake{ConfirmAnswers: []bool{true}}
 	d := Deps{Prompt: f, IsTTY: func() bool { return true }}
 	cmd := &cobra.Command{}
+	// SetContext for the same reason answersCmd does it: confirm() hands
+	// cmd.Context() to the Prompter, and a bare cobra.Command answers nil
+	// there (Command.Context returns c.ctx, set only by Execute/SetContext).
+	// prompt.Fake ignores the value, so a nil would go unnoticed here while
+	// the real Prompter calls ctx.Err() on it — a test whose shape no
+	// production call path produces.
+	cmd.SetContext(context.Background())
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
@@ -488,6 +495,7 @@ func TestConfirmNeverAsksWhenItDoesNotNeedTo(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			got, err := confirm(cmd, c.d, c.yes, c.changes)
@@ -512,6 +520,7 @@ func TestConfirmNeverAsksWhenItDoesNotNeedTo(t *testing.T) {
 // still one nil-check short of that rule).
 func TestConfirmRefusesWithATerminalButNoPrompter(t *testing.T) {
 	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	_, err := confirm(cmd, Deps{IsTTY: func() bool { return true }}, false, true)
@@ -529,7 +538,7 @@ func TestConfirmRefusesWithATerminalButNoPrompter(t *testing.T) {
 // bypass a guard that lives only at today's one call site
 // (M1/M2 review, Task 4).
 func TestAskRepositoryRootsRefusesWithNilPrompter(t *testing.T) {
-	_, err := askRepositoryRoots(nil)
+	_, err := askRepositoryRoots(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected a refusal when no prompter is wired")
 	}
@@ -549,7 +558,7 @@ func TestAskRepositoryRootsSplitsAndExpandsOnDensSide(t *testing.T) {
 	t.Setenv("HOME", home)
 	f := &prompt.Fake{LineAnswers: []string{"~/dev  " + home + "/work"}}
 
-	roots, err := askRepositoryRoots(f)
+	roots, err := askRepositoryRoots(context.Background(), f)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -13,6 +13,7 @@
 package huhui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -75,7 +76,12 @@ func (p *Prompter) gate() error {
 // consent to — stays on screen above the form. internal/converge/render.go
 // calls that plan the trust boundary; a form that scrolled it away would make
 // the confirmation uninformed consent.
-func (p *Prompter) run(field huh.Field) error {
+//
+// ctx is the command's own cancellation context (internal/cli/root.go's
+// signal.NotifyContext, carried by cobra), and it is a parameter rather than a
+// field because a Prompter outlives no single question: one run of den asks
+// several, and each must die with the command that asked it.
+func (p *Prompter) run(ctx context.Context, field huh.Field) error {
 	// ctrl+d joins ctrl+c on Quit. The bufio path this package replaced read
 	// through a Scanner, so a terminal EOF refused loudly — "-i: input ended
 	// before the selection was confirmed (a pipe, a closed terminal)"
@@ -105,7 +111,21 @@ func (p *Prompter) run(field huh.Field) error {
 		WithKeyMap(km).
 		WithInput(p.In).
 		WithOutput(p.Out).
-		Run()
+		RunWithContext(ctx)
+	if ctx.Err() != nil {
+		// The command's context died while the form was up — SIGTERM, SIGINT
+		// handled by root.go's NotifyContext, or a parent timeout. huh reports
+		// this as ErrTimeout (form.go:693-694 maps tea.ErrProgramKilled, and
+		// den sets no huh timeout at all), which would read as a den defect;
+		// the truth is a shutdown, and the answer to a question nobody
+		// finished answering is no answer at all.
+		//
+		// Checked BEFORE the error, so a form that happened to submit as the
+		// signal arrived is discarded too. Fail-closed on purpose: den is on
+		// its way out, and applying a plan while shutting down is the one
+		// outcome worse than losing an answer.
+		return fmt.Errorf("cancelled: %w", ctx.Err())
+	}
 	if errors.Is(err, huh.ErrUserAborted) {
 		// ctrl+c and ctrl+d are answers, and the answer is no. Callers wrap
 		// this error into their own refusal (e.g. "-i: reading the selection:
@@ -143,7 +163,7 @@ func optionsFor(r prompt.MultiSelectRequest) []huh.Option[string] {
 	return options
 }
 
-func (p *Prompter) MultiSelect(r prompt.MultiSelectRequest) ([]string, error) {
+func (p *Prompter) MultiSelect(ctx context.Context, r prompt.MultiSelectRequest) ([]string, error) {
 	if err := p.gate(); err != nil {
 		return nil, err
 	}
@@ -155,37 +175,37 @@ func (p *Prompter) MultiSelect(r prompt.MultiSelectRequest) ([]string, error) {
 	// No Limit call: a MultiSelect with no floor is what lets a `select:
 	// prompt` nest be confirmed empty (measured, spec §3.f), which is that
 	// mode's entire contract.
-	if err := p.run(field); err != nil {
+	if err := p.run(ctx, field); err != nil {
 		return nil, err
 	}
 	return chosen, nil
 }
 
-func (p *Prompter) Confirm(r prompt.ConfirmRequest) (bool, error) {
+func (p *Prompter) Confirm(ctx context.Context, r prompt.ConfirmRequest) (bool, error) {
 	if err := p.gate(); err != nil {
 		return false, err
 	}
 	var yes bool
 	// Affirmative/Negative are left at their defaults, and the field starts on
 	// the negative: den never defaults to yes on a plan (spec 2026-08-14 §7.1).
-	if err := p.run(huh.NewConfirm().Title(r.Question).Value(&yes)); err != nil {
+	if err := p.run(ctx, huh.NewConfirm().Title(r.Question).Value(&yes)); err != nil {
 		return false, err
 	}
 	return yes, nil
 }
 
-func (p *Prompter) Line(r prompt.LineRequest) (string, error) {
+func (p *Prompter) Line(ctx context.Context, r prompt.LineRequest) (string, error) {
 	if err := p.gate(); err != nil {
 		return "", err
 	}
 	var line string
-	if err := p.run(huh.NewInput().Title(r.Question).Value(&line)); err != nil {
+	if err := p.run(ctx, huh.NewInput().Title(r.Question).Value(&line)); err != nil {
 		return "", err
 	}
 	return line, nil
 }
 
-func (p *Prompter) Secret(r prompt.SecretRequest) (string, error) {
+func (p *Prompter) Secret(ctx context.Context, r prompt.SecretRequest) (string, error) {
 	if err := p.gate(); err != nil {
 		return "", err
 	}
@@ -202,7 +222,7 @@ func (p *Prompter) Secret(r prompt.SecretRequest) (string, error) {
 		// sentence true.
 		EchoMode(huh.EchoModeNone).
 		Value(&secret)
-	if err := p.run(field); err != nil {
+	if err := p.run(ctx, field); err != nil {
 		return "", err
 	}
 	return secret, nil
