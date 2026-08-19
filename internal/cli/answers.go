@@ -431,13 +431,22 @@ func (d Deps) getenv() func(string) string {
 // Prompter. That is the split ConfirmRequest's godoc already states: the caller
 // owns the context on screen, the Prompter owns the one line it reads. The
 // question used to be a bufio read off cmd.InOrStdin() with the `> ` prompt
-// printed by hand, and two verified defects are why it stopped being one
-// (PR 82, finding F6):
+// printed by hand, and two defects are why it stopped being one (PR 82,
+// finding F6). Both are read off the code named below; neither was measured,
+// and the distinction is kept because a later reader deciding how much weight
+// to give them deserves to know which kind of claim they are:
 //
-//   - it had no gate of its own beyond the IsTTY check above, and none of the
-//     cancelled path: ctrl+c on it was a raw SIGINT killing den mid-run,
-//     whereas a Prompter call runs under cmd.Context() and unwinds through
-//     the same signal handling as every other question;
+//   - it observed no context, so a ^C on this question left den BLOCKED. It
+//     did not kill den, and the tempting shorter story — "a raw SIGINT killed
+//     the process" — is wrong: Execute (root.go) arms signal.NotifyContext
+//     over os.Interrupt and SIGTERM for EVERY command, so the runtime traps
+//     SIGINT and the default disposition never applies. The signal became an
+//     ordinary cancellation of cmd.Context() — which this read had no way to
+//     observe, so it went on waiting for a line or an EOF that a human who
+//     just pressed ^C does not type. askRepositoryRoots' godoc already calls
+//     the sibling question "the one prompt that can hang forever" and threads
+//     the context for exactly that reason; this one had no share of it. A
+//     Prompter call takes cmd.Context() and unwinds;
 //   - prompt.Fake could not see it, which made this — den's fifth interactive
 //     question — the only one a test had to script through a byte stream.
 //
@@ -447,8 +456,8 @@ func (d Deps) getenv() func(string) string {
 // reproduced — a terminal in canonical mode returns at most one line per
 // read(2), so the type-ahead stays in the tty queue rather than in the buffer,
 // and a piped run never reaches this loop at all (IsTTY sends it to the report
-// branch above). A hazard the shape carried, not a defect it was measured to
-// carry; the two above carry the change on their own.
+// branch above). A hazard the shape carried, not a defect anything establishes
+// it carried; the two above carry the change on their own.
 //
 // With it gone, "den's ONE question-asking surface" (internal/prompt/prompt.go)
 // is a fact rather than an intention: a convergence reads no stdin at all.
