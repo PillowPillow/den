@@ -1009,10 +1009,9 @@ func countCalls(m *sbx.Machine, prefix string) int {
 // times. The verdict cannot differ between two sources: it is a fact about the
 // machine, not about the source.
 //
-// The counts are what this pins, and only them. Each source still PRINTS the
-// cause on its own line when the machine cannot answer — that is a rendering
-// decision this change does not touch (measured: 3 occurrences for 2 sources,
-// before and after).
+// The COUNTS are what this pins, and only them. What an unobservable machine
+// prints is the other half of the same finding, pinned by
+// TestDoctorPrintsTheUnobservableCauseOnce below.
 func TestDoctorReadsTheMachineOnceForEverySource(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "den")
 	work := t.TempDir()
@@ -1070,5 +1069,88 @@ func TestDoctorReadsNothingForALegacyOnlyHome(t *testing.T) {
 	}
 	if n := countCalls(f, "secret ls"); n != 0 {
 		t.Errorf("`sbx secret ls` ran %d times on a legacy-only home, want 0", n)
+	}
+}
+
+// reportLine returns the single report line naming a check, so an assertion
+// can be about THAT line rather than about the whole page — "the report
+// contains X somewhere" would pass on a line meant for another source.
+func reportLine(t *testing.T, out, name string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, name) {
+			return line
+		}
+	}
+	t.Fatalf("no report line for %q:\n%s", name, out)
+	return ""
+}
+
+// The output half of F10: an unobservable machine states its cause ONCE.
+//
+// Every source's plan carries the same cause — one read feeds them all — so
+// printing it per source repeated sbx's four-line refusal down the report and
+// buried the verdicts (review PR82). doctor prints it on the `sbx policy`
+// line; each source line points there and still reports its own unknown.
+func TestDoctorPrintsTheUnobservableCauseOnce(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--name", "corp", "--answers", writeAnswerFile(t, work), "--yes",
+		"--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	blind := &sbx.Fake{Default: sbx.Response{Err: errors.New("keychain access denied")}}
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), blind)
+	if err == nil {
+		t.Fatalf("an unobservable machine must exit non-zero:\n%s", out)
+	}
+	if n := strings.Count(out, "keychain access denied"); n != 1 {
+		t.Errorf("the cause is printed %d times, want exactly 1:\n%s", n, out)
+	}
+	// The dedup must not cost the verdict: each source still fails on its own
+	// line, and still names where the cause is.
+	for _, name := range []string{"source dg", "source corp"} {
+		line := reportLine(t, out, name)
+		if !strings.Contains(line, "unknown") {
+			t.Errorf("%s no longer reports unknown: %q", name, line)
+		}
+		if !strings.Contains(line, "sbx") {
+			t.Errorf("%s points at no carrier of the cause: %q", name, line)
+		}
+	}
+}
+
+// Task 2's invariant, under the dedup above: a source that is ALSO blocked
+// keeps its BLOCKING refusal as the printed explanation.
+//
+// The refusal is about the source — a spawn would raise it — so it is not the
+// repeated machine cause the dedup targets. Blocked here by removing the
+// personal file, which is what RequireUsable refuses on.
+func TestDoctorKeepsTheBlockingRefusalOnAnUnobservableMachine(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if err := os.Remove(filepath.Join(home, "source-config", "dg.yaml")); err != nil {
+		t.Fatal(err)
+	}
+
+	blind := &sbx.Fake{Default: sbx.Response{Err: errors.New("keychain access denied")}}
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), blind)
+	if err == nil {
+		t.Fatalf("a blocked source must exit non-zero:\n%s", out)
+	}
+	line := reportLine(t, out, "source dg")
+	if !strings.Contains(line, "not configured on this machine") {
+		t.Errorf("the blocking refusal is gone from the source line: %q", line)
+	}
+	if strings.Contains(line, "keychain access denied") {
+		t.Errorf("the machine cause is repeated on a blocked source line: %q", line)
 	}
 }
