@@ -52,23 +52,27 @@ func credentialManifest() *source.Manifest {
 	}
 }
 
-// answersCmd is a bare command carrying the streams collectInitialAnswers
-// reads and writes: the function under test takes its input from the cobra
-// command, never from the process.
+// answersCmd is a bare command carrying the OUTPUT stream the collectors write
+// to: the functions under test print their context to the cobra command, never
+// to the process.
+//
+// It carries no input stream any more, and that absence is the point: since the
+// repo-choice question moved onto the Prompter, nothing in a convergence reads
+// stdin. A helper still handing one out would invite the next test to script an
+// answer den would never read.
 //
 // SetContext, so cmd.Context() answers context.Background() the way a command
 // dispatched through cobra's own Execute always does (Command.Context's own
 // doc: nil "Otherwise" — only before Execute or SetContext ran). Load-bearing
-// since stillMissingCredentials threads this context into converge.ReadSbxState;
-// a real Runner given a nil one would panic building its exec.Cmd, and even the
-// Machine double, which ignores it, should not be handed one no production
-// call path would ever produce.
-func answersCmd(stdin string) (*cobra.Command, *bytes.Buffer) {
+// since stillMissingCredentials threads this context into converge.ReadSbxState
+// and every Prompter call takes it; a real Runner given a nil one would panic
+// building its exec.Cmd, and even the Machine double, which ignores it, should
+// not be handed one no production call path would ever produce.
+func answersCmd() (*cobra.Command, *bytes.Buffer) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
-	cmd.SetIn(strings.NewReader(stdin))
 	return cmd, out
 }
 
@@ -100,7 +104,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fileCmd, _ := answersCmd("")
+	fileCmd, _ := answersCmd()
 	fromFile, err := collectFromFile(t, fileCmd, Deps{
 		Getenv: func(k string) string {
 			if k == "GLPAT" {
@@ -114,7 +118,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 	}
 
 	f := &prompt.Fake{LineAnswers: []string{root}, SecretAnswers: []string{"sentinel-secret"}}
-	interactiveCmd, out := answersCmd("")
+	interactiveCmd, out := answersCmd()
 	fromPrompt, err := collectInitialAnswers(interactiveCmd, Deps{
 		IsTTY:  func() bool { return true },
 		Prompt: f,
@@ -144,7 +148,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 // refuses rather than reading a pipe that will never answer — and names both
 // flags, because a CI needs `--answers` AND `--yes` to get through.
 func TestCollectInitialAnswersRefusesWithoutATerminal(t *testing.T) {
-	cmd, _ := answersCmd("")
+	cmd, _ := answersCmd()
 	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), converge.Answers{}, false, false)
 	if err == nil {
 		t.Fatal("expected a refusal with no terminal and no answer file")
@@ -164,7 +168,7 @@ func TestCollectInitialAnswersRefusesWithoutATerminal(t *testing.T) {
 // at once — answersManifest() with no answer file needs both roots and a
 // credential, so both must appear (M1/M2 review, Task 4).
 func TestCollectInitialAnswersRefusesWithATerminalButNoPrompter(t *testing.T) {
-	cmd, _ := answersCmd("")
+	cmd, _ := answersCmd()
 	_, err := collectInitialAnswers(cmd, Deps{IsTTY: func() bool { return true }},
 		answersManifest(), converge.Answers{}, false, false)
 	if err == nil {
@@ -193,7 +197,7 @@ func TestCollectInitialAnswersRefusesACredentialWithATerminalButNoPrompter(t *te
 	if err := os.WriteFile(path, []byte("repository_roots: ["+root+"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd, _ := answersCmd("")
+	cmd, _ := answersCmd()
 	_, err := collectFromFile(t, cmd, Deps{IsTTY: func() bool { return true }},
 		answersManifest(), path, false)
 	if err == nil {
@@ -213,7 +217,7 @@ func TestCollectInitialAnswersNeedsNoTerminalWhenTheFileIsComplete(t *testing.T)
 		"credentials:\n  gitlab_token:\n    from_env: GLPAT\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd, _ := answersCmd("")
+	cmd, _ := answersCmd()
 	a, err := collectFromFile(t, cmd, Deps{
 		Getenv: func(string) string { return "sentinel-secret" },
 	}, answersManifest(), path, false)
@@ -235,7 +239,7 @@ func TestCollectInitialAnswersRefusesAGenuinelyAbsentRegistryCredential(t *testi
 	m := sbx.NewMachine()
 	m.Services["github"] = true // present: must not be named in this refusal
 
-	cmd, _ := answersCmd("")
+	cmd, _ := answersCmd()
 	_, err := collectInitialAnswers(cmd, Deps{Sbx: m}, credentialManifest(),
 		converge.Answers{}, false, true)
 	if err == nil {
@@ -268,7 +272,7 @@ func TestCollectInitialAnswersRefusesAnAbsentGithubCredentialNamingTheTerminal(t
 	m := sbx.NewMachine()
 	m.Registries["registry.example.test:443"] = true // present: must not be named below
 
-	cmd, _ := answersCmd("")
+	cmd, _ := answersCmd()
 	_, err := collectFromFile(t, cmd, Deps{
 		Sbx:    m,
 		Getenv: func(k string) string { return map[string]string{"TEST_REGISTRY_TOKEN": "tok"}[k] },
@@ -302,7 +306,7 @@ func TestCollectInitialAnswersNamesTheReadFailureWhenSbxIsUnreadable(t *testing.
 		"secret ls -g": {Err: readErr},
 	}}
 
-	cmd, _ := answersCmd("")
+	cmd, _ := answersCmd()
 	_, err := collectInitialAnswers(cmd, Deps{Sbx: f}, credentialManifest(),
 		converge.Answers{}, false, true)
 	if err == nil {
@@ -341,7 +345,7 @@ func TestCollectInitialAnswersDoesNotRefuseOverAnAbsentGithubCredentialOnAPlanOn
 	}
 	m := sbx.NewMachine() // github absent
 
-	cmd, _ := answersCmd("")
+	cmd, _ := answersCmd()
 	_, err := collectFromFile(t, cmd, Deps{
 		Sbx:    m,
 		Getenv: func(k string) string { return map[string]string{"TEST_REGISTRY_TOKEN": "tok"}[k] },
@@ -632,7 +636,7 @@ func TestConfirm(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cmd, out := answersCmd("")
+			cmd, out := answersCmd()
 			f := &prompt.Fake{}
 			if c.confirmAnswer != nil {
 				f.ConfirmAnswers = []bool{*c.confirmAnswer}
@@ -694,10 +698,25 @@ func TestResolveRepoChoicesWritesConfirmedChoicesIntoTheAnswers(t *testing.T) {
 			Kind:        converge.MatchAbsent,
 		},
 	}
-	cmd, out := answersCmd("2\n\n")
+	cmd, out := answersCmd()
+	// The second candidate for `crm`, then an empty line declining `docs`.
+	f := &prompt.Fake{LineAnswers: []string{"2", ""}}
 	a := converge.Answers{}
-	if err := resolveRepoChoices(cmd, Deps{IsTTY: func() bool { return true }}, matches, &a); err != nil {
+	d := Deps{IsTTY: func() bool { return true }, Prompt: f}
+	if err := resolveRepoChoices(cmd, d, matches, &a); err != nil {
 		t.Fatalf("resolveRepoChoices: %v", err)
+	}
+	// The question itself must go through the Prompter: a raw bufio read
+	// between two huh forms can buffer type-ahead the next form never sees,
+	// and gets neither the terminal gate nor the cancelled path. One question
+	// per pending match, and none for the two matches den settles alone.
+	if len(f.Lines) != 2 {
+		t.Fatalf("resolveRepoChoices asked %d Line question(s), want 2 through the Prompter", len(f.Lines))
+	}
+	for _, r := range f.Lines {
+		if !strings.Contains(r.Question, "choose a number") {
+			t.Errorf("the question must still name what an answer may be: %q", r.Question)
+		}
 	}
 	if a.Repos["crm"] != "/dev/two/crm" {
 		t.Errorf("repos = %#v, want the chosen candidate", a.Repos)
@@ -721,17 +740,48 @@ func TestResolveRepoChoicesReportsWithoutATerminal(t *testing.T) {
 		Requirement: converge.RepoRequirement{Key: "crm"},
 		Kind:        converge.MatchAmbiguous, Candidates: []string{"/dev/one/crm", "/dev/two/crm"},
 	}}
-	cmd, out := answersCmd("")
+	cmd, out := answersCmd()
+	f := &prompt.Fake{}
 	a := converge.Answers{}
-	if err := resolveRepoChoices(cmd, Deps{}, matches, &a); err != nil {
+	if err := resolveRepoChoices(cmd, Deps{Prompt: f}, matches, &a); err != nil {
 		t.Fatalf("resolveRepoChoices: %v", err)
 	}
 	if len(a.Repos) != 0 {
 		t.Errorf("repos = %#v, expected nothing chosen without a terminal", a.Repos)
 	}
+	if len(f.Lines) != 0 {
+		t.Errorf("a run with no terminal must report, not ask: %v", f.Lines)
+	}
 	for _, want := range []string{"crm", "repos:"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output must name %q:\n%s", want, out.String())
 		}
+	}
+}
+
+// A terminal with no Prompter behind it is a WIRING fault, and den says so
+// rather than skipping the question in silence.
+//
+// Same family as the guards in collectInitialAnswers and confirm: skipping here
+// would leave the repository unmapped and the nests not_ready, with nothing in
+// the output pointing at the missing Deps.Prompt. The guard is self-gating —
+// it sits below the non-TTY report branch, so a scripted run with no Prompter
+// still reports its unconfirmed matches instead of being refused.
+func TestResolveRepoChoicesRefusesWithATerminalAndNoPrompter(t *testing.T) {
+	matches := []converge.RepoMatch{{
+		Requirement: converge.RepoRequirement{Key: "crm"},
+		Kind:        converge.MatchAmbiguous, Candidates: []string{"/dev/one/crm", "/dev/two/crm"},
+	}}
+	cmd, _ := answersCmd()
+	a := converge.Answers{}
+	err := resolveRepoChoices(cmd, Deps{IsTTY: func() bool { return true }}, matches, &a)
+	if err == nil {
+		t.Fatal("den asked a repo-choice question with no prompter to ask it on")
+	}
+	if !strings.Contains(err.Error(), "den defect") {
+		t.Errorf("the refusal must name the fault as den's, not the user's: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--answers") {
+		t.Errorf("the refusal must name the workaround: %v", err)
 	}
 }
