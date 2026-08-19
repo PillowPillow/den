@@ -71,9 +71,11 @@ func RenderStatus(w io.Writer, p *Plan) {
 	fmt.Fprintf(w, "source: %s  version: %s  status: %s", p.Source, p.Version, p.Status)
 	// The verdict's reason, in the same voice `den doctor` uses (sourceDetail,
 	// internal/cli/doctor.go: "<summary> — <first warning>"). Service.Status
-	// appends the RequireUsable refusal to Warnings before setting the status
-	// to blocked — that warning IS the explanation, and doctor already prints
-	// it for this source. Without this line `den source status` said only
+	// PREPENDS the RequireUsable refusal to Warnings before setting the status
+	// to blocked, so on a blocked source it is Warnings[0] — that warning IS
+	// the explanation printed here, whatever observation warning got there
+	// first, and doctor already prints it for this source. Without this line
+	// `den source status` said only
 	// "blocked" while `den doctor` named the reason for the same source: two
 	// commands disagreeing about why. Narrowed to non-ready: a ready source
 	// has nothing to explain, and printing every warning regardless of status

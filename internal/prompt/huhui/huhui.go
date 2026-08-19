@@ -13,6 +13,7 @@
 package huhui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -65,28 +66,87 @@ func (p *Prompter) gate() error {
 
 // run executes one single-field form, in line, on den's descriptors.
 //
-// WithAccessible is never called, and that is a decision, not an omission
+// den never calls WithAccessible, and that is a decision, not an omission
 // (spec §8): accessible mode replaces the form with a plaintext question, and
 // den does not have a degraded mode — it has refusals that name the flag doing
 // the same job.
+//
+// huh turns it on ITSELF, which den not calling it does not prevent: NewForm
+// sets WithAccessible(true) when TERM=dumb (huh@v1.0.0 form.go:124-127), and
+// RunWithContext then short-circuits to runAccessible (form.go:670-671), which
+// ignores ctx and discards every field error (form.go:713: `_ = field.
+// WithAccessible(true).RunAccessible(w, r)`) before returning nil. Everything
+// below is bypassed on that path — the keymap, the cancellation, the
+// fail-closed error handling — and a MultiSelect answers an empty selection
+// with a nil error, which is a selection nobody made reported as success.
+// gate() does not refuse TERM=dumb today: that is a behavior change, escalated
+// as its own decision (review PR82, I2), not something a comment settles.
 //
 // No alt-screen: measured 2026-08-18, huh's default emits no ^[[?1049h, so
 // den's own output — above all the converge plan a human is being asked to
 // consent to — stays on screen above the form. internal/converge/render.go
 // calls that plan the trust boundary; a form that scrolled it away would make
 // the confirmation uninformed consent.
-func (p *Prompter) run(field huh.Field) error {
+//
+// ctx is the command's own cancellation context (internal/cli/root.go's
+// signal.NotifyContext, carried by cobra), and it is a parameter rather than a
+// field because a Prompter outlives no single question: one run of den asks
+// several, and each must die with the command that asked it.
+func (p *Prompter) run(ctx context.Context, field huh.Field) error {
+	// ctrl+d joins ctrl+c on Quit. The bufio path this package replaced read
+	// through a Scanner, so a terminal EOF refused loudly — "-i: input ended
+	// before the selection was confirmed (a pipe, a closed terminal)"
+	// (internal/spawn/interactive.go at 8514bd2), because confirming the
+	// current state instead would be den deciding for the user. huh's default
+	// spends that keystroke on half-page scrolling (keymap.go:151 and :166 bind
+	// ctrl+d to Select/MultiSelect HalfPageDown), which turns EOF into a silent
+	// no-answer. It has to reach the fail-closed cancel path below.
+	//
+	// Rebinding the form-level Quit is the whole fix ON THE BUBBLETEA PATH —
+	// the only path a keymap exists on, since TERM=dumb sends huh through
+	// runAccessible, which consults none of this (see the godoc above).
+	// Verified in huh@v1.0.0:
+	// WithKeyMap reassigns f.keymap (form.go:290) before propagating it to the
+	// groups, and Form.Update matches f.keymap.Quit and RETURNS (form.go:557-563)
+	// before group.Update ever runs (form.go:615) — no field's keymap sees
+	// ctrl+d at all. Clearing HalfPageDown as well would be dead code twice
+	// over: unreachable by that order, and never advertised either way, since
+	// HalfPageDown appears in neither MultiSelect.KeyBinds
+	// (field_multiselect.go:249-273) nor Select.KeyBinds (field_select.go:307-320).
+	//
+	// The trade, stated rather than left to be discovered: ctrl+d now aborts
+	// whatever is already typed, where the canonical-mode EOF it restores fired
+	// only on an empty line, and it takes ctrl+d away from textinput's
+	// DeleteCharacterForward (bubbles textinput.go:78) — including while a
+	// Select filter is being typed. Fail-closed is worth all three.
+	km := huh.NewDefaultKeyMap()
+	km.Quit.SetKeys("ctrl+c", "ctrl+d")
 	err := huh.NewForm(huh.NewGroup(field)).
+		WithKeyMap(km).
 		WithInput(p.In).
 		WithOutput(p.Out).
-		Run()
+		RunWithContext(ctx)
+	if ctx.Err() != nil {
+		// The command's context died while the form was up — SIGTERM, SIGINT
+		// handled by root.go's NotifyContext, or a parent timeout. huh reports
+		// this as ErrTimeout (form.go:693-694 maps tea.ErrProgramKilled, and
+		// den sets no huh timeout at all), which would read as a den defect;
+		// the truth is a shutdown, and the answer to a question nobody
+		// finished answering is no answer at all.
+		//
+		// Checked BEFORE the error, so a form that happened to submit as the
+		// signal arrived is discarded too. Fail-closed on purpose: den is on
+		// its way out, and applying a plan while shutting down is the one
+		// outcome worse than losing an answer.
+		return fmt.Errorf("cancelled: %w", ctx.Err())
+	}
 	if errors.Is(err, huh.ErrUserAborted) {
-		// ctrl+c is an answer, and the answer is no. Callers wrap this error
-		// into their own refusal (e.g. "-i: reading the selection: cancelled;
-		// ..." in internal/spawn); den exits non-zero and applies nothing.
-		// This does NOT print a cancel-specific line of its own — confirm()
-		// only prints "nothing was applied" when the answer is an explicit
-		// No, not on ctrl+c (internal/cli/answers.go).
+		// ctrl+c and ctrl+d are answers, and the answer is no. Callers wrap
+		// this error into their own refusal (e.g. "-i: reading the selection:
+		// cancelled; ..." in internal/spawn); den exits non-zero and applies
+		// nothing. This does NOT print a cancel-specific line of its own —
+		// confirm() only prints "nothing was applied" when the answer is an
+		// explicit No, not on an abort (internal/cli/answers.go).
 		return errors.New("cancelled")
 	}
 	return err
@@ -117,7 +177,7 @@ func optionsFor(r prompt.MultiSelectRequest) []huh.Option[string] {
 	return options
 }
 
-func (p *Prompter) MultiSelect(r prompt.MultiSelectRequest) ([]string, error) {
+func (p *Prompter) MultiSelect(ctx context.Context, r prompt.MultiSelectRequest) ([]string, error) {
 	if err := p.gate(); err != nil {
 		return nil, err
 	}
@@ -129,46 +189,54 @@ func (p *Prompter) MultiSelect(r prompt.MultiSelectRequest) ([]string, error) {
 	// No Limit call: a MultiSelect with no floor is what lets a `select:
 	// prompt` nest be confirmed empty (measured, spec §3.f), which is that
 	// mode's entire contract.
-	if err := p.run(field); err != nil {
+	if err := p.run(ctx, field); err != nil {
 		return nil, err
 	}
 	return chosen, nil
 }
 
-func (p *Prompter) Confirm(r prompt.ConfirmRequest) (bool, error) {
+func (p *Prompter) Confirm(ctx context.Context, r prompt.ConfirmRequest) (bool, error) {
 	if err := p.gate(); err != nil {
 		return false, err
 	}
 	var yes bool
 	// Affirmative/Negative are left at their defaults, and the field starts on
 	// the negative: den never defaults to yes on a plan (spec 2026-08-14 §7.1).
-	if err := p.run(huh.NewConfirm().Title(r.Question).Value(&yes)); err != nil {
+	if err := p.run(ctx, huh.NewConfirm().Title(r.Question).Value(&yes)); err != nil {
 		return false, err
 	}
 	return yes, nil
 }
 
-func (p *Prompter) Line(r prompt.LineRequest) (string, error) {
+func (p *Prompter) Line(ctx context.Context, r prompt.LineRequest) (string, error) {
 	if err := p.gate(); err != nil {
 		return "", err
 	}
 	var line string
-	if err := p.run(huh.NewInput().Title(r.Question).Value(&line)); err != nil {
+	if err := p.run(ctx, huh.NewInput().Title(r.Question).Value(&line)); err != nil {
 		return "", err
 	}
 	return line, nil
 }
 
-func (p *Prompter) Secret(r prompt.SecretRequest) (string, error) {
+func (p *Prompter) Secret(ctx context.Context, r prompt.SecretRequest) (string, error) {
 	if err := p.gate(); err != nil {
 		return "", err
 	}
 	var secret string
 	field := huh.NewInput().
 		Title(r.Prompt).
-		EchoMode(huh.EchoModePassword).
+		// EchoModeNone, not EchoModePassword: the mask mode renders one
+		// character per keystroke, disclosing the credential's LENGTH to a
+		// screen-share or a terminal recording, and leaves the masked line in
+		// scrollback. EchoModeNone "displays nothing as characters are
+		// entered" (huh@v1.0.0 field_input.go:189-191). The term.ReadPassword
+		// this replaces echoed nothing, and internal/cli/answers.go promises
+		// "Never echoed" at the call site — this line is what keeps that
+		// sentence true.
+		EchoMode(huh.EchoModeNone).
 		Value(&secret)
-	if err := p.run(field); err != nil {
+	if err := p.run(ctx, field); err != nil {
 		return "", err
 	}
 	return secret, nil

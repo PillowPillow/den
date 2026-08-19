@@ -80,6 +80,13 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 					"its sandbox is gone\n", b.Path, b.Err)
 			}
 			checks = append(checks, doctor.OrphanCheck(live, manifests))
+			// Appended as they come, both of them: no check here decides how
+			// another one words itself. den used to hold the policy checks and
+			// hand the source lines a flag saying "some check already states
+			// why the machine is blind" — a test of EXISTENCE, not of
+			// identity, which printed no cause at all when the two sbx reads
+			// failed for different reasons (review PR82, I1). The source lines
+			// now deduplicate among themselves; see sourceChecks.
 			checks = append(checks, networkPolicyChecks(cmd.Context(), deps, runner)...)
 			checks = append(checks, sourceChecks(cmd.Context(), home, runner, g)...)
 
@@ -205,25 +212,69 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 //
 // One check per source, in sorted order, and a legacy source produces none —
 // it declares nothing to converge, so there is nothing doctor could judge.
-func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktree.Git) []doctor.Check {
+//
+// The cause of an UNOBSERVABLE machine is stated on the FIRST source line that
+// can state it, and every following one points at that line by name. It is a
+// fact about the machine, identical in every source's plan — printing it per
+// source repeated sbx's four-line refusal down the report and buried the
+// verdicts it was meant to explain (review PR82). Deduplicating among the
+// source lines THEMSELVES is what makes the count one whatever else the report
+// contains; see sourceDetail.
+//
+// "The first line that CAN state it" is the exact claim, and the qualifier is
+// load-bearing: a blocked source prints its own refusal instead (see
+// sourceDetail), so a home whose only unobservable source is also blocked
+// states the machine cause on no source line at all — as it did before this
+// dedup existed. The cause is still `den source status <name>`, and the `sbx
+// policy` line when the policy read is what failed.
+func sourceChecks(ctx context.Context, home string, runner sbx.Runner,
+	g worktree.Git) []doctor.Check {
 	names, err := source.Names(home)
-	if err != nil || len(names) == 0 {
+	if err != nil {
 		// A home with no sources/ directory is the normal case, not a fault.
 		return nil
 	}
-	svc := converge.Service{Git: g, Sbx: runner}
-	var checks []doctor.Check
+	// The manifested sources are selected BEFORE the observation below, so a
+	// home holding only legacy ones still runs no sbx at all — it declares
+	// nothing to judge, and reading the machine to judge nothing would be a
+	// subprocess this function used to owe nobody.
+	manifested := make([]string, 0, len(names))
 	for _, name := range names {
-		if !source.HasManifest(source.Dir(home, name)) {
-			continue
+		if source.HasManifest(source.Dir(home, name)) {
+			manifested = append(manifested, name)
 		}
-		plan, err := svc.Status(ctx, home, name)
+	}
+	if len(manifested) == 0 {
+		return nil
+	}
+	svc := converge.Service{Git: g, Sbx: runner}
+	// ONE observation for every source: Status re-reading the machine per
+	// source ran the same two sbx subprocesses once per source, for a verdict
+	// that cannot change between two of them — it is machine state, not source
+	// state (review PR82).
+	//
+	// A FAILED observation lands in every source's plan, so it is stated on the
+	// first line that can state it and pointed at from the rest — see
+	// sourceDetail below.
+	state, observeErr := converge.ReadSbxState(ctx, runner)
+	var checks []doctor.Check
+	// statedBy is the source whose line already printed that cause, empty
+	// while none has. The sorted iteration is what makes the pointer honest:
+	// source.Names returns os.ReadDir's entries, which are sorted by name, so
+	// the source it names has already been printed ABOVE the line naming it.
+	statedBy := ""
+	for _, name := range manifested {
+		plan, err := svc.StatusWith(ctx, home, name, state, observeErr)
 		if err != nil {
 			checks = append(checks, doctor.Check{Name: "source " + name, Level: doctor.LevelFail,
 				Detail: err.Error()})
 			continue
 		}
-		checks = append(checks, doctor.SourceCheck(name, plan.Status, sourceDetail(plan)))
+		detail, stated := sourceDetail(plan, statedBy)
+		if stated {
+			statedBy = name
+		}
+		checks = append(checks, doctor.SourceCheck(name, plan.Status, detail))
 	}
 	return checks
 }
@@ -232,13 +283,58 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 // verdict, and the first thing to do about it. The full report — every
 // resource, every nest — is `den source status <name>`, which the detail names
 // when there is something to read there.
-func sourceDetail(p *converge.Plan) string {
+//
+// An UNOBSERVABLE machine is the one case where the plan's own first warning
+// is not always what doctor prints. Every source's plan carries the same cause
+// — they all come from the one read in sourceChecks — so printing it per source
+// repeated sbx's four-line refusal down the report and buried the verdicts it
+// was meant to explain (review PR82).
+//
+// statedBy is the source whose line printed that cause above; empty means no
+// line has, and then THIS one prints it — unless it is blocked, in which case
+// it owes its own refusal instead and states nothing about the machine. So a
+// cause is stated once by the lines that can state it, never twice, and the
+// question of whether some OTHER kind of check happens to carry it never
+// arises. den used to ask exactly that question, and answered
+// it by existence rather than by identity: when `secret ls -g` failed on one
+// cause and doctor's own `policy ls` on another, every source line pointed at
+// a check stating the second while the first was printed nowhere at all
+// (review PR82, I1).
+//
+// The returned bool says this line PRINTED the cause — never merely that the
+// plan is unobserved. The caller advances statedBy on it, so a true from a
+// line carrying no cause would delete that cause from the whole report, which
+// is the fault this shape removes.
+//
+// Only the unobserved cause is ever deduplicated. A source that is ALSO blocked
+// keeps its blocking refusal printed here, because that one IS about the
+// source: RequireUsable's message is what Status prepends to Warnings, and a
+// blocked source must say what a spawn would refuse (see Status). The two are
+// told apart by the status — with a failed observation every resource is
+// unknown, so AggregateStatus can only answer `unknown`, and `blocked` on top
+// of an unobserved plan can only have come from that prepend.
+//
+// This lives in doctor and nowhere else — not because `den source status` is
+// exempt. Its bare form loops over every source too and does print the cause
+// once per source. It is that the loop is what holds statedBy;
+// converge.RenderStatus renders one plan at a time and cannot know whether
+// another line already carried the cause.
+func sourceDetail(p *converge.Plan, statedBy string) (string, bool) {
 	detail := fmt.Sprintf("version %s: %s", p.Version, p.Status)
+	unobserved := p.Unobserved != nil && p.Status != source.StatusBlocked
+	if unobserved && statedBy != "" {
+		return detail + fmt.Sprintf(
+			" — den could not observe this machine: same cause as `source %s` above", statedBy), false
+	}
+	// Warnings[0] is the unobserved cause on an unobserved plan — the ONE
+	// wording, appended by Status (converge.unobservedWarning) and prepended
+	// past only by a blocking refusal, which the status above excluded. The
+	// bool is returned from HERE, where the cause is actually concatenated.
 	if len(p.Warnings) > 0 {
-		return detail + " — " + p.Warnings[0]
+		return detail + " — " + p.Warnings[0], unobserved
 	}
 	if p.Status != source.StatusReady {
-		return detail + fmt.Sprintf(" — `den source status %s` says what is missing", p.Source)
+		return detail + fmt.Sprintf(" — `den source status %s` says what is missing", p.Source), false
 	}
-	return detail
+	return detail, false
 }

@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -15,10 +16,10 @@ import (
 // is one answer short would then pass while asserting on a phantom.
 func TestFakeRefusesWhenTheScriptRunsOut(t *testing.T) {
 	f := &Fake{}
-	if _, err := f.MultiSelect(MultiSelectRequest{Title: "pick"}); err == nil {
+	if _, err := f.MultiSelect(context.Background(), MultiSelectRequest{Title: "pick"}); err == nil {
 		t.Fatal("an exhausted Fake must refuse, not answer nothing")
 	}
-	_, err := f.Confirm(ConfirmRequest{Question: "apply?"})
+	_, err := f.Confirm(context.Background(), ConfirmRequest{Question: "apply?"})
 	if err == nil {
 		t.Fatal("an exhausted Fake must refuse on Confirm too")
 	}
@@ -31,7 +32,7 @@ func TestFakeRefusesWhenTheScriptRunsOut(t *testing.T) {
 // rendered checklist move here when the bufio renderer goes away (spec §6).
 func TestFakeRecordsTheRequest(t *testing.T) {
 	f := &Fake{MultiSelectAnswers: [][]string{{"worker"}}}
-	got, err := f.MultiSelect(MultiSelectRequest{
+	got, err := f.MultiSelect(context.Background(), MultiSelectRequest{
 		Title:       "nest api: 2 optional repo(s)",
 		Options:     []Option{{Value: "worker", Label: "worker"}},
 		Preselected: true,
@@ -57,7 +58,7 @@ func TestFakeRecordsTheRequest(t *testing.T) {
 func TestFakeErrWinsOverTheScript(t *testing.T) {
 	boom := errors.New("boom")
 	f := &Fake{ConfirmAnswers: []bool{true}, Err: boom}
-	if _, err := f.Confirm(ConfirmRequest{Question: "apply?"}); !errors.Is(err, boom) {
+	if _, err := f.Confirm(context.Background(), ConfirmRequest{Question: "apply?"}); !errors.Is(err, boom) {
 		t.Errorf("Err must win over a scripted answer, got %v", err)
 	}
 }

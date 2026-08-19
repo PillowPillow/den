@@ -155,6 +155,26 @@ func (s Service) Plan(ctx context.Context, req Request) (*Plan, error) {
 // machine is `unknown`, which is a state doctor renders and exits non-zero on
 // (spec §12.2), never an error that would leave it with nothing to print.
 func (s Service) Status(ctx context.Context, denHome, name string) (*Plan, error) {
+	state, observeErr := ReadSbxState(ctx, s.Sbx)
+	return s.StatusWith(ctx, denHome, name, state, observeErr)
+}
+
+// StatusWith is Status with the sbx observation supplied by the caller.
+//
+// It exists for a caller that reports on SEVERAL sources in one run — `den
+// doctor`, which ran the same two sbx subprocesses once per source because
+// Status read the machine itself (review PR82). The observation is a fact
+// about the MACHINE, not about a source: it cannot differ between two of them,
+// so sharing one read is the truthful shape rather than an optimization that
+// trades accuracy for speed.
+//
+// state and observeErr are one ReadSbxState result, passed as it was returned:
+// state is nil exactly when observeErr is not. Sharing the pointer across
+// sources is safe because nothing on this path writes through it — Inspect and
+// Plan only read the maps, and the drivers that reassign state (Verify) run on
+// the apply path a status never takes.
+func (s Service) StatusWith(ctx context.Context, denHome, name string,
+	state *SbxState, observeErr error) (*Plan, error) {
 	c, err := source.InstalledCandidate(ctx, s.Git, denHome, name)
 	if err != nil {
 		return nil, err
@@ -168,7 +188,6 @@ func (s Service) Status(ctx context.Context, denHome, name string) (*Plan, error
 	}
 
 	plan := &Plan{Source: name, Version: m.Metadata.Version}
-	state, observeErr := ReadSbxState(ctx, s.Sbx)
 	if observeErr != nil {
 		plan.Unobserved = observeErr
 		plan.Warnings = append(plan.Warnings, unobservedWarning(observeErr))
@@ -209,7 +228,13 @@ func (s Service) Status(ctx context.Context, denHome, name string) (*Plan, error
 	// resources look like: den refuses to use it, and a status reporting
 	// "ready" next to a spawn that refuses would be the worse of the two lies.
 	if _, err := source.RequireUsable(denHome, name); err != nil {
-		plan.Warnings = append(plan.Warnings, err.Error())
+		// PREPENDED, not appended: RenderStatus and doctor's sourceDetail print
+		// only Warnings[0], and for a blocked source that line must be the
+		// refusal a spawn would raise — not whichever observation warning got
+		// there first. An unobservable machine that is ALSO blocked stays
+		// blocked for the blocking reason; the unobserved cause keeps its own
+		// entry right behind it.
+		plan.Warnings = append([]string{err.Error()}, plan.Warnings...)
 		plan.Status = source.StatusBlocked
 	}
 	return plan, nil
@@ -286,10 +311,43 @@ func (s Service) Unobservable(req Request, plan *Plan) error {
 	if plan == nil || plan.Unobserved == nil {
 		return nil
 	}
+	return s.unobservableRefusal(req, plan.Unobserved)
+}
+
+// unobservableRefusal is the ONE wording of that refusal, shared by the check
+// that reads it off a plan and the probe that raises it without one. Two
+// spellings would let a user meet the same fact under two remedies depending
+// on how early den noticed it.
+//
+// It reads nothing a probe does not hold yet: retryCommand needs the mode, the
+// name and the candidate URL, all of them set before the first question is
+// asked.
+func (s Service) unobservableRefusal(req Request, cause error) error {
 	return fmt.Errorf(
 		"source %q: %w — den will not converge a machine it cannot see; fix that read "+
 			"(`den doctor` reports it), then run `%s`. Nothing was applied",
-		req.Name, plan.Unobserved, s.retryCommand(req))
+		req.Name, cause, s.retryCommand(req))
+}
+
+// Observable asks the machine the same question Plan will, EARLIER: before the
+// first prompt.
+//
+// The prompts in collectInitialAnswers collect a credential den immediately
+// discards when the machine turns out unobservable — the 2026-08-18 report
+// named that exact shape, and the refusal that used to sit only after Plan
+// still let it happen: den asked for a GitLab token, then refused. One extra
+// ReadSbxState per run is the price; a secret typed into a run that was doomed
+// before the question is the regression it buys back.
+//
+// It does NOT replace the checks on the plans themselves. This probe and they
+// cover different windows — the machine can die between the probe and a Plan,
+// and between the two Plans — and a fact observed early is not a fact that
+// stays true.
+func (s Service) Observable(ctx context.Context, req Request) error {
+	if _, err := ReadSbxState(ctx, s.Sbx); err != nil {
+		return s.unobservableRefusal(req, err)
+	}
+	return nil
 }
 
 func buildList(m *source.Manifest) string {
@@ -577,8 +635,11 @@ func (s Service) resumeCommand(req Request) string {
 
 // retryCommand names the command that starts this convergence OVER, for a
 // refusal raised BEFORE Apply ran — where resumeCommand names the one that
-// picks up a convergence interrupted halfway. The two differ on ModeInit, and
-// the difference is load-bearing.
+// picks up a convergence interrupted halfway. The two differ on ModeInit and
+// on ModeUpdate, and both differences are load-bearing — same cause each time:
+// what Apply does on its way in has not happened yet when this refusal fires.
+// It writes the fresh config.yaml on ModeInit, and it moves the checkout onto
+// the candidate on ModeUpdate.
 //
 // resumeCommand can name `den source add` on ModeInit because it only ever
 // speaks from inside Apply, which writes the fresh config.yaml as its very
@@ -595,6 +656,13 @@ func (s Service) retryCommand(req Request) string {
 		return fmt.Sprintf("den init --source %s --name %s", s.candidateURL(req), req.Name)
 	case ModeAdd:
 		return fmt.Sprintf("den source add %s --name %s", s.candidateURL(req), req.Name)
+	case ModeUpdate:
+		// `den source configure` would be a lie here: fastForward only runs
+		// inside Apply, so at refusal time the checkout still carries the OLD
+		// version — configure would converge it, report success, and the
+		// published update would silently never land. The retry must restart
+		// the update itself.
+		return fmt.Sprintf("den source update %s", req.Name)
 	default:
 		return fmt.Sprintf("den source configure %s", req.Name)
 	}

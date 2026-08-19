@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -792,5 +793,472 @@ func TestSourceAddRefusesAnUnobservableMachineBeforeConfirming(t *testing.T) {
 	}
 	if exists(t, source.ReceiptPath(home, "dg")) {
 		t.Errorf("den opened the applying window on a machine it could not observe")
+	}
+}
+
+// den asks NOTHING on a machine it cannot observe.
+//
+// The test above passes `--answers`, which is exactly what hides this half:
+// with a file supplying the roots and the credential, den has no question left
+// to ask, so a refusal placed after the questions and one placed before them
+// are indistinguishable there. This run carries no answer file at all — the
+// fresh-laptop shape the 2026-08-18 report described — so the repository-roots
+// question and the registry-token prompt are both live. den must refuse before
+// either: a token typed into a run that was doomed before the question is a
+// secret collected for nothing, and the human retypes it on the retry.
+//
+// The prompter is scripted with answers it must never consume. Without them a
+// regression would fail on prompt.Fake's "no scripted answer left" instead of
+// on the assertions below, which would pass this test for the wrong reason the
+// day the refusal moves again.
+func TestSourceAddAsksNothingOnAnUnobservableMachine(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	f := convergedSbx()
+	f.Fail["secret ls -g"] = errors.New("keychain access denied")
+	d := convergeDeps(f)
+	d.IsTTY = func() bool { return true }
+	pf := &prompt.Fake{
+		LineAnswers:    []string{work},
+		SecretAnswers:  []string{"sentinel-token"},
+		ConfirmAnswers: []bool{true},
+	}
+	d.Prompt = pf
+
+	root := NewRootCmdWith(d)
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetIn(strings.NewReader(""))
+	root.SetArgs([]string{"source", "add", makeManifestedSourceRepo(t), "--den-home", home})
+	err := root.Execute()
+	out := buf.String()
+
+	if err == nil {
+		t.Fatalf("den converged a machine it could not observe:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "den will not converge a machine it cannot see") {
+		t.Errorf("the refusal is not the unobservable one: %v\n%s", err, out)
+	}
+	if len(pf.Secrets) != 0 {
+		t.Errorf("den collected a credential it was about to discard: %v", pf.Secrets)
+	}
+	// Two questions land in Fake.Lines now — the repository roots and the
+	// repo choices — and this run must have asked neither: it was already lost
+	// before the collector ran, and lost again before the second planning pass.
+	if len(pf.Lines) != 0 {
+		t.Errorf("den asked a line question on a run it had already lost: %v", pf.Lines)
+	}
+}
+
+// blindingPrompter blinds the machine the first time den asks a Line question.
+//
+// It replaces a blindingReader that hooked stdin, back when resolveRepoChoices
+// was den's only production stdin read; that question now goes through the
+// Prompter, so the hook moved with it. The window is unchanged — the repository
+// choice is asked between the two planning passes, so blinding the machine here
+// reproduces the sbx daemon dying while the human answers, which is what the
+// second guard covers. Driving it from the QUESTION rather than from a call
+// counter keeps the test independent of how many times den observes the
+// machine, which is exactly what this change alters.
+//
+// The blind fires BEFORE the answer is produced, for the same reason it fired
+// before the Read returned: den must still be waiting on the human when the
+// machine goes away.
+//
+// No mutex: the only goroutine that touches the Machine is the one calling
+// Line, since den scans, plans and applies sequentially on the command's own
+// goroutine.
+type blindingPrompter struct {
+	*prompt.Fake
+	blind func()
+	fired bool
+}
+
+func (p *blindingPrompter) Line(ctx context.Context, r prompt.LineRequest) (string, error) {
+	if !p.fired {
+		p.fired = true
+		p.blind()
+	}
+	return p.Fake.Line(ctx, r)
+}
+
+// A machine that stops answering BETWEEN the two planning passes is refused
+// too — the second plan is checked, not only the first.
+//
+// The first pass observed a healthy machine, so the early probe and the guard
+// under it both passed. Then the human answered a repository choice, the daemon
+// died, and the second pass — the one whose plan is actually printed and
+// confirmed — came back all-`unknown`. Without a re-check den printed that plan,
+// took the `y`, and refused from inside Apply with the applying receipt already
+// written: the exact shape the first guard exists to prevent, reached through
+// the one door that guard does not cover.
+func TestConvergenceRefusesWhenTheMachineBecomesUnobservableMidRun(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	// A directory named like the repository whose remote does NOT confirm it:
+	// discovery leaves it unconfirmed, which is what makes den ask, and asking
+	// is what opens the window this test drives.
+	makeWorkRepoFor(t, work, "api", "https://git.example.test/someone-else/api.git")
+	f := convergedSbx()
+	d := convergeDeps(f)
+	d.IsTTY = func() bool { return true }
+	// One LineAnswer, because `api` is the single unconfirmed match — the
+	// optional `front` is absent, and an absent repository has no candidate to
+	// choose. ConfirmAnswers says yes: without the re-check den must get all the
+	// way to Apply, which is the failure this pins. With it, Confirm is never
+	// called.
+	pf := &prompt.Fake{LineAnswers: []string{"1"}, ConfirmAnswers: []bool{true}}
+	d.Prompt = &blindingPrompter{
+		Fake: pf,
+		blind: func() {
+			f.Fail["secret ls -g"] = errors.New("the sbx daemon stopped answering")
+		},
+	}
+
+	root := NewRootCmdWith(d)
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"init", "--source", makeManifestedSourceRepo(t),
+		"--answers", writeAnswerFile(t, work), "--den-home", home})
+	err := root.Execute()
+	out := buf.String()
+
+	if err == nil {
+		t.Fatalf("den converged a machine that went blind mid-run:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "den will not converge a machine it cannot see") {
+		t.Errorf("the refusal came from somewhere other than the unobservable guard: %v\n%s", err, out)
+	}
+	// The blind must have fired on the repo-choice question, not on the
+	// repository-roots one. Line has two production callers now, and this test
+	// reaches the right one only because the answer file supplies the roots —
+	// so the repo choice IS the first Line call, and blinding there falls
+	// between the two planning passes. Should a future fixture make den ask for
+	// roots as well, the blind would fire before the FIRST plan, the first
+	// guard would refuse with the identical message, and this test would go on
+	// passing without covering its own window.
+	if len(pf.Lines) != 1 || !strings.Contains(pf.Lines[0].Question, "repo api") {
+		t.Errorf("the machine went blind on the wrong question: %v", pf.Lines)
+	}
+	if len(pf.Confirms) != 0 {
+		t.Errorf("den asked to confirm an all-unknown plan: %v", pf.Confirms)
+	}
+	if exists(t, source.ReceiptPath(home, "dg")) {
+		t.Errorf("den opened the applying window on a machine it could not observe")
+	}
+}
+
+// A bad answer file is refused BEFORE den asks the machine anything.
+//
+// den refuses on what files alone decide before it observes — the doctrine that
+// orders the spawn sequence (spec §6), applied to a convergence. The machine
+// here is blind AND the file is wrong: reporting the machine first would send
+// the user to fix sbx, re-run, and only then learn the file names a credential
+// the source does not declare. Two round trips for two faults den held from the
+// start.
+//
+// The zero-call assertion is the load-bearing half. Asserting the message alone
+// would still pass with the probe running first and its error swallowed
+// somewhere, and this is the ordering the observability probe put at risk by
+// landing above the collector.
+func TestABadAnswerFileIsRefusedBeforeTheMachineIsAsked(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	path := filepath.Join(t.TempDir(), "answers.yaml")
+	if err := os.WriteFile(path, []byte(
+		"credentials:\n  ghost_token:\n    from_env: DEN_TEST_REGISTRY_TOKEN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := convergedSbx()
+	f.Fail["secret ls -g"] = errors.New("keychain access denied")
+	d := convergeDeps(f)
+	d.IsTTY = func() bool { return true }
+	d.Prompt = &prompt.Fake{}
+
+	out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--answers", path, "--den-home", home)
+
+	if err == nil {
+		t.Fatalf("den accepted an answer file naming an undeclared credential:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "ghost_token") || !strings.Contains(err.Error(), path) {
+		t.Errorf("the refusal names neither the credential nor the file: %v\n%s", err, out)
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("den questioned the machine before settling the answer file: %v", f.Calls)
+	}
+}
+
+// countCalls counts the sbx invocations whose argv starts with prefix.
+func countCalls(m *sbx.Machine, prefix string) int {
+	n := 0
+	for _, c := range m.Calls {
+		if strings.HasPrefix(strings.Join(c, " "), prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// One doctor run reads the machine ONCE, whatever the number of sources.
+//
+// Reported by the PR82 review (F10): Status re-read sbx per source, so a home
+// with N manifested sources ran `secret ls -g` N times and `policy ls` N+1
+// times. The verdict cannot differ between two sources: it is a fact about the
+// machine, not about the source.
+//
+// The COUNTS are what this pins, and only them. What an unobservable machine
+// prints is the other half of the same finding, pinned by
+// TestDoctorPrintsTheUnobservableCauseOnce below.
+func TestDoctorReadsTheMachineOnceForEverySource(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--name", "corp", "--answers", writeAnswerFile(t, work), "--yes",
+		"--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	// A machine of its own, so the counts below are doctor's alone and not the
+	// two installations'.
+	f := convergedSbx()
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("doctor: %v\n%s", err, out)
+	}
+	// Asserted before the counts: with a single source the counts hold by
+	// accident, and a fixture that installed only one source would pass a test
+	// that proves nothing.
+	for _, name := range []string{"source dg", "source corp"} {
+		if !strings.Contains(out, name) {
+			t.Fatalf("%s is missing from the report — the counts below prove nothing:\n%s",
+				name, out)
+		}
+	}
+	if n := countCalls(f, "secret ls"); n != 1 {
+		t.Errorf("`sbx secret ls` ran %d times, want 1: the observation is not shared", n)
+	}
+	// 2, not 1: networkPolicyChecks keeps its own read on purpose — it reports
+	// sbx's own refusal, flattened, which is a different message from the one
+	// ReadSbxState wraps.
+	if n := countCalls(f, "policy ls"); n != 2 {
+		t.Errorf("`sbx policy ls` ran %d times, want 2 (1 network check + 1 shared read)", n)
+	}
+}
+
+// The other half of the same property: a home whose sources are all legacy
+// reads the machine not at all. A legacy source declares nothing doctor could
+// judge, and hoisting the observation out of the loop must not make den pay a
+// subprocess for a loop that turns zero times.
+func TestDoctorReadsNothingForALegacyOnlyHome(t *testing.T) {
+	home := testDenHome(t)
+	if out, err := runCLI(t, convergeDeps(convergedSbx()), "source", "add",
+		makeSourceRepo(t), "--name", "corp", "--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	f := convergedSbx()
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("doctor: %v\n%s", err, out)
+	}
+	if n := countCalls(f, "secret ls"); n != 0 {
+		t.Errorf("`sbx secret ls` ran %d times on a legacy-only home, want 0", n)
+	}
+}
+
+// reportLine returns the single report line naming a check, so an assertion
+// can be about THAT line rather than about the whole page — "the report
+// contains X somewhere" would pass on a line meant for another source.
+func reportLine(t *testing.T, out, name string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, name) {
+			return line
+		}
+	}
+	t.Fatalf("no report line for %q:\n%s", name, out)
+	return ""
+}
+
+// The output half of F10: an unobservable machine states its cause ONCE.
+//
+// Every source's plan carries the same cause — one read feeds them all — so
+// printing it per source repeated sbx's four-line refusal down the report and
+// buried the verdicts (review PR82). The FIRST source line states it; the rest
+// point at that line by name and still report their own unknown.
+//
+// Here both sbx reads fail the same way, so the `sbx policy` check states that
+// same text on its own line. That is not a duplicate the dedup owes anything:
+// it is a different check reporting what IT hit. The property is scoped to the
+// source lines below for that reason, and asserting a whole-report count of 1
+// would pin an accident of this fixture rather than the guarantee.
+func TestDoctorPrintsTheUnobservableCauseOnce(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--name", "corp", "--answers", writeAnswerFile(t, work), "--yes",
+		"--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	blind := &sbx.Fake{Default: sbx.Response{Err: errors.New("keychain access denied")}}
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), blind)
+	if err == nil {
+		t.Fatalf("an unobservable machine must exit non-zero:\n%s", out)
+	}
+	corp, dg := reportLine(t, out, "source corp"), reportLine(t, out, "source dg")
+	if n := strings.Count(corp+"\n"+dg, "keychain access denied"); n != 1 {
+		t.Errorf("the cause is printed on %d source lines, want exactly 1:\n%s", n, out)
+	}
+	// corp sorts before dg, so corp states and dg points.
+	if !strings.Contains(corp, "keychain access denied") {
+		t.Errorf("the first source line does not state the cause: %q", corp)
+	}
+	if !strings.Contains(dg, "same cause as `source corp` above") {
+		t.Errorf("the second source line does not point at the line stating the cause: %q", dg)
+	}
+	// The dedup must not cost the verdict: each source still fails on its own
+	// line.
+	for _, line := range []string{corp, dg} {
+		if !strings.Contains(line, "unknown") {
+			t.Errorf("a source line no longer reports unknown: %q", line)
+		}
+	}
+}
+
+// The regression I1 closed: the two sbx reads fail for DIFFERENT reasons, and
+// den still names the one it actually hit.
+//
+// ReadSbxState gives up on `secret ls -g` before it ever runs `policy ls`, so
+// the shared read's cause is the keychain refusal — while doctor's own `sbx
+// policy` check runs its OWN read and fails on the uninitialized policy. den
+// used to ask "did some other check fail?", and on that yes every source line
+// dropped the keychain refusal for a pointer at a check stating a different
+// cause: the report exited non-zero naming the cause den hit ZERO times
+// (review PR82, I1).
+//
+// The two lines are asserted by NAME, not by count alone: the dedup is only
+// honest when the line that points has the line it names above it.
+func TestDoctorNamesTheCauseWhenTheTwoSbxReadsFailDifferently(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--name", "corp", "--answers", writeAnswerFile(t, work), "--yes",
+		"--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	blind := &sbx.Fake{Responses: map[string]sbx.Response{
+		"secret ls -g": {Err: errors.New("keychain access denied")},
+		"policy ls --type network --source local --decision allow --json": {
+			Err: errors.New("global network policy has not been initialized")},
+	}}
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), blind)
+	if err == nil {
+		t.Fatalf("an unobservable machine must exit non-zero:\n%s", out)
+	}
+	if n := strings.Count(out, "keychain access denied"); n != 1 {
+		t.Errorf("the cause den hit is printed %d times, want exactly 1:\n%s", n, out)
+	}
+	// corp sorts before dg, so corp is the line that states the cause and dg
+	// the line that points at it.
+	if line := reportLine(t, out, "source corp"); !strings.Contains(line, "keychain access denied") {
+		t.Errorf("the first source line does not state the cause: %q", line)
+	}
+	if line := reportLine(t, out, "source dg"); !strings.Contains(line,
+		"same cause as `source corp` above") {
+		t.Errorf("the second source line does not point at the line stating the cause: %q", line)
+	}
+}
+
+// The same property on the exit NO other check can carry: den still names the
+// cause, on the first source line.
+//
+// ReadSbxState gives up in four places, and only one of them — `policy ls`
+// failing — also fails doctor's own `sbx policy` check. Here `secret ls -g`
+// ANSWERS, with a header den does not parse (what a newer sbx changing that
+// table looks like, per parseSecretList), so the policy check is a plain [ok]
+// and nothing outside the source lines could say why den is blind. The dedup
+// runs among the source lines only, so this exit needs no special case — which
+// is the whole point of the shape: the count is one here for the same reason
+// it is one everywhere.
+func TestDoctorStatesTheCauseNoOtherCheckStates(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--name", "corp", "--answers", writeAnswerFile(t, work), "--yes",
+		"--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	// The machine ANSWERS both calls; den cannot read the first one's table.
+	unparsable := &sbx.Fake{Responses: map[string]sbx.Response{
+		"secret ls -g": {Output: []byte("SCOPE KIND LABEL\n")},
+		"policy ls --type network --source local --decision allow --json": {
+			Output: []byte(`{"rules":[]}`)},
+	}}
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), unparsable)
+	if err == nil {
+		t.Fatalf("an unobservable machine must exit non-zero:\n%s", out)
+	}
+	if n := strings.Count(out, "unrecognized table header"); n != 1 {
+		t.Fatalf("a report that exits 1 names the cause %d times, want exactly 1:\n%s", n, out)
+	}
+	if line := reportLine(t, out, "source corp"); !strings.Contains(line, "unrecognized table header") {
+		t.Errorf("the first source line does not state the cause: %q", line)
+	}
+	if line := reportLine(t, out, "source dg"); !strings.Contains(line,
+		"same cause as `source corp` above") {
+		t.Errorf("the second source line does not point at the line stating the cause: %q", line)
+	}
+	// The [ok] policy check must not be read as a carrier: nothing above the
+	// source lines says a word about why den is blind here.
+	if line := reportLine(t, out, "sbx policy"); strings.Contains(line, "unrecognized table header") {
+		t.Errorf("the policy check states a cause it did not hit: %q", line)
+	}
+}
+
+// Task 2's invariant, under the dedup above: a source that is ALSO blocked
+// keeps its BLOCKING refusal as the printed explanation.
+//
+// The refusal is about the source — a spawn would raise it — so it is not the
+// repeated machine cause the dedup targets. Blocked here by removing the
+// personal file, which is what RequireUsable refuses on.
+func TestDoctorKeepsTheBlockingRefusalOnAnUnobservableMachine(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if err := os.Remove(filepath.Join(home, "source-config", "dg.yaml")); err != nil {
+		t.Fatal(err)
+	}
+
+	blind := &sbx.Fake{Default: sbx.Response{Err: errors.New("keychain access denied")}}
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), blind)
+	if err == nil {
+		t.Fatalf("a blocked source must exit non-zero:\n%s", out)
+	}
+	line := reportLine(t, out, "source dg")
+	if !strings.Contains(line, "not configured on this machine") {
+		t.Errorf("the blocking refusal is gone from the source line: %q", line)
+	}
+	if strings.Contains(line, "keychain access denied") {
+		t.Errorf("the machine cause is repeated on a blocked source line: %q", line)
 	}
 }

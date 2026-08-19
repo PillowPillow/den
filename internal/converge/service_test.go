@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1064,6 +1065,51 @@ func TestStatusReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {
 	}
 }
 
+// A source that is BOTH unobservable and blocked explains the BLOCK first.
+//
+// RenderStatus (render.go) and doctor's sourceDetail (internal/cli/doctor.go)
+// print Warnings[0] and nothing else. Whichever warning lands there is the
+// whole explanation the user gets, so the refusal a spawn would raise must
+// win over the observation gap: den will not spawn from this source whatever
+// the machine answers, and "den could not observe this machine" sends the
+// user to fix a keychain that has nothing to do with it.
+func TestStatusExplainsTheBlockBeforeTheObservationGap(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
+		&strings.Builder{}, &strings.Builder{}); err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	cleanup()
+	// Both faults at once, and only AFTER the install: the machine stops
+	// answering, and the three files stop agreeing.
+	f.Fail["secret ls -g"] = errors.New("keychain access denied")
+	if err := source.WritePersonal(denHome, "dg", source.Personal{Version: "0.9.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := s.Status(context.Background(), denHome, "dg")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Status != source.StatusBlocked {
+		t.Fatalf("status = %q, want blocked — an unobservable machine that is ALSO "+
+			"blocked stays blocked:\n%+v", status.Status, status)
+	}
+	if len(status.Warnings) == 0 || !strings.Contains(status.Warnings[0], "0.9.0") {
+		t.Fatalf("warnings = %v — RenderStatus and doctor print only Warnings[0], so the "+
+			"blocking refusal must come first, not the unobserved cause", status.Warnings)
+	}
+	// The observation gap is not dropped, only demoted: `unknown` resources
+	// still need their cause named somewhere.
+	if !slices.ContainsFunc(status.Warnings, func(w string) bool {
+		return strings.Contains(w, "keychain access denied")
+	}) {
+		t.Errorf("warnings = %v, want the unobserved cause kept behind the refusal", status.Warnings)
+	}
+}
+
 // The cause of a failed shared read is printed ONCE, whatever the source
 // declares.
 //
@@ -1165,6 +1211,22 @@ func TestUnobservableRefusalOnInitNamesInit(t *testing.T) {
 	}
 }
 
+// `den source update` is retried with `den source update`, never with
+// `den source configure`.
+//
+// Same before-Apply/inside-Apply split as ModeInit above, from the other end:
+// the fast-forward that moves the checkout onto the new version runs INSIDE
+// Apply, so at refusal time the installed checkout still carries the OLD one.
+func TestRetryCommandNamesUpdateForModeUpdate(t *testing.T) {
+	s := Service{}
+	got := s.retryCommand(Request{Mode: ModeUpdate, Name: "dg"})
+	want := "den source update dg"
+	if got != want {
+		t.Fatalf("retryCommand(ModeUpdate) = %q, want %q — `den source configure` would "+
+			"converge the OLD version (fastForward only runs inside Apply), silently dropping the update", got, want)
+	}
+}
+
 // A legacy source has no contract to report on, and the refusal says which
 // command does apply to it.
 func TestStatusRefusesALegacySource(t *testing.T) {
@@ -1172,7 +1234,13 @@ func TestStatusRefusesALegacySource(t *testing.T) {
 	tree := t.TempDir()
 	writeFile(t, filepath.Join(tree, "stacks", "devx", "stack.yaml"), "image: devx:v1\n")
 	remote := sourceRemote(t, tree)
-	s := Service{Git: worktree.NewGit(), Now: testClock}
+	// An sbx, where this test used to leave the field nil: Status now takes its
+	// observation BEFORE it resolves the source (it hands one read to
+	// StatusWith), so a nil runner panics here instead of reaching the refusal.
+	// The refusal itself is unchanged, and no caller reaches Status on a legacy
+	// source — internal/cli/source.go and doctor's sourceChecks both filter on
+	// HasManifest first — so the wasted read costs nothing in production.
+	s := Service{Git: worktree.NewGit(), Sbx: stateFake(t), Now: testClock}
 	if _, err := source.Add(context.Background(), s.Git, denHome, remote, "corp"); err != nil {
 		t.Fatal(err)
 	}

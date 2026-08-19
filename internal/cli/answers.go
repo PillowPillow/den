@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -16,8 +15,40 @@ import (
 	"github.com/PillowPillow/den/internal/source"
 )
 
-// collectInitialAnswers produces the transient answers of ONE onboarding run,
-// from `--answers <file>` or from the terminal.
+// loadAnswerFile reads and validates `--answers <file>`, and answers the empty
+// Answers when no file was given.
+//
+// It is a HALF of what collectInitialAnswers used to be, split out so
+// runConvergence can run it before it touches the machine. den refuses on what
+// files alone decide before it observes anything (the spawn sequence's own
+// doctrine, spec §6): a malformed answer file is a fault den holds without
+// asking sbx a single question, and reporting the machine first would send the
+// user to fix sbx, re-run, and only then learn the file was wrong.
+//
+// Both halves stay one contract — the answers a file produces and the answers a
+// terminal produces are the same converge.Answers, which is what makes a CI
+// run a real rehearsal of a human one (spec §7.1).
+func loadAnswerFile(d Deps, m *source.Manifest, answersPath string) (converge.Answers, error) {
+	if answersPath == "" {
+		return converge.Answers{}, nil
+	}
+	a, err := converge.LoadAnswers(answersPath, d.getenv())
+	if err != nil {
+		return converge.Answers{}, err
+	}
+	if err := converge.ValidateAnswers(m, a); err != nil {
+		return converge.Answers{}, fmt.Errorf("%s: %w", answersPath, err)
+	}
+	return a, nil
+}
+
+// collectInitialAnswers completes the transient answers of ONE onboarding run:
+// it takes what loadAnswerFile already read and asks the terminal for the rest.
+//
+// a is that loaded file, empty when there was none, and fromFile says which —
+// the two are not the same thing, and only the caller still knows. A file that
+// carries no `repository_roots:` has ANSWERED that question with "none"; no
+// file at all leaves it open.
 //
 // Both paths end in the same converge.Answers, and that is the contract this
 // function exists for: a CI running `--answers` must exercise the same
@@ -42,6 +73,14 @@ import (
 // sbx already holds. That check costs an `sbx secret ls -g`/`policy ls`, paid
 // only on the branch that would otherwise refuse.
 //
+// runConvergence's own probe does NOT make that read redundant, and does not
+// make this branch unreachable either: the probe proves the machine answered
+// at one moment, and the daemon can stop answering before this read — the same
+// window argument that keeps a check on each planning pass. What the probe does
+// change is who reports a machine that was ALREADY blind when the command
+// started: that is the probe's refusal now, which names the read rather than
+// sending the user to find a terminal they do not need.
+//
 // yes is `--yes`, threaded in ONLY for that same refusal, and only for the
 // half of it a plan-only run does not need: a run without `--yes` never
 // applies anything even when confirmed (confirm() itself refuses without a
@@ -53,18 +92,7 @@ import (
 // before this parameter existed (TestCollectInitialAnswersRefusesWithoutATerminal
 // passes no `--yes` at all and still expects the refusal).
 func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
-	answersPath string, yes bool) (converge.Answers, error) {
-
-	var a converge.Answers
-	if answersPath != "" {
-		var err error
-		if a, err = converge.LoadAnswers(answersPath, d.getenv()); err != nil {
-			return converge.Answers{}, err
-		}
-		if err := converge.ValidateAnswers(m, a); err != nil {
-			return converge.Answers{}, fmt.Errorf("%s: %w", answersPath, err)
-		}
-	}
+	a converge.Answers, fromFile, yes bool) (converge.Answers, error) {
 
 	missing := converge.MissingCredentials(m, a)
 	// An answer FILE is the answer. A `repository_roots:` it does not carry
@@ -72,7 +100,7 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 	// make `--answers` mean "some of the answers", and would leave a source
 	// whose nests declare no repository at all impossible to install without a
 	// terminal, over roots den would never look in.
-	needsRoots := len(a.RepositoryRoots) == 0 && answersPath == ""
+	needsRoots := len(a.RepositoryRoots) == 0 && !fromFile
 
 	// Nothing left to ask FROM AN ANSWER, and there is a terminal standing by
 	// for the one credential no answer can ever supply (sbx_github: manifest.go
@@ -121,7 +149,7 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 	}
 
 	if needsRoots {
-		roots, err := askRepositoryRoots(d.Prompt)
+		roots, err := askRepositoryRoots(cmd.Context(), d.Prompt)
 		if err != nil {
 			return converge.Answers{}, err
 		}
@@ -134,7 +162,7 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 		}
 		// Never echoed, and never carried in a flag: an argv is visible to
 		// every process on the machine (spec §5.3).
-		value, err := d.Prompt.Secret(prompt.SecretRequest{Prompt: label})
+		value, err := d.Prompt.Secret(cmd.Context(), prompt.SecretRequest{Prompt: label})
 		if err != nil {
 			return converge.Answers{}, fmt.Errorf("reading %s: %w", name, err)
 		}
@@ -282,7 +310,13 @@ func noTerminalRefusal(missing, needsTerminal []string, needsRoots bool, obsErr 
 // validating each entry stay here, exactly where they were: a Prompter that
 // knew what a path is would be a second judge of den's config, and there is one
 // judge (config.ExpandPath).
-func askRepositoryRoots(p prompt.Prompter) ([]string, error) {
+//
+// ctx is the command's own (cmd.Context()), threaded rather than created here:
+// this question is the longest den ever blocks on, and root.go's
+// signal.NotifyContext is what ends that wait on ^C or SIGTERM. A
+// context.Background() at this call site would silently opt the one prompt
+// that can hang forever out of the shutdown path.
+func askRepositoryRoots(ctx context.Context, p prompt.Prompter) ([]string, error) {
 	// Deliberate redundancy with collectInitialAnswers' own guard above its
 	// call site: THAT guard names both remedies for the run and is what a
 	// human actually reads; THIS one defends the function itself, so a
@@ -297,7 +331,7 @@ func askRepositoryRoots(p prompt.Prompter) ([]string, error) {
 			"the repository-roots question has no prompter to ask on — this is a den defect; " +
 				"pass `--answers <file>` supplying `repository_roots:` as a workaround")
 	}
-	line, err := p.Line(prompt.LineRequest{
+	line, err := p.Line(ctx, prompt.LineRequest{
 		Question: "Where do your working repositories live? (space-separated directories, " +
 			"empty line to skip — den only looks, it never clones)",
 	})
@@ -358,7 +392,7 @@ func confirm(cmd *cobra.Command, d Deps, yes, changes bool) (bool, error) {
 	// what it applies to and nothing else: internal/converge/render.go calls
 	// that plan the trust boundary, and a prompt that redrew it — or that took
 	// the screen and scrolled it away — would turn consent into a guess.
-	ok, err := d.Prompt.Confirm(prompt.ConfirmRequest{Question: "apply this plan?"})
+	ok, err := d.Prompt.Confirm(cmd.Context(), prompt.ConfirmRequest{Question: "apply this plan?"})
 	if err != nil {
 		return false, fmt.Errorf("reading the confirmation: %w", err)
 	}
@@ -392,6 +426,41 @@ func (d Deps) getenv() func(string) string {
 // unmapped, and the nests needing it become not_ready — a state the user can
 // fix later with `den source configure`, unlike a wrong directory silently
 // mounted into every sandbox.
+//
+// The candidates are PRINTED to out and only the choice is asked through the
+// Prompter. That is the split ConfirmRequest's godoc already states: the caller
+// owns the context on screen, the Prompter owns the one line it reads. The
+// question used to be a bufio read off cmd.InOrStdin() with the `> ` prompt
+// printed by hand, and two defects are why it stopped being one (PR 82,
+// finding F6). Both are read off the code named below; neither was measured,
+// and the distinction is kept because a later reader deciding how much weight
+// to give them deserves to know which kind of claim they are:
+//
+//   - it observed no context, so a ^C on this question left den BLOCKED. It
+//     did not kill den, and the tempting shorter story — "a raw SIGINT killed
+//     the process" — is wrong: Execute (root.go) arms signal.NotifyContext
+//     over os.Interrupt and SIGTERM for EVERY command, so the runtime traps
+//     SIGINT and the default disposition never applies. The signal became an
+//     ordinary cancellation of cmd.Context() — which this read had no way to
+//     observe, so it went on waiting for a line or an EOF that a human who
+//     just pressed ^C does not type. askRepositoryRoots' godoc already calls
+//     the sibling question "the one prompt that can hang forever" and threads
+//     the context for exactly that reason; this one had no share of it. A
+//     Prompter call takes cmd.Context() and unwinds;
+//   - prompt.Fake could not see it, which made this — den's fifth interactive
+//     question — the only one a test had to script through a byte stream.
+//
+// A third reason was argued and is NOT claimed here: that a bufio.Reader
+// reading past the newline it returns could strand type-ahead in a buffer the
+// huh confirmation one planning pass later never sees. The path was never
+// reproduced — a terminal in canonical mode returns at most one line per
+// read(2), so the type-ahead stays in the tty queue rather than in the buffer,
+// and a piped run never reaches this loop at all (IsTTY sends it to the report
+// branch above). A hazard the shape carried, not a defect anything establishes
+// it carried; the two above carry the change on their own.
+//
+// With it gone, "den's ONE question-asking surface" (internal/prompt/prompt.go)
+// is a fact rather than an intention: a convergence reads no stdin at all.
 func resolveRepoChoices(cmd *cobra.Command, d Deps, matches []converge.RepoMatch,
 	a *converge.Answers) error {
 
@@ -412,7 +481,17 @@ func resolveRepoChoices(cmd *cobra.Command, d Deps, matches []converge.RepoMatch
 		return nil
 	}
 
-	in := bufio.NewReader(cmd.InOrStdin())
+	// Below the non-TTY branch on purpose: the guard is reachable only when den
+	// really is about to ask, so a scripted run with no Prompter still gets its
+	// report instead of a refusal. Same family as collectInitialAnswers and
+	// confirm — a nil Prompter is "no way to ask", never "leave them unmapped in
+	// silence", which would strand the nests at not_ready with nothing in the
+	// output naming the missing wiring.
+	if d.Prompt == nil {
+		return fmt.Errorf(
+			"the repo-choice question has no prompter to ask on — this is a den defect; " +
+				"pass `--answers <file>` supplying `repos:` as a workaround")
+	}
 	for _, m := range pending {
 		candidates := m.Candidates
 		if len(candidates) == 0 && m.Path != "" {
@@ -428,10 +507,12 @@ func resolveRepoChoices(cmd *cobra.Command, d Deps, matches []converge.RepoMatch
 		for i, c := range candidates {
 			fmt.Fprintf(out, "  %d %s\n", i+1, c)
 		}
-		fmt.Fprint(out, "  choose a number, type a path, or press enter to leave it unmapped > ")
 
-		line, err := in.ReadString('\n')
-		if err != nil && line == "" {
+		line, err := d.Prompt.Line(cmd.Context(), prompt.LineRequest{
+			Question: fmt.Sprintf("repo %s: choose a number, type a path, or leave empty to keep it unmapped",
+				m.Requirement.Key),
+		})
+		if err != nil {
 			return fmt.Errorf("reading the choice for repo %s: %w", m.Requirement.Key, err)
 		}
 		answer := strings.TrimSpace(line)

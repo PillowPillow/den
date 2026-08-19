@@ -1,6 +1,7 @@
 package spawn
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"slices"
@@ -100,7 +101,8 @@ func nonInteractiveEquivalents(prompts bool) string {
 // (spec §6), so a checklist that consulted the global mapping would offer a
 // repo nest.Resolve then refuses, or mark as unmapped one it resolves. The
 // caller selected both; this layer only displays them.
-func interactiveWithout(d Deps, mappingPath string, n *nest.Nest, mapping map[string]string) ([]string, error) {
+func interactiveWithout(ctx context.Context, d Deps, mappingPath string, n *nest.Nest,
+	mapping map[string]string) ([]string, error) {
 	// Nothing to ask comes FIRST, before the terminal check: a nest with no
 	// optional repo needs no answer, so it needs no terminal either — `den up
 	// api -i --detach` from a script keeps working, and says why it asked nothing
@@ -126,7 +128,7 @@ func interactiveWithout(d Deps, mappingPath string, n *nest.Nest, mapping map[st
 			"-i: no terminal on den's input — the checklist has nobody to ask, and reading anyway would "+
 				"block a pipe or a CI job forever; %s", nonInteractiveEquivalents(false))
 	}
-	return promptOptionalRepos(d.Prompt, mappingPath, n.Name, n.Repos, n.PromptsForRepos(), mapping)
+	return promptOptionalRepos(ctx, d.Prompt, mappingPath, n.Name, n.Repos, n.PromptsForRepos(), mapping)
 }
 
 // selectionFlagsInPlay names the repo-selection flag `-i` collides with, or ""
@@ -191,14 +193,24 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // This function draws NOTHING. It builds a request and inverts the answer; the
 // Prompter owns every byte on the terminal. That split is what lets the suite
 // assert on what den ASKED without a tty ever existing (CLAUDE.md).
-func promptOptionalRepos(p prompt.Prompter, mappingPath, nestName string, repos []nest.Repo,
-	prompts bool, mapping map[string]string) ([]string, error) {
+func promptOptionalRepos(ctx context.Context, p prompt.Prompter, mappingPath, nestName string,
+	repos []nest.Repo, prompts bool, mapping map[string]string) ([]string, error) {
 	// A nil Prompter is "no way to ask", never "assume the defaults": an
 	// unwired double must refuse here rather than let the caller mount a
 	// selection nobody made. Same rule as a nil IsTTY, one layer down.
 	if p == nil {
+		// The prefix follows the entry point, the same rule interactiveWithout
+		// applies to its own refusal: a `select: prompt` nest reaches this
+		// checklist with no -i on the command line, and naming that flag would
+		// send its user hunting for something they never typed. The nest name
+		// takes its place, because a refusal that names neither is anonymous.
+		if prompts {
+			return nil, fmt.Errorf(
+				"nest %s selects its repos at spawn time and no prompter is wired — this is a den "+
+					"defect; %s", nestName, nonInteractiveEquivalents(true))
+		}
 		return nil, fmt.Errorf("-i: no prompter is wired — this is a den defect; %s",
-			nonInteractiveEquivalents(prompts))
+			nonInteractiveEquivalents(false))
 	}
 
 	optional := make([]nest.Repo, 0, len(repos))
@@ -221,7 +233,7 @@ func promptOptionalRepos(p prompt.Prompter, mappingPath, nestName string, repos 
 		})
 	}
 
-	keep, err := p.MultiSelect(prompt.MultiSelectRequest{
+	keep, err := p.MultiSelect(ctx, prompt.MultiSelectRequest{
 		Title: fmt.Sprintf("nest %s: %d optional repo(s), %s — required repos are always mounted (%s)",
 			nestName, len(optional), selected, nonInteractiveEquivalents(prompts)),
 		Options:     options,
@@ -233,8 +245,16 @@ func promptOptionalRepos(p prompt.Prompter, mappingPath, nestName string, repos 
 		// user sees before den gives up on asking, and "reading the selection
 		// failed" without the flag that does the same job is a dead end — den
 		// names the file to fix and the remedy (spec §2).
+		//
+		// Which prefix it carries is the OTHER fact, and it follows the entry
+		// point exactly as the nil guard above and interactiveWithout do: a
+		// `select: prompt` nest gets here with no -i typed anywhere.
+		if prompts {
+			return nil, fmt.Errorf("nest %s: reading the selection: %w; %s",
+				nestName, err, nonInteractiveEquivalents(true))
+		}
 		return nil, fmt.Errorf("-i: reading the selection: %w; %s",
-			err, nonInteractiveEquivalents(prompts))
+			err, nonInteractiveEquivalents(false))
 	}
 
 	// The answer names what STAYS; den's flag names what goes. Inverting here,
