@@ -80,8 +80,14 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 					"its sandbox is gone\n", b.Path, b.Err)
 			}
 			checks = append(checks, doctor.OrphanCheck(live, manifests))
-			checks = append(checks, networkPolicyChecks(cmd.Context(), deps, runner)...)
-			checks = append(checks, sourceChecks(cmd.Context(), home, runner, g)...)
+			// The policy checks are held rather than appended blind: whether
+			// THIS report states why the machine could not be observed is a
+			// fact only the composed report holds, and it decides how the
+			// source lines below explain themselves (see sourceDetail).
+			policy := networkPolicyChecks(cmd.Context(), deps, runner)
+			checks = append(checks, policy...)
+			checks = append(checks,
+				sourceChecks(cmd.Context(), home, runner, g, causeStated(deps, policy))...)
 
 			failures, warnings := 0, 0
 			for _, c := range checks {
@@ -197,6 +203,35 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 		Detail: "local network policy readable"}}
 }
 
+// causeStated reports whether this report already says WHY den could not
+// observe the machine. It is what lets the source lines point at that
+// explanation instead of each repeating it (sourceDetail).
+//
+// Two carriers, and only two. The `sbx` check states a missing binary — the
+// whole cause, in that case — and the `sbx policy` FAIL carries sbx's own
+// refusal when the policy is what did not answer. Everything else that can
+// fail the shared read is stated NOWHERE else in the report: ReadSbxState also
+// gives up when `secret ls -g` fails, and when either output parses into
+// nothing den recognizes — a header changed by a newer sbx is the expected
+// shape of that, not a broken machine. On those exits the policy check is a
+// plain [ok], so the answer here is false and each source line keeps printing
+// the cause itself.
+//
+// Duplicated on those exits, then, rather than deduplicated into silence:
+// doctor exits 1 and a user must be able to read why. Repetition costs
+// attention; a report that fails while naming no cause costs the diagnosis.
+func causeStated(deps doctor.Deps, policy []doctor.Check) bool {
+	if _, err := deps.LookPath("sbx"); err != nil {
+		return true
+	}
+	for _, c := range policy {
+		if c.Blocking() {
+			return true
+		}
+	}
+	return false
+}
+
 // sourceChecks diagnoses every manifested source installed in this home.
 //
 // Read HERE, not in internal/doctor, for the reason the live list above is:
@@ -205,7 +240,13 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 //
 // One check per source, in sorted order, and a legacy source produces none —
 // it declares nothing to converge, so there is nothing doctor could judge.
-func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktree.Git) []doctor.Check {
+//
+// causeStated comes from the report being composed above, never from anything
+// this function can see: it says whether an earlier check already explains an
+// unobservable machine. Passed down to sourceDetail, which is where it decides
+// how a source line explains itself.
+func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktree.Git,
+	causeStated bool) []doctor.Check {
 	names, err := source.Names(home)
 	if err != nil {
 		// A home with no sources/ directory is the normal case, not a fault.
@@ -230,9 +271,9 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 	// that cannot change between two of them — it is machine state, not source
 	// state (review PR82).
 	//
-	// A FAILED observation lands in every source's plan, so it is also stated
-	// once rather than once per source — see sourceDetail below, which points
-	// each source line at the `sbx` check carrying the cause.
+	// A FAILED observation lands in every source's plan, so it is stated once
+	// rather than once per source WHEN an earlier check already carries it —
+	// see causeStated above and sourceDetail below.
 	state, observeErr := converge.ReadSbxState(ctx, runner)
 	var checks []doctor.Check
 	for _, name := range manifested {
@@ -242,7 +283,7 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 				Detail: err.Error()})
 			continue
 		}
-		checks = append(checks, doctor.SourceCheck(name, plan.Status, sourceDetail(plan)))
+		checks = append(checks, doctor.SourceCheck(name, plan.Status, sourceDetail(plan, causeStated)))
 	}
 	return checks
 }
@@ -253,17 +294,19 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 // when there is something to read there.
 //
 // An UNOBSERVABLE machine is the one case where the plan's own first warning
-// is not what doctor prints. Every source's plan carries the same cause — they
-// all come from the one read above — so printing it per source repeated sbx's
-// four-line refusal down the report and buried the verdicts it was meant to
-// explain (review PR82). doctor already states it once further up: the `sbx
-// policy` FAIL carries sbx's own refusal when the binary is there, and when it
-// is not, networkPolicyChecks is skipped and the `sbx` check states the
-// missing binary — which is that machine's cause, in its own words. So the
-// source line points there instead of repeating anything, and names no single
-// carrier line, because which one carries it depends on how far den got.
+// is not always what doctor prints. Every source's plan carries the same cause
+// — they all come from the one read above — so printing it per source repeated
+// sbx's four-line refusal down the report and buried the verdicts it was meant
+// to explain (review PR82).
 //
-// Only the unobserved cause is deduplicated. A source that is ALSO blocked
+// It is dropped for a pointer ONLY when causeStated says an earlier check
+// carries that cause; the sole judge of that is causeStated, which the composed
+// report answers and this function cannot. Otherwise the line keeps printing
+// the cause, repetition and all — see there for why silence would be worse.
+// That is also why the pointer names no particular carrier line: which check
+// holds the cause depends on how far den got.
+//
+// Only the unobserved cause is ever dropped. A source that is ALSO blocked
 // keeps its blocking refusal printed here, because that one IS about the
 // source: RequireUsable's message is what Status prepends to Warnings, and a
 // blocked source must say what a spawn would refuse (see Status). The two are
@@ -271,11 +314,14 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 // unknown, so AggregateStatus can only answer `unknown`, and `blocked` on top
 // of an unobserved plan can only have come from that prepend.
 //
-// This lives in doctor and nowhere else: `den source status` renders through
-// converge.RenderStatus, which prints the cause once per invocation already.
-func sourceDetail(p *converge.Plan) string {
+// This lives in doctor and nowhere else — not because `den source status` is
+// exempt. Its bare form loops over every source too and does print the cause
+// once per source. It is that deduplicating needs the whole report to be
+// composed first, to know whether the cause survives being dropped;
+// converge.RenderStatus renders one plan at a time and cannot answer that.
+func sourceDetail(p *converge.Plan, causeStated bool) string {
 	detail := fmt.Sprintf("version %s: %s", p.Version, p.Status)
-	if p.Unobserved != nil && p.Status != source.StatusBlocked {
+	if causeStated && p.Unobserved != nil && p.Status != source.StatusBlocked {
 		return detail + " — den could not observe this machine: the sbx check above carries the cause"
 	}
 	if len(p.Warnings) > 0 {
