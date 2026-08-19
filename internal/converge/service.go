@@ -209,7 +209,13 @@ func (s Service) Status(ctx context.Context, denHome, name string) (*Plan, error
 	// resources look like: den refuses to use it, and a status reporting
 	// "ready" next to a spawn that refuses would be the worse of the two lies.
 	if _, err := source.RequireUsable(denHome, name); err != nil {
-		plan.Warnings = append(plan.Warnings, err.Error())
+		// PREPENDED, not appended: RenderStatus and doctor's sourceDetail print
+		// only Warnings[0], and for a blocked source that line must be the
+		// refusal a spawn would raise — not whichever observation warning got
+		// there first. An unobservable machine that is ALSO blocked stays
+		// blocked for the blocking reason; the unobserved cause keeps its own
+		// entry right behind it.
+		plan.Warnings = append([]string{err.Error()}, plan.Warnings...)
 		plan.Status = source.StatusBlocked
 	}
 	return plan, nil

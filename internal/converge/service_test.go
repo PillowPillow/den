@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1061,6 +1062,51 @@ func TestStatusReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {
 	// thing that tells them whether to fix a keychain, a daemon or a policy.
 	if !strings.Contains(rendered.String(), "keychain access denied") {
 		t.Errorf("the status does not name the read that failed:\n%s", rendered.String())
+	}
+}
+
+// A source that is BOTH unobservable and blocked explains the BLOCK first.
+//
+// RenderStatus (render.go) and doctor's sourceDetail (internal/cli/doctor.go)
+// print Warnings[0] and nothing else. Whichever warning lands there is the
+// whole explanation the user gets, so the refusal a spawn would raise must
+// win over the observation gap: den will not spawn from this source whatever
+// the machine answers, and "den could not observe this machine" sends the
+// user to fix a keychain that has nothing to do with it.
+func TestStatusExplainsTheBlockBeforeTheObservationGap(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	f := sbx.NewMachine()
+	s, req, cleanup := requestFor(t, denHome, remote, root, f)
+	if _, err := s.Apply(context.Background(), req, planFor(t, s, req),
+		&strings.Builder{}, &strings.Builder{}); err != nil {
+		t.Fatalf("installing: %v", err)
+	}
+	cleanup()
+	// Both faults at once, and only AFTER the install: the machine stops
+	// answering, and the three files stop agreeing.
+	f.Fail["secret ls -g"] = errors.New("keychain access denied")
+	if err := source.WritePersonal(denHome, "dg", source.Personal{Version: "0.9.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := s.Status(context.Background(), denHome, "dg")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Status != source.StatusBlocked {
+		t.Fatalf("status = %q, want blocked — an unobservable machine that is ALSO "+
+			"blocked stays blocked:\n%+v", status.Status, status)
+	}
+	if len(status.Warnings) == 0 || !strings.Contains(status.Warnings[0], "0.9.0") {
+		t.Fatalf("warnings = %v — RenderStatus and doctor print only Warnings[0], so the "+
+			"blocking refusal must come first, not the unobserved cause", status.Warnings)
+	}
+	// The observation gap is not dropped, only demoted: `unknown` resources
+	// still need their cause named somewhere.
+	if !slices.ContainsFunc(status.Warnings, func(w string) bool {
+		return strings.Contains(w, "keychain access denied")
+	}) {
+		t.Errorf("warnings = %v, want the unobserved cause kept behind the refusal", status.Warnings)
 	}
 }
 
