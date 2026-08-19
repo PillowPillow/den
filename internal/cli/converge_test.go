@@ -928,3 +928,43 @@ func TestConvergenceRefusesWhenTheMachineBecomesUnobservableMidRun(t *testing.T)
 		t.Errorf("den opened the applying window on a machine it could not observe")
 	}
 }
+
+// A bad answer file is refused BEFORE den asks the machine anything.
+//
+// den refuses on what files alone decide before it observes — the doctrine that
+// orders the spawn sequence (spec §6), applied to a convergence. The machine
+// here is blind AND the file is wrong: reporting the machine first would send
+// the user to fix sbx, re-run, and only then learn the file names a credential
+// the source does not declare. Two round trips for two faults den held from the
+// start.
+//
+// The zero-call assertion is the load-bearing half. Asserting the message alone
+// would still pass with the probe running first and its error swallowed
+// somewhere, and this is the ordering the observability probe put at risk by
+// landing above the collector.
+func TestABadAnswerFileIsRefusedBeforeTheMachineIsAsked(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	path := filepath.Join(t.TempDir(), "answers.yaml")
+	if err := os.WriteFile(path, []byte(
+		"credentials:\n  ghost_token:\n    from_env: DEN_TEST_REGISTRY_TOKEN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := convergedSbx()
+	f.Fail["secret ls -g"] = errors.New("keychain access denied")
+	d := convergeDeps(f)
+	d.IsTTY = func() bool { return true }
+	d.Prompt = &prompt.Fake{}
+
+	out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--answers", path, "--den-home", home)
+
+	if err == nil {
+		t.Fatalf("den accepted an answer file naming an undeclared credential:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "ghost_token") || !strings.Contains(err.Error(), path) {
+		t.Errorf("the refusal names neither the credential nor the file: %v\n%s", err, out)
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("den questioned the machine before settling the answer file: %v", f.Calls)
+	}
+}

@@ -72,6 +72,23 @@ func answersCmd(stdin string) (*cobra.Command, *bytes.Buffer) {
 	return cmd, out
 }
 
+// collectFromFile replays runConvergence's own order — read the answer file,
+// then collect what it did not answer.
+//
+// The two are separate functions so runConvergence can probe the machine
+// BETWEEN them (den refuses on a bad file before it asks sbx anything). A test
+// that is about the collector should not have to spell that seam out, and a
+// test that IS about it calls loadAnswerFile directly instead.
+func collectFromFile(t *testing.T, cmd *cobra.Command, d Deps, m *source.Manifest,
+	path string, yes bool) (converge.Answers, error) {
+	t.Helper()
+	a, err := loadAnswerFile(d, m, path)
+	if err != nil {
+		return converge.Answers{}, err
+	}
+	return collectInitialAnswers(cmd, d, m, a, path != "", yes)
+}
+
 // The two paths must produce the SAME typed answers: that equivalence is what
 // makes the non-interactive flow a real rehearsal of the interactive one
 // rather than a second implementation nobody exercises (spec §7.1).
@@ -84,7 +101,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 	}
 
 	fileCmd, _ := answersCmd("")
-	fromFile, err := collectInitialAnswers(fileCmd, Deps{
+	fromFile, err := collectFromFile(t, fileCmd, Deps{
 		Getenv: func(k string) string {
 			if k == "GLPAT" {
 				return "sentinel-secret"
@@ -101,7 +118,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 	fromPrompt, err := collectInitialAnswers(interactiveCmd, Deps{
 		IsTTY:  func() bool { return true },
 		Prompt: f,
-	}, answersManifest(), "", false)
+	}, answersManifest(), converge.Answers{}, false, false)
 	if err != nil {
 		t.Fatalf("interactive collection: %v", err)
 	}
@@ -128,7 +145,7 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 // flags, because a CI needs `--answers` AND `--yes` to get through.
 func TestCollectInitialAnswersRefusesWithoutATerminal(t *testing.T) {
 	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), "", false)
+	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), converge.Answers{}, false, false)
 	if err == nil {
 		t.Fatal("expected a refusal with no terminal and no answer file")
 	}
@@ -149,7 +166,7 @@ func TestCollectInitialAnswersRefusesWithoutATerminal(t *testing.T) {
 func TestCollectInitialAnswersRefusesWithATerminalButNoPrompter(t *testing.T) {
 	cmd, _ := answersCmd("")
 	_, err := collectInitialAnswers(cmd, Deps{IsTTY: func() bool { return true }},
-		answersManifest(), "", false)
+		answersManifest(), converge.Answers{}, false, false)
 	if err == nil {
 		t.Fatal("expected a refusal when no prompter is wired, even with a terminal")
 	}
@@ -177,7 +194,7 @@ func TestCollectInitialAnswersRefusesACredentialWithATerminalButNoPrompter(t *te
 		t.Fatal(err)
 	}
 	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{IsTTY: func() bool { return true }},
+	_, err := collectFromFile(t, cmd, Deps{IsTTY: func() bool { return true }},
 		answersManifest(), path, false)
 	if err == nil {
 		t.Fatal("expected a refusal when no prompter is wired, even with a terminal")
@@ -197,7 +214,7 @@ func TestCollectInitialAnswersNeedsNoTerminalWhenTheFileIsComplete(t *testing.T)
 		t.Fatal(err)
 	}
 	cmd, _ := answersCmd("")
-	a, err := collectInitialAnswers(cmd, Deps{
+	a, err := collectFromFile(t, cmd, Deps{
 		Getenv: func(string) string { return "sentinel-secret" },
 	}, answersManifest(), path, false)
 	if err != nil {
@@ -219,7 +236,8 @@ func TestCollectInitialAnswersRefusesAGenuinelyAbsentRegistryCredential(t *testi
 	m.Services["github"] = true // present: must not be named in this refusal
 
 	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{Sbx: m}, credentialManifest(), "", true)
+	_, err := collectInitialAnswers(cmd, Deps{Sbx: m}, credentialManifest(),
+		converge.Answers{}, false, true)
 	if err == nil {
 		t.Fatal("expected a refusal: the registry credential is absent and there is no terminal")
 	}
@@ -251,7 +269,7 @@ func TestCollectInitialAnswersRefusesAnAbsentGithubCredentialNamingTheTerminal(t
 	m.Registries["registry.example.test:443"] = true // present: must not be named below
 
 	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{
+	_, err := collectFromFile(t, cmd, Deps{
 		Sbx:    m,
 		Getenv: func(k string) string { return map[string]string{"TEST_REGISTRY_TOKEN": "tok"}[k] },
 	}, credentialManifest(), path, true)
@@ -285,7 +303,8 @@ func TestCollectInitialAnswersNamesTheReadFailureWhenSbxIsUnreadable(t *testing.
 	}}
 
 	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{Sbx: f}, credentialManifest(), "", true)
+	_, err := collectInitialAnswers(cmd, Deps{Sbx: f}, credentialManifest(),
+		converge.Answers{}, false, true)
 	if err == nil {
 		t.Fatal("expected a refusal: sbx could not be read, so github must be assumed absent")
 	}
@@ -323,7 +342,7 @@ func TestCollectInitialAnswersDoesNotRefuseOverAnAbsentGithubCredentialOnAPlanOn
 	m := sbx.NewMachine() // github absent
 
 	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{
+	_, err := collectFromFile(t, cmd, Deps{
 		Sbx:    m,
 		Getenv: func(k string) string { return map[string]string{"TEST_REGISTRY_TOKEN": "tok"}[k] },
 	}, credentialManifest(), path, false)
@@ -408,8 +427,7 @@ func TestDepsGetenvIsHermeticByDefault(t *testing.T) {
 	if err := os.WriteFile(path, []byte("credentials:\n  gitlab_token:\n    from_env: GLPAT\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{}, answersManifest(), path, false)
+	_, err := loadAnswerFile(Deps{}, answersManifest(), path)
 	if err == nil || !strings.Contains(err.Error(), "GLPAT") {
 		t.Fatalf("error = %v, expected the unset-variable refusal", err)
 	}
@@ -418,16 +436,18 @@ func TestDepsGetenvIsHermeticByDefault(t *testing.T) {
 // An answer file naming a credential the source does not declare is refused,
 // naming the file: the same judgment converge makes, surfaced where the user
 // can act on it.
-func TestCollectInitialAnswersRefusesAnUndeclaredCredential(t *testing.T) {
+//
+// loadAnswerFile, not collectInitialAnswers: this is a fault the FILE carries,
+// which is exactly why runConvergence settles it before it asks sbx anything.
+func TestAnswerFileRefusesAnUndeclaredCredential(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "answers.yaml")
 	if err := os.WriteFile(path, []byte("repository_roots: [/tmp]\n"+
 		"credentials:\n  ghost_token:\n    from_env: GHOST\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd, _ := answersCmd("")
-	_, err := collectInitialAnswers(cmd, Deps{
+	_, err := loadAnswerFile(Deps{
 		Getenv: func(string) string { return "sentinel-secret" },
-	}, answersManifest(), path, false)
+	}, answersManifest(), path)
 	if err == nil || !strings.Contains(err.Error(), "ghost_token") {
 		t.Fatalf("error = %v, expected the undeclared credential to be named", err)
 	}
