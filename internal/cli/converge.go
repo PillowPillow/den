@@ -59,9 +59,14 @@ func (d Deps) denVersion() string {
 // everything below is identical for all three, which is the whole point of
 // spec §9.3 — a user who has read one plan has read them all.
 //
-// The order is fixed: collect the answers, plan, settle what discovery could
-// not decide alone, plan AGAIN with those choices, print, confirm, apply.
-// Nothing before the confirmation writes to the den home or the machine.
+// The order is fixed, and it is FILE → MACHINE → HUMAN before anything else:
+// load and validate the answer file, probe that the machine can be observed,
+// collect the answers, plan, settle what discovery could not decide alone,
+// plan AGAIN with those choices, print, confirm, apply. The first two ask
+// nothing of the human, which is the point — den refuses on what a file or an
+// unobservable machine already decides before it costs anyone a typed secret
+// (see the body, and the 2026-08-18 report). Nothing before the confirmation
+// writes to the den home or the machine: the probe is a read.
 func runConvergence(cmd *cobra.Command, d Deps, mode converge.Mode, home, name string,
 	c *source.Candidate, f convergenceFlags, fresh []byte) error {
 

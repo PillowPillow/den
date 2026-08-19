@@ -11,12 +11,16 @@ import (
 // is: internal/cli, internal/spawn and internal/converge all need it, and a
 // double that lives in one package's test files cannot be shared by three.
 //
-// The context is accepted and ignored (`_ context.Context`), and that is the
-// honest shape rather than a gap: this double answers from a slice and never
-// blocks, so there is no in-flight work for a cancellation to reach. Recording
-// it would only let a test assert that a value was carried, which the compiler
-// already guarantees — what matters, that a cancelled context aborts a form,
-// lives in the renderer (internal/prompt/huhui).
+// The context is accepted and ignored (`_ context.Context`): this double
+// answers from a slice and never blocks, so there is no in-flight work for a
+// cancellation to reach, and what matters — that a cancelled context aborts a
+// form — lives in the renderer (internal/prompt/huhui).
+//
+// What stays unenforced is PROPAGATION. The compiler guarantees a context
+// arrives, never that it is the caller's own: a future call site passing
+// context.Background() would compile, run, and silently lose the cancellation
+// this interface exists to carry. Recording the ctx here is what a test would
+// need to assert against that, and nothing does it today.
 //
 // It records requests as well as scripting answers. That is what makes the
 // old checklist's rendered-bytes assertions survive the move: the header line

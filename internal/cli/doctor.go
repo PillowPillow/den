@@ -218,8 +218,15 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 // fact about the machine, identical in every source's plan — printing it per
 // source repeated sbx's four-line refusal down the report and buried the
 // verdicts it was meant to explain (review PR82). Deduplicating among the
-// source lines THEMSELVES is what makes the count exactly one whatever else
-// the report contains; see sourceDetail.
+// source lines THEMSELVES is what makes the count one whatever else the report
+// contains; see sourceDetail.
+//
+// "The first line that CAN state it" is the exact claim, and the qualifier is
+// load-bearing: a blocked source prints its own refusal instead (see
+// sourceDetail), so a home whose only unobservable source is also blocked
+// states the machine cause on no source line at all — as it did before this
+// dedup existed. The cause is still `den source status <name>`, and the `sbx
+// policy` line when the policy read is what failed.
 func sourceChecks(ctx context.Context, home string, runner sbx.Runner,
 	g worktree.Git) []doctor.Check {
 	names, err := source.Names(home)
@@ -284,9 +291,11 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner,
 // was meant to explain (review PR82).
 //
 // statedBy is the source whose line printed that cause above; empty means no
-// line has, and then THIS one prints it. So the cause is stated exactly once,
-// always, and the question of whether some OTHER kind of check happens to
-// carry it never arises. den used to ask exactly that question, and answered
+// line has, and then THIS one prints it — unless it is blocked, in which case
+// it owes its own refusal instead and states nothing about the machine. So a
+// cause is stated once by the lines that can state it, never twice, and the
+// question of whether some OTHER kind of check happens to carry it never
+// arises. den used to ask exactly that question, and answered
 // it by existence rather than by identity: when `secret ls -g` failed on one
 // cause and doctor's own `policy ls` on another, every source line pointed at
 // a check stating the second while the first was printed nowhere at all
