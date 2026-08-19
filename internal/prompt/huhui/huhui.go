@@ -76,17 +76,43 @@ func (p *Prompter) gate() error {
 // calls that plan the trust boundary; a form that scrolled it away would make
 // the confirmation uninformed consent.
 func (p *Prompter) run(field huh.Field) error {
+	// ctrl+d joins ctrl+c on Quit. The bufio path this package replaced read
+	// through a Scanner, so a terminal EOF refused loudly — "-i: input ended
+	// before the selection was confirmed (a pipe, a closed terminal)"
+	// (internal/spawn/interactive.go at 8514bd2), because confirming the
+	// current state instead would be den deciding for the user. huh's default
+	// spends that keystroke on half-page scrolling (keymap.go:151 and :166 bind
+	// ctrl+d to Select/MultiSelect HalfPageDown), which turns EOF into a silent
+	// no-answer. It has to reach the fail-closed cancel path below.
+	//
+	// Rebinding the form-level Quit is the WHOLE fix, verified in huh@v1.0.0:
+	// WithKeyMap reassigns f.keymap (form.go:290) before propagating it to the
+	// groups, and Form.Update matches f.keymap.Quit and RETURNS (form.go:557-563)
+	// before group.Update ever runs (form.go:615) — no field's keymap sees
+	// ctrl+d at all. Clearing HalfPageDown as well would be dead code twice
+	// over: unreachable by that order, and never advertised either way, since
+	// HalfPageDown appears in neither MultiSelect.KeyBinds
+	// (field_multiselect.go:249-273) nor Select.KeyBinds (field_select.go:307-320).
+	//
+	// The trade, stated rather than left to be discovered: ctrl+d now aborts
+	// whatever is already typed, where the canonical-mode EOF it restores fired
+	// only on an empty line, and it takes ctrl+d away from textinput's
+	// DeleteCharacterForward (bubbles textinput.go:78) — including while a
+	// Select filter is being typed. Fail-closed is worth all three.
+	km := huh.NewDefaultKeyMap()
+	km.Quit.SetKeys("ctrl+c", "ctrl+d")
 	err := huh.NewForm(huh.NewGroup(field)).
+		WithKeyMap(km).
 		WithInput(p.In).
 		WithOutput(p.Out).
 		Run()
 	if errors.Is(err, huh.ErrUserAborted) {
-		// ctrl+c is an answer, and the answer is no. Callers wrap this error
-		// into their own refusal (e.g. "-i: reading the selection: cancelled;
-		// ..." in internal/spawn); den exits non-zero and applies nothing.
-		// This does NOT print a cancel-specific line of its own — confirm()
-		// only prints "nothing was applied" when the answer is an explicit
-		// No, not on ctrl+c (internal/cli/answers.go).
+		// ctrl+c and ctrl+d are answers, and the answer is no. Callers wrap
+		// this error into their own refusal (e.g. "-i: reading the selection:
+		// cancelled; ..." in internal/spawn); den exits non-zero and applies
+		// nothing. This does NOT print a cancel-specific line of its own —
+		// confirm() only prints "nothing was applied" when the answer is an
+		// explicit No, not on an abort (internal/cli/answers.go).
 		return errors.New("cancelled")
 	}
 	return err
@@ -166,7 +192,15 @@ func (p *Prompter) Secret(r prompt.SecretRequest) (string, error) {
 	var secret string
 	field := huh.NewInput().
 		Title(r.Prompt).
-		EchoMode(huh.EchoModePassword).
+		// EchoModeNone, not EchoModePassword: the mask mode renders one
+		// character per keystroke, disclosing the credential's LENGTH to a
+		// screen-share or a terminal recording, and leaves the masked line in
+		// scrollback. EchoModeNone "displays nothing as characters are
+		// entered" (huh@v1.0.0 field_input.go:189-191). The term.ReadPassword
+		// this replaces echoed nothing, and internal/cli/answers.go promises
+		// "Never echoed" at the call site — this line is what keeps that
+		// sentence true.
+		EchoMode(huh.EchoModeNone).
 		Value(&secret)
 	if err := p.run(field); err != nil {
 		return "", err
