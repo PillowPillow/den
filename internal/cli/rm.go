@@ -110,7 +110,7 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 	cmd.Flags().BoolVar(&keepWorktrees, "keep-worktrees", false,
 		"keep the worktrees den created")
 	cmd.Flags().BoolVar(&force, "force", false,
-		"remove worktrees even when they carry uncommitted changes")
+		"remove worktrees even when they carry uncommitted changes or ignored files")
 	return cmd
 }
 
@@ -184,6 +184,12 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 	// still mounting them — collected here, reported once after the loop.
 	var stranded []string
 
+	// What den intends to reclaim, gathered rather than acted on: the loop
+	// below decides WHAT belongs to this sandbox, reclaimAll decides whether
+	// den may touch any of it. Keeping the two apart is what makes a refusal
+	// on the last repo leave the first one alone.
+	var targets []worktree.Target
+
 	for _, r := range m.Repos {
 		// The one bit that matters: den only ever reclaims what it created.
 		// A repo mounted as-is is the user's own working directory.
@@ -231,10 +237,7 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 		if m.Worktree != nil {
 			layout, root, wt = m.Worktree.Layout, m.Worktree.Root, m.Worktree.Name
 		}
-		// One deadline PER repo, not one for the whole loop: a broken repo
-		// must not eat the budget of the next ones.
-		repoCtx, cancel := context.WithTimeout(ctx, gitProbeTimeout)
-		dest, err := worktree.Remove(repoCtx, g, worktree.Target{
+		targets = append(targets, worktree.Target{
 			DenHome:      home,
 			Layout:       layout,
 			Root:         root,
@@ -244,16 +247,13 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 			WorktreePath: r.Mount,
 			Force:        force,
 		})
-		cancel()
-		if err != nil {
-			// The record SURVIVES a failed reclaim, deliberately: it is the
-			// only trace of the directories still on disk, and deleting it
-			// here would strand them permanently.
-			return err
-		}
-		if dest != "" {
-			fmt.Fprintf(out, "worktree moved to trash: %s\n", dest)
-		}
+	}
+	// The whole set is judged before a single directory moves — see reclaimAll.
+	// The record SURVIVES a failed reclaim, deliberately: it is the only trace
+	// of the directories still on disk, and deleting it here would strand them
+	// permanently.
+	if err := reclaimAll(ctx, g, targets, out); err != nil {
+		return err
 	}
 	if len(stranded) > 0 {
 		guard.nameUnknownSharers(out, stranded)
@@ -283,6 +283,55 @@ func cleanFromManifest(ctx context.Context, home string, m manifest.Manifest, g 
 	}
 	// Removed only now, when everything it listed is reclaimed.
 	return manifest.Remove(home, m.Sandbox)
+}
+
+// reclaimAll moves a sandbox's worktrees to the trash — every one of them, or
+// none.
+//
+// TWO passes on purpose. den used to check and move repo by repo, so a nest
+// whose SECOND worktree was dirty ended with the first one in the trash, the
+// second on disk with a live git registration, the VM still alive and the
+// record still there — a state no retry could clear, since the retry hit the
+// same refusal and the first directory was already gone (reported 2026-08-19).
+// The judgment now runs over the whole set first (worktree.CheckRemovable),
+// and den moves nothing until every repo has answered.
+//
+// Every refusal is reported, not just the first: a user who has to commit work
+// in two worktrees learns both in one run rather than one per `den rm`.
+//
+// The move pass can still stop half-way — a rename that fails is not a verdict
+// den can ask for in advance — but everything rejectable from a probe is
+// decided before the first directory moves, which is the same order the spawn
+// sequence follows (spec §6).
+func reclaimAll(ctx context.Context, g worktree.Git, targets []worktree.Target, out io.Writer) error {
+	// One deadline PER repo, not one for the whole pass: a repo on a dead
+	// network mount must not eat the budget of the next ones.
+	var refusals []error
+	for _, t := range targets {
+		repoCtx, cancel := context.WithTimeout(ctx, gitProbeTimeout)
+		err := worktree.CheckRemovable(repoCtx, g, t)
+		cancel()
+		if err != nil {
+			refusals = append(refusals, err)
+		}
+	}
+	if len(refusals) > 0 {
+		return errors.Join(refusals...)
+	}
+
+	for _, t := range targets {
+		repoCtx, cancel := context.WithTimeout(ctx, gitProbeTimeout)
+		dest, err := worktree.Remove(repoCtx, g, t)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if dest == "" {
+			continue // the directory was already gone: nothing to announce
+		}
+		fmt.Fprintf(out, "worktree moved to trash: %s\n", dest)
+	}
+	return nil
 }
 
 // mountGuard answers the ONE question both reclaim paths have to answer the
@@ -589,6 +638,9 @@ func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g 
 	// one still mounting them — collected here, reported once after the loop.
 	var stranded []string
 
+	// What den intends to reclaim, gathered rather than acted on (reclaimAll).
+	var targets []worktree.Target
+
 	for _, repo := range n.Repos {
 		// The KEY is resolved here, through the same personal mapping spawn
 		// used when it created the worktree — LoadNest leaves a `key:` entry's
@@ -654,10 +706,7 @@ func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g 
 				continue
 			}
 		}
-		// One deadline PER repo, not one for the whole loop: a broken repo must
-		// not eat the budget of the next repos of the same nest.
-		repoCtx, cancel := context.WithTimeout(ctx, gitProbeTimeout)
-		dest, err := worktree.Remove(repoCtx, g, worktree.Target{
+		targets = append(targets, worktree.Target{
 			DenHome:  home,
 			Layout:   gl.WorktreeLayout,
 			Root:     gl.WorktreeRoot,
@@ -666,14 +715,12 @@ func cleanWorktreesLegacy(ctx context.Context, home, ref, sandboxName string, g 
 			RepoPath: path,
 			Force:    force,
 		})
-		cancel()
-		if err != nil {
-			return err
-		}
-		if dest == "" {
-			continue // the directory was already gone: nothing to announce
-		}
-		fmt.Fprintf(out, "worktree moved to trash: %s\n", dest)
+	}
+	// Judged as a set, exactly like the record path: this branch derives its
+	// directories instead of replaying them, but a user whose second repo is
+	// dirty must not find the first one already in the trash either.
+	if err := reclaimAll(ctx, g, targets, out); err != nil {
+		return err
 	}
 	if len(stranded) > 0 {
 		guard.nameUnknownSharers(out, stranded)

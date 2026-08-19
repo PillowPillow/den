@@ -655,6 +655,10 @@ func TestRmBoundsGitProbesWithADeadline(t *testing.T) {
 // if the deadline is set ONCE for the whole loop, the second repo's remaining
 // budget will already have been eaten by that slowdown; if it is set FOR EACH
 // repo, the second repo starts from an almost-intact budget.
+//
+// Each repo now shows up in listDeadlines more than once — the preflight pass
+// asks first (reclaimAll), then the move pass asks again through Remove — so
+// the deadlines are read by INDEX, not counted.
 type fakeGitTwoRepoDeadlines struct {
 	sleepOnFirstCall time.Duration
 	calls            int
@@ -702,8 +706,13 @@ func TestRmGivesAFreshDeadlineToEachRepo(t *testing.T) {
 	if _, err := executeCmd(t, root, "--den-home", denHome, "rm", "api.feat12"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(git.listDeadlines) != 2 {
-		t.Fatalf("expected one deadline per repo (2 repos), got %d", len(git.listDeadlines))
+	// One `worktree list` per repo in the PREFLIGHT pass, then more in the move
+	// pass (reclaimAll judges the whole set before it moves anything, and
+	// Remove re-asks for itself). The count is therefore not the property —
+	// index 1 is, and it is the second repo's preflight: the call right after
+	// the slowdown, hence the one a hoisted deadline would starve.
+	if len(git.listDeadlines) < 2 {
+		t.Fatalf("expected at least one deadline per repo (2 repos), got %d", len(git.listDeadlines))
 	}
 	secondRemaining := time.Until(git.listDeadlines[1])
 	// A deadline HOISTED out of the loop would have already lost ~700ms by the
@@ -2086,5 +2095,115 @@ func TestRmWithoutARecordNamesTheSourceConfigurationOfAnUnmappedKey(t *testing.T
 	}
 	if _, err := os.Stat(wt); err != nil {
 		t.Errorf("den moved a directory it could not attribute to a repo: %v", err)
+	}
+}
+
+// Reproduction (2026-08-19, real user report): a nest with two repos, the
+// SECOND one dirty. The loop moved the first worktree to the trash, then
+// refused on the second — leaving the user with one worktree in the trash, one
+// on disk with a live git registration, a live sandbox and a surviving record.
+// Nothing said which half had happened.
+func TestRmMovesNothingWhenALaterWorktreeIsDirty(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+
+	clean := filepath.Join(t.TempDir(), "back")
+	dirty := filepath.Join(t.TempDir(), "front")
+	createTestRepo(t, clean)
+	createTestRepo(t, dirty)
+	cleanWt := createWorktree(t, clean, root, "feat12")
+	dirtyWt := createWorktree(t, dirty, root, "feat12")
+	if err := os.WriteFile(filepath.Join(dirtyWt, "draft.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feat12",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: root},
+		Repos: []manifest.Repo{
+			{Name: "back", Origin: manifest.OriginPath, Repo: clean, Mount: cleanWt, Worktree: true},
+			{Name: "front", Origin: manifest.OriginPath, Repo: dirty, Mount: dirtyWt, Worktree: true},
+		},
+	})
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+
+	if err == nil {
+		t.Fatal("a dirty worktree must fail the rm")
+	}
+	// THE property: the refusal happens before the FIRST side effect. A repo
+	// whose worktree den already moved cannot be brought back by retrying.
+	if _, statErr := os.Stat(cleanWt); statErr != nil {
+		t.Errorf("the clean worktree must still be in place: %v", statErr)
+	}
+	if _, statErr := os.Stat(dirtyWt); statErr != nil {
+		t.Errorf("the dirty worktree must still be in place: %v", statErr)
+	}
+	if f.HasCalled("rm", "--force", "api.feat12") {
+		t.Errorf("the sandbox must NOT have been destroyed; calls: %v", f.Calls)
+	}
+	// And the message names the repo that blocks, not just a path the user
+	// then has to map back to a repo by hand.
+	if !strings.Contains(err.Error(), dirtyWt) {
+		t.Errorf("the message must name the offending worktree; got: %v", err)
+	}
+}
+
+// Companion of the reproduction above: the refusal names EVERY worktree that
+// blocks, not just the first one den met. Reporting them one per run turns a
+// two-repo nest into two `den rm`, each one telling the user about work they
+// could have committed in the same pass.
+func TestRmNamesEveryDirtyWorktreeAtOnce(t *testing.T) {
+	denHome := t.TempDir()
+	root := filepath.Join(denHome, "worktrees")
+	writeConfig(t, denHome, worktreeConfig(root))
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+
+	back := filepath.Join(t.TempDir(), "back")
+	front := filepath.Join(t.TempDir(), "front")
+	createTestRepo(t, back)
+	createTestRepo(t, front)
+	backWt := createWorktree(t, back, root, "feat12")
+	frontWt := createWorktree(t, front, root, "feat12")
+	for _, wt := range []string{backWt, frontWt} {
+		if err := os.WriteFile(filepath.Join(wt, "draft.txt"), []byte("wip"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeManifest(t, denHome, manifest.Manifest{
+		Sandbox:  "api.feat12",
+		Nest:     manifest.Nest{Ref: "api", File: filepath.Join(denHome, "nests", "api.yaml")},
+		Worktree: &manifest.Worktree{Name: "feat12", Branch: "feat12", Layout: "central", Root: root},
+		Repos: []manifest.Repo{
+			{Name: "back", Origin: manifest.OriginPath, Repo: back, Mount: backWt, Worktree: true},
+			{Name: "front", Origin: manifest.OriginPath, Repo: front, Mount: frontWt, Worktree: true},
+		},
+	})
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+	if err == nil {
+		t.Fatal("two dirty worktrees must fail the rm")
+	}
+	for _, wt := range []string{backWt, frontWt} {
+		if !strings.Contains(err.Error(), wt) {
+			t.Errorf("the message must name %s; got: %v", wt, err)
+		}
+	}
+	// And with --force both go, in one run.
+	f2 := &sbx.Fake{Responses: lsWith("api.feat12")}
+	out, err := executeCmdWithSbx(t, f2, "--den-home", denHome, "rm", "api.feat12", "--force")
+	if err != nil {
+		t.Fatalf("with --force, the rm must succeed: %v", err)
+	}
+	if strings.Count(out, "worktree moved to trash:") != 2 {
+		t.Errorf("both worktrees must be reclaimed; got:\n%s", out)
 	}
 }

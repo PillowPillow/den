@@ -2033,9 +2033,9 @@ func TestProbesRefuseUnreadableOutput(t *testing.T) {
 	t.Run("truncated status", func(t *testing.T) {
 		for _, output := range []string{"XY", "XYZfile.txt\x00", " M\x00"} {
 			g := scriptedGit{real: NewGit(), prefix: statusPrefix, output: []byte(output)}
-			dirty, err := dirtyFiles(context.Background(), g, worktreePath)
+			d, err := dirtyFiles(context.Background(), g, worktreePath)
 			if err == nil {
-				t.Errorf("output %q: an unreadable record must produce an error; got %v", output, dirty)
+				t.Errorf("output %q: an unreadable record must produce an error; got %v", output, d.all())
 			}
 		}
 	})
@@ -2068,12 +2068,12 @@ func TestProbesRefuseUnreadableOutput(t *testing.T) {
 		}
 		for _, c := range cases {
 			g := scriptedGit{real: NewGit(), prefix: statusPrefix, output: []byte(c.output)}
-			dirty, err := dirtyFiles(context.Background(), g, worktreePath)
+			d, err := dirtyFiles(context.Background(), g, worktreePath)
 			if err != nil {
 				t.Errorf("output %q: unexpected error: %v", c.output, err)
 				continue
 			}
-			if !slices.Equal(dirty, c.expected) {
+			if dirty := d.all(); !slices.Equal(dirty, c.expected) {
 				t.Errorf("output %q: dirty = %v, expected %v", c.output, dirty, c.expected)
 			}
 		}
@@ -2725,4 +2725,52 @@ func TestRemoveUsesTheRecordedPathOverTheCalculatedOne(t *testing.T) {
 	if _, err := os.Stat(created); !os.IsNotExist(err) {
 		t.Errorf("%s must have left its place: %v", created, err)
 	}
+}
+
+// An ignored file is not committable, so telling the user to commit it sends
+// them looking for work that does not exist. den still refuses — a `.env` is
+// exactly what one cannot get back — but it says WHICH remedy applies.
+// Reported 2026-08-19 on a repo whose `.DS_Store` and generated
+// `environment.development.ts` alone blocked every `den rm`.
+func TestRemoveTellsIgnoredFilesApartFromUncommittedWork(t *testing.T) {
+	t.Run("ignored files only", func(t *testing.T) {
+		_, worktreePath, target := prepareWorktree(t)
+		writeFile(t, filepath.Join(worktreePath, ".gitignore"), ".DS_Store\n")
+		git(t, worktreePath, "add", ".gitignore")
+		git(t, worktreePath, "commit", "-m", "ignore junk")
+		writeFile(t, filepath.Join(worktreePath, ".DS_Store"), "junk")
+
+		err := CheckRemovable(context.Background(), NewGit(), target)
+		if err == nil {
+			t.Fatal("an ignored file still blocks the removal (spec §14)")
+		}
+		if !strings.Contains(err.Error(), "no uncommitted change") ||
+			!strings.Contains(err.Error(), ".DS_Store") {
+			t.Errorf("the message must name the ignored file and say there is nothing to "+
+				"commit; got: %v", err)
+		}
+		if strings.Contains(err.Error(), "commit them") {
+			t.Errorf("nothing here is committable, so the message must not ask for a "+
+				"commit; got: %v", err)
+		}
+	})
+
+	t.Run("both halves", func(t *testing.T) {
+		_, worktreePath, target := prepareWorktree(t)
+		writeFile(t, filepath.Join(worktreePath, ".gitignore"), ".DS_Store\n")
+		git(t, worktreePath, "add", ".gitignore")
+		git(t, worktreePath, "commit", "-m", "ignore junk")
+		writeFile(t, filepath.Join(worktreePath, ".DS_Store"), "junk")
+		writeFile(t, filepath.Join(worktreePath, "draft.txt"), "wip")
+
+		err := CheckRemovable(context.Background(), NewGit(), target)
+		if err == nil {
+			t.Fatal("uncommitted work blocks the removal")
+		}
+		for _, want := range []string{"draft.txt", ".DS_Store", "commit the changes"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the message must carry %q; got: %v", want, err)
+			}
+		}
+	})
 }

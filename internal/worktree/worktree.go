@@ -282,6 +282,102 @@ type Target struct {
 	Force        bool
 }
 
+// targetPath is the directory a Target designates: the one RECORDED at
+// creation when there is one, the derivation otherwise. One body, so
+// CheckRemovable and Remove can never judge one directory and move another.
+func targetPath(c Target) string {
+	if c.WorktreePath != "" {
+		return c.WorktreePath
+	}
+	return Path(c.Layout, c.Root, c.Worktree, c.RepoPath)
+}
+
+// lockedRegistrationError names the state where the directory is gone and the
+// registration is not. One wording for the two callers that can reach it —
+// CheckRemovable before pruning, Remove after — because the user acts on it the
+// same way.
+func lockedRegistrationError(worktreePath, repoPath string) error {
+	return fmt.Errorf(
+		"the registration of worktree %s survives in %s while its directory is gone — "+
+			"it is probably locked: run `git worktree unlock %s` in %s, then retry",
+		worktreePath, repoPath, worktreePath, repoPath)
+}
+
+// CheckRemovable answers "would Remove refuse this worktree?" WITHOUT touching
+// anything. It exists because reclaiming is a SET operation: `den rm` reclaims
+// every repo of a sandbox, and a refusal discovered on the third repo used to
+// arrive after the first two had already moved to the trash — one directory
+// gone, one still on disk with a live registration, a live VM and a surviving
+// record, and no way to retry into a clean state (reported 2026-08-19 on a
+// two-repo nest whose second worktree was dirty).
+//
+// Same doctrine as the spawn sequence (spec §6): everything rejectable from a
+// probe alone is decided before the first side effect. The price is that the
+// probes run twice on the happy path — once here, once inside Remove — which is
+// a `git status` per repo, paid so that a refusal never leaves a half-reclaimed
+// sandbox behind.
+//
+// What it does NOT promise is atomicity: a rename that fails mid-set (a full
+// disk, a vanished mount) still stops the caller half-way. Only the verdicts
+// den can ask for in advance move up here.
+func CheckRemovable(ctx context.Context, g Git, c Target) error {
+	repoPath, worktreePath := c.RepoPath, targetPath(c)
+
+	// BEFORE anything else: with nowhere to put the directory, den does nothing
+	// at all. An earlier version refused only after the dirtiness check, and then
+	// pointed the user at a relative path that designates nothing.
+	if c.DenHome == "" {
+		return fmt.Errorf(
+			"removing worktree %s: no den_home given — den does not delete worktrees, "+
+				"it moves them, so it needs somewhere to put them", worktreePath)
+	}
+
+	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+		// Nothing to move, so nothing to refuse — except the one state Remove
+		// cannot fix on that branch: a LOCKED registration, which `prune`
+		// silently skips. `worktree list` reports the lock without pruning
+		// anything, so the refusal can be raised here, before a sibling repo's
+		// worktree moves.
+		registered, locked, err := worktreeEntry(ctx, g, repoPath, worktreePath)
+		if err != nil {
+			return err
+		}
+		if registered && locked {
+			return lockedRegistrationError(worktreePath, repoPath)
+		}
+		return nil
+	}
+
+	if err := checkOwnership(ctx, g, worktreePath, repoPath); err != nil {
+		return err
+	}
+
+	// The lock is checked BEFORE moving. `git worktree lock` exists for removable
+	// volumes and network mounts, and `prune` SILENTLY skips locked worktrees
+	// (rc=0, no output): moving first would leave both a directory in the trash
+	// AND a live registration blocking every later Ensure, with nothing saying so.
+	_, locked, err := worktreeEntry(ctx, g, repoPath, worktreePath)
+	if err != nil {
+		return err
+	}
+	if locked {
+		return fmt.Errorf(
+			"worktree %s is locked in %s — run `git worktree unlock %s` in %s, then retry",
+			worktreePath, repoPath, worktreePath, repoPath)
+	}
+
+	if !c.Force {
+		d, err := dirtyFiles(ctx, g, worktreePath)
+		if err != nil {
+			return err
+		}
+		if err := d.refusal(worktreePath, primaryTrash(c)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Remove moves the worktree to the trash and returns the path of the entry it
 // created — or "" if the directory was already gone. Refuses if the tree is
 // dirty and Force is false (spec §14).
@@ -302,18 +398,20 @@ type Target struct {
 // pointing at a now-pruned registration. Files are recovered, not a working
 // worktree. Commits were never at stake — the branch survives in the repository.
 func Remove(ctx context.Context, g Git, c Target) (string, error) {
-	repoPath, worktreePath, force := c.RepoPath, c.WorktreePath, c.Force
-	if worktreePath == "" {
-		worktreePath = Path(c.Layout, c.Root, c.Worktree, c.RepoPath)
-	}
+	repoPath, worktreePath := c.RepoPath, targetPath(c)
 
-	// BEFORE anything else: with nowhere to put the directory, den does nothing
-	// at all. An earlier version refused only after the dirtiness check, and then
-	// pointed the user at a relative path that designates nothing.
-	if c.DenHome == "" {
-		return "", fmt.Errorf(
-			"removing worktree %s: no den_home given — den does not delete worktrees, "+
-				"it moves them, so it needs somewhere to put them", worktreePath)
+	// EVERY refusal, asked once, before the first side effect of this call —
+	// and the same judgment a caller can ask for its whole set of repos before
+	// den moves any of them (CheckRemovable). Remove asks it again for itself
+	// rather than trusting the caller: it is the only function that moves, so
+	// it is the one that must never move what it did not judge.
+	//
+	// The verdict and the move each stat the directory, so a directory that
+	// appears BETWEEN the two is moved on a verdict that judged an absent
+	// path. Milliseconds wide, and it ends in the trash rather than in the
+	// void — the reason Remove moves instead of deleting.
+	if err := CheckRemovable(ctx, g, c); err != nil {
+		return "", err
 	}
 
 	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
@@ -329,50 +427,19 @@ func Remove(ctx context.Context, g Git, c Target) (string, error) {
 		// Without this re-check den would return nil claiming to have cleaned up,
 		// and Ensure would later send the user back to `den rm` — the command that
 		// just told them it succeeded.
+		//
+		// CheckRemovable already refused a registration it could SEE was locked;
+		// this net catches the one it could not — a registration `prune` declined
+		// to clear for any other reason, or a lock taken between the two calls.
 		registered, _, err := worktreeEntry(ctx, g, repoPath, worktreePath)
 		if err != nil {
 			return "", err
 		}
 		if registered {
-			return "", fmt.Errorf(
-				"the registration of worktree %s survives in %s while its directory is gone — "+
-					"it is probably locked: run `git worktree unlock %s` in %s, then retry",
-				worktreePath, repoPath, worktreePath, repoPath)
+			return "", lockedRegistrationError(worktreePath, repoPath)
 		}
 		removeParentDir(c, worktreePath)
 		return "", nil
-	}
-
-	if err := checkOwnership(ctx, g, worktreePath, repoPath); err != nil {
-		return "", err
-	}
-
-	// The lock is checked BEFORE moving. `git worktree lock` exists for removable
-	// volumes and network mounts, and `prune` SILENTLY skips locked worktrees
-	// (rc=0, no output): moving first would leave both a directory in the trash
-	// AND a live registration blocking every later Ensure, with nothing saying so.
-	_, locked, err := worktreeEntry(ctx, g, repoPath, worktreePath)
-	if err != nil {
-		return "", err
-	}
-	if locked {
-		return "", fmt.Errorf(
-			"worktree %s is locked in %s — run `git worktree unlock %s` in %s, then retry",
-			worktreePath, repoPath, worktreePath, repoPath)
-	}
-
-	if !force {
-		dirty, err := dirtyFiles(ctx, g, worktreePath)
-		if err != nil {
-			return "", err
-		}
-		if len(dirty) > 0 {
-			return "", fmt.Errorf(
-				"worktree %s holds uncommitted changes (%s) — commit them, or retry "+
-					"with --force to send it to the trash %s, or with --keep-worktrees "+
-					"to leave the directory in place",
-				worktreePath, shortList(dirty), primaryTrash(c))
-		}
 	}
 
 	dest, err := moveToTrash(c, worktreePath)
@@ -886,7 +953,7 @@ func defaultBranch(ctx context.Context, g Git, repoPath string) (string, bool) {
 // refusing on every `node_modules/`, i.e. making `den rm` unusable. The price is
 // paid once and for good now that Remove moves instead of deleting: what this
 // verdict misses ends up in the trash, not in the void.
-func dirtyFiles(ctx context.Context, g Git, dir string) ([]string, error) {
+func dirtyFiles(ctx context.Context, g Git, dir string) (dirt, error) {
 	// --untracked-files=normal is passed EXPLICITLY: den reads git under the
 	// user's config, and `status.showUntrackedFiles = no` — a performance setting
 	// common on large repositories — would otherwise empty the output of all
@@ -901,7 +968,7 @@ func dirtyFiles(ctx context.Context, g Git, dir string) ([]string, error) {
 	out, err := g.Run(ctx, dir, "-c", "core.fsmonitor=", "status", "--porcelain",
 		"--ignored=traditional", "--untracked-files=normal", "-z")
 	if err != nil {
-		return nil, fmt.Errorf("status of %s: %w", dir, err)
+		return dirt{}, fmt.Errorf("status of %s: %w", dir, err)
 	}
 	// Two passes: read every record first, then ask git ONE single question for
 	// all candidate directories. Deciding entry by entry cost one fork per entry
@@ -920,7 +987,7 @@ func dirtyFiles(ctx context.Context, g Git, dir string) ([]string, error) {
 		// exact fail-open direction the rest of this module refuses. A format den
 		// cannot read is a doubt, hence a refusal.
 		if len(e) < 4 || e[2] != ' ' {
-			return nil, fmt.Errorf(
+			return dirt{}, fmt.Errorf(
 				"status of %s: unreadable record in git status output: %q", dir, e)
 		}
 		status, entryPath := e[:2], e[3:]
@@ -950,24 +1017,75 @@ func dirtyFiles(ctx context.Context, g Git, dir string) ([]string, error) {
 		ignored = ignoredDirs(ctx, g, dir, candidates)
 	}
 
-	var dirty []string
+	var d dirt
 	for _, e := range records {
-		if isCollapsedIgnoredDir(e.status, e.path) && ignored[strings.TrimSuffix(e.path, "/")] {
+		if e.status == "!!" {
+			if isCollapsedIgnoredDir(e.status, e.path) && ignored[strings.TrimSuffix(e.path, "/")] {
+				continue
+			}
+			d.ignored = append(d.ignored, e.path)
 			continue
 		}
-		dirty = append(dirty, e.path)
+		d.changes = append(d.changes, e.path)
 	}
 
 	marked, err := markedFiles(ctx, g, dir)
 	if err != nil {
-		return nil, err
+		return dirt{}, err
 	}
 	for _, m := range marked {
-		if !slices.Contains(dirty, m) {
-			dirty = append(dirty, m)
+		if !slices.Contains(d.changes, m) {
+			d.changes = append(d.changes, m)
 		}
 	}
-	return dirty, nil
+	return d, nil
+}
+
+// dirt is what keeps a worktree from being disposable, split by what the user
+// can DO about it — the two halves call for opposite actions.
+//
+// changes is committable work: tracked modifications, staged entries,
+// untracked files. The remedy is a commit.
+//
+// ignored is what no commit will ever carry: a `.env`, a local sqlite base, a
+// `.DS_Store`. den keeps refusing on them (a secret is exactly what one cannot
+// get back, spec §14), but telling the user to "commit them" sent them looking
+// for work that does not exist — reported 2026-08-19 on a repo whose
+// `.DS_Store` and generated `environment.development.ts` alone blocked every
+// `den rm`.
+type dirt struct {
+	changes []string
+	ignored []string
+}
+
+// all is every offending path, changes first. For callers that only need to
+// know whether something is in the way.
+func (d dirt) all() []string { return append(append([]string{}, d.changes...), d.ignored...) }
+
+// refusal is the message, or nil when nothing is in the way. The remedies
+// differ per half, so the sentence does too: --force is offered everywhere
+// (den moves to the trash, it does not delete), a COMMIT only where committing
+// is possible.
+func (d dirt) refusal(worktreePath, trash string) error {
+	const remedy = "retry with --force to send it to the trash %s, or with --keep-worktrees " +
+		"to leave the directory in place"
+	switch {
+	case len(d.changes) > 0 && len(d.ignored) > 0:
+		return fmt.Errorf(
+			"worktree %s holds uncommitted changes (%s) and ignored files no commit will carry "+
+				"(%s) — commit the changes, then "+remedy,
+			worktreePath, shortList(d.changes), shortList(d.ignored), trash)
+	case len(d.changes) > 0:
+		return fmt.Errorf(
+			"worktree %s holds uncommitted changes (%s) — commit them, or "+remedy,
+			worktreePath, shortList(d.changes), trash)
+	case len(d.ignored) > 0:
+		return fmt.Errorf(
+			"worktree %s holds no uncommitted change: only ignored files, which den refuses to "+
+				"discard on its own because it cannot tell a `.DS_Store` from a `.env` (%s) — "+remedy,
+			worktreePath, shortList(d.ignored), trash)
+	}
+	return nil
 }
 
 // isCollapsedIgnoredDir says whether the record is a collapsed ignored
