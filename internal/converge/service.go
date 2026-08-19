@@ -292,10 +292,43 @@ func (s Service) Unobservable(req Request, plan *Plan) error {
 	if plan == nil || plan.Unobserved == nil {
 		return nil
 	}
+	return s.unobservableRefusal(req, plan.Unobserved)
+}
+
+// unobservableRefusal is the ONE wording of that refusal, shared by the check
+// that reads it off a plan and the probe that raises it without one. Two
+// spellings would let a user meet the same fact under two remedies depending
+// on how early den noticed it.
+//
+// It reads nothing a probe does not hold yet: retryCommand needs the mode, the
+// name and the candidate URL, all of them set before the first question is
+// asked.
+func (s Service) unobservableRefusal(req Request, cause error) error {
 	return fmt.Errorf(
 		"source %q: %w — den will not converge a machine it cannot see; fix that read "+
 			"(`den doctor` reports it), then run `%s`. Nothing was applied",
-		req.Name, plan.Unobserved, s.retryCommand(req))
+		req.Name, cause, s.retryCommand(req))
+}
+
+// Observable asks the machine the same question Plan will, EARLIER: before the
+// first prompt.
+//
+// The prompts in collectInitialAnswers collect a credential den immediately
+// discards when the machine turns out unobservable — the 2026-08-18 report
+// named that exact shape, and the refusal that used to sit only after Plan
+// still let it happen: den asked for a GitLab token, then refused. One extra
+// ReadSbxState per run is the price; a secret typed into a run that was doomed
+// before the question is the regression it buys back.
+//
+// It does NOT replace the checks on the plans themselves. This probe and they
+// cover different windows — the machine can die between the probe and a Plan,
+// and between the two Plans — and a fact observed early is not a fact that
+// stays true.
+func (s Service) Observable(ctx context.Context, req Request) error {
+	if _, err := ReadSbxState(ctx, s.Sbx); err != nil {
+		return s.unobservableRefusal(req, err)
+	}
+	return nil
 }
 
 func buildList(m *source.Manifest) string {

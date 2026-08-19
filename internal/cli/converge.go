@@ -84,6 +84,22 @@ func runConvergence(cmd *cobra.Command, d Deps, mode converge.Mode, home, name s
 		FreshGlobalConfig: fresh,
 	}
 
+	// Ask the MACHINE before asking the human. collectInitialAnswers below
+	// prompts for the repository roots and for every declared credential, and
+	// on a machine den cannot observe all of that is collected only to be
+	// thrown away by the refusal further down — a secret typed into a run that
+	// was already lost, which the human then retypes on the retry. That is the
+	// shape the 2026-08-18 report named, and it survived the refusal that was
+	// added for it because that refusal sits after the questions.
+	//
+	// The guards on the plans below STAY. This probe and they cover different
+	// windows: the sbx daemon can die between this read and the first Plan, or
+	// between the two Plans, and an observation is a fact about a moment rather
+	// than a property of the run.
+	if err := svc.Observable(cmd.Context(), req); err != nil {
+		return err
+	}
+
 	answers, err := collectInitialAnswers(cmd, d, c.Manifest, f.Answers, f.Yes)
 	if err != nil {
 		return err
@@ -97,15 +113,16 @@ func runConvergence(cmd *cobra.Command, d Deps, mode converge.Mode, home, name s
 	// An unobservable machine stops the command HERE — before the repository
 	// questions below, before the plan is printed, before the confirmation.
 	//
-	// Plan itself does not refuse (its godoc says why: `den source status` and
-	// `den doctor` must still render such a machine), so this is the one place
-	// that turns that state into a refusal. It used to be absent, and the shape
-	// reported on 2026-08-18 is what that cost: sbx demands a one-time
-	// `sbx policy init <profile>`, a laptop that never ran it answered nothing
-	// to `policy ls`, and den asked for a GitLab token, printed a plan whose
-	// every line read `unknown`, prompted `apply this plan? [y/N]`, accepted
-	// the `y` — and only then refused, from inside Apply, with the applying
-	// receipt already written. den knew before the prompt.
+	// It covers the window the probe above cannot: the machine answered when den
+	// asked, and stopped answering by the time Plan read it. Plan itself does not
+	// refuse (its godoc says why: `den source status` and `den doctor` must still
+	// render such a machine), so this is where that state becomes a refusal.
+	//
+	// The shape reported on 2026-08-18 is what its absence cost: sbx demands a
+	// one-time `sbx policy init <profile>`, a laptop that never ran it answered
+	// nothing to `policy ls`, and den printed a plan whose every line read
+	// `unknown`, prompted `apply this plan? [y/N]`, accepted the `y` — and only
+	// then refused, from inside Apply, with the applying receipt already written.
 	if err := svc.Unobservable(req, plan); err != nil {
 		return err
 	}
@@ -119,6 +136,16 @@ func runConvergence(cmd *cobra.Command, d Deps, mode converge.Mode, home, name s
 			return err
 		}
 		if plan, err = svc.Plan(cmd.Context(), req); err != nil {
+			return err
+		}
+		// And check THAT plan too: it is the one that gets printed, confirmed
+		// and applied. The human has just spent time answering repository
+		// choices, which is exactly long enough for the sbx daemon to stop
+		// answering — and an all-`unknown` plan confirmed here, then refused
+		// from inside Apply with the applying receipt already written, is the
+		// very shape the guard above exists to prevent. Checking only the first
+		// pass would leave that door open.
+		if err := svc.Unobservable(req, plan); err != nil {
 			return err
 		}
 	}
