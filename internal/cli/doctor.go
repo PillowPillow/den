@@ -230,11 +230,9 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 	// that cannot change between two of them — it is machine state, not source
 	// state (review PR82).
 	//
-	// What this does NOT change is the OUTPUT: each source still carries the
-	// cause in its own plan and still prints it on its own check line, so an
-	// unobservable machine reports it once per source, as before. That half is
-	// a rendering decision (unobservedWarning, sourceDetail), shared with
-	// `den source status`, and it is not this change's to make.
+	// A FAILED observation lands in every source's plan, so it is also stated
+	// once rather than once per source — see sourceDetail below, which points
+	// each source line at the `sbx` check carrying the cause.
 	state, observeErr := converge.ReadSbxState(ctx, runner)
 	var checks []doctor.Check
 	for _, name := range manifested {
@@ -253,8 +251,33 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 // verdict, and the first thing to do about it. The full report — every
 // resource, every nest — is `den source status <name>`, which the detail names
 // when there is something to read there.
+//
+// An UNOBSERVABLE machine is the one case where the plan's own first warning
+// is not what doctor prints. Every source's plan carries the same cause — they
+// all come from the one read above — so printing it per source repeated sbx's
+// four-line refusal down the report and buried the verdicts it was meant to
+// explain (review PR82). doctor already states it once further up: the `sbx
+// policy` FAIL carries sbx's own refusal when the binary is there, and when it
+// is not, networkPolicyChecks is skipped and the `sbx` check states the
+// missing binary — which is that machine's cause, in its own words. So the
+// source line points there instead of repeating anything, and names no single
+// carrier line, because which one carries it depends on how far den got.
+//
+// Only the unobserved cause is deduplicated. A source that is ALSO blocked
+// keeps its blocking refusal printed here, because that one IS about the
+// source: RequireUsable's message is what Status prepends to Warnings, and a
+// blocked source must say what a spawn would refuse (see Status). The two are
+// told apart by the status — with a failed observation every resource is
+// unknown, so AggregateStatus can only answer `unknown`, and `blocked` on top
+// of an unobserved plan can only have come from that prepend.
+//
+// This lives in doctor and nowhere else: `den source status` renders through
+// converge.RenderStatus, which prints the cause once per invocation already.
 func sourceDetail(p *converge.Plan) string {
 	detail := fmt.Sprintf("version %s: %s", p.Version, p.Status)
+	if p.Unobserved != nil && p.Status != source.StatusBlocked {
+		return detail + " — den could not observe this machine: the sbx check above carries the cause"
+	}
 	if len(p.Warnings) > 0 {
 		return detail + " — " + p.Warnings[0]
 	}
