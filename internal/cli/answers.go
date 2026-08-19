@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 
@@ -13,6 +12,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/converge"
+	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/source"
 )
 
@@ -105,28 +105,36 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 		return converge.Answers{}, noTerminalRefusal(stillMissing, needsTerminal, needsRoots, obsErr)
 	}
 
-	in := bufio.NewReader(cmd.InOrStdin())
-	out := cmd.OutOrStdout()
+	// A terminal is present (we are past the no-terminal branch above), but
+	// nothing is wired to ask on it — that is a WIRING defect, not a user
+	// error, and it must refuse HERE, before askRepositoryRoots or the
+	// credential loop below ever call a nil Prompter. One guard above both
+	// call sites, naming BOTH remedies at once, gated on the question(s)
+	// this run would actually need to ask: nobody is sent to the wrong key
+	// in the right file, and the guard stays silent when neither question
+	// would have been asked (M1/M2 review, Task 4).
+	if d.Prompt == nil && (needsRoots || len(missing) > 0) {
+		return converge.Answers{}, fmt.Errorf(
+			"this run has a terminal but no prompter is wired — this is a den defect; " +
+				"pass `--answers <file>` supplying `repository_roots:` and " +
+				"`credentials.<name>.from_env:` as a workaround")
+	}
+
 	if needsRoots {
-		roots, err := askRepositoryRoots(out, in)
+		roots, err := askRepositoryRoots(d.Prompt)
 		if err != nil {
 			return converge.Answers{}, err
 		}
 		a.RepositoryRoots = roots
 	}
 	for _, name := range missing {
-		prompt := m.Inputs.Credentials[name].Prompt
-		if strings.TrimSpace(prompt) == "" {
-			prompt = name
-		}
-		if d.ReadSecret == nil {
-			return converge.Answers{}, fmt.Errorf(
-				"credential %q must be typed, and no secret reader is wired — this is a den defect; "+
-					"pass `--answers <file>` with `from_env:` as a workaround", name)
+		label := m.Inputs.Credentials[name].Prompt
+		if strings.TrimSpace(label) == "" {
+			label = name
 		}
 		// Never echoed, and never carried in a flag: an argv is visible to
 		// every process on the machine (spec §5.3).
-		value, err := d.ReadSecret(prompt + ": ")
+		value, err := d.Prompt.Secret(prompt.SecretRequest{Prompt: label})
 		if err != nil {
 			return converge.Answers{}, fmt.Errorf("reading %s: %w", name, err)
 		}
@@ -267,14 +275,33 @@ func noTerminalRefusal(missing, needsTerminal []string, needsRoots bool, obsErr 
 }
 
 // askRepositoryRoots reads the directories to scan. They are answers to ONE
-// execution: den never stores them (spec §7.2), which is also why the prompt
+// execution: den never stores them (spec §7.2), which is also why the question
 // says what they are for rather than presenting them as a setting.
-func askRepositoryRoots(out io.Writer, in *bufio.Reader) ([]string, error) {
-	fmt.Fprintln(out, "Where do your working repositories live? (space-separated directories, "+
-		"empty line to skip — den only looks, it never clones)")
-	fmt.Fprint(out, "> ")
-	line, err := in.ReadString('\n')
-	if err != nil && line == "" {
+//
+// The Prompter returns the line RAW. Splitting on whitespace, expanding `~` and
+// validating each entry stay here, exactly where they were: a Prompter that
+// knew what a path is would be a second judge of den's config, and there is one
+// judge (config.ExpandPath).
+func askRepositoryRoots(p prompt.Prompter) ([]string, error) {
+	// Deliberate redundancy with collectInitialAnswers' own guard above its
+	// call site: THAT guard names both remedies for the run and is what a
+	// human actually reads; THIS one defends the function itself, so a
+	// future caller reaching askRepositoryRoots directly (it is exported to
+	// this package) cannot bypass a guard that lives only at today's one
+	// call site — the exact failure mode that produced this defect. Same
+	// belt-and-braces the repo already accepts between huhui's own gate and
+	// its callers' IsTTY checks, and the same reason spawn.promptOptionalRepos
+	// guards inside the callee.
+	if p == nil {
+		return nil, fmt.Errorf(
+			"the repository-roots question has no prompter to ask on — this is a den defect; " +
+				"pass `--answers <file>` supplying `repository_roots:` as a workaround")
+	}
+	line, err := p.Line(prompt.LineRequest{
+		Question: "Where do your working repositories live? (space-separated directories, " +
+			"empty line to skip — den only looks, it never clones)",
+	})
+	if err != nil {
 		return nil, fmt.Errorf("reading the repository roots: %w", err)
 	}
 	var roots []string
@@ -318,17 +345,27 @@ func confirm(cmd *cobra.Command, d Deps, yes, changes bool) (bool, error) {
 	if !changes {
 		return true, nil
 	}
-	fmt.Fprint(cmd.OutOrStdout(), "\napply this plan? [y/N] ")
-	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-	if err != nil && line == "" {
+	// A nil Prompter is "no way to ask", never "assume the defaults": an
+	// unwired double must refuse here rather than let the caller apply a
+	// plan nobody confirmed. Same rule as promptOptionalRepos (internal/
+	// spawn/interactive.go), one caller down.
+	if d.Prompt == nil {
+		return false, fmt.Errorf(
+			"no prompter is wired to confirm this plan — this is a den defect; " +
+				"pass `--yes` as a workaround")
+	}
+	// The plan is ALREADY on screen, printed by the caller. The question names
+	// what it applies to and nothing else: internal/converge/render.go calls
+	// that plan the trust boundary, and a prompt that redrew it — or that took
+	// the screen and scrolled it away — would turn consent into a guess.
+	ok, err := d.Prompt.Confirm(prompt.ConfirmRequest{Question: "apply this plan?"})
+	if err != nil {
 		return false, fmt.Errorf("reading the confirmation: %w", err)
 	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true, nil
+	if !ok {
+		fmt.Fprintln(cmd.OutOrStdout(), "nothing was applied")
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "nothing was applied")
-	return false, nil
+	return ok, nil
 }
 
 // getenv returns the environment reader, defaulting to a reader that finds

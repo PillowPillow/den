@@ -438,6 +438,18 @@ README de la source (« den ≥ X.Y requis ») en est le seul remède préventif
    couleur au prix de cette propriété. Si trente entrées se révèlent pénibles à l'usage, un filtre
    par préfixe tapé se code dans le même `bufio` ; hors scope ici, à chiffrer sur mesure réelle.
 
+   **Renversée le 2026-08-18** par `2026-08-18-rich-prompts-design.md`. La mesure réelle que cette
+   décision attendait est tombée : ce n'est pas la longueur de la liste qui gênait, c'est le geste.
+
+   Son fondement écrit ne tient plus non plus, mais dans le détail plutôt qu'en bloc — deux fautes
+   distinctes, pas une. HANDOFF §8 ne porte aucune revendication de dépendances ni de binaire
+   statique : cette citation était fausse dès cette décision, pas seulement révélée fausse
+   aujourd'hui. « `cobra` et `yaml.v3` comme seules dépendances », en revanche, était exact le
+   2026-08-13 (`git show d420c57:go.mod` : `cobra`, `pflag`, `yaml.v3`, rien d'autre) ; ça a cessé de
+   l'être le 2026-08-16, quand l'onboarding de sources (#74) a fait de `golang.org/x/term` un
+   `require` direct de `go.mod` — une prémisse qui a pourri en cours de route plutôt qu'un énoncé
+   faux d'origine. Les quatre invites de den passent à `huh`.
+
 ## Surface de test
 
 Hermétique intégralement : aucun socket, aucun process, aucune horloge (décision 5).

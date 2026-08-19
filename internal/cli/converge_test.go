@@ -10,6 +10,7 @@ import (
 
 	den "github.com/PillowPillow/den"
 	"github.com/PillowPillow/den/internal/doctor"
+	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/worktree"
@@ -747,9 +748,10 @@ func TestDoctorReportsAReadySource(t *testing.T) {
 // written. den held the fatal fact before the prompt: asking anyway is the bug,
 // and the sbx error is only its cause.
 //
-// Interactive on purpose (IsTTY true, `y` on stdin): the non-interactive path
-// refuses earlier, for a different reason — no terminal to collect a credential
-// on — which would leave the confirmation itself untested.
+// Interactive on purpose (IsTTY true, `d.Prompt` a `prompt.Fake`): the
+// non-interactive path refuses earlier, for a different reason — no terminal
+// to collect a credential on — which would leave the confirmation itself
+// untested.
 func TestSourceAddRefusesAnUnobservableMachineBeforeConfirming(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "den")
 	work := t.TempDir()
@@ -759,12 +761,17 @@ func TestSourceAddRefusesAnUnobservableMachineBeforeConfirming(t *testing.T) {
 		"ERROR: global network policy has not been initialized")
 	d := convergeDeps(f)
 	d.IsTTY = func() bool { return true }
+	// A Fake, not nil: a nil Prompter would make a regression PANIC on the
+	// asking call rather than actually ask it, which would pass this test for
+	// the wrong reason the moment convergeDeps starts wiring a Prompt of its
+	// own. Recording Confirms is what lets the assertion below survive that.
+	pf := &prompt.Fake{}
+	d.Prompt = pf
 
 	root := NewRootCmdWith(d)
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetIn(strings.NewReader("y\n"))
 	root.SetArgs([]string{"source", "add", makeManifestedSourceRepo(t),
 		"--answers", writeAnswerFile(t, work), "--den-home", home})
 	err := root.Execute()
@@ -773,7 +780,7 @@ func TestSourceAddRefusesAnUnobservableMachineBeforeConfirming(t *testing.T) {
 	if err == nil {
 		t.Fatalf("den converged a machine it could not observe:\n%s", out)
 	}
-	if strings.Contains(out, "apply this plan?") {
+	if len(pf.Confirms) != 0 {
 		t.Errorf("den asked to confirm a plan it already knew it could not apply:\n%s", out)
 	}
 	msg := err.Error() + "\n" + out

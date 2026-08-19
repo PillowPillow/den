@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/PillowPillow/den/internal/converge"
+	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/source"
 )
@@ -95,14 +96,11 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 		t.Fatalf("answer-file collection: %v", err)
 	}
 
-	var prompted []string
-	interactiveCmd, out := answersCmd(root + "\n")
+	f := &prompt.Fake{LineAnswers: []string{root}, SecretAnswers: []string{"sentinel-secret"}}
+	interactiveCmd, out := answersCmd("")
 	fromPrompt, err := collectInitialAnswers(interactiveCmd, Deps{
-		IsTTY: func() bool { return true },
-		ReadSecret: func(prompt string) (string, error) {
-			prompted = append(prompted, prompt)
-			return "sentinel-secret", nil
-		},
+		IsTTY:  func() bool { return true },
+		Prompt: f,
 	}, answersManifest(), "", false)
 	if err != nil {
 		t.Fatalf("interactive collection: %v", err)
@@ -116,8 +114,8 @@ func TestInteractiveAndAnswerFileProduceTheSameAnswers(t *testing.T) {
 	}
 	// The manifest's own wording is what the user sees: a source that explains
 	// which token it wants must not have that sentence replaced by a key name.
-	if len(prompted) != 1 || !strings.Contains(prompted[0], "GitLab personal access token") {
-		t.Errorf("prompts = %v, expected the manifest's own prompt", prompted)
+	if len(f.Secrets) != 1 || !strings.Contains(f.Secrets[0].Prompt, "GitLab personal access token") {
+		t.Errorf("prompts = %v, expected the manifest's own prompt", f.Secrets)
 	}
 	// The value is typed, never echoed: nothing den printed may contain it.
 	if strings.Contains(out.String(), "sentinel-secret") {
@@ -138,6 +136,54 @@ func TestCollectInitialAnswersRefusesWithoutATerminal(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, expected a mention of %q", err.Error(), want)
 		}
+	}
+}
+
+// A terminal being present does not mean something is wired to ask ON it: a
+// caller that built Deps by hand (every test that does, and — until
+// SystemDeps runs — nothing else) can set IsTTY true and leave Prompt nil.
+// That must refuse legibly, not panic on a nil Prompter, and the one guard
+// above both askRepositoryRoots and the credential loop names BOTH remedies
+// at once — answersManifest() with no answer file needs both roots and a
+// credential, so both must appear (M1/M2 review, Task 4).
+func TestCollectInitialAnswersRefusesWithATerminalButNoPrompter(t *testing.T) {
+	cmd, _ := answersCmd("")
+	_, err := collectInitialAnswers(cmd, Deps{IsTTY: func() bool { return true }},
+		answersManifest(), "", false)
+	if err == nil {
+		t.Fatal("expected a refusal when no prompter is wired, even with a terminal")
+	}
+	for _, want := range []string{"no prompter is wired", "repository_roots:", "credentials.<name>.from_env:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, expected a mention of %q", err.Error(), want)
+		}
+	}
+}
+
+// The guard's condition is `needsRoots || len(missing) > 0`: the test above
+// reaches it with needsRoots true (and, incidentally, a credential missing
+// too), so it never requires the `len(missing) > 0` half to be true on its
+// own — a bare `needsRoots` would pass that test just as well. THIS is the
+// only test that reaches the guard through the len(missing) > 0 half alone:
+// the answer file below supplies repository_roots (needsRoots false) but not
+// the credential. Deleting it would let that half of the condition rot
+// silently, the exact shape of the #79 dead-grep this review round exists to
+// close — so a future reader removing this test should know that is what
+// they are giving up.
+func TestCollectInitialAnswersRefusesACredentialWithATerminalButNoPrompter(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(t.TempDir(), "answers.yaml")
+	if err := os.WriteFile(path, []byte("repository_roots: ["+root+"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _ := answersCmd("")
+	_, err := collectInitialAnswers(cmd, Deps{IsTTY: func() bool { return true }},
+		answersManifest(), path, false)
+	if err == nil {
+		t.Fatal("expected a refusal when no prompter is wired, even with a terminal")
+	}
+	if !strings.Contains(err.Error(), "no prompter is wired") {
+		t.Errorf("error = %q, expected the wiring defect to be named", err.Error())
 	}
 }
 
@@ -390,41 +436,179 @@ func TestCollectInitialAnswersRefusesAnUndeclaredCredential(t *testing.T) {
 	}
 }
 
-// Confirmation: `--yes` applies, a typed "n" does not, and no terminal means
-// the plan is printed and nothing happens — never a default yes. changes
-// defaults to true in every row but the two that test Plan.Changes() itself:
-// a plan with nothing to create or update needs no confirmation, but — the
-// case that matters most — it must NOT relax the no-terminal refusal, which
-// stays strict regardless of changes (collectInitialAnswers reasons about
-// that refusal being unconditional).
-func TestConfirm(t *testing.T) {
-	cases := []struct {
+// The plan a human consents to is printed by the CALLER and must still be on
+// screen when the question is asked (internal/converge/render.go: the trust
+// boundary). The Prompter is handed a question, never the plan — a prompt that
+// redrew or replaced it would be uninformed consent.
+func TestConfirmAsksWithoutSwallowingThePrintedPlan(t *testing.T) {
+	f := &prompt.Fake{ConfirmAnswers: []bool{true}}
+	d := Deps{Prompt: f, IsTTY: func() bool { return true }}
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	ok, err := confirm(cmd, d, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("a scripted yes must confirm")
+	}
+	if len(f.Confirms) != 1 {
+		t.Fatalf("exactly one question must be asked, got %d", len(f.Confirms))
+	}
+	if !strings.Contains(f.Confirms[0].Question, "apply this plan") {
+		t.Errorf("the question must still name what is being applied: %q", f.Confirms[0].Question)
+	}
+	// The name promises the printed plan is not SWALLOWED into the question —
+	// only the caller's own Fprintln puts it on screen. Assert the negative
+	// half directly, or the name and the assertions above disagree: a
+	// question carrying the plan's own text would still pass every check
+	// above it.
+	if f.Confirms[0].Question != "apply this plan?" {
+		t.Errorf("the question must carry ONLY the question, no plan text: %q", f.Confirms[0].Question)
+	}
+}
+
+// --yes and the no-terminal branch both answer WITHOUT asking. The gate stays
+// above the Prompter: a run that cannot ask must not build a form (spec §5.2).
+func TestConfirmNeverAsksWhenItDoesNotNeedTo(t *testing.T) {
+	for _, c := range []struct {
 		name    string
+		d       Deps
 		yes     bool
-		tty     bool
-		stdin   string
 		changes bool
 		want    bool
 	}{
-		{"--yes", true, false, "", true, true},
-		{"typed yes", false, true, "y\n", true, true},
-		{"typed no", false, true, "n\n", true, false},
-		{"empty line", false, true, "\n", true, false},
-		{"no terminal", false, false, "", true, false},
-		// A plan that changes nothing skips the question entirely: no stdin is
-		// read (an empty reader would otherwise make ReadString fail), and the
-		// prompt text never appears.
-		{"no changes, terminal", false, true, "", false, true},
+		{"--yes answers without asking", Deps{Prompt: &prompt.Fake{}}, true, true, true},
+		{"no terminal refuses without asking",
+			Deps{Prompt: &prompt.Fake{}, IsTTY: func() bool { return false }}, false, true, false},
+		{"nothing to change needs no decision",
+			Deps{Prompt: &prompt.Fake{}, IsTTY: func() bool { return true }}, false, false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			got, err := confirm(cmd, c.d, c.yes, c.changes)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != c.want {
+				t.Errorf("confirm = %v, want %v", got, c.want)
+			}
+			// An empty Fake refuses when asked; reaching here proves nothing
+			// asked. Asserted explicitly so the reason is legible.
+			if f := c.d.Prompt.(*prompt.Fake); len(f.Confirms) != 0 {
+				t.Errorf("no question may be asked on this path, got %d", len(f.Confirms))
+			}
+		})
+	}
+}
+
+// A nil Prompter must refuse the same way promptOptionalRepos does one
+// caller down — not panic on the Confirm call the moment a plan actually
+// has changes to apply (M1 review fix, Task 4: this was the one call site
+// still one nil-check short of that rule).
+func TestConfirmRefusesWithATerminalButNoPrompter(t *testing.T) {
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	_, err := confirm(cmd, Deps{IsTTY: func() bool { return true }}, false, true)
+	if err == nil {
+		t.Fatal("expected a refusal when no prompter is wired, even with a terminal")
+	}
+	if !strings.Contains(err.Error(), "no prompter is wired") {
+		t.Errorf("error = %q, expected the wiring defect to be named", err.Error())
+	}
+}
+
+// Deliberate redundancy with collectInitialAnswers' own guard: this one
+// lives INSIDE askRepositoryRoots itself, not at its call site, so a future
+// caller reaching it directly (it is exported to this package) cannot
+// bypass a guard that lives only at today's one call site
+// (M1/M2 review, Task 4).
+func TestAskRepositoryRootsRefusesWithNilPrompter(t *testing.T) {
+	_, err := askRepositoryRoots(nil)
+	if err == nil {
+		t.Fatal("expected a refusal when no prompter is wired")
+	}
+	if !strings.Contains(err.Error(), "no prompter to ask on") {
+		t.Errorf("error = %q, expected the wiring defect to be named", err.Error())
+	}
+	if !strings.Contains(err.Error(), "repository_roots:") {
+		t.Errorf("error = %q, expected the roots remedy to be named", err.Error())
+	}
+}
+
+// askRepositoryRoots reads ONE line and keeps the splitting, the ~ expansion
+// and the validation on den's side. The Prompter returns raw text: a prompter
+// that knew what a path is would be a second judge of den's config.
+func TestAskRepositoryRootsSplitsAndExpandsOnDensSide(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	f := &prompt.Fake{LineAnswers: []string{"~/dev  " + home + "/work"}}
+
+	roots, err := askRepositoryRoots(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(roots) != 2 {
+		t.Fatalf("one line carries several roots, got %v", roots)
+	}
+	if roots[0] != filepath.Join(home, "dev") {
+		t.Errorf("~ must be expanded by den, got %q", roots[0])
+	}
+	if len(f.Lines) != 1 {
+		t.Fatalf("exactly one line must be read, got %d", len(f.Lines))
+	}
+	if !strings.Contains(f.Lines[0].Question, "never clones") {
+		t.Errorf("the question must still say den only looks: %q", f.Lines[0].Question)
+	}
+}
+
+// Confirmation: `--yes` applies, a scripted "no" does not, and no terminal
+// means the plan is printed and nothing happens — never a default yes.
+// changes defaults to true in every row but the two that test
+// Plan.Changes() itself: a plan with nothing to create or update needs no
+// confirmation, but — the case that matters most — it must NOT relax the
+// no-terminal refusal, which stays strict regardless of changes
+// (collectInitialAnswers reasons about that refusal being unconditional).
+//
+// confirmAnswer scripts the Prompter for the rows that actually reach it;
+// nil means the row must not ask (an empty Fake would refuse if asked, so
+// asking would fail the row anyway, and it is also asserted explicitly).
+func TestConfirm(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name          string
+		yes           bool
+		tty           bool
+		confirmAnswer *bool
+		changes       bool
+		want          bool
+	}{
+		{"--yes", true, false, nil, true, true},
+		{"typed yes", false, true, &yes, true, true},
+		{"typed no", false, true, &no, true, false},
+		{"no terminal", false, false, nil, true, false},
+		// A plan that changes nothing skips the question entirely: no answer is
+		// scripted, so asking at all would exhaust the Fake and fail the row.
+		{"no changes, terminal", false, true, nil, false, true},
 		// The no-terminal refusal is NOT relaxed by changes==false: without a
 		// terminal den still has nobody to tell it `--yes` was intended, and
 		// collectInitialAnswers' own reasoning about this branch depends on
 		// that staying true unconditionally.
-		{"no changes, no terminal", false, false, "", false, false},
+		{"no changes, no terminal", false, false, nil, false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cmd, out := answersCmd(c.stdin)
-			d := Deps{}
+			cmd, out := answersCmd("")
+			f := &prompt.Fake{}
+			if c.confirmAnswer != nil {
+				f.ConfirmAnswers = []bool{*c.confirmAnswer}
+			}
+			d := Deps{Prompt: f}
 			if c.tty {
 				d.IsTTY = func() bool { return true }
 			}
@@ -438,8 +622,14 @@ func TestConfirm(t *testing.T) {
 			if !got && !strings.Contains(out.String(), "nothing was applied") {
 				t.Errorf("a refused plan must say nothing happened:\n%s", out.String())
 			}
-			if !c.changes && c.tty && strings.Contains(out.String(), "apply this plan?") {
-				t.Errorf("a plan with nothing to change must not ask:\n%s", out.String())
+			// The no-terminal refusal is the ONE message a human with no
+			// terminal has to act on: it must name the flag that gets them
+			// through next time, not just say no.
+			if !c.yes && !c.tty && !strings.Contains(out.String(), "`--yes`") {
+				t.Errorf("the no-terminal refusal must name --yes:\n%s", out.String())
+			}
+			if c.confirmAnswer == nil && len(f.Confirms) != 0 {
+				t.Errorf("this row must not ask, got %d question(s)", len(f.Confirms))
 			}
 		})
 	}
