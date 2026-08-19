@@ -7,6 +7,39 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.9.0 — 2026-08-19
+
+### Added
+- `den update` replaces the running binary with the latest release: it resolves the tag, verifies
+  the published sha256 the way `install.sh` does, and swaps through a single atomic rename, so an
+  update while den is running cannot leave a half-written file on your PATH. It refuses, naming the
+  right command, when Homebrew or the go toolchain owns the binary — overwriting their file would
+  leave them managing a version they no longer manage — and refuses a build from a checkout, which
+  `git describe` stamps with a commit count or `-dirty`. There are no flags: `DEN_VERSION=v1.0.1`
+  on `install.sh` pins a version or rolls back. `README.md` gained an `Updating` table naming the
+  update command for every install path.
+- `den doctor` checks the machine's sbx network policy and reports `[FAIL] sbx policy` when
+  `sbx policy init <allow-all|balanced|deny-all>` has never run — the one-time step den does not
+  perform for you, and without which sbx answers no policy command and starts no sandbox. doctor
+  now also reads sbx once for all its source lines instead of once per source.
+
+### Changed
+- den's questions are rendered forms instead of typed lines: the `-i` repo checklist and the
+  repo choice of `den init --source` / `den source add` select with the arrow keys and space, and
+  a confirmation is an inline Yes/No defaulting to No. Ctrl-C now ends a prompt — the previous
+  reader hung on it, leaving a question on the terminal after the signal meant to end den.
+
+### Fixed
+- Every flow that converges a source — `den init --source`, `den source add`, `den source
+  configure`, `den source update` — refuses a machine den cannot observe before asking anything,
+  and names `sbx policy init`. A fresh laptop used to answer every question, hand over a GitLab
+  token, read a plan whose every line said `unknown`, confirm it, and only then meet sbx's own
+  error about the uninitialized global network policy. `den up` and `den run` name the same step
+  when the settle loop's host check is what fails.
+- Those flows no longer pass sbx's deprecated `--global` to `secret set`. sbx's deprecation
+  warning landed on stderr interleaved with its own `Enter secret:` prompt, which reads as den
+  failing mid-plan.
+
 ## v1.8.1 — 2026-08-17
 
 ### Fixed
