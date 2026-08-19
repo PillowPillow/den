@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -427,6 +426,26 @@ func (d Deps) getenv() func(string) string {
 // unmapped, and the nests needing it become not_ready — a state the user can
 // fix later with `den source configure`, unlike a wrong directory silently
 // mounted into every sandbox.
+//
+// The candidates are PRINTED to out and only the choice is asked through the
+// Prompter. That is the split ConfirmRequest's godoc already states: the caller
+// owns the context on screen, the Prompter owns the one line it reads. The
+// question used to be a bufio read off cmd.InOrStdin() with the `> ` prompt
+// printed by hand, and every reason it stopped being one is a defect it
+// actually carried (PR 82, finding F6):
+//
+//   - a bufio.Reader buffers past the newline it returns, so bytes a human
+//     typed ahead were swallowed here and never reached the huh confirmation
+//     that follows one planning pass later;
+//   - it had no gate of its own beyond the IsTTY check above, and none of the
+//     cancelled path: ctrl+c on it was a raw SIGINT killing den mid-run,
+//     whereas a Prompter call runs under cmd.Context() and unwinds through
+//     the same signal handling as every other question;
+//   - prompt.Fake could not see it, which made this — den's fifth interactive
+//     question — the only one a test had to script through a byte stream.
+//
+// With it gone, "den's ONE question-asking surface" (internal/prompt/prompt.go)
+// is a fact rather than an intention: a convergence reads no stdin at all.
 func resolveRepoChoices(cmd *cobra.Command, d Deps, matches []converge.RepoMatch,
 	a *converge.Answers) error {
 
@@ -447,7 +466,17 @@ func resolveRepoChoices(cmd *cobra.Command, d Deps, matches []converge.RepoMatch
 		return nil
 	}
 
-	in := bufio.NewReader(cmd.InOrStdin())
+	// Below the non-TTY branch on purpose: the guard is reachable only when den
+	// really is about to ask, so a scripted run with no Prompter still gets its
+	// report instead of a refusal. Same family as collectInitialAnswers and
+	// confirm — a nil Prompter is "no way to ask", never "leave them unmapped in
+	// silence", which would strand the nests at not_ready with nothing in the
+	// output naming the missing wiring.
+	if d.Prompt == nil {
+		return fmt.Errorf(
+			"the repo-choice question has no prompter to ask on — this is a den defect; " +
+				"pass `--answers <file>` supplying `repos:` as a workaround")
+	}
 	for _, m := range pending {
 		candidates := m.Candidates
 		if len(candidates) == 0 && m.Path != "" {
@@ -463,10 +492,12 @@ func resolveRepoChoices(cmd *cobra.Command, d Deps, matches []converge.RepoMatch
 		for i, c := range candidates {
 			fmt.Fprintf(out, "  %d %s\n", i+1, c)
 		}
-		fmt.Fprint(out, "  choose a number, type a path, or press enter to leave it unmapped > ")
 
-		line, err := in.ReadString('\n')
-		if err != nil && line == "" {
+		line, err := d.Prompt.Line(cmd.Context(), prompt.LineRequest{
+			Question: fmt.Sprintf("repo %s: choose a number, type a path, or leave empty to keep it unmapped",
+				m.Requirement.Key),
+		})
+		if err != nil {
 			return fmt.Errorf("reading the choice for repo %s: %w", m.Requirement.Key, err)
 		}
 		answer := strings.TrimSpace(line)

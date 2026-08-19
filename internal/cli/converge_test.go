@@ -2,8 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -844,35 +844,44 @@ func TestSourceAddAsksNothingOnAnUnobservableMachine(t *testing.T) {
 	if len(pf.Secrets) != 0 {
 		t.Errorf("den collected a credential it was about to discard: %v", pf.Secrets)
 	}
+	// Two questions land in Fake.Lines now — the repository roots and the
+	// repo choices — and this run must have asked neither: it was already lost
+	// before the collector ran, and lost again before the second planning pass.
 	if len(pf.Lines) != 0 {
-		t.Errorf("den asked for the repository roots on a run it had already lost: %v", pf.Lines)
+		t.Errorf("den asked a line question on a run it had already lost: %v", pf.Lines)
 	}
 }
 
-// blindingReader blinds the machine the first time den reads stdin.
+// blindingPrompter blinds the machine the first time den asks a Line question.
 //
-// stdin is read in exactly one place during a convergence — resolveRepoChoices,
-// between the two planning passes — so this reproduces the window the second
-// guard covers: the sbx daemon dies while the human answers a repository
-// choice. Driving it from the READER rather than from a call counter keeps the
-// test independent of how many times den observes the machine, which is exactly
-// what this change alters.
+// It replaces a blindingReader that hooked stdin, back when resolveRepoChoices
+// was den's only production stdin read; that question now goes through the
+// Prompter, so the hook moved with it. The window is unchanged — the repository
+// choice is asked between the two planning passes, so blinding the machine here
+// reproduces the sbx daemon dying while the human answers, which is what the
+// second guard covers. Driving it from the QUESTION rather than from a call
+// counter keeps the test independent of how many times den observes the
+// machine, which is exactly what this change alters.
 //
-// No mutex: the only goroutine that touches the Machine is the one blocked in
-// this Read, since den scans, plans and applies sequentially on the command's
-// own goroutine.
-type blindingReader struct {
-	io.Reader
+// The blind fires BEFORE the answer is produced, for the same reason it fired
+// before the Read returned: den must still be waiting on the human when the
+// machine goes away.
+//
+// No mutex: the only goroutine that touches the Machine is the one calling
+// Line, since den scans, plans and applies sequentially on the command's own
+// goroutine.
+type blindingPrompter struct {
+	*prompt.Fake
 	blind func()
 	fired bool
 }
 
-func (r *blindingReader) Read(p []byte) (int, error) {
-	if !r.fired {
-		r.fired = true
-		r.blind()
+func (p *blindingPrompter) Line(ctx context.Context, r prompt.LineRequest) (string, error) {
+	if !p.fired {
+		p.fired = true
+		p.blind()
 	}
-	return r.Reader.Read(p)
+	return p.Fake.Line(ctx, r)
 }
 
 // A machine that stops answering BETWEEN the two planning passes is refused
@@ -895,21 +904,23 @@ func TestConvergenceRefusesWhenTheMachineBecomesUnobservableMidRun(t *testing.T)
 	f := convergedSbx()
 	d := convergeDeps(f)
 	d.IsTTY = func() bool { return true }
-	// ConfirmAnswers says yes: without the re-check den must get all the way to
-	// Apply, which is the failure this pins. With it, Confirm is never called.
-	pf := &prompt.Fake{ConfirmAnswers: []bool{true}}
-	d.Prompt = pf
+	// One LineAnswer, because `api` is the single unconfirmed match — the
+	// optional `front` is absent, and an absent repository has no candidate to
+	// choose. ConfirmAnswers says yes: without the re-check den must get all the
+	// way to Apply, which is the failure this pins. With it, Confirm is never
+	// called.
+	pf := &prompt.Fake{LineAnswers: []string{"1"}, ConfirmAnswers: []bool{true}}
+	d.Prompt = &blindingPrompter{
+		Fake: pf,
+		blind: func() {
+			f.Fail["secret ls -g"] = errors.New("the sbx daemon stopped answering")
+		},
+	}
 
 	root := NewRootCmdWith(d)
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
-	root.SetIn(&blindingReader{
-		Reader: strings.NewReader("1\n\n"),
-		blind: func() {
-			f.Fail["secret ls -g"] = errors.New("the sbx daemon stopped answering")
-		},
-	})
 	root.SetArgs([]string{"init", "--source", makeManifestedSourceRepo(t),
 		"--answers", writeAnswerFile(t, work), "--den-home", home})
 	err := root.Execute()
@@ -920,6 +931,17 @@ func TestConvergenceRefusesWhenTheMachineBecomesUnobservableMidRun(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "den will not converge a machine it cannot see") {
 		t.Errorf("the refusal came from somewhere other than the unobservable guard: %v\n%s", err, out)
+	}
+	// The blind must have fired on the repo-choice question, not on the
+	// repository-roots one. Line has two production callers now, and this test
+	// reaches the right one only because the answer file supplies the roots —
+	// so the repo choice IS the first Line call, and blinding there falls
+	// between the two planning passes. Should a future fixture make den ask for
+	// roots as well, the blind would fire before the FIRST plan, the first
+	// guard would refuse with the identical message, and this test would go on
+	// passing without covering its own window.
+	if len(pf.Lines) != 1 || !strings.Contains(pf.Lines[0].Question, "repo api") {
+		t.Errorf("the machine went blind on the wrong question: %v", pf.Lines)
 	}
 	if len(pf.Confirms) != 0 {
 		t.Errorf("den asked to confirm an all-unknown plan: %v", pf.Confirms)
