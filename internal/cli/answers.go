@@ -431,18 +431,24 @@ func (d Deps) getenv() func(string) string {
 // Prompter. That is the split ConfirmRequest's godoc already states: the caller
 // owns the context on screen, the Prompter owns the one line it reads. The
 // question used to be a bufio read off cmd.InOrStdin() with the `> ` prompt
-// printed by hand, and every reason it stopped being one is a defect it
-// actually carried (PR 82, finding F6):
+// printed by hand, and two verified defects are why it stopped being one
+// (PR 82, finding F6):
 //
-//   - a bufio.Reader buffers past the newline it returns, so bytes a human
-//     typed ahead were swallowed here and never reached the huh confirmation
-//     that follows one planning pass later;
 //   - it had no gate of its own beyond the IsTTY check above, and none of the
 //     cancelled path: ctrl+c on it was a raw SIGINT killing den mid-run,
 //     whereas a Prompter call runs under cmd.Context() and unwinds through
 //     the same signal handling as every other question;
 //   - prompt.Fake could not see it, which made this — den's fifth interactive
 //     question — the only one a test had to script through a byte stream.
+//
+// A third reason was argued and is NOT claimed here: that a bufio.Reader
+// reading past the newline it returns could strand type-ahead in a buffer the
+// huh confirmation one planning pass later never sees. The path was never
+// reproduced — a terminal in canonical mode returns at most one line per
+// read(2), so the type-ahead stays in the tty queue rather than in the buffer,
+// and a piped run never reaches this loop at all (IsTTY sends it to the report
+// branch above). A hazard the shape carried, not a defect it was measured to
+// carry; the two above carry the change on their own.
 //
 // With it gone, "den's ONE question-asking surface" (internal/prompt/prompt.go)
 // is a fact rather than an intention: a convergence reads no stdin at all.

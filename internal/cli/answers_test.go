@@ -706,10 +706,9 @@ func TestResolveRepoChoicesWritesConfirmedChoicesIntoTheAnswers(t *testing.T) {
 	if err := resolveRepoChoices(cmd, d, matches, &a); err != nil {
 		t.Fatalf("resolveRepoChoices: %v", err)
 	}
-	// The question itself must go through the Prompter: a raw bufio read
-	// between two huh forms can buffer type-ahead the next form never sees,
-	// and gets neither the terminal gate nor the cancelled path. One question
-	// per pending match, and none for the two matches den settles alone.
+	// The question itself must go through the Prompter: a raw bufio read gets
+	// neither the cancelled path nor prompt.Fake's eyes. One question per
+	// pending match, and none for the two matches den settles alone.
 	if len(f.Lines) != 2 {
 		t.Fatalf("resolveRepoChoices asked %d Line question(s), want 2 through the Prompter", len(f.Lines))
 	}
@@ -735,27 +734,49 @@ func TestResolveRepoChoicesWritesConfirmedChoicesIntoTheAnswers(t *testing.T) {
 // Without a terminal the unconfirmed matches are REPORTED, not refused: a
 // scripted run installs what it can and names what it could not attribute,
 // with the answer-file key that settles it.
+//
+// The two rows differ only in whether a Prompter is wired, and the second is
+// the one that PINS the nil-guard's placement. That guard sits below this
+// branch on purpose; hoisting it above would refuse a scripted run, and with
+// only the wired row here every test would still pass through the move. The
+// unwired row is the combination the guard must NOT catch — a CI has no
+// terminal and often no Prompter, and it must come out with a report.
 func TestResolveRepoChoicesReportsWithoutATerminal(t *testing.T) {
 	matches := []converge.RepoMatch{{
 		Requirement: converge.RepoRequirement{Key: "crm"},
 		Kind:        converge.MatchAmbiguous, Candidates: []string{"/dev/one/crm", "/dev/two/crm"},
 	}}
-	cmd, out := answersCmd()
-	f := &prompt.Fake{}
-	a := converge.Answers{}
-	if err := resolveRepoChoices(cmd, Deps{Prompt: f}, matches, &a); err != nil {
-		t.Fatalf("resolveRepoChoices: %v", err)
+	cases := []struct {
+		name   string
+		wired  bool
+		prompt *prompt.Fake
+	}{
+		{name: "a Prompter is wired but must not be asked", wired: true, prompt: &prompt.Fake{}},
+		{name: "no Prompter at all", wired: false},
 	}
-	if len(a.Repos) != 0 {
-		t.Errorf("repos = %#v, expected nothing chosen without a terminal", a.Repos)
-	}
-	if len(f.Lines) != 0 {
-		t.Errorf("a run with no terminal must report, not ask: %v", f.Lines)
-	}
-	for _, want := range []string{"crm", "repos:"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("output must name %q:\n%s", want, out.String())
-		}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cmd, out := answersCmd()
+			d := Deps{} // IsTTY nil: no terminal
+			if c.wired {
+				d.Prompt = c.prompt
+			}
+			a := converge.Answers{}
+			if err := resolveRepoChoices(cmd, d, matches, &a); err != nil {
+				t.Fatalf("resolveRepoChoices refused a scripted run instead of reporting: %v", err)
+			}
+			if len(a.Repos) != 0 {
+				t.Errorf("repos = %#v, expected nothing chosen without a terminal", a.Repos)
+			}
+			if c.wired && len(c.prompt.Lines) != 0 {
+				t.Errorf("a run with no terminal must report, not ask: %v", c.prompt.Lines)
+			}
+			for _, want := range []string{"crm", "repos:"} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output must name %q:\n%s", want, out.String())
+				}
+			}
+		})
 	}
 }
 
