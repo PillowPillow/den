@@ -1125,6 +1125,46 @@ func TestDoctorPrintsTheUnobservableCauseOnce(t *testing.T) {
 	}
 }
 
+// The other side of the dedup: den keeps repeating a cause NOTHING else in the
+// report states.
+//
+// ReadSbxState gives up in four places, and only one of them — `policy ls`
+// failing — also fails doctor's own `sbx policy` check. Here `secret ls -g`
+// ANSWERS, with a header den does not parse (what a newer sbx changing that
+// table looks like, per parseSecretList), so the policy check is a plain [ok]
+// and no other line says why den is blind. Pointing at it would have deleted
+// the cause from a report that exits 1 — worse than repeating it.
+func TestDoctorRepeatsTheCauseNoOtherCheckStates(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--name", "corp", "--answers", writeAnswerFile(t, work), "--yes",
+		"--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	// The machine ANSWERS both calls; den cannot read the first one's table.
+	unparsable := &sbx.Fake{Responses: map[string]sbx.Response{
+		"secret ls -g": {Output: []byte("SCOPE KIND LABEL\n")},
+		"policy ls --type network --source local --decision allow --json": {
+			Output: []byte(`{"rules":[]}`)},
+	}}
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), unparsable)
+	if err == nil {
+		t.Fatalf("an unobservable machine must exit non-zero:\n%s", out)
+	}
+	if !strings.Contains(out, "unrecognized table header") {
+		t.Fatalf("the report exits 1 without ever naming the cause:\n%s", out)
+	}
+	if strings.Contains(out, "the sbx check above carries the cause") {
+		t.Errorf("a source line points at a check that states nothing — "+
+			"`sbx policy` answered [ok] here:\n%s", out)
+	}
+}
+
 // Task 2's invariant, under the dedup above: a source that is ALSO blocked
 // keeps its BLOCKING refusal as the printed explanation.
 //
