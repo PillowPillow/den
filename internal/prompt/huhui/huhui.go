@@ -66,10 +66,21 @@ func (p *Prompter) gate() error {
 
 // run executes one single-field form, in line, on den's descriptors.
 //
-// WithAccessible is never called, and that is a decision, not an omission
+// den never calls WithAccessible, and that is a decision, not an omission
 // (spec §8): accessible mode replaces the form with a plaintext question, and
 // den does not have a degraded mode — it has refusals that name the flag doing
 // the same job.
+//
+// huh turns it on ITSELF, which den not calling it does not prevent: NewForm
+// sets WithAccessible(true) when TERM=dumb (huh@v1.0.0 form.go:124-127), and
+// RunWithContext then short-circuits to runAccessible (form.go:670-671), which
+// ignores ctx and discards every field error (form.go:713: `_ = field.
+// WithAccessible(true).RunAccessible(w, r)`) before returning nil. Everything
+// below is bypassed on that path — the keymap, the cancellation, the
+// fail-closed error handling — and a MultiSelect answers an empty selection
+// with a nil error, which is a selection nobody made reported as success.
+// gate() does not refuse TERM=dumb today: that is a behavior change, escalated
+// as its own decision (review PR82, I2), not something a comment settles.
 //
 // No alt-screen: measured 2026-08-18, huh's default emits no ^[[?1049h, so
 // den's own output — above all the converge plan a human is being asked to
@@ -91,7 +102,10 @@ func (p *Prompter) run(ctx context.Context, field huh.Field) error {
 	// ctrl+d to Select/MultiSelect HalfPageDown), which turns EOF into a silent
 	// no-answer. It has to reach the fail-closed cancel path below.
 	//
-	// Rebinding the form-level Quit is the WHOLE fix, verified in huh@v1.0.0:
+	// Rebinding the form-level Quit is the whole fix ON THE BUBBLETEA PATH —
+	// the only path a keymap exists on, since TERM=dumb sends huh through
+	// runAccessible, which consults none of this (see the godoc above).
+	// Verified in huh@v1.0.0:
 	// WithKeyMap reassigns f.keymap (form.go:290) before propagating it to the
 	// groups, and Form.Update matches f.keymap.Quit and RETURNS (form.go:557-563)
 	// before group.Update ever runs (form.go:615) — no field's keymap sees
