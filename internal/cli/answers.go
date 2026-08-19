@@ -121,7 +121,7 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 	}
 
 	if needsRoots {
-		roots, err := askRepositoryRoots(d.Prompt)
+		roots, err := askRepositoryRoots(cmd.Context(), d.Prompt)
 		if err != nil {
 			return converge.Answers{}, err
 		}
@@ -134,7 +134,7 @@ func collectInitialAnswers(cmd *cobra.Command, d Deps, m *source.Manifest,
 		}
 		// Never echoed, and never carried in a flag: an argv is visible to
 		// every process on the machine (spec §5.3).
-		value, err := d.Prompt.Secret(prompt.SecretRequest{Prompt: label})
+		value, err := d.Prompt.Secret(cmd.Context(), prompt.SecretRequest{Prompt: label})
 		if err != nil {
 			return converge.Answers{}, fmt.Errorf("reading %s: %w", name, err)
 		}
@@ -282,7 +282,13 @@ func noTerminalRefusal(missing, needsTerminal []string, needsRoots bool, obsErr 
 // validating each entry stay here, exactly where they were: a Prompter that
 // knew what a path is would be a second judge of den's config, and there is one
 // judge (config.ExpandPath).
-func askRepositoryRoots(p prompt.Prompter) ([]string, error) {
+//
+// ctx is the command's own (cmd.Context()), threaded rather than created here:
+// this question is the longest den ever blocks on, and root.go's
+// signal.NotifyContext is what ends that wait on ^C or SIGTERM. A
+// context.Background() at this call site would silently opt the one prompt
+// that can hang forever out of the shutdown path.
+func askRepositoryRoots(ctx context.Context, p prompt.Prompter) ([]string, error) {
 	// Deliberate redundancy with collectInitialAnswers' own guard above its
 	// call site: THAT guard names both remedies for the run and is what a
 	// human actually reads; THIS one defends the function itself, so a
@@ -297,7 +303,7 @@ func askRepositoryRoots(p prompt.Prompter) ([]string, error) {
 			"the repository-roots question has no prompter to ask on — this is a den defect; " +
 				"pass `--answers <file>` supplying `repository_roots:` as a workaround")
 	}
-	line, err := p.Line(prompt.LineRequest{
+	line, err := p.Line(ctx, prompt.LineRequest{
 		Question: "Where do your working repositories live? (space-separated directories, " +
 			"empty line to skip — den only looks, it never clones)",
 	})
@@ -358,7 +364,7 @@ func confirm(cmd *cobra.Command, d Deps, yes, changes bool) (bool, error) {
 	// what it applies to and nothing else: internal/converge/render.go calls
 	// that plan the trust boundary, and a prompt that redrew it — or that took
 	// the screen and scrolled it away — would turn consent into a guess.
-	ok, err := d.Prompt.Confirm(prompt.ConfirmRequest{Question: "apply this plan?"})
+	ok, err := d.Prompt.Confirm(cmd.Context(), prompt.ConfirmRequest{Question: "apply this plan?"})
 	if err != nil {
 		return false, fmt.Errorf("reading the confirmation: %w", err)
 	}

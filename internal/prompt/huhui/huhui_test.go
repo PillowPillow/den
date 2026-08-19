@@ -1,6 +1,7 @@
 package huhui
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -47,19 +48,19 @@ func TestEveryMethodRefusesWithoutATerminal(t *testing.T) {
 		t.Run(f.name, func(t *testing.T) {
 			p := &Prompter{In: f.file, Out: f.file}
 
-			if _, err := p.MultiSelect(prompt.MultiSelectRequest{
+			if _, err := p.MultiSelect(context.Background(), prompt.MultiSelectRequest{
 				Title:   "pick",
 				Options: []prompt.Option{{Value: "web", Label: "web"}},
 			}); !errors.Is(err, prompt.ErrNoTerminal) {
 				t.Errorf("MultiSelect must refuse with ErrNoTerminal, got %v", err)
 			}
-			if _, err := p.Confirm(prompt.ConfirmRequest{Question: "apply?"}); !errors.Is(err, prompt.ErrNoTerminal) {
+			if _, err := p.Confirm(context.Background(), prompt.ConfirmRequest{Question: "apply?"}); !errors.Is(err, prompt.ErrNoTerminal) {
 				t.Errorf("Confirm must refuse with ErrNoTerminal, got %v", err)
 			}
-			if _, err := p.Line(prompt.LineRequest{Question: "where?"}); !errors.Is(err, prompt.ErrNoTerminal) {
+			if _, err := p.Line(context.Background(), prompt.LineRequest{Question: "where?"}); !errors.Is(err, prompt.ErrNoTerminal) {
 				t.Errorf("Line must refuse with ErrNoTerminal, got %v", err)
 			}
-			if _, err := p.Secret(prompt.SecretRequest{Prompt: "token"}); !errors.Is(err, prompt.ErrNoTerminal) {
+			if _, err := p.Secret(context.Background(), prompt.SecretRequest{Prompt: "token"}); !errors.Is(err, prompt.ErrNoTerminal) {
 				t.Errorf("Secret must refuse with ErrNoTerminal, got %v", err)
 			}
 		})
@@ -88,7 +89,7 @@ func TestOneNonTerminalDescriptorIsEnoughToRefuse(t *testing.T) {
 		{In: devNull, Out: os.Stdout},
 		{In: os.Stdin, Out: devNull},
 	} {
-		if _, err := p.Confirm(prompt.ConfirmRequest{Question: "apply?"}); !errors.Is(err, prompt.ErrNoTerminal) {
+		if _, err := p.Confirm(context.Background(), prompt.ConfirmRequest{Question: "apply?"}); !errors.Is(err, prompt.ErrNoTerminal) {
 			t.Errorf("a non-terminal on either side must refuse, got %v", err)
 		}
 	}

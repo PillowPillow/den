@@ -1,6 +1,7 @@
 package spawn
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"slices"
@@ -100,7 +101,8 @@ func nonInteractiveEquivalents(prompts bool) string {
 // (spec §6), so a checklist that consulted the global mapping would offer a
 // repo nest.Resolve then refuses, or mark as unmapped one it resolves. The
 // caller selected both; this layer only displays them.
-func interactiveWithout(d Deps, mappingPath string, n *nest.Nest, mapping map[string]string) ([]string, error) {
+func interactiveWithout(ctx context.Context, d Deps, mappingPath string, n *nest.Nest,
+	mapping map[string]string) ([]string, error) {
 	// Nothing to ask comes FIRST, before the terminal check: a nest with no
 	// optional repo needs no answer, so it needs no terminal either — `den up
 	// api -i --detach` from a script keeps working, and says why it asked nothing
@@ -126,7 +128,7 @@ func interactiveWithout(d Deps, mappingPath string, n *nest.Nest, mapping map[st
 			"-i: no terminal on den's input — the checklist has nobody to ask, and reading anyway would "+
 				"block a pipe or a CI job forever; %s", nonInteractiveEquivalents(false))
 	}
-	return promptOptionalRepos(d.Prompt, mappingPath, n.Name, n.Repos, n.PromptsForRepos(), mapping)
+	return promptOptionalRepos(ctx, d.Prompt, mappingPath, n.Name, n.Repos, n.PromptsForRepos(), mapping)
 }
 
 // selectionFlagsInPlay names the repo-selection flag `-i` collides with, or ""
@@ -191,8 +193,8 @@ func hasOptionalRepo(repos []nest.Repo) bool {
 // This function draws NOTHING. It builds a request and inverts the answer; the
 // Prompter owns every byte on the terminal. That split is what lets the suite
 // assert on what den ASKED without a tty ever existing (CLAUDE.md).
-func promptOptionalRepos(p prompt.Prompter, mappingPath, nestName string, repos []nest.Repo,
-	prompts bool, mapping map[string]string) ([]string, error) {
+func promptOptionalRepos(ctx context.Context, p prompt.Prompter, mappingPath, nestName string,
+	repos []nest.Repo, prompts bool, mapping map[string]string) ([]string, error) {
 	// A nil Prompter is "no way to ask", never "assume the defaults": an
 	// unwired double must refuse here rather than let the caller mount a
 	// selection nobody made. Same rule as a nil IsTTY, one layer down.
@@ -221,7 +223,7 @@ func promptOptionalRepos(p prompt.Prompter, mappingPath, nestName string, repos 
 		})
 	}
 
-	keep, err := p.MultiSelect(prompt.MultiSelectRequest{
+	keep, err := p.MultiSelect(ctx, prompt.MultiSelectRequest{
 		Title: fmt.Sprintf("nest %s: %d optional repo(s), %s — required repos are always mounted (%s)",
 			nestName, len(optional), selected, nonInteractiveEquivalents(prompts)),
 		Options:     options,

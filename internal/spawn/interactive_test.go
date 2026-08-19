@@ -70,7 +70,7 @@ func promptWith(t *testing.T, checked []string, prompts bool,
 	mapping map[string]string) ([]string, prompt.MultiSelectRequest, error) {
 	t.Helper()
 	f := &prompt.Fake{MultiSelectAnswers: [][]string{checked}}
-	without, err := promptOptionalRepos(f, promptMappingPath, "api",
+	without, err := promptOptionalRepos(context.Background(), f, promptMappingPath, "api",
 		optionalRepos(), prompts, mapping)
 	if len(f.MultiSelects) == 0 {
 		return without, prompt.MultiSelectRequest{}, err
@@ -143,7 +143,7 @@ func TestPromptAnnotatesUnmappedKeys(t *testing.T) {
 		{Key: "docs", Optional: true},
 	}
 	f := &prompt.Fake{MultiSelectAnswers: [][]string{nil}}
-	if _, err := promptOptionalRepos(f, promptMappingPath, "api", repos, true,
+	if _, err := promptOptionalRepos(context.Background(), f, promptMappingPath, "api", repos, true,
 		map[string]string{"worker": "/dev/worker"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestPromptExcludesOnlyWhatWasUnchecked(t *testing.T) {
 // reader — it is this code, and this test.
 func TestPromptRefusesWhenThePrompterCannotAnswer(t *testing.T) {
 	f := &prompt.Fake{Err: errors.New("no terminal")}
-	_, err := promptOptionalRepos(f, promptMappingPath, "api", optionalRepos(), false, nil)
+	_, err := promptOptionalRepos(context.Background(), f, promptMappingPath, "api", optionalRepos(), false, nil)
 	if err == nil {
 		t.Fatal("a prompter error must be an error, never a silent confirmation")
 	}
@@ -227,7 +227,7 @@ func TestPromptRefusesWhenThePrompterCannotAnswer(t *testing.T) {
 // fills spawn.Deps.Prompt until the real renderer lands), so it is the last
 // place that can hand over a command which works.
 func TestPromptRefusesANilPrompter(t *testing.T) {
-	_, err := promptOptionalRepos(nil, promptMappingPath, "api", optionalRepos(), false, nil)
+	_, err := promptOptionalRepos(context.Background(), nil, promptMappingPath, "api", optionalRepos(), false, nil)
 	if err == nil {
 		t.Fatal("a nil prompter must refuse")
 	}
@@ -600,22 +600,22 @@ func (p failingPrompter) refuse() {
 	p.t.Fatal("the checklist was opened on a live sandbox: nothing it collects can be mounted")
 }
 
-func (p failingPrompter) MultiSelect(prompt.MultiSelectRequest) ([]string, error) {
+func (p failingPrompter) MultiSelect(context.Context, prompt.MultiSelectRequest) ([]string, error) {
 	p.refuse()
 	return nil, nil
 }
 
-func (p failingPrompter) Confirm(prompt.ConfirmRequest) (bool, error) {
+func (p failingPrompter) Confirm(context.Context, prompt.ConfirmRequest) (bool, error) {
 	p.refuse()
 	return false, nil
 }
 
-func (p failingPrompter) Line(prompt.LineRequest) (string, error) {
+func (p failingPrompter) Line(context.Context, prompt.LineRequest) (string, error) {
 	p.refuse()
 	return "", nil
 }
 
-func (p failingPrompter) Secret(prompt.SecretRequest) (string, error) {
+func (p failingPrompter) Secret(context.Context, prompt.SecretRequest) (string, error) {
 	p.refuse()
 	return "", nil
 }

@@ -1,12 +1,22 @@
 package prompt
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // Fake is the Prompter every test uses.
 //
 // A PRODUCTION file, not a _test.go one, and for the reason internal/sbx/fake.go
 // is: internal/cli, internal/spawn and internal/converge all need it, and a
 // double that lives in one package's test files cannot be shared by three.
+//
+// The context is accepted and ignored (`_ context.Context`), and that is the
+// honest shape rather than a gap: this double answers from a slice and never
+// blocks, so there is no in-flight work for a cancellation to reach. Recording
+// it would only let a test assert that a value was carried, which the compiler
+// already guarantees — what matters, that a cancelled context aborts a form,
+// lives in the renderer (internal/prompt/huhui).
 //
 // It records requests as well as scripting answers. That is what makes the
 // old checklist's rendered-bytes assertions survive the move: the header line
@@ -36,7 +46,7 @@ func exhausted(method string) error {
 		"add one to Fake.%sAnswers", method, method)
 }
 
-func (f *Fake) MultiSelect(r MultiSelectRequest) ([]string, error) {
+func (f *Fake) MultiSelect(_ context.Context, r MultiSelectRequest) ([]string, error) {
 	f.MultiSelects = append(f.MultiSelects, r)
 	if f.Err != nil {
 		return nil, f.Err
@@ -49,7 +59,7 @@ func (f *Fake) MultiSelect(r MultiSelectRequest) ([]string, error) {
 	return answer, nil
 }
 
-func (f *Fake) Confirm(r ConfirmRequest) (bool, error) {
+func (f *Fake) Confirm(_ context.Context, r ConfirmRequest) (bool, error) {
 	f.Confirms = append(f.Confirms, r)
 	if f.Err != nil {
 		return false, f.Err
@@ -62,7 +72,7 @@ func (f *Fake) Confirm(r ConfirmRequest) (bool, error) {
 	return answer, nil
 }
 
-func (f *Fake) Line(r LineRequest) (string, error) {
+func (f *Fake) Line(_ context.Context, r LineRequest) (string, error) {
 	f.Lines = append(f.Lines, r)
 	if f.Err != nil {
 		return "", f.Err
@@ -75,7 +85,7 @@ func (f *Fake) Line(r LineRequest) (string, error) {
 	return answer, nil
 }
 
-func (f *Fake) Secret(r SecretRequest) (string, error) {
+func (f *Fake) Secret(_ context.Context, r SecretRequest) (string, error) {
 	f.Secrets = append(f.Secrets, r)
 	if f.Err != nil {
 		return "", f.Err
