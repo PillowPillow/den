@@ -80,14 +80,15 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 					"its sandbox is gone\n", b.Path, b.Err)
 			}
 			checks = append(checks, doctor.OrphanCheck(live, manifests))
-			// The policy checks are held rather than appended blind: whether
-			// THIS report states why the machine could not be observed is a
-			// fact only the composed report holds, and it decides how the
-			// source lines below explain themselves (see sourceDetail).
-			policy := networkPolicyChecks(cmd.Context(), deps, runner)
-			checks = append(checks, policy...)
-			checks = append(checks,
-				sourceChecks(cmd.Context(), home, runner, g, causeStated(deps, policy))...)
+			// Appended as they come, both of them: no check here decides how
+			// another one words itself. den used to hold the policy checks and
+			// hand the source lines a flag saying "some check already states
+			// why the machine is blind" — a test of EXISTENCE, not of
+			// identity, which printed no cause at all when the two sbx reads
+			// failed for different reasons (review PR82, I1). The source lines
+			// now deduplicate among themselves; see sourceChecks.
+			checks = append(checks, networkPolicyChecks(cmd.Context(), deps, runner)...)
+			checks = append(checks, sourceChecks(cmd.Context(), home, runner, g)...)
 
 			failures, warnings := 0, 0
 			for _, c := range checks {
@@ -203,35 +204,6 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 		Detail: "local network policy readable"}}
 }
 
-// causeStated reports whether this report already says WHY den could not
-// observe the machine. It is what lets the source lines point at that
-// explanation instead of each repeating it (sourceDetail).
-//
-// Two carriers, and only two. The `sbx` check states a missing binary — the
-// whole cause, in that case — and the `sbx policy` FAIL carries sbx's own
-// refusal when the policy is what did not answer. Everything else that can
-// fail the shared read is stated NOWHERE else in the report: ReadSbxState also
-// gives up when `secret ls -g` fails, and when either output parses into
-// nothing den recognizes — a header changed by a newer sbx is the expected
-// shape of that, not a broken machine. On those exits the policy check is a
-// plain [ok], so the answer here is false and each source line keeps printing
-// the cause itself.
-//
-// Duplicated on those exits, then, rather than deduplicated into silence:
-// doctor exits 1 and a user must be able to read why. Repetition costs
-// attention; a report that fails while naming no cause costs the diagnosis.
-func causeStated(deps doctor.Deps, policy []doctor.Check) bool {
-	if _, err := deps.LookPath("sbx"); err != nil {
-		return true
-	}
-	for _, c := range policy {
-		if c.Blocking() {
-			return true
-		}
-	}
-	return false
-}
-
 // sourceChecks diagnoses every manifested source installed in this home.
 //
 // Read HERE, not in internal/doctor, for the reason the live list above is:
@@ -241,12 +213,15 @@ func causeStated(deps doctor.Deps, policy []doctor.Check) bool {
 // One check per source, in sorted order, and a legacy source produces none —
 // it declares nothing to converge, so there is nothing doctor could judge.
 //
-// causeStated comes from the report being composed above, never from anything
-// this function can see: it says whether an earlier check already explains an
-// unobservable machine. Passed down to sourceDetail, which is where it decides
-// how a source line explains itself.
-func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktree.Git,
-	causeStated bool) []doctor.Check {
+// The cause of an UNOBSERVABLE machine is stated on the FIRST source line that
+// can state it, and every following one points at that line by name. It is a
+// fact about the machine, identical in every source's plan — printing it per
+// source repeated sbx's four-line refusal down the report and buried the
+// verdicts it was meant to explain (review PR82). Deduplicating among the
+// source lines THEMSELVES is what makes the count exactly one whatever else
+// the report contains; see sourceDetail.
+func sourceChecks(ctx context.Context, home string, runner sbx.Runner,
+	g worktree.Git) []doctor.Check {
 	names, err := source.Names(home)
 	if err != nil {
 		// A home with no sources/ directory is the normal case, not a fault.
@@ -271,11 +246,16 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 	// that cannot change between two of them — it is machine state, not source
 	// state (review PR82).
 	//
-	// A FAILED observation lands in every source's plan, so it is stated once
-	// rather than once per source WHEN an earlier check already carries it —
-	// see causeStated above and sourceDetail below.
+	// A FAILED observation lands in every source's plan, so it is stated on the
+	// first line that can state it and pointed at from the rest — see
+	// sourceDetail below.
 	state, observeErr := converge.ReadSbxState(ctx, runner)
 	var checks []doctor.Check
+	// statedBy is the source whose line already printed that cause, empty
+	// while none has. The sorted iteration is what makes the pointer honest:
+	// source.Names returns os.ReadDir's entries, which are sorted by name, so
+	// the source it names has already been printed ABOVE the line naming it.
+	statedBy := ""
 	for _, name := range manifested {
 		plan, err := svc.StatusWith(ctx, home, name, state, observeErr)
 		if err != nil {
@@ -283,7 +263,11 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 				Detail: err.Error()})
 			continue
 		}
-		checks = append(checks, doctor.SourceCheck(name, plan.Status, sourceDetail(plan, causeStated)))
+		detail, stated := sourceDetail(plan, statedBy)
+		if stated {
+			statedBy = name
+		}
+		checks = append(checks, doctor.SourceCheck(name, plan.Status, detail))
 	}
 	return checks
 }
@@ -295,18 +279,25 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 //
 // An UNOBSERVABLE machine is the one case where the plan's own first warning
 // is not always what doctor prints. Every source's plan carries the same cause
-// — they all come from the one read above — so printing it per source repeated
-// sbx's four-line refusal down the report and buried the verdicts it was meant
-// to explain (review PR82).
+// — they all come from the one read in sourceChecks — so printing it per source
+// repeated sbx's four-line refusal down the report and buried the verdicts it
+// was meant to explain (review PR82).
 //
-// It is dropped for a pointer ONLY when causeStated says an earlier check
-// carries that cause; the sole judge of that is causeStated, which the composed
-// report answers and this function cannot. Otherwise the line keeps printing
-// the cause, repetition and all — see there for why silence would be worse.
-// That is also why the pointer names no particular carrier line: which check
-// holds the cause depends on how far den got.
+// statedBy is the source whose line printed that cause above; empty means no
+// line has, and then THIS one prints it. So the cause is stated exactly once,
+// always, and the question of whether some OTHER kind of check happens to
+// carry it never arises. den used to ask exactly that question, and answered
+// it by existence rather than by identity: when `secret ls -g` failed on one
+// cause and doctor's own `policy ls` on another, every source line pointed at
+// a check stating the second while the first was printed nowhere at all
+// (review PR82, I1).
 //
-// Only the unobserved cause is ever dropped. A source that is ALSO blocked
+// The returned bool says this line PRINTED the cause — never merely that the
+// plan is unobserved. The caller advances statedBy on it, so a true from a
+// line carrying no cause would delete that cause from the whole report, which
+// is the fault this shape removes.
+//
+// Only the unobserved cause is ever deduplicated. A source that is ALSO blocked
 // keeps its blocking refusal printed here, because that one IS about the
 // source: RequireUsable's message is what Status prepends to Warnings, and a
 // blocked source must say what a spawn would refuse (see Status). The two are
@@ -316,19 +307,25 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktre
 //
 // This lives in doctor and nowhere else — not because `den source status` is
 // exempt. Its bare form loops over every source too and does print the cause
-// once per source. It is that deduplicating needs the whole report to be
-// composed first, to know whether the cause survives being dropped;
-// converge.RenderStatus renders one plan at a time and cannot answer that.
-func sourceDetail(p *converge.Plan, causeStated bool) string {
+// once per source. It is that the loop is what holds statedBy;
+// converge.RenderStatus renders one plan at a time and cannot know whether
+// another line already carried the cause.
+func sourceDetail(p *converge.Plan, statedBy string) (string, bool) {
 	detail := fmt.Sprintf("version %s: %s", p.Version, p.Status)
-	if causeStated && p.Unobserved != nil && p.Status != source.StatusBlocked {
-		return detail + " — den could not observe this machine: the sbx check above carries the cause"
+	unobserved := p.Unobserved != nil && p.Status != source.StatusBlocked
+	if unobserved && statedBy != "" {
+		return detail + fmt.Sprintf(
+			" — den could not observe this machine: same cause as `source %s` above", statedBy), false
 	}
+	// Warnings[0] is the unobserved cause on an unobserved plan — the ONE
+	// wording, appended by Status (converge.unobservedWarning) and prepended
+	// past only by a blocking refusal, which the status above excluded. The
+	// bool is returned from HERE, where the cause is actually concatenated.
 	if len(p.Warnings) > 0 {
-		return detail + " — " + p.Warnings[0]
+		return detail + " — " + p.Warnings[0], unobserved
 	}
 	if p.Status != source.StatusReady {
-		return detail + fmt.Sprintf(" — `den source status %s` says what is missing", p.Source)
+		return detail + fmt.Sprintf(" — `den source status %s` says what is missing", p.Source), false
 	}
-	return detail
+	return detail, false
 }
