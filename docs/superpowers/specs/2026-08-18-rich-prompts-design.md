@@ -199,16 +199,27 @@ printed ») et que `confirm` applique. Ce que cette boucle lit est une ligne lib
 chemin, ou du vide. `LineRequest` la porte telle quelle, sans rien ajouter à l'interface. La
 troisième politique de porte, elle, **reste** : sans terminal la boucle imprime toujours son rapport
 et rend `nil`, parce qu'une exécution scriptée doit installer ce qu'elle peut. La garde `nil`-`Prompt`
-est donc placée SOUS la branche non-TTY, jamais au-dessus. Ce que le report coûtait, **mesuré**, tient
-en deux points : le ctrl+c de ce `bufio` était un SIGINT brut au lieu du chemin annulé, et
-`prompt.Fake` ne le voyait pas — ce qui en faisait la seule invite qu'un test devait scripter par un
-flux d'octets.
+est donc placée SOUS la branche non-TTY, jamais au-dessus. Ce que le report coûtait tient en deux
+points, **lus dans le code et non mesurés** — la distinction compte, une lecture n'est pas une
+observation :
+
+1. Ce `bufio` n'observait aucun contexte, donc un ^C sur cette question laissait den **bloqué**. Il ne
+   le tuait pas : `Execute` (`root.go`) arme `signal.NotifyContext` sur `os.Interrupt` et `SIGTERM`
+   pour **toute** commande, le runtime intercepte donc SIGINT et la disposition par défaut ne
+   s'applique jamais. Le signal devenait une annulation ordinaire de `cmd.Context()` — que cette
+   lecture n'avait aucun moyen d'observer, si bien qu'elle continuait d'attendre une ligne ou un EOF
+   qu'un humain venant de taper ^C ne tape pas. Le godoc d'`askRepositoryRoots` dit déjà exactement
+   cela de la question voisine (« the one prompt that can hang forever ») et lui passe le contexte
+   pour cette raison ; celle-ci n'en avait aucune part.
+2. `prompt.Fake` ne la voyait pas — ce qui en faisait la seule invite qu'un test devait scripter par
+   un flux d'octets.
 
 Un troisième argument a circulé et n'est **pas** retenu : qu'un `bufio` placé entre deux formulaires
 `huh` puisse avaler la frappe anticipée destinée au second. Le chemin n'a jamais été reproduit — un
 terminal en mode canonique rend au plus une ligne par `read(2)`, la frappe anticipée reste donc dans
 la file du tty et non dans le tampon, et une exécution en tube n'atteint jamais cette boucle
-(`IsTTY` l'envoie à la branche rapport). Un risque que la forme portait, pas un défaut mesuré.
+(`IsTTY` l'envoie à la branche rapport). Un risque que la forme portait, pas un défaut établi. Les
+deux points ci-dessus portent le changement à eux seuls.
 
 Le tableau ci-dessous reste le périmètre **de cette tranche** — les quatre invites qu'elle a portées
 en premier derrière `Prompter`. `resolveRepoChoices` n'y figure pas : elle a suivi ensuite, par la
