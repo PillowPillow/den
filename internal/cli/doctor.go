@@ -207,17 +207,38 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 // it declares nothing to converge, so there is nothing doctor could judge.
 func sourceChecks(ctx context.Context, home string, runner sbx.Runner, g worktree.Git) []doctor.Check {
 	names, err := source.Names(home)
-	if err != nil || len(names) == 0 {
+	if err != nil {
 		// A home with no sources/ directory is the normal case, not a fault.
 		return nil
 	}
-	svc := converge.Service{Git: g, Sbx: runner}
-	var checks []doctor.Check
+	// The manifested sources are selected BEFORE the observation below, so a
+	// home holding only legacy ones still runs no sbx at all — it declares
+	// nothing to judge, and reading the machine to judge nothing would be a
+	// subprocess this function used to owe nobody.
+	manifested := make([]string, 0, len(names))
 	for _, name := range names {
-		if !source.HasManifest(source.Dir(home, name)) {
-			continue
+		if source.HasManifest(source.Dir(home, name)) {
+			manifested = append(manifested, name)
 		}
-		plan, err := svc.Status(ctx, home, name)
+	}
+	if len(manifested) == 0 {
+		return nil
+	}
+	svc := converge.Service{Git: g, Sbx: runner}
+	// ONE observation for every source: Status re-reading the machine per
+	// source ran the same two sbx subprocesses once per source, for a verdict
+	// that cannot change between two of them — it is machine state, not source
+	// state (review PR82).
+	//
+	// What this does NOT change is the OUTPUT: each source still carries the
+	// cause in its own plan and still prints it on its own check line, so an
+	// unobservable machine reports it once per source, as before. That half is
+	// a rendering decision (unobservedWarning, sourceDetail), shared with
+	// `den source status`, and it is not this change's to make.
+	state, observeErr := converge.ReadSbxState(ctx, runner)
+	var checks []doctor.Check
+	for _, name := range manifested {
+		plan, err := svc.StatusWith(ctx, home, name, state, observeErr)
 		if err != nil {
 			checks = append(checks, doctor.Check{Name: "source " + name, Level: doctor.LevelFail,
 				Detail: err.Error()})

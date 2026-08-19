@@ -155,6 +155,26 @@ func (s Service) Plan(ctx context.Context, req Request) (*Plan, error) {
 // machine is `unknown`, which is a state doctor renders and exits non-zero on
 // (spec §12.2), never an error that would leave it with nothing to print.
 func (s Service) Status(ctx context.Context, denHome, name string) (*Plan, error) {
+	state, observeErr := ReadSbxState(ctx, s.Sbx)
+	return s.StatusWith(ctx, denHome, name, state, observeErr)
+}
+
+// StatusWith is Status with the sbx observation supplied by the caller.
+//
+// It exists for a caller that reports on SEVERAL sources in one run — `den
+// doctor`, which ran the same two sbx subprocesses once per source because
+// Status read the machine itself (review PR82). The observation is a fact
+// about the MACHINE, not about a source: it cannot differ between two of them,
+// so sharing one read is the truthful shape rather than an optimization that
+// trades accuracy for speed.
+//
+// state and observeErr are one ReadSbxState result, passed as it was returned:
+// state is nil exactly when observeErr is not. Sharing the pointer across
+// sources is safe because nothing on this path writes through it — Inspect and
+// Plan only read the maps, and the drivers that reassign state (Verify) run on
+// the apply path a status never takes.
+func (s Service) StatusWith(ctx context.Context, denHome, name string,
+	state *SbxState, observeErr error) (*Plan, error) {
 	c, err := source.InstalledCandidate(ctx, s.Git, denHome, name)
 	if err != nil {
 		return nil, err
@@ -168,7 +188,6 @@ func (s Service) Status(ctx context.Context, denHome, name string) (*Plan, error
 	}
 
 	plan := &Plan{Source: name, Version: m.Metadata.Version}
-	state, observeErr := ReadSbxState(ctx, s.Sbx)
 	if observeErr != nil {
 		plan.Unobserved = observeErr
 		plan.Warnings = append(plan.Warnings, unobservedWarning(observeErr))
