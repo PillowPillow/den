@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -789,6 +790,139 @@ func TestSourceAddRefusesAnUnobservableMachineBeforeConfirming(t *testing.T) {
 	}
 	if f.HasCalled("secret", "set") || f.HasCalled("policy", "allow") || f.HasCalled("create") {
 		t.Errorf("den mutated a machine it could not observe: %v", f.Calls)
+	}
+	if exists(t, source.ReceiptPath(home, "dg")) {
+		t.Errorf("den opened the applying window on a machine it could not observe")
+	}
+}
+
+// den asks NOTHING on a machine it cannot observe.
+//
+// The test above passes `--answers`, which is exactly what hides this half:
+// with a file supplying the roots and the credential, den has no question left
+// to ask, so a refusal placed after the questions and one placed before them
+// are indistinguishable there. This run carries no answer file at all — the
+// fresh-laptop shape the 2026-08-18 report described — so the repository-roots
+// question and the registry-token prompt are both live. den must refuse before
+// either: a token typed into a run that was doomed before the question is a
+// secret collected for nothing, and the human retypes it on the retry.
+//
+// The prompter is scripted with answers it must never consume. Without them a
+// regression would fail on prompt.Fake's "no scripted answer left" instead of
+// on the assertions below, which would pass this test for the wrong reason the
+// day the refusal moves again.
+func TestSourceAddAsksNothingOnAnUnobservableMachine(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	f := convergedSbx()
+	f.Fail["secret ls -g"] = errors.New("keychain access denied")
+	d := convergeDeps(f)
+	d.IsTTY = func() bool { return true }
+	pf := &prompt.Fake{
+		LineAnswers:    []string{work},
+		SecretAnswers:  []string{"sentinel-token"},
+		ConfirmAnswers: []bool{true},
+	}
+	d.Prompt = pf
+
+	root := NewRootCmdWith(d)
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetIn(strings.NewReader(""))
+	root.SetArgs([]string{"source", "add", makeManifestedSourceRepo(t), "--den-home", home})
+	err := root.Execute()
+	out := buf.String()
+
+	if err == nil {
+		t.Fatalf("den converged a machine it could not observe:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "den will not converge a machine it cannot see") {
+		t.Errorf("the refusal is not the unobservable one: %v\n%s", err, out)
+	}
+	if len(pf.Secrets) != 0 {
+		t.Errorf("den collected a credential it was about to discard: %v", pf.Secrets)
+	}
+	if len(pf.Lines) != 0 {
+		t.Errorf("den asked for the repository roots on a run it had already lost: %v", pf.Lines)
+	}
+}
+
+// blindingReader blinds the machine the first time den reads stdin.
+//
+// stdin is read in exactly one place during a convergence — resolveRepoChoices,
+// between the two planning passes — so this reproduces the window the second
+// guard covers: the sbx daemon dies while the human answers a repository
+// choice. Driving it from the READER rather than from a call counter keeps the
+// test independent of how many times den observes the machine, which is exactly
+// what this change alters.
+//
+// No mutex: the only goroutine that touches the Machine is the one blocked in
+// this Read, since den scans, plans and applies sequentially on the command's
+// own goroutine.
+type blindingReader struct {
+	io.Reader
+	blind func()
+	fired bool
+}
+
+func (r *blindingReader) Read(p []byte) (int, error) {
+	if !r.fired {
+		r.fired = true
+		r.blind()
+	}
+	return r.Reader.Read(p)
+}
+
+// A machine that stops answering BETWEEN the two planning passes is refused
+// too — the second plan is checked, not only the first.
+//
+// The first pass observed a healthy machine, so the early probe and the guard
+// under it both passed. Then the human answered a repository choice, the daemon
+// died, and the second pass — the one whose plan is actually printed and
+// confirmed — came back all-`unknown`. Without a re-check den printed that plan,
+// took the `y`, and refused from inside Apply with the applying receipt already
+// written: the exact shape the first guard exists to prevent, reached through
+// the one door that guard does not cover.
+func TestConvergenceRefusesWhenTheMachineBecomesUnobservableMidRun(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	// A directory named like the repository whose remote does NOT confirm it:
+	// discovery leaves it unconfirmed, which is what makes den ask, and asking
+	// is what opens the window this test drives.
+	makeWorkRepoFor(t, work, "api", "https://git.example.test/someone-else/api.git")
+	f := convergedSbx()
+	d := convergeDeps(f)
+	d.IsTTY = func() bool { return true }
+	// ConfirmAnswers says yes: without the re-check den must get all the way to
+	// Apply, which is the failure this pins. With it, Confirm is never called.
+	pf := &prompt.Fake{ConfirmAnswers: []bool{true}}
+	d.Prompt = pf
+
+	root := NewRootCmdWith(d)
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetIn(&blindingReader{
+		Reader: strings.NewReader("1\n\n"),
+		blind: func() {
+			f.Fail["secret ls -g"] = errors.New("the sbx daemon stopped answering")
+		},
+	})
+	root.SetArgs([]string{"init", "--source", makeManifestedSourceRepo(t),
+		"--answers", writeAnswerFile(t, work), "--den-home", home})
+	err := root.Execute()
+	out := buf.String()
+
+	if err == nil {
+		t.Fatalf("den converged a machine that went blind mid-run:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "den will not converge a machine it cannot see") {
+		t.Errorf("the refusal came from somewhere other than the unobservable guard: %v\n%s", err, out)
+	}
+	if len(pf.Confirms) != 0 {
+		t.Errorf("den asked to confirm an all-unknown plan: %v", pf.Confirms)
 	}
 	if exists(t, source.ReceiptPath(home, "dg")) {
 		t.Errorf("den opened the applying window on a machine it could not observe")
