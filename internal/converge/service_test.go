@@ -1234,7 +1234,13 @@ func TestStatusRefusesALegacySource(t *testing.T) {
 	tree := t.TempDir()
 	writeFile(t, filepath.Join(tree, "stacks", "devx", "stack.yaml"), "image: devx:v1\n")
 	remote := sourceRemote(t, tree)
-	s := Service{Git: worktree.NewGit(), Now: testClock}
+	// An sbx, where this test used to leave the field nil: Status now takes its
+	// observation BEFORE it resolves the source (it hands one read to
+	// StatusWith), so a nil runner panics here instead of reaching the refusal.
+	// The refusal itself is unchanged, and no caller reaches Status on a legacy
+	// source — internal/cli/source.go and doctor's sourceChecks both filter on
+	// HasManifest first — so the wasted read costs nothing in production.
+	s := Service{Git: worktree.NewGit(), Sbx: stateFake(t), Now: testClock}
 	if _, err := source.Add(context.Background(), s.Git, denHome, remote, "corp"); err != nil {
 		t.Fatal(err)
 	}

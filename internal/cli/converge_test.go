@@ -990,3 +990,85 @@ func TestABadAnswerFileIsRefusedBeforeTheMachineIsAsked(t *testing.T) {
 		t.Errorf("den questioned the machine before settling the answer file: %v", f.Calls)
 	}
 }
+
+// countCalls counts the sbx invocations whose argv starts with prefix.
+func countCalls(m *sbx.Machine, prefix string) int {
+	n := 0
+	for _, c := range m.Calls {
+		if strings.HasPrefix(strings.Join(c, " "), prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// One doctor run reads the machine ONCE, whatever the number of sources.
+//
+// Reported by the PR82 review (F10): Status re-read sbx per source, so a home
+// with N manifested sources ran `secret ls -g` N times and `policy ls` N+1
+// times. The verdict cannot differ between two sources: it is a fact about the
+// machine, not about the source.
+//
+// The counts are what this pins, and only them. Each source still PRINTS the
+// cause on its own line when the machine cannot answer — that is a rendering
+// decision this change does not touch (measured: 3 occurrences for 2 sources,
+// before and after).
+func TestDoctorReadsTheMachineOnceForEverySource(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--name", "corp", "--answers", writeAnswerFile(t, work), "--yes",
+		"--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	// A machine of its own, so the counts below are doctor's alone and not the
+	// two installations'.
+	f := convergedSbx()
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("doctor: %v\n%s", err, out)
+	}
+	// Asserted before the counts: with a single source the counts hold by
+	// accident, and a fixture that installed only one source would pass a test
+	// that proves nothing.
+	for _, name := range []string{"source dg", "source corp"} {
+		if !strings.Contains(out, name) {
+			t.Fatalf("%s is missing from the report — the counts below prove nothing:\n%s",
+				name, out)
+		}
+	}
+	if n := countCalls(f, "secret ls"); n != 1 {
+		t.Errorf("`sbx secret ls` ran %d times, want 1: the observation is not shared", n)
+	}
+	// 2, not 1: networkPolicyChecks keeps its own read on purpose — it reports
+	// sbx's own refusal, flattened, which is a different message from the one
+	// ReadSbxState wraps.
+	if n := countCalls(f, "policy ls"); n != 2 {
+		t.Errorf("`sbx policy ls` ran %d times, want 2 (1 network check + 1 shared read)", n)
+	}
+}
+
+// The other half of the same property: a home whose sources are all legacy
+// reads the machine not at all. A legacy source declares nothing doctor could
+// judge, and hoisting the observation out of the loop must not make den pay a
+// subprocess for a loop that turns zero times.
+func TestDoctorReadsNothingForALegacyOnlyHome(t *testing.T) {
+	home := testDenHome(t)
+	if out, err := runCLI(t, convergeDeps(convergedSbx()), "source", "add",
+		makeSourceRepo(t), "--name", "corp", "--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	f := convergedSbx()
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("doctor: %v\n%s", err, out)
+	}
+	if n := countCalls(f, "secret ls"); n != 0 {
+		t.Errorf("`sbx secret ls` ran %d times on a legacy-only home, want 0", n)
+	}
+}
