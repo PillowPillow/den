@@ -3118,15 +3118,18 @@ func TestSpawnLocalNestWithSourceStack(t *testing.T) {
 	repo := t.TempDir()
 	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
 		"image: teamstack:v1\n")
-	write(t, filepath.Join(denHome, "nests", "n.yaml"),
+	write(t, filepath.Join(denHome, "nests", "nn.yaml"),
 		"stack: corp:teamstack\nrepos:\n  - { path: "+repo+" }\n")
 
 	f, d := fakeDeps()
-	if err := Spawn(context.Background(), denHome, Options{Nest: "n", Detach: true}, d); err != nil {
+	if err := Spawn(context.Background(), denHome, Options{Nest: "nn", Detach: true}, d); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "n", "--template", "teamstack:v1") {
-		t.Errorf("expected sandbox name to stay \"n\" (unflattened); calls: %v", f.Calls)
+	// "nn", not "n": sbx refuses any name under two characters, so a
+	// one-character nest is no longer a name den can build (sbx.MinNameLength).
+	// What this test asserts is unchanged — the name stays UNFLATTENED.
+	if !f.HasCalled("create", "--name", "nn", "--template", "teamstack:v1") {
+		t.Errorf("expected sandbox name to stay \"nn\" (unflattened); calls: %v", f.Calls)
 	}
 }
 
@@ -3228,7 +3231,7 @@ func TestSpawnHintsOnStaleSourceThroughStackOnly(t *testing.T) {
 	repo := t.TempDir()
 	write(t, filepath.Join(denHome, "sources", "corp", "stacks", "teamstack", "stack.yaml"),
 		"image: teamstack:v1\n")
-	write(t, filepath.Join(denHome, "nests", "n.yaml"),
+	write(t, filepath.Join(denHome, "nests", "nn.yaml"),
 		"stack: corp:teamstack\nrepos:\n  - { path: "+repo+" }\n")
 	headPath := filepath.Join(denHome, "sources", "corp", ".git", "HEAD")
 	write(t, headPath, "ref: refs/heads/main\n")
@@ -3242,7 +3245,7 @@ func TestSpawnHintsOnStaleSourceThroughStackOnly(t *testing.T) {
 	errBuf := &bytes.Buffer{}
 	d.Err = errBuf
 
-	if err := Spawn(context.Background(), denHome, Options{Nest: "n", Detach: true}, d); err != nil {
+	if err := Spawn(context.Background(), denHome, Options{Nest: "nn", Detach: true}, d); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 	if !strings.Contains(errBuf.String(), "den source update corp") {
