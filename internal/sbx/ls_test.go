@@ -472,3 +472,21 @@ func containsAll(s string, parts ...string) bool {
 	}
 	return true
 }
+
+// THE 2026-08-21 OUTAGE, in one test: sbx prints its update banner on STDOUT,
+// after the JSON, and `den exec swimspot bash` died with `sbx ls: unreadable
+// JSON output (invalid character 'â' after top-level value)` — den refusing a
+// VM that was running, over a cosmetic line it did not write. See DecodeJSON.
+func TestLsIgnoresTheUpdateBannerAfterTheJSON(t *testing.T) {
+	f := &Fake{Responses: map[string]Response{
+		"ls --json": {Output: []byte(realLsOutput + updateBanner)},
+	}}
+
+	boxes, err := Ls(context.Background(), f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(boxes) != 1 || boxes[0].Name != "den" {
+		t.Fatalf("boxes = %+v, want the single sandbox of the payload", boxes)
+	}
+}

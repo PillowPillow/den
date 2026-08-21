@@ -2,7 +2,6 @@ package converge
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"slices"
@@ -77,7 +76,11 @@ func ReadSbxState(ctx context.Context, runner sbx.Runner) (*SbxState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading the global sbx secrets: %w", err)
 	}
-	state, err := parseSecretList(string(secrets))
+	// StripUpdateBanner first: this is the one sbx read with no `--json`, so
+	// the update box lands INSIDE the table den parses by column, where a
+	// corner line carries one field and the row guard refuses the whole
+	// inventory. See sbx.StripUpdateBanner.
+	state, err := parseSecretList(sbx.StripUpdateBanner(string(secrets)))
 	if err != nil {
 		return nil, err
 	}
@@ -200,11 +203,14 @@ type policyList struct {
 }
 
 func parseAllowedHosts(raw []byte) (map[string]bool, error) {
+	// sbx.DecodeJSON, not json.Unmarshal: sbx writes its update banner on
+	// stdout behind the payload, and Unmarshal refuses anything after the
+	// value — a converge run failed here for that alone. See sbx.DecodeJSON.
 	var list policyList
-	if err := json.Unmarshal(raw, &list); err != nil {
+	if err := sbx.DecodeJSON("policy ls --json", raw, &list); err != nil {
 		return nil, fmt.Errorf(
-			"sbx policy ls --json: unreadable output: %w — den compares the exact entries of "+
-				"rules[].resources, and cannot guess on a shape it does not know", err)
+			"%w — den compares the exact entries of rules[].resources, and cannot guess on a "+
+				"shape it does not know", err)
 	}
 	out := map[string]bool{}
 	for _, r := range list.Rules {
