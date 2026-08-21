@@ -257,3 +257,20 @@ func TestFindTemplateOnAnEmptyInventory(t *testing.T) {
 		t.Errorf("FindTemplate on an empty inventory = %+v, want nil", got)
 	}
 }
+
+// Same outage as TestLsIgnoresTheUpdateBannerAfterTheJSON, on the other
+// listing: an update banner behind the payload used to make `den build` and
+// every spawn that checks its image refuse.
+func TestTemplatesIgnoreTheUpdateBannerAfterTheJSON(t *testing.T) {
+	f := &Fake{Responses: map[string]Response{
+		"template ls --json": {Output: []byte(templateLsJSON + updateBanner)},
+	}}
+
+	list, err := Templates(context.Background(), f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("got %d templates, want 2: %+v", len(list), list)
+	}
+}

@@ -60,9 +60,11 @@ func Templates(ctx context.Context, r Runner) ([]Template, error) {
 	// list reads as "no image is built", so `den build` would rebuild
 	// everything and `den spawn` would refuse every spawn with "run `den
 	// build`" on a machine where every image is present.
+	// DecodeJSON, for the same reason as Ls: an update banner behind the
+	// payload must not turn every `den build` into a refusal.
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(output, &fields); err != nil {
-		return nil, fmt.Errorf("sbx template ls: unreadable JSON output (%w): %s", err, string(output))
+	if err := DecodeJSON("template ls", output, &fields); err != nil {
+		return nil, err
 	}
 	raw, present := fields["images"]
 	if !present {

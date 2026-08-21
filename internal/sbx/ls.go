@@ -189,11 +189,13 @@ func Ls(ctx context.Context, r Runner) ([]Sandbox, error) {
 	// array, never its outright absence (a bare `{}`). If a first smoke test
 	// on a real machine shows a bare `{}` when nothing is running, this guard
 	// must be relaxed.
+	// DecodeJSON, not json.Unmarshal: sbx prints its update banner on stdout
+	// BEHIND the payload, and Unmarshal refuses anything after the value. That
+	// is the 2026-08-21 outage — `den exec` dying on a running VM over a box
+	// of ASCII art. The whole story is in DecodeJSON.
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(output, &fields); err != nil {
-		// The raw output is in the message: without it, a schema change on
-		// sbx's side would be undiagnosable.
-		return nil, fmt.Errorf("sbx ls: unreadable JSON output (%w): %s", err, string(output))
+	if err := DecodeJSON("ls", output, &fields); err != nil {
+		return nil, err
 	}
 	raw, present := fields["sandboxes"]
 	if !present {

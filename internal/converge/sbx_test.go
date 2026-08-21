@@ -442,3 +442,64 @@ func TestNetworkDriverRecognizesTheHostSbxStoredWithItsDefaultPort(t *testing.T)
 		t.Errorf("an explicit port was rewritten: %v", m.Allowed)
 	}
 }
+
+// sbxUpdateBanner is what sbx v0.38.0 printed on STDOUT, behind the payload,
+// on 2026-08-21. Same outage as internal/sbx's TestLsIgnoresTheUpdateBanner…:
+// `sbx policy ls --json` goes out the same stdout, so a converge run on the
+// day sbx advertises a new version used to fail here too.
+const sbxUpdateBanner = `
+╭──────────────────────────────────────────────────────────────────────────────────╮
+│ Docker Sandboxes Update Available                                                │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│ v0.38.0  →  v0.39.0                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────╯
+`
+
+func TestParseAllowedHostsIgnoresTheUpdateBanner(t *testing.T) {
+	raw := []byte(`{"rules":[{"resources":["registry.npmjs.org","proxy.golang.org"]}]}` + sbxUpdateBanner)
+
+	hosts, err := parseAllowedHosts(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hosts["registry.npmjs.org"] || !hosts["proxy.golang.org"] {
+		t.Errorf("hosts = %v, want both entries of rules[].resources", hosts)
+	}
+}
+
+func TestParseAllowedHostsKeepsItsHintOnAnUnreadableShape(t *testing.T) {
+	_, err := parseAllowedHosts([]byte("not json at all"))
+	if err == nil {
+		t.Fatal("expected a refusal on a shape den does not know")
+	}
+	if !strings.Contains(err.Error(), "rules[].resources") {
+		t.Errorf("error = %v, want the hint naming what den compares", err)
+	}
+}
+
+// The SAME outage on the one sbx read that has no --json: `sbx secret ls -g`
+// is a text table, and the banner's corner lines (`╭───╮`) carry a single
+// field where den's column parser demands two. The row guard then turned the
+// whole credential inventory into a hard refusal — den announcing an
+// unreadable machine because sbx advertised a release.
+func TestReadSbxStateIgnoresTheUpdateBannerOnTheSecretTable(t *testing.T) {
+	runner := &sbx.Fake{Responses: map[string]sbx.Response{
+		"secret ls -g": {Output: append(fixture(t, "secret-ls.txt"), []byte(sbxUpdateBanner)...)},
+		"policy ls --type network --source local --decision allow --json": {
+			Output: []byte(`{"rules":[]}` + sbxUpdateBanner)},
+	}}
+
+	state, err := ReadSbxState(context.Background(), runner)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !state.Services["github"] || !state.Services["anthropic"] {
+		t.Errorf("Services = %v, want the two of the fixture", state.Services)
+	}
+	if !state.Registries["registry.example.test:443"] {
+		t.Errorf("Registries = %v, want the fixture entry", state.Registries)
+	}
+	if len(state.Customs) != 1 {
+		t.Errorf("Customs = %v, want the single custom secret of the fixture", state.Customs)
+	}
+}
