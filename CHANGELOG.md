@@ -7,6 +7,28 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.10.0 — 2026-08-21
+
+### Fixed
+- den no longer builds a sandbox name `sbx` refuses. A plus sign leaves the name charset — nobody
+  had to type one, `-w feat/c++` flattened to `feat-c++` and kept it — and a name under two
+  characters is refused up front, which is what `den up a` produced. `sbx` rejected both, but only
+  after den had already created the worktree.
+- Any den command that reads sbx survives sbx's "Update Available" banner. sbx v0.38.0 prints that
+  box on stdout, behind the payload, and `den exec <nest> bash` died on it with `sbx ls: unreadable
+  JSON output (invalid character 'â' after top-level value)` — den refusing to attach to a VM that
+  was running, about once a day. The `--json` reads take the first top-level value and ignore what
+  follows; the spawn's settle loop, which parses sbx's credential table by column offset, drops the
+  banner lines before parsing.
+- `den rm` judges every worktree before it moves any of them. A refusal on the second repo used to
+  arrive after the first one had already gone to the trash: one directory moved, one still on disk
+  with a live git registration, and no retry could clear it, since the retry hit the same refusal.
+  Every refusal is now reported in one run instead of one per `den rm`. `den doctor --fix` reclaims
+  the same way.
+- `den rm`'s dirtiness refusals name the remedy that applies — commit, `--force`, or
+  `--keep-worktrees`. An ignored file still blocks, a `.env` being exactly what one cannot get back,
+  but "uncommitted changes (.DS_Store)" sent you looking for work that does not exist.
+
 ## v1.9.0 — 2026-08-19
 
 ### Added
