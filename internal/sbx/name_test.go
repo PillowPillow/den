@@ -55,7 +55,7 @@ func TestSplitNameIsTheExactInverse(t *testing.T) {
 		{"api", ""},
 		{"api", "feat12"},
 		{"my-api", "feat-2"},
-		{"a+b", "c-d"},
+		{"a-b", "c-d"},
 	}
 	for _, c := range cases {
 		name, err := SandboxName(c.nest, c.worktree)
@@ -89,7 +89,10 @@ func TestSplitNameForeign(t *testing.T) {
 // assembly cannot diverge: they did diverge, and the "api." case passed on
 // one side and not the other.
 func TestValidateSandboxName(t *testing.T) {
-	for _, name := range []string{"api", "api.feat12", "my-api.feat-2", "api2", "a"} {
+	// "a" left this list on 2026-08-21: sbx refuses any name under two
+	// characters. "a.b" replaces it — a one-character COMPONENT is still
+	// legal, the floor being on the assembled name. See MinNameLength.
+	for _, name := range []string{"api", "api.feat12", "my-api.feat-2", "api2", "a.b"} {
 		if err := ValidateSandboxName(name); err != nil {
 			t.Errorf("%q must be accepted: %v", name, err)
 		}
@@ -127,5 +130,42 @@ func TestValidateSandboxNameAcceptsTheImageOfSandboxName(t *testing.T) {
 					nest, worktree, name, err)
 			}
 		}
+	}
+}
+
+// MEASURED on sbx v0.38.0, 2026-08-21: `sbx create --name a` answers
+// `name must match regexp ^[a-zA-Z0-9][a-zA-Z0-9.-]+$`, and `--name ab` is
+// accepted. den used to build the refused name for `den up a`.
+func TestSandboxNameRefusesANameShorterThanSbxAccepts(t *testing.T) {
+	_, err := SandboxName("a", "")
+	if err == nil {
+		t.Fatal("expected a refusal on a one-character sandbox name")
+	}
+	for _, want := range []string{`"a"`, "--as", "-w"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+// The floor is on the WHOLE name, never on a component: "a.b" is three
+// characters and sbx takes it. Enforcing it per component would refuse a
+// legal name.
+func TestSandboxNameAcceptsAShortComponentInALongEnoughName(t *testing.T) {
+	name, err := SandboxName("a", "b")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name != "a.b" {
+		t.Errorf("name = %q, want %q", name, "a.b")
+	}
+}
+
+// The plus sign left the charset on 2026-08-21: sbx answers `sandbox name
+// cannot contain plus signs`. It was reachable through -w without anyone
+// typing one — `feat/c++` flattened to `feat-c++`.
+func TestSandboxNameRefusesThePlusSign(t *testing.T) {
+	if _, err := SandboxName("api", "feat-c++"); err == nil {
+		t.Fatal("expected a refusal on a plus sign in a sandbox name")
 	}
 }

@@ -35,14 +35,29 @@ const alphanumericChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0
 // sandboxComponentChars is everything a sandbox name component may contain
 // past the first character (see alphanumericChars).
 //
-// `sbx create --name` accepts "letters, numbers, hyphens, periods, plus signs
-// and minus signs". den is stricter by one notch: the period is excluded,
-// because it's the separator in `<nest>.<worktree>` and splitting must stay
+// MEASURED against a real `sbx create`, 2026-08-21 on v0.38.0, because the
+// help text lies. sbx refuses a plus sign by name:
+//
+//	ERROR: sandbox name cannot contain plus signs: denprobe+x
+//	ERROR: name must match regexp ^[a-zA-Z0-9][a-zA-Z0-9.-]+$: a
+//
+// The plus USED to be in this constant, and it was here because `sbx create
+// --name`'s own help said "letters, numbers, hyphens, periods, plus signs and
+// minus signs" — a sentence sbx v0.39.0 then corrected as wrong ("incorrectly
+// listed plus signs as valid sandbox-name characters"). den had therefore been
+// able to build a name sbx refuses since before v0.35.0, and `-w` made it
+// REACHABLE without anyone typing a plus: FlattenSandboxComponent keeps every
+// rune already in this charset, so a branch `feat/c++` flattened to
+// `feat-c++`, den created the worktree, and only then did `sbx create` refuse
+// — the exact ordering internal/spawn exists to prevent.
+//
+// den stays stricter than the regexp by one notch: the period is excluded,
+// because it is the separator in `<nest>.<worktree>` and splitting must stay
 // exact without consulting the list of declared nests.
 //
 // This is the ONLY definition of the charset: ValidateSandboxComponent checks
 // it rune by rune rather than duplicating it in a regexp, so the two can never diverge.
-const sandboxComponentChars = alphanumericChars + "+-"
+const sandboxComponentChars = alphanumericChars + "-"
 
 // FlattenedSourceSeparator is what SourceRefSeparator BECOMES in a sandbox
 // name: ":" is outside sandboxComponentChars, and FlattenSandboxComponent
@@ -106,7 +121,7 @@ func ValidateSandboxComponent(kind, name string) error {
 		if !strings.ContainsRune(sandboxComponentChars, r) {
 			return fmt.Errorf(
 				"%s %q: character %q is not allowed — this name becomes a sandbox name, "+
-					"limited to letters, digits, \"-\" and \"+\" (\".\" is reserved for the "+
+					"limited to letters, digits and \"-\" (\".\" is reserved for the "+
 					"<nest>.<worktree> separator)", kind, name, string(r))
 		}
 	}

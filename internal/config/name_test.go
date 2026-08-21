@@ -42,7 +42,7 @@ func TestValidateNameRejectsWhatEscapesDenHome(t *testing.T) {
 }
 
 func TestValidateSandboxComponent(t *testing.T) {
-	valid := []string{"api", "my-api", "api2", "v1+beta", "A-B"}
+	valid := []string{"api", "my-api", "api2", "A-B"}
 	for _, name := range valid {
 		if err := ValidateSandboxComponent("nest", name); err != nil {
 			t.Errorf("%q must be accepted, refused with: %v", name, err)
@@ -51,12 +51,16 @@ func TestValidateSandboxComponent(t *testing.T) {
 
 	// The period is reserved for the <nest>.<worktree> separator; underscore
 	// and slash are refused by `sbx create --name` itself. A name starting
-	// with "-" or "+" is indistinguishable from a flag both for sbx and for
-	// den (`den nest show -api` fails on an unknown flag before ever reaching
-	// nest resolution): -api, --, +, - are therefore all refused.
+	// with "-" is indistinguishable from a flag both for sbx and for den
+	// (`den nest show -api` fails on an unknown flag before ever reaching nest
+	// resolution): -api, --, - are therefore all refused.
+	//
+	// "v1+beta" is in this list since 2026-08-21, and it used to be in the
+	// valid one: sbx answers `sandbox name cannot contain plus signs`
+	// (measured on v0.38.0). See sandboxComponentChars.
 	invalid := []string{
 		"", "my.api", "my_api", "feature/123", "my api", "café",
-		"-api", "--", "+", "-",
+		"-api", "--", "+", "-", "v1+beta", "c++",
 	}
 	for _, name := range invalid {
 		if err := ValidateSandboxComponent("nest", name); err == nil {
@@ -88,7 +92,10 @@ func TestFlattenSandboxComponent(t *testing.T) {
 		{"café", "caf-"},
 		{"feat//x", "feat--x"}, // no merging of runs: one character, one dash
 		{"feat12", "feat12"},   // already valid: rendered as-is
-		{"v1+beta", "v1+beta"},
+		// The plus left the charset on 2026-08-21 (sbx: "sandbox name cannot
+		// contain plus signs"), so it is now flattened like any other
+		// out-of-charset rune. It used to survive untouched.
+		{"v1+beta", "v1-beta"},
 		{"A-B", "A-B"},
 	}
 	for _, c := range cases {

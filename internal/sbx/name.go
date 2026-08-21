@@ -19,19 +19,49 @@ import (
 // is deleted.
 const NameSeparator = "."
 
+// MinNameLength is the shortest sandbox name sbx accepts.
+//
+// MEASURED, 2026-08-21 on sbx v0.38.0, and it is a WHOLE-NAME rule, not a
+// per-component one — which is why it lives here and not in
+// config.ValidateSandboxComponent:
+//
+//	$ sbx create --name a ...
+//	ERROR: name must match regexp ^[a-zA-Z0-9][a-zA-Z0-9.-]+$: a
+//	$ sbx create --name ab ...        # accepted
+//
+// The floor is the `+` quantifier in that regexp: one leading alphanumeric,
+// then at least one more character. sbx v0.39.0 names the rule its own help
+// had omitted ("omitted the leading-alphanumeric and two-character-minimum
+// rules"), so den has been able to build the refused name since before
+// v0.35.0 — `den up a` produced the sandbox name "a".
+//
+// A one-character COMPONENT stays legal, and deliberately: "api.a" is five
+// characters and sbx takes it. Only a bare one-character nest is short enough
+// to be refused, which is why the check is on the assembled name.
+const MinNameLength = 2
+
 // SandboxName builds the sandbox name of a nest, optionally worktreed.
 // This name is den's only state carrier: `--label` does not exist in sbx.
 func SandboxName(nest, worktree string) (string, error) {
 	if err := config.ValidateSandboxComponent("nest", nest); err != nil {
 		return "", err
 	}
-	if worktree == "" {
-		return nest, nil
+	name := nest
+	if worktree != "" {
+		if err := config.ValidateSandboxComponent("worktree", worktree); err != nil {
+			return "", err
+		}
+		name = nest + NameSeparator + worktree
 	}
-	if err := config.ValidateSandboxComponent("worktree", worktree); err != nil {
-		return "", err
+	if len(name) < MinNameLength {
+		// The remedy names both exits, because which one applies is the
+		// user's call: rename the nest, or give this sandbox an instance.
+		return "", fmt.Errorf(
+			"sandbox name %q: %d characters, and sbx refuses anything under %d "+
+				"(`name must match regexp ^[a-zA-Z0-9][a-zA-Z0-9.-]+$`) — rename the nest, "+
+				"or name the instance with `--as` or `-w`", name, len(name), MinNameLength)
 	}
-	return nest + NameSeparator + worktree, nil
+	return name, nil
 }
 
 // SplitName is the inverse of SandboxName. TOTAL function: it validates
