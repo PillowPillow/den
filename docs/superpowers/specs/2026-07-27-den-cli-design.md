@@ -1888,3 +1888,43 @@ CPUs* — et den ne l'envoie que s'il est ÉCRIT.
   référence est le registre de création (`internal/manifest`), parce que `sbx ls --json` ne porte
   aucun champ de taille (§14.2, inchangé) — une VM vivante ne peut pas être interrogée sur sa
   taille.
+
+### `--deny-network` à la création : TRANCHÉ — non (issue #90, §4.2 du handoff)
+
+L'aide de `sbx create` dit d'un deny local qu'il *« can only narrow, never widen, egress »*, ce qui
+le rend sûr sous la doctrine fail-closed de den (§7). La question n'est pas la sûreté, c'est le
+nombre de mécanismes.
+
+**den n'en ajoute pas.** L'egress de den est une **allowlist** : `egress:` fusionne baseline ∪ stack
+∪ nest, et la settle-loop attend que la politique soit posée avant tout attach. Un `deny:` à côté
+ferait deux mécanismes pour un concept, et la question « pourquoi cet hôte est-il injoignable ? »
+aurait alors deux réponses à lire dans deux endroits — le mode de défaillance exact que
+`unionEgress` (une liste, un ordre, un golden) existe pour fermer.
+
+Un deny n'est utile que là où il **restreint une allowlist trop large**. Celle de den ne l'est pas :
+elle est écrite à la main, hôte par hôte, et un hôte de trop se retire en supprimant sa ligne. Le
+jour où une source d'équipe imposerait une allowlist qu'une machine doit rétrécir sans pouvoir la
+modifier, la question se rouvre — et c'est une question de **gouvernance**, la même que `--profile`
+ci-dessous, pas un drapeau de plus sur `sbx create`.
+
+### `--profile` : SONDÉ, sans objet sur cette machine (issue #90, §4.3 du handoff)
+
+Personne ne savait ce qu'était un « profil de gouvernance » sbx. Mesuré le 2026-08-24 :
+
+```
+$ sbx policy profile --help
+Manage policy profiles provided by remote governance policies.
+Profiles can be selected when creating sandboxes to apply a specific policy profile.
+
+$ sbx policy profile ls
+No policy profiles found
+```
+
+Un profil est donc fourni par une **politique de gouvernance distante**, pas déclaré localement.
+Cette machine n'en a aucun, et il n'existe aucune sous-commande pour en créer un : `sbx policy
+profile` n'offre que `ls`. den n'a donc **rien à quoi faire pointer `--profile`**, et aucun moyen
+d'observer l'effet du drapeau s'il l'envoyait.
+
+**Reporté**, pour la raison qui a écarté `--no-share-skills` au §14.2 : livrer un drapeau dont
+l'effet n'est pas observable brouille la prémisse. La sonde à refaire le jour où une organisation
+pousse des profils est celle ci-dessus, en une ligne.
