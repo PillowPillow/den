@@ -1819,6 +1819,19 @@ un paragraphe dans #87.
 
 Le binaire porte `Include ~/.ssh/sandboxes/config`. sbx écrirait donc sa propre configuration SSH
 et attendrait un `Include` dans celle de l'hôte. den possède son propre modèle SSH (§10) et monte
-`~/.ssh_sbx` — visible dans les `workspaces` des deux sandboxes vivantes. **NON VÉRIFIÉ** :
-l'existence réelle de `~/.ssh/sandboxes/`, et la présence d'un `Include` dans `~/.ssh/config`.
-Sonde à mener.
+`~/.ssh_sbx` — visible dans les `workspaces` des deux sandboxes vivantes.
+
+**Sondé le 2026-08-24 : la collision est LATENTE, pas active.**
+
+- `ls ~/.ssh/sandboxes/` → `No such file or directory`. Le répertoire n'existe pas.
+- `grep -i include ~/.ssh/config` → aucune correspondance, **stderr vide** : le fichier existe
+  bel et bien (un fichier absent aurait fait écrire grep sur stderr) et ne porte aucun `Include`.
+
+sbx porte donc le chemin de code mais n'a **rien écrit** sur cette machine — cohérent avec le `[q]`
+du 2026-08-23 : refuser l'assistant, c'est aussi refuser sa configuration SSH. Le `~/.ssh_sbx` de
+den est intact et reste le seul auteur.
+
+Ce qui reste **NON VÉRIFIÉ**, et ce que la sonde ne pouvait pas atteindre : ce que sbx écrit quand
+on répond `[enter]`, et si `~/.ssh/config` est alors modifié par sbx lui-même. C'est la même
+frontière que les sondes 3 et 4 de #87 — elle se paie en pollution réelle, et den ne la franchit
+pas pour l'instant.
