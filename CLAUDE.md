@@ -125,9 +125,20 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   (`2026-07-*`, `2026-08-*`) are historical and never rewritten — each describes the state on its
   own date. So is everything under `docs/superpowers/plans/` and `.superpowers/sdd/`, where several
   reports still say `sbx` is not installed on this machine. It is (`/opt/homebrew/bin/sbx`,
-  v0.35.0, three real smokes). The spec `docs/superpowers/specs/2026-07-27-den-cli-design.md`
-  remains the source of truth, and its §14.0/§14.1 the only place that says what a real `sbx` has
-  actually answered.
+  **v0.39.0 `def8cb0`** as of 2026-08-24 — the v0.35.0 this note used to record is three releases
+  behind). The spec `docs/superpowers/specs/2026-07-27-den-cli-design.md` remains the source of
+  truth, and its §14.0 / §14.1 / **§14.2** the only place that says what a real `sbx` has actually
+  answered. §14.2 is the current one: it records the v0.39.0 surface, and it settles probes 1 and 2
+  of issue #87. The `sbx setup` wizard is one-shot per machine (marker
+  `~/Library/Application Support/com.docker.sandboxes/sandboxes/first-run-import.json`, keyed on
+  `offeredAt` — *offered*, not accepted, so `[q]` closes it). Its gate is
+  `isTerminal(stdin) && isTerminal(stdout)` — **the descriptors, not `-it`**. So `den build`, the
+  §9.1 gate and the ports probe are safe (they capture stdout into a buffer), and so is CI, but
+  **`den exec -T` / `den run -T` typed at a terminal HANG** on a machine that has never been
+  prompted: den sends no `-it`, yet `spawn.Enter`'s Pipe branch passes the terminal's own
+  descriptors through. Measured 2026-08-24, §14.2 carries the table. Do not repeat the first
+  reading of that probe, which used `stdin=/dev/null` throughout and wrongly concluded the wizard
+  could never reach den.
 - `.claude/worktrees/feat+spawn-interactive/` is a full shadow copy of the tree. Exclude it from
   greps or every search returns doubled hits.
 - Il n'y a plus de `Makefile` : le runner est `Taskfile.yml` depuis le 2026-08-04. Les plans
