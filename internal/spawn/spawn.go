@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1217,6 +1218,13 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		// stays silent. Without this, the user reattaches to a VM where
 		// git is dead and only finds out on their first git command.
 		reportMissingGitDirs(d.Out, sandboxName, live.Workspaces, gitDirs)
+		// A third drift the mixin cannot carry: the VM's SIZE. Nothing resizes
+		// a running VM either, and the VM cannot be asked what it was made with
+		// (`sbx ls --json` has no such field), so the creation record is the
+		// reference — hence the guard, like the two record-based reports below.
+		if recordedErr == nil {
+			reportResourceDrift(d.Out, sandboxName, recorded.Resources, r.Resources)
+		}
 		// Two DIFFERENT drifts used to arrive as one. reportUnmountedRepos
 		// compares today's configuration to what the VM mounts, which
 		// fires both when the VM is missing something and when the nest
@@ -1380,6 +1388,11 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 			StackKits:  r.Stack.DeclaredKits(),
 			MixinKit:   mixinDir,
 			Workspaces: workspaces,
+			// Already validated by nest.Resolve, before the worktrees above
+			// existed. CreateArgv checks them again as a boundary guard, and
+			// that duplication is the doctrine, not an oversight.
+			CPUs:   r.Resources.CPUs,
+			Memory: r.Resources.Memory,
 		})
 		if err != nil {
 			return err
@@ -2018,6 +2031,98 @@ func reportDrift(out io.Writer, sandboxName string, previous agent.Mixin, previo
 		sandboxName)
 }
 
+// copyCPUs duplicates a `cpus:` pointer, preserving nil.
+//
+// One function rather than the three-line inline copy at each site: nil is the
+// meaningful value here ("no flag at all"), and a site that dereferenced
+// without checking would panic on the ordinary case.
+func copyCPUs(n *int) *int {
+	if n == nil {
+		return nil
+	}
+	v := *n
+	return &v
+}
+
+// showCPUs renders a `cpus:` for a message. Absent is stated as such, never as
+// a zero: `--cpus 0` is sbx's "auto", so printing 0 for "nothing declared"
+// would name a value the user might actually have written.
+func showCPUs(n *int) string {
+	if n == nil {
+		return "not set"
+	}
+	return strconv.Itoa(*n)
+}
+
+// showMemory is showCPUs for `memory:`, whose absence is the empty string.
+func showMemory(v string) string {
+	if v == "" {
+		return "not set"
+	}
+	return v
+}
+
+// reportResourceDrift warns when a LIVE sandbox runs with a size the current
+// configuration no longer asks for.
+//
+// The same doctrine as reportDrift right above, applied to the one thing the
+// mixin cannot carry: NOTHING resizes a running VM, so den warns without
+// refusing (refusing would break a `den up` that worked yesterday over a YAML
+// edit) and without recreating (unrequested destruction of a VM that may hold
+// work in progress).
+//
+// The reference is the CREATION RECORD and not the VM, because the VM cannot
+// be asked: `sbx ls --json` carries exactly {agent, id, name, status,
+// workspaces} (four sandboxes verified, 2026-08-24). recorded is nil for a
+// sandbox created before `resources:` existed, and that is not "no drift" —
+// it is a VM running on sbx's own default, which a nest declaring a size today
+// genuinely diverges from.
+//
+// It is called only inside the branch that HAS a record: with no record at all
+// there is no "at creation" side to name, and a warning quoting one would be
+// inventing it. That is the same guard reportNestChangedSinceCreation sits
+// behind, for the same reason.
+func reportResourceDrift(out io.Writer, sandboxName string, recorded *manifest.Resources,
+	want config.Resources) {
+
+	var was manifest.Resources
+	if recorded != nil {
+		was = *recorded
+	}
+	var diffs []string
+	// Pointer identity is not the comparison: two distinct pointers to 4 are
+	// the same size. Nil-vs-set is a difference, and so is 4-vs-8.
+	if (was.CPUs == nil) != (want.CPUs == nil) || (was.CPUs != nil && *was.CPUs != *want.CPUs) {
+		diffs = append(diffs, fmt.Sprintf("cpus: %s at creation, %s now",
+			showCPUs(was.CPUs), showCPUs(want.CPUs)))
+	}
+	// The SPELLING is compared, not the byte count: `8g` and `8192m` are the
+	// same size, and reporting them as drift would fire a warning on a
+	// reformatted line. They are equal here only if written the same way —
+	// accepted, and cheap to live with: the message quotes both spellings, so
+	// a reader sees at once that nothing really changed. Parsing to compare
+	// would instead make the message lie in the other direction, calling `8g`
+	// and `8589934592` identical when the second is what the user has to fix.
+	if was.Memory != want.Memory {
+		diffs = append(diffs, fmt.Sprintf("memory: %s at creation, %s now",
+			showMemory(was.Memory), showMemory(want.Memory)))
+	}
+	if len(diffs) == 0 {
+		return
+	}
+	fmt.Fprintf(out,
+		"warning: sandbox %s is running with the size from its `sbx create`, not the current "+
+			"configuration:\n", sandboxName)
+	for _, line := range diffs {
+		fmt.Fprintf(out, "  - %s\n", line)
+	}
+	// The same remedy reportDrift names, and deliberately the same words: one
+	// situation — a live VM frozen at its creation — must not read as two.
+	fmt.Fprintf(out,
+		"  nothing resizes a running VM: `sbx rm --force %s` then relaunch to apply it.\n",
+		sandboxName)
+}
+
 // reportMissingGitDirs warns when a LIVE sandbox doesn't mount the git
 // dirs a requested worktree needs.
 //
@@ -2527,6 +2632,18 @@ func manifestOf(sandboxName, nestRef, nestFile string, wt worktree.Name,
 		Nest:    manifest.Nest{Ref: nestRef, File: nestFile},
 		Repos:   make([]manifest.Repo, 0, len(r.Repos)),
 		GitDirs: gitDirs,
+	}
+	// Recorded only when den actually asked for a size. A block of zero values
+	// would read like a size someone chose, and would then report drift against
+	// itself the day a nest declares its first `resources:`.
+	if r.Resources.CPUs != nil || r.Resources.Memory != "" {
+		m.Resources = &manifest.Resources{
+			// COPIED, never the resolved pointer: the record is marshalled
+			// after this function returns, and an alias would let anything
+			// still holding the *nest.Resolved change what gets written.
+			CPUs:   copyCPUs(r.Resources.CPUs),
+			Memory: r.Resources.Memory,
+		}
 	}
 	if wt.Dir != "" {
 		m.Worktree = &manifest.Worktree{

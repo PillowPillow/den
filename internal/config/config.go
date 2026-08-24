@@ -69,6 +69,33 @@ type Mount struct {
 // config, so the sugar reads the same constant — one spelling, one concept.
 const SSHLinkTarget = "$HOME/.ssh"
 
+// Resources is the microVM's size: what `sbx create` receives as `--cpus` and
+// `--memory`. It is the one part of the cascade that describes the MACHINE
+// rather than what runs on it, and it is declarable at every level
+// (config.yaml ← stack.yaml ← nest.yaml ← flags), merged FIELD by field.
+//
+// Field by field, and not block by block, for the reason `env:` merges the
+// same way: a stack that pins a memory floor for its toolchain and a nest that
+// asks for more CPUs are two independent statements, and a whole-block
+// override would make the second silently discard the first.
+//
+// CPUs is a POINTER, alone among den's config fields, and the distinction it
+// buys is real rather than theoretical: `sbx create --help` documents
+// `--cpus 0` as "auto: all host CPUs", so 0 is a value one can mean. With a
+// plain int, an absent `cpus:` and a written `cpus: 0` would be the same fact,
+// and a nest could not send a stack's fixed count back to the host default.
+// Absent OMITS the flag; a written 0 emits `--cpus 0`. The two are equivalent
+// to sbx v0.39.0 today, but by coincidence, and den does not build on those.
+//
+// Memory is a STRING, kept in the spelling the user wrote: it travels verbatim
+// to sbx, whose grammar is the authority (sbx.ParseMemory mirrors it). Storing
+// bytes here would make den re-render a value the user has to recognize in a
+// diagnostic, and `8g` re-rendered as `8589934592` is not the line they typed.
+type Resources struct {
+	CPUs   *int   `yaml:"cpus"`
+	Memory string `yaml:"memory"`
+}
+
 // Global is the content of ~/.den/config.yaml, with defaults applied and paths expanded.
 type Global struct {
 	Agents         map[string]Agent `yaml:"agents"`
@@ -81,6 +108,12 @@ type Global struct {
 	// §2.4) to a path on THIS machine. Personal by design: it is the one part
 	// of a shared nest that cannot travel.
 	Repos map[string]string `yaml:"repos"`
+	// Resources is the cascade's baseline microVM size — the floor a den home
+	// gives every sandbox that says nothing (see Resources). Unlike Mounts just
+	// below it IS part of the stack/nest cascade: a cpu count and a memory size
+	// carry nothing machine-specific, so a stack shipped through a source can
+	// state them without reintroducing what `den lint` exists to refuse.
+	Resources Resources `yaml:"resources"`
 	// Mounts is GLOBAL and deliberately not part of the stack/nest cascade.
 	// A `host:` is a path on THIS machine, and den already refuses `path:` on a
 	// nest that comes from a source for exactly that reason — a stack in a

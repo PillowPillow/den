@@ -103,6 +103,13 @@ type Nest struct {
 	Repos  []Repo            `yaml:"repos"`
 	Ports  Ports             `yaml:"ports"`
 	Agents map[string]string `yaml:"agents"` // per-agent config_dir override
+	// Resources is the nest's own microVM size — the level that finally answers
+	// "how big is THIS nest", which is the question the whole cascade exists
+	// for: a nest running one Go suite and a nest running three services plus a
+	// database were sized identically until it existed. It wins over the stack
+	// and the global, field by field; only a flag overrides it
+	// (config.Resources).
+	Resources config.Resources `yaml:"resources"`
 }
 
 // PromptsForRepos reports whether this nest chooses its repos at spawn time.

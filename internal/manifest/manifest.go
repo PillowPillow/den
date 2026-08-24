@@ -66,6 +66,40 @@ type Manifest struct {
 	Worktree *Worktree `yaml:"worktree,omitempty"`
 	Repos    []Repo    `yaml:"repos"`
 	GitDirs  []string  `yaml:"git_dirs,omitempty"`
+	// Resources is the microVM size den asked sbx for, and it is here because
+	// nothing else can answer for it: `sbx ls --json` carries exactly
+	// {agent, id, name, status, workspaces} (four sandboxes verified,
+	// 2026-08-24), so a live VM cannot be asked how big it was made. The mixin
+	// is not that record either — it is a kit, and a kit sets no resources; a
+	// resources block written into it would claim something it does not do.
+	//
+	// A POINTER, like Worktree above and for the same reason: a spawn that
+	// declared no `resources:` renders no block at all, rather than one of zero
+	// values that reads like a size someone chose.
+	//
+	// What it is FOR: the attach branch reapplies nothing to a live VM
+	// (spec §6), so a `resources:` edited after creation can only be WARNED
+	// about — and a warning needs the number the sandbox was actually created
+	// with.
+	Resources *Resources `yaml:"resources,omitempty"`
+}
+
+// Resources is what `sbx create` received as `--cpus` and `--memory`.
+//
+// The manifest's OWN type rather than config.Resources, the way Repo and
+// Worktree are the manifest's own: this file records an EVENT — the flags one
+// `sbx create` was given — while config.Resources is a schema the cascade
+// merges. They happen to hold the same two values today, and a shared type
+// would make every later change to the schema silently rewrite the meaning of
+// records already on disk.
+//
+// Both fields are omitempty, and CPUs is a pointer for the reason it is one
+// everywhere else: a written `cpus: 0` is sbx's "auto", a distinct fact from
+// no cpus at all, and a record that flattened them would report drift where
+// there is none.
+type Resources struct {
+	CPUs   *int   `yaml:"cpus,omitempty"`
+	Memory string `yaml:"memory,omitempty"`
 }
 
 // Nest records BOTH spellings, because they answer different questions: Ref is
