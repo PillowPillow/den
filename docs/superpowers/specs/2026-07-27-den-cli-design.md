@@ -1915,3 +1915,25 @@ qui décide, pas la longueur.
 
 Enfin, comme pour `secret ls -g` (§ `ReadSbxState`), la bannière de mise à jour de sbx atterrit
 sur stdout : `sbx.StripUpdateBanner` s'applique avant toute reconnaissance.
+
+### Ce que la mécanique rend sur cette machine (vérification, même jour)
+
+`den doctor` construit avec ce relevé, sur `~/.den` réel :
+
+```
+[ok  ] sbx secrets      1 of 4 present, undeclared: service anthropic — not written by den,
+                        which never removes what it did not create; `sbx secret ls -g` shows the detail
+[ok  ] sbx mcp servers  nothing on this machine
+[ok  ] sbx skills       nothing on this machine
+```
+
+Trois faits mesurés, et non supposés :
+
+- le magasin global porte **4 secrets**, dont **3 sont déclarés** par la source `dg` ;
+- le quatrième, `service anthropic`, n'est déclaré par aucune source — c'est exactement l'angle
+  mort que #88 ferme, et il existait pour de vrai sur cette machine ;
+- les deux magasins opaques répondent leur sentinelle négative, donc « rien » — ce qui confirme la
+  reconnaissance côté den contre la sortie réelle, et pas seulement contre un double.
+
+`den doctor` reste **vert** (`all good`) : l'état non déclaré est de l'information, jamais un
+défaut. Rien n'a été supprimé, et aucune commande mutante n'a été lancée.

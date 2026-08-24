@@ -136,8 +136,13 @@ func UndeclaredCheck(s UndeclaredSurface) Check {
 	}
 	// Every one is NAMED, not counted: "3 undeclared" is unactionable, and the
 	// one the reader is looking for is the credential they forgot they set.
+	//
+	// Worded without a pronoun for the list, on purpose: the count is 1 as
+	// often as it is 5, and "den did not write them" reads wrong on the single
+	// entry that is the common case (measured on a real machine, 2026-08-24:
+	// "1 of 4"). Same care as identities() one file over.
 	return Check{Name: s.Name, Level: LevelOK, Detail: fmt.Sprintf(
-		"%d of %d present, undeclared: %s — den did not write them and never removes them; "+
-			"`%s` shows them", len(undeclared), len(s.Entries),
+		"%d of %d present, undeclared: %s — not written by den, which never removes what it "+
+			"did not create; `%s` shows the detail", len(undeclared), len(s.Entries),
 		strings.Join(undeclared, ", "), s.Look)}
 }
