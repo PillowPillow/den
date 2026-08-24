@@ -1658,3 +1658,180 @@ Celles-ci ne portent pas sur `sbx` mais sur des choix de den, tous **délibéré
   - un `sbx template ls` **en échec** est fail-open. Le contrôle améliore un message, il ne garde
     rien : `sbx` refuse toujours le create de lui-même si l'image manque vraiment, donc un
     diagnostic en panne ne doit pas interdire un spawn.
+
+## 14.2 Relevé du 2026-08-24 — sbx **v0.39.0** (`def8cb0`), issue #87
+
+Premier relevé depuis le 2026-08-10 (v0.37.1). La machine porte
+`/opt/homebrew/bin/sbx`, `sbx version` → `v0.39.0 def8cb0523a77e757bdd6ef52b459fe374f3783e`.
+
+### Le sondage de l'assistant `sbx setup` (sondes 1 et 2 de #87) — TRANCHÉES
+
+**Sonde 2 — le marqueur, et sa clé.** L'assistant enregistre son passage dans
+
+```
+~/Library/Application Support/com.docker.sandboxes/sandboxes/first-run-import.json
+{"offeredAt":"2026-08-23T20:30:27.976331Z"}
+```
+
+Le champ est `offeredAt` — **proposé**, et non **accepté**. `[q]` suffit donc à le clore : le
+fichier existe dès que l'assistant s'est affiché une fois, et l'assistant ne revient pas. Le
+tribut est **unique par machine**, pas récurrent. Corollaire mesuré : le magasin frère
+`…/sandboxes/agent-skills/` est **vide** — le `[q]` du 2026-08-23 n'a rien importé, et le profil
+agent de den (`~/.den/agents/claude`, monté en workspace dans les deux sandboxes vivantes de cette
+machine) n'a jamais été touché.
+
+⚠️ Ce marqueur rend la sonde 1 **ininterprétable** sur une machine déjà sondée : un `exec` non-tty
+propre n'y prouve rien, puisque l'assistant est clos pour tout le monde. La sonde 1 ci-dessous a
+donc été menée **marqueur retiré**, restauré par un `trap … EXIT`.
+
+**Sonde 1 — la garde porte sur les DEUX descripteurs, pas sur `-it`.** Marqueur absent à chaque
+essai, restauré par un `trap … EXIT`.
+
+D'abord trois formes sans tty du tout, stdin `/dev/null` :
+
+| Commande | code | stdout | stderr |
+|---|---|---|---|
+| `sbx exec swimspot true` | 0 | vide | **vide** |
+| `sbx exec swimspot cat /etc/hostname` (forme de la porte §9.1) | 0 | `localhost.localdomain` | **vide** |
+| `sbx ls --json` | 0 | JSON propre | **vide** |
+
+Aucun blocage, aucune bannière, et — mesuré explicitement après chaque appel — **`sbx` ne
+réécrit pas le marqueur** : il est resté ABSENT tout du long.
+
+⚠️ **Conclure ici serait une faute, et elle a été commise une première fois.** Ces trois formes
+n'ont AUCUN tty. Or den possède une porte qui n'a pas de tty *pour sbx* tout en tournant sur un
+terminal : `den exec -T` / `den run -T` forcent `TTY=false` (`internal/cli/exec.go:388`,
+`internal/cli/run.go:64`), donc den n'envoie pas `-it` — mais les descripteurs du process, eux,
+restent le terminal de l'utilisateur, puisque la branche Pipe les passe tels quels
+(`internal/spawn/enter.go:95`, « the three descriptors pass through unmerged »).
+
+Trois formes de plus, sous un pty réel (`script -q /dev/null`), marqueur retiré, chien de garde
+de 15–20 s :
+
+| Forme | stdin | stdout | `-it` | résultat |
+|---|---|---|---|---|
+| **`den exec -T` depuis un terminal** | **pty** | **pty** | **non** | **BLOCAGE.** Toujours vivant après 20 s, tué en SIGKILL. Sortie = tempête d'échappements bubbletea (`[?25l`, `[?2004h`, écran alterné). Et **`sbx` RÉÉCRIT le marqueur** : `{"offeredAt":"2026-08-24T14:44:53.268983Z"}` |
+| `sbx exec … true \| cat` sous pty | pty | tube | non | sortie propre, aucun blocage, marqueur resté ABSENT, zéro échappement TUI |
+| `sbx exec … true </dev/null` sous pty | /dev/null | pty | non | idem |
+
+**La garde est donc `isTerminal(stdin) && isTerminal(stdout)`** — exactement la condition de
+`spawn.LooksInteractive` (`internal/spawn/interactive.go:59`). Une seule extrémité non-tty suffit
+à la fermer. `-it` n'y entre pour rien : ce que sbx regarde, ce sont les descripteurs.
+
+**Ce que cela ferme.** Les trois portes de den qui passent par `sbx.Runner.Run` — la porte §9.1
+(`internal/agent/gate.go`), la sonde de ports (`internal/cli/ports.go`) et le flux de provisioning
+de `den build` (`internal/build/execute.go`) — capturent stdout dans un tampon, donc stdout est un
+tube et la garde est fermée. Mesuré par la deuxième ligne du tableau. La CI, qui n'a aucun tty, est
+sûre pour la même raison. Ce n'est pas la bannière de v0.38.0 (#85), qui, elle, polluait stdout en
+tube.
+
+**Ce que cela n'a PAS fermé — le Tier 2 de #87 est RÉEL.** La quatrième porte, la branche Pipe de
+`spawn.Enter`, est exposée dans un cas précis et un seul : **`den exec -T` ou `den run -T` tapés
+sur un terminal, sur une machine où l'assistant n'a jamais été proposé**. den y bloque
+indéfiniment, en affichant une TUI que rien dans son propre code n'a demandée. C'est plus étroit
+que ce que #87 craignait — ni la CI, ni `den build`, ni la porte §9.1 — et ce n'est pas rien : le
+cas est exactement celui d'un humain qui essaie `den exec -T api go test ./...` sur une machine
+fraîche.
+
+Le Tier 3 (UX d'attache) subsiste tel quel : sans `-T`, `LooksInteractive` rend vrai, den envoie
+`-it`, l'assistant s'affiche — et il est alors **répondable**, ce qui est le comportement attendu,
+pas un défaut.
+
+**Sondes 3 et 4 de #87 — NON menées, délibérément.** Elles exigent de répondre `[enter]`, ce qui
+importe pour de vrai 13 serveurs MCP et les skills de l'hôte dans le magasin global. C'est la seule
+sonde dont le prix est une pollution réelle de la machine ; l'option B de #87 (converge nomme
+l'état non déclaré) rendrait la même réponse sans la payer.
+
+### `--no-share-skills` existe, est ACCEPTÉ, et n'a AUCUN effet aujourd'hui
+
+Le drapeau est **absent** de `sbx create --help` comme de `sbx create claude --help`. Il est
+pourtant accepté par l'analyseur — l'erreur porte sur l'argument manquant, pas sur le drapeau :
+
+```
+$ sbx create --no-share-skills
+ERROR: requires at least 1 argument: AGENT        ← et NON « unknown flag »
+```
+
+Le binaire porte la chaîne `Enables the --no-share-skills flag for a persistent, shared skills
+store. Experimental` : le drapeau est donc derrière un **feature gate**, éteint sur cette machine.
+
+Mesuré par deux sandboxes jetables (`den-probe-a` **avec** le drapeau, `den-probe-b` **sans**,
+créées puis détruites par `sbx rm --force`) : **rien ne les distingue**. Même `workspaces` dans
+`sbx ls --json` (le seul chemin passé), même contenu de `~` dans la VM
+(`.bash_profile .bashrc .docker .gitconfig .gitignore_global .local workspace`), et `mount | grep
+-i skill` ne rend **aucune** ligne des deux côtés.
+
+Donc : passer `--no-share-skills` depuis `CreateArgv` serait une **garde tournée vers l'avenir**
+contre une fonctionnalité qui ne tourne pas ici — pas un correctif d'une collision en cours. Le
+`1 conflict(s)` de l'assistant est un décompte de ce qu'il **importerait**, pas de ce qu'il partage.
+
+### `sbx ls --json` — schéma INCHANGÉ depuis le 2026-07-31
+
+Quatre sandboxes lues (deux réelles, deux jetables), même jeu de clés partout :
+
+```
+['agent', 'id', 'name', 'status', 'workspaces']
+```
+
+Aucun champ de date, toujours. La colonne « âge » du §5 reste **INFAISABLE** en v0.39.0 — le
+constat du 2026-07-31 tient, il n'est plus une simple absence de nouvelle mesure.
+
+### La surface v0.39.0 que den n'utilise PAS
+
+`sbx create` (relevé du jour) offre, en plus de ce que den envoie
+(`--name --template --kit` ×N et les workspaces) :
+
+```
+--clone --cpus int -m/--memory --profile --deny-network (répétable)
+-e/--env (répétable) --env-file (répétable) -p/--publish (répétable)
+--static-mcp (liste) -q/--quiet
+--no-share-skills (caché, derrière un feature gate)
+```
+
+Quatre d'entre eux (`--clone --cpus --profile -m`) sont **attestés depuis le 2026-07-31** au §14.0
+et den n'en a jamais envoyé un seul.
+
+`-m/--memory` refuse en dessous de 1 GiB, et le refus est **côté serveur** — il arrive APRÈS
+`✓ image ready`, pas à l'analyse des drapeaux (mesuré, sandbox jetable, aucun résidu) :
+
+```
+$ sbx create --memory 512m --name den-probe-mem shell <dir>
+   ✓ image ready
+ERROR: request failed: 400 Bad Request: invalid memory "512m": memory 512m is below the minimum of 1 GiB
+```
+
+Donc un `resources.memory` invalide coûte un tirage d'image avant d'échouer : c'est l'argument
+pour que den valide la valeur lui-même plutôt que de la relayer verbatim.
+
+Commandes nouvelles ou jamais employées : `cp`, `diagnose`, `env`, `mcp` (add/auth/inspect/load/
+ls/rm), `skills` (import/ls), `tui`, `prune`, `reset`, `setup`.
+
+**`sbx env` compose — c'est la cascade de den, à l'intérieur de sbx.** `.sbxenv.yaml` déclare
+« the agent, optional mixin kits, workspace mounts, environment variables, secrets to provision,
+and per-service credential bindings » (aide verbatim). Et `sbx env create [PATH...]` :
+« Passing more than one PATH deep-merges them in order (docker-compose `-f` semantics): later
+files override earlier ones », avec interpolation `${VAR}` / `${VAR:-default}`. Ce n'est donc pas
+un fichier plat par sandbox : il **compose**, comme `config.yaml ← stack.yaml ← nests/<n>.yaml ←
+drapeaux`. C'est une question de **positionnement**, ouverte, et elle mérite sa propre spec — pas
+un paragraphe dans #87.
+
+### Une collision non listée par #87 : la configuration SSH
+
+Le binaire porte `Include ~/.ssh/sandboxes/config`. sbx écrirait donc sa propre configuration SSH
+et attendrait un `Include` dans celle de l'hôte. den possède son propre modèle SSH (§10) et monte
+`~/.ssh_sbx` — visible dans les `workspaces` des deux sandboxes vivantes.
+
+**Sondé le 2026-08-24 : la collision est LATENTE, pas active.**
+
+- `ls ~/.ssh/sandboxes/` → `No such file or directory`. Le répertoire n'existe pas.
+- `grep -i include ~/.ssh/config` → aucune correspondance, **stderr vide** : le fichier existe
+  bel et bien (un fichier absent aurait fait écrire grep sur stderr) et ne porte aucun `Include`.
+
+sbx porte donc le chemin de code mais n'a **rien écrit** sur cette machine — cohérent avec le `[q]`
+du 2026-08-23 : refuser l'assistant, c'est aussi refuser sa configuration SSH. Le `~/.ssh_sbx` de
+den est intact et reste le seul auteur.
+
+Ce qui reste **NON VÉRIFIÉ**, et ce que la sonde ne pouvait pas atteindre : ce que sbx écrit quand
+on répond `[enter]`, et si `~/.ssh/config` est alors modifié par sbx lui-même. C'est la même
+frontière que les sondes 3 et 4 de #87 — elle se paie en pollution réelle, et den ne la franchit
+pas pour l'instant.
