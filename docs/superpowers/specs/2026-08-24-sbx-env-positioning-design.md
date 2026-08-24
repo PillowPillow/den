@@ -242,10 +242,15 @@ La cascade reste lisible là où elle est vraie : dans `nests/` et `stacks/`, le
 - `internal/sbx/argv.go` — l'assemblage d'argv, remplacé par un émetteur. Échange à somme nulle en
   volume, gain net en stabilité (§2). *Fichier de l'axe 3 : décrit ici, pas modifié.*
 - La **moitié VM** de `internal/cli/rm.go` — `sbx env rm` retire la sandbox et ses secrets scopés.
-- Une part de `internal/converge` — `secrets:`, `registries:`, `bindings:` ont un cycle de vie lié
-  à la sandbox chez sbx.
 - La **moitié sbx** de `internal/manifest` — l'enregistrement de ce qui a été monté côté sandbox
   devient le `.sbxenv.yaml` émis, dans un format que sbx sait relire.
+
+**Candidat, mais NON décidé ici :** une part de `internal/converge`. Le schéma porte bien
+`secrets:`, `registries:` et `bindings:`, provisionnés au scope de la sandbox et retirés par
+`env rm`. Mais le §7 dit que leur cycle de vie réel **n'est pas mesuré**, et ce spec ne verrouille
+aucune suppression sur une déduction. La §5.5 point 4 interdit donc à l'émetteur d'écrire ces trois
+champs pour l'instant : den continue de converger comme aujourd'hui. **Une sonde dédiée est le
+préalable**, et elle mérite sa propre issue — la même règle que pour `ports:`.
 
 **Ne part PAS, et la spec le dit explicitement parce qu'une première analyse l'avait annoncé à
 tort :**
@@ -277,6 +282,8 @@ tort :**
 4. **Aucune clé que den n'a pas mesurée.** L'émetteur n'écrit que les champs du §14.3.
 5. **`ports:` n'est pas émis.** Le modèle de den est la publication à la demande, et le
    comportement de `ports:` à la création n'est pas mesuré (§7).
+6. **`secrets:`, `registries:` et `bindings:` ne sont pas émis** tant que leur cycle de vie n'est
+   pas mesuré. Même règle que le point 5 : den ne relaie pas un champ dont il ignore l'effet.
 
 ### 5.6 Où vit le fichier émis
 
@@ -289,6 +296,29 @@ state/sandboxes/<sandbox>/
 ```
 
 `state/` reste ce qu'il est : jamais purgé, jamais confondu avec `cache/`.
+
+### 5.7 `den rm` ne doit JAMAIS refuser — le repli, explicitement
+
+`sbx env rm` résout la sandbox **depuis le jeu de fichiers passé** (§14.3). Le `.sbxenv.yaml` émis
+devient donc une entrée dure du teardown, alors qu'aujourd'hui `den rm` re-dérive et ne refuse
+jamais. C'est exactement le piège que `manifest.LaxMounts` existe pour éviter, et le laisser ouvert
+contredirait la doctrine T13/T16 que la §5.4 invoque.
+
+**Le repli est nommé, et il est inconditionnel.** Quand `state/sandboxes/<sandbox>/.sbxenv.yaml`
+est absent, tronqué, ou écrit par un den plus récent :
+
+1. den **n'appelle pas** `sbx env rm`. Il appelle `sbx rm --force <sandbox>`, par le nom de
+   sandbox — l'identité que den possède de toute façon (§3.4), et qui ne dépend d'aucun fichier.
+2. den **avertit explicitement** que les secrets scopés à cette sandbox n'ont pas été retirés, et
+   nomme la commande qui le ferait. Un avertissement, jamais un refus : un secret orphelin est
+   récupérable, une VM orpheline avec ses worktrees bloqués ne l'est pas.
+3. La corbeille des worktrees suit son chemin habituel, depuis `manifest.yaml`, qui est un fichier
+   distinct et peut être lisible quand l'autre ne l'est pas.
+4. den **ne supprime jamais** un fichier qu'il n'a pas su lire — il peut appartenir à un den plus
+   récent (même règle qu'au §11 de la spec mère).
+
+Autrement dit : le fichier émis rend le teardown *meilleur* quand il est là, et ne le rend jamais
+*impossible* quand il ne l'est pas.
 
 ---
 
@@ -353,8 +383,9 @@ Le dépôt atteste le comportement de `sbx`, il ne l'extrapole pas.
 - **Le comportement de `ports:`** — le schéma est connu (`host`, `sandbox`, `protocol`), la
   publication à la création est **déduite**, pas observée. C'est pourquoi la §5.5 interdit de
   l'émettre : den ne relaie pas un champ dont il ignore l'effet.
-- **Le cycle de vie réel de `secrets:` et `bindings:`** au-delà de leur forme YAML. La §5.4 annonce
-  qu'une part de `internal/converge` part ; le périmètre exact demande une sonde dédiée.
+- **Le cycle de vie réel de `secrets:`, `registries:` et `bindings:`** au-delà de leur forme YAML.
+  C'est ce qui empêche la §5.4 de verrouiller le départ d'une part de `internal/converge` : le
+  candidat est nommé, la décision attend une sonde dédiée et sa propre issue.
 - **Ce que `sbx env` fait d'un kit dont la validation échoue APRÈS la création de la VM.** La
   résolution de chemin, elle, tombe avant (§3.2) ; la validation de contenu n'a pas été sondée.
 - **La stabilité de `schemaVersion 1`** — c'est une prédiction, pas un fait. La §5.5 point 1 est la
@@ -375,8 +406,14 @@ Le dépôt atteste le comportement de `sbx`, il ne l'extrapole pas.
    (§3.5)
 5. **`schemaVersion` est épinglé à `1` et vérifié.** Une valeur non mesurée est un refus. (§5.5)
 6. **Le manifeste git survit** à côté du fichier émis. (§5.4, §5.6)
-7. **`ports:` n'est pas émis** tant que son effet n'est pas mesuré. (§5.5, §7)
-8. **Les sources ne changent pas de forme.** Seul `den lint` gagne une vérification. (§6)
+7. **`den rm` ne refuse jamais.** Fichier émis illisible ou absent ⇒ `sbx rm --force <sandbox>` par
+   le nom, avertissement sur les secrets non retirés, corbeille des worktrees inchangée, et aucun
+   fichier illisible n'est supprimé. (§5.7)
+8. **`ports:` n'est pas émis** tant que son effet n'est pas mesuré. (§5.5, §7)
+9. **`secrets:`, `registries:`, `bindings:` ne sont pas émis** tant que leur cycle de vie n'est pas
+   mesuré ; la part de `internal/converge` qui pourrait partir reste un candidat, pas une décision.
+   (§5.4, §5.5, §7)
+10. **Les sources ne changent pas de forme.** Seul `den lint` gagne une vérification. (§6)
 
 ---
 
