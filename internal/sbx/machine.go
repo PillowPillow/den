@@ -57,6 +57,20 @@ type Machine struct {
 	Allowed    map[string]bool
 	Images     map[string]bool
 
+	// MCPServers and Skills are the two stores sbx v0.39.0 writes and den only
+	// PROBES: den reads them by their negative sentinel, never by row (see
+	// ReadStore). They are here because the alternative was worse — an
+	// unhandled command falls through to `nil, nil` at the bottom of Run, an
+	// EMPTY output carries no sentinel, and den therefore read a fresh machine
+	// as holding MCP servers. A double that answers nothing was answering
+	// wrongly.
+	//
+	// No mutating command feeds them: den never runs `sbx mcp add` nor
+	// `sbx skills import`, and a double simulating a mutation den cannot make
+	// would be fiction. A test populates them directly.
+	MCPServers map[string]bool
+	Skills     map[string]bool
+
 	// Fail maps a joined argv to the error that command must return. The argv
 	// is the RECORDED one, so a sensitive command is keyed on its redacted
 	// form — the only spelling a test can write without holding the secret.
@@ -71,6 +85,7 @@ func NewMachine() *Machine {
 		Services: map[string]bool{}, Registries: map[string]bool{},
 		Customs: map[CustomSecret]bool{}, Allowed: map[string]bool{},
 		Images: map[string]bool{}, Fail: map[string]error{},
+		MCPServers: map[string]bool{}, Skills: map[string]bool{},
 	}
 }
 
@@ -134,6 +149,10 @@ func (m *Machine) Run(_ context.Context, args ...string) ([]byte, error) {
 		return []byte(m.renderImages()), nil
 	case joined == "ls --json":
 		return []byte(`{"sandboxes":[]}`), nil
+	case joined == "mcp ls":
+		return []byte(m.renderMCP()), nil
+	case joined == "skills ls":
+		return []byte(m.renderSkills()), nil
 	case joined == "secret set github":
 		// github is interactive on sbx's side (measured 2026-08-16, `sbx secret
 		// set --help` on v0.38.0): sbx reads the value from a prompt. Exec.Run
@@ -280,6 +299,49 @@ func (m *Machine) renderSecrets() string {
 		for _, e := range entries {
 			fmt.Fprintf(&b, "(global)   %s   %s   sbx-cs-x   token-***\n", e.Host, e.Env)
 		}
+	}
+	return b.String()
+}
+
+// renderMCP and renderSkills print what `sbx mcp ls` and `sbx skills ls`
+// print, with ONE honest limit: the populated layout has never been observed
+// (spec §14.3 — seeing it means writing into the registry den is trying to
+// make visible), so these doubles reproduce the EMPTY output verbatim and
+// invent a minimal one-name-per-line body otherwise.
+//
+// That asymmetry is deliberate and must stay: den reads these surfaces by
+// their negative sentinel and by nothing else, so a test may assert "den saw
+// something is there" and must never assert a column, a count or a name off
+// this body — the double would then be pinning a format nobody measured.
+//
+// The empty half IS measured, and is what the sentinel matches: `sbx mcp ls`
+// prints its gateway header even with nothing registered, which is exactly why
+// den cannot read emptiness off an empty output.
+//
+// Callers hold m.mu.
+func (m *Machine) renderMCP() string {
+	if len(m.MCPServers) == 0 {
+		return "LOCAL · managed by you · ✓ on\n\nNo MCP servers registered\n" +
+			"  add one   sbx mcp add <name> --url <url>\n"
+	}
+	var b strings.Builder
+	b.WriteString("LOCAL · managed by you · ✓ on\n\n")
+	for _, name := range slices.Sorted(maps.Keys(m.MCPServers)) {
+		fmt.Fprintf(&b, "%s\n", name)
+	}
+	return b.String()
+}
+
+// Callers hold m.mu.
+func (m *Machine) renderSkills() string {
+	const store = "Skills store: /tmp/sbx/agent-skills\n"
+	if len(m.Skills) == 0 {
+		return store + "No skills found. Use 'sbx skills import' to add skills.\n"
+	}
+	var b strings.Builder
+	b.WriteString(store)
+	for _, name := range slices.Sorted(maps.Keys(m.Skills)) {
+		fmt.Fprintf(&b, "%s\n", name)
 	}
 	return b.String()
 }

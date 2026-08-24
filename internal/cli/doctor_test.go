@@ -436,3 +436,46 @@ func TestDoctorPassesWhenTheNetworkPolicyAnswers(t *testing.T) {
 		t.Errorf("the check is missing from a healthy report:\n%s", out)
 	}
 }
+
+// Issue #88's own property, end to end: `den doctor` NAMES the machine state
+// no source declares, and stays out of the exit code while doing it.
+//
+// The home holds no source at all, which is the case the report must handle
+// rather than skip: den declares nothing, sbx wrote something, and every entry
+// present is therefore undeclared. A doctor silent here would describe a
+// machine reachable by three other authors as a machine den fully describes —
+// the blind spot spec §2 forbids.
+func TestDoctorNamesTheSbxStateNoSourceDeclares(t *testing.T) {
+	home := testDenHome(t)
+	m := sbx.NewMachine()
+	m.Services["github"] = true
+	m.Registries["ghcr.io:443"] = true
+	m.MCPServers["notion"] = true
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), m)
+	if err != nil {
+		t.Fatalf("undeclared state must not fail the report: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "[warn] sbx secrets") || strings.Contains(out, "[FAIL] sbx secrets") {
+		t.Errorf("the undeclared-state report weighs on the exit contract:\n%s", out)
+	}
+	secrets := reportLine(t, out, "sbx secrets")
+	for _, want := range []string{"present, undeclared", "service github", "registry ghcr.io:443"} {
+		if !strings.Contains(secrets, want) {
+			t.Errorf("the secrets line %q is missing %q", secrets, want)
+		}
+	}
+	if mcp := reportLine(t, out, "sbx mcp servers"); !strings.Contains(mcp, "present, undeclared") {
+		t.Errorf("a registered MCP server is not reported: %q", mcp)
+	}
+	// The skills store is empty on this machine, and "empty" must read as
+	// empty rather than as one more thing to go and look at.
+	if skills := reportLine(t, out, "sbx skills"); strings.Contains(skills, "undeclared") {
+		t.Errorf("an empty skills store is reported as undeclared: %q", skills)
+	}
+	// The report is a diagnosis, never a cleanup: den removes nothing it did
+	// not create, here or anywhere.
+	if m.HasCalled("mcp", "rm") || m.HasCalled("secret", "rm") {
+		t.Errorf("den removed sbx state it did not create: %v", m.Calls)
+	}
+}
