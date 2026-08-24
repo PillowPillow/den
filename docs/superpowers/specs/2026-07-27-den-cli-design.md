@@ -1835,3 +1835,56 @@ Ce qui reste **NON VÉRIFIÉ**, et ce que la sonde ne pouvait pas atteindre : ce
 on répond `[enter]`, et si `~/.ssh/config` est alors modifié par sbx lui-même. C'est la même
 frontière que les sondes 3 et 4 de #87 — elle se paie en pollution réelle, et den ne la franchit
 pas pour l'instant.
+
+## 14.3 Sondes du 2026-08-24 — la grammaire de `--memory` (issue #90)
+
+> **Append-only.** Cette sous-section est celle de l'axe 3 (#90). Elle ne modifie rien de §14.0,
+> §14.1 ni §14.2 : elle ajoute ce que celles-ci ne mesuraient pas.
+
+Le §14.2 établit que `-m/--memory` refuse en dessous de 1 GiB, **côté serveur**, après
+`✓ image ready`. Il ne dit pas ce que la grammaire ACCEPTE. den doit le savoir, parce qu'il valide
+la valeur lui-même : un validateur plus étroit que sbx transformerait un tirage d'image épargné en
+un refus de configuration qui marche.
+
+Quatre sondes, `sbx create` réel, v0.39.0 `def8cb0`, chacune sur un répertoire jetable. **Aucune ne
+crée de sandbox** : toutes échouent au contrôle du minimum ou à l'analyse de la valeur.
+
+| Valeur envoyée | Réponse de sbx | Ce que ça prouve |
+|---|---|---|
+| `abc` | `invalid memory "abc": invalid memory value "abc": invalid size: 'abc'` | grammaire REFUSÉE |
+| `1kib` | `memory 1kib is below the minimum of 1 GiB` | grammaire ACCEPTÉE (suffixe `ib`) |
+| `1024` | `memory 1024 is below the minimum of 1 GiB` | grammaire ACCEPTÉE (nombre nu = OCTETS) |
+| `0.5g` | `memory 0.5g is below the minimum of 1 GiB` | grammaire ACCEPTÉE (décimal) |
+
+Les trois dernières atteignent le contrôle du **minimum**, donc l'analyse a réussi. La première
+meurt avant. Le diagnostic `invalid size: '…'` est celui de `go-units.RAMInBytes` (docker), mot pour
+mot : la grammaire est donc `<nombre décimal>` + unité optionnelle parmi `b k m g t p` + suffixe
+optionnel `b`/`ib`, insensible à la casse, un espace toléré, un nombre nu valant des octets, base
+binaire (1024).
+
+`sbx create --help` n'en donne que deux exemples (`1024m`, `8g`). **Un den qui n'accepterait que
+ceux-là refuserait `2gb`, `4G` et `2048MiB`, qui marchent.** `internal/sbx/resources.go` réimplémente
+la grammaire mesurée plutôt que de prendre la dépendance : ~20 lignes contre un module de plus dans
+`go.mod`, pour une grammaire figée par un test.
+
+Le seuil est `>=` et non `>` : le serveur dit « **below** the minimum », donc `1g` et `1024m` —
+exactement 1073741824 octets — passent.
+
+**Non sondé, délibérément** : le comportement d'un `--cpus` négatif. den le refuse quand même, sans
+mesure : un compte de CPU négatif n'est pas une demande dont sbx aurait une lecture, et den refuse
+plutôt que de normaliser en silence (§2). `--cpus 0` reste ce que l'aide dit — *auto: all host
+CPUs* — et den ne l'envoie que s'il est ÉCRIT.
+
+### Ce que #90 a livré, et ce que la mesure a décidé
+
+- `resources: {cpus, memory}` à chaque niveau de la cascade (`config.yaml` ← `stack.yaml` ←
+  `nests/<n>.yaml` ← drapeaux), fusionné **champ par champ**, résolu par `nest.Resolve`, émis par
+  `sbx.CreateArgv` en `--cpus` / `--memory`.
+- Refus **avant le premier effet de bord** (§6) : le refus serveur coûte un tirage d'image, et
+  arrive après que den a créé ses worktrees.
+- `cpus:` est un **pointeur** : `--cpus 0` est une valeur qu'on peut vouloir dire, un `cpus:` absent
+  n'envoie aucun drapeau. Les deux sont équivalents pour sbx aujourd'hui, par coïncidence.
+- La branche attach ne réapplique **rien** : un `resources:` modifié **avertit** de la dérive. La
+  référence est le registre de création (`internal/manifest`), parce que `sbx ls --json` ne porte
+  aucun champ de taille (§14.2, inchangé) — une VM vivante ne peut pas être interrogée sur sa
+  taille.

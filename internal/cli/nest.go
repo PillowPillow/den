@@ -344,6 +344,32 @@ func writeResolution(w io.Writer, ref string, r *nest.Resolved) {
 		}
 	}
 
+	// The resolved SIZE, and only when something asked for one. A cascade is
+	// exactly the kind of configuration whose winner cannot be read off any
+	// single file — four levels can each state `cpus:` — so the dry-run is
+	// where a user finds out which one won without spawning to see it.
+	//
+	// Silent when nothing is declared, rather than printing sbx's defaults:
+	// den does not know them (they depend on the host, and `sbx ls --json`
+	// reports no size), and a line reading "cpus: all" would be den asserting a
+	// number it has never measured.
+	if r.Resources.CPUs != nil || r.Resources.Memory != "" {
+		fmt.Fprintln(w, "resources:")
+		if r.Resources.CPUs != nil {
+			// 0 is printed as what sbx calls it: a reader seeing a bare "0"
+			// would take it for "no CPUs", which is the one thing it does not
+			// mean.
+			if *r.Resources.CPUs == 0 {
+				fmt.Fprintln(w, "  cpus: 0 (auto: all host CPUs)")
+			} else {
+				fmt.Fprintf(w, "  cpus: %d\n", *r.Resources.CPUs)
+			}
+		}
+		if r.Resources.Memory != "" {
+			fmt.Fprintf(w, "  memory: %s\n", r.Resources.Memory)
+		}
+	}
+
 	fmt.Fprintf(w, "egress (%d):\n", len(r.Egress))
 	for _, h := range r.Egress {
 		fmt.Fprintf(w, "  - %s\n", h)

@@ -353,6 +353,45 @@ not (`No matching allow rule (default deny)`).
 
 Treat `egress:` as *access you would not otherwise have*, not as a sandbox firewall.
 
+## Sizing a sandbox
+
+Without a `resources:` block every sandbox takes sbx's own default — 50% of host memory (capped at
+32 GiB) and every host CPU — so a nest running one test suite and a nest running three services
+plus a database are sized identically. `resources:` says how big *this* nest is.
+
+```yaml
+# ~/.den/nests/backend.yaml
+stack: dgdevx
+resources:
+  cpus: 8
+  memory: 16g
+repos:
+  - { key: api }
+```
+
+It is declarable at **every level of the cascade** — `config.yaml`, `stacks/<name>/stack.yaml`,
+`nests/<name>.yaml` — and the levels merge **field by field**, the later winning. A stack pinning
+the memory its toolchain needs and a nest asking for more CPUs are two independent statements, and
+both survive:
+
+```yaml
+# ~/.den/config.yaml → cpus: 2, memory: 4g
+# ~/.den/stacks/dgdevx/stack.yaml → memory: 8g
+# ~/.den/nests/backend.yaml → cpus: 8
+# resolved: cpus 8, memory 8g
+```
+
+`den nest show <nest>` prints the resolved block, so you can see which level won without spawning.
+
+- **`memory:` uses sbx's grammar**, binary units: `1024m`, `8g`, `2gib`, `4G`, or a bare number of
+  bytes. **The minimum is 1 GiB**, and den refuses a smaller value itself — sbx refuses it too, but
+  only after pulling the image, by which point den has already created your worktrees.
+- **`cpus:` omitted sends no flag at all.** `cpus: 0` is sbx's own *auto: all host CPUs*, and it is
+  written when you want a nest to give a stack's fixed count back to the host default.
+- **Nothing resizes a running VM.** Edit `resources:` on a nest whose sandbox is live and the next
+  `den up` warns that the sandbox runs with the size from its creation, naming both numbers. To
+  apply the new one: `sbx rm --force <sandbox>`, then relaunch.
+
 ## Agent profile — a `.claude` dedicated to den
 
 Every agent in the registry owns a **profile directory**, `<den home>/agents/<agent>` by default
