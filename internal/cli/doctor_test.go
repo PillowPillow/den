@@ -479,3 +479,26 @@ func TestDoctorNamesTheSbxStateNoSourceDeclares(t *testing.T) {
 		t.Errorf("den removed sbx state it did not create: %v", m.Calls)
 	}
 }
+
+// Without sbx there is no surface to report, and the `sbx` check already says
+// so. Three more lines restating it in other words make the report harder to
+// act on — the rule networkPolicyChecks follows, pinned here because the skip
+// is easy to lose while adding a fourth surface.
+func TestDoctorSaysNothingAboutUndeclaredStateWithoutSbx(t *testing.T) {
+	home := testDenHome(t)
+	deps := doctor.FakeDeps()
+	// A plain error, not exec.ErrNotFound: internal/ports/hermeticity_test.go
+	// locks internal/cli out of os/exec, and importing it here to spell one
+	// sentinel would be the import that breaks the graph.
+	deps.LookPath = func(string) (string, error) { return "", errors.New("executable file not found in $PATH") }
+
+	out, err := runDoctorWithSbx(t, home, deps, sbx.NewMachine())
+	if err == nil {
+		t.Fatalf("a missing sbx must fail den doctor:\n%s", out)
+	}
+	for _, name := range []string{"sbx secrets", "sbx mcp servers", "sbx skills"} {
+		if strings.Contains(out, name) {
+			t.Errorf("the %q line restates a missing sbx:\n%s", name, out)
+		}
+	}
+}

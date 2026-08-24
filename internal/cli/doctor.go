@@ -95,11 +95,19 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 			// for a verdict that cannot differ — machine state, not source
 			// state, the very argument PR82 settled one level down.
 			//
-			// Read UNCONDITIONALLY, sbx missing from the PATH included: the
-			// failure is exactly what both callers need. sourceChecks turns it
-			// into an unobserved plan (never an empty one, which would report a
-			// configured machine as broken), and undeclaredChecks into a
-			// "skipped" line naming the cause.
+			// Read UNCONDITIONALLY, sbx missing from the PATH included, and
+			// that is for ONE of the two callers: sourceChecks needs sbx's own
+			// failure verbatim, which it turns into an unobserved plan — never
+			// an empty one, which would report a configured machine as broken.
+			// undeclaredChecks does NOT need it there; it skips itself when sbx
+			// is absent, because the `sbx` check already failed on that and a
+			// second line restating it only makes the report harder to act on.
+			//
+			// So a home with no manifested source and no sbx pays two reads
+			// nobody consumes. Left that way rather than guarded: both resolve
+			// on exec.ErrNotFound without starting a process, and the guard
+			// would mean synthesizing an observation error here — a second
+			// wording for a failure sbx already words itself.
 			state, observeErr := converge.ReadSbxState(cmd.Context(), runner)
 			checks = append(checks, sourceChecks(cmd.Context(), home, runner, g,
 				state, observeErr)...)
