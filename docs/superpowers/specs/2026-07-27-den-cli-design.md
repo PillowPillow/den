@@ -1835,3 +1835,223 @@ Ce qui reste **NON VÉRIFIÉ**, et ce que la sonde ne pouvait pas atteindre : ce
 on répond `[enter]`, et si `~/.ssh/config` est alors modifié par sbx lui-même. C'est la même
 frontière que les sondes 3 et 4 de #87 — elle se paie en pollution réelle, et den ne la franchit
 pas pour l'instant.
+
+---
+
+## 14.3 Sonde du 2026-08-24 — #89 — le schéma réel de `.sbxenv.yaml`
+
+Même binaire qu'au §14.2 : `/opt/homebrew/bin/sbx`, `v0.39.0 def8cb0`. Cette sous-section ne dit
+que ce qui a été **mesuré** ; l'analyse de positionnement qui s'en déduit vit dans son propre spec,
+`2026-08-24-sbx-env-positioning-design.md`.
+
+Trois sandboxes jetables créées, mesurées et détruites (`den-probe-merge`, `den-probe-rev`,
+`shell-noname`) ; `sbx ls --json` ne montre aucun résidu après coup. `sbx env run` n'a **jamais**
+été appelé nu : il attache, et l'attache depuis un terminal est la branche que le §14.2 a mesurée
+comme celle qui ouvre l'assistant. Le marqueur `first-run-import.json` est resté au 2026-08-23 tout
+du long, vérifié après les sondes.
+
+### Le levier : le décodeur est strict et nomme son type Go
+
+```
+$ cat .sbxenv.yaml
+schemaVersion: "1"
+agent: shell
+bogusKey: 42
+$ sbx env create .
+ERROR: parse …/.sbxenv.yaml: yaml: unmarshal errors:
+  line 2: field bogusKey not found in type sbxenv.Config
+```
+
+C'est la même doctrine qu'au §12 de den. Elle rend le schéma **énumérable par sondage de clés**, et
+l'erreur nomme aussi les types imbriqués. Tout ce qui suit a été obtenu ainsi, puis confirmé par un
+comportement réel.
+
+⚠️ **Les numéros de ligne de ces erreurs ne sont pas fiables** : les erreurs de clé inconnue
+reviennent re-triées par ordre alphabétique du nom de champ, et la numérotation est décorrélée du
+fichier. Lire les messages, jamais les positions.
+
+### Les champs, mesurés
+
+`schemaVersion` est **obligatoire** (`schemaVersion is required`) et n'accepte que `1` :
+
+```
+ERROR: invalid …/.sbxenv.yaml: unsupported schemaVersion "2" (supported: 1)
+```
+
+`agent` est **obligatoire** (`agent is required`). Le reste de `sbxenv.Config` :
+
+| Clé | Type | Notes |
+|---|---|---|
+| `schemaVersion` | string | obligatoire, `"1"` seul |
+| `agent` | string | obligatoire |
+| `name` | string | nomme la sandbox ; défaut `<agent>-<basename(dir)>` |
+| `workspace` | `WorkspaceSpec` | unmarshaler custom : *« workspace must be a string or a mapping with 'path'/'clone' »* ; `path` string, `clone` bool |
+| `additionalWorkspaces` | `[]WorkspaceMount` | `WorkspaceMount` porte **`path` seul** — ni `ro`, ni `target`, ni `clone` |
+| `kits` | `[]string` | ordonné, cf. plus bas |
+| `env` | `map[string]string` | |
+| `secrets` | `map[string]SecretSource` | `SecretSource` = `{command string, value string}` ; `env`/`file`/`prompt` refusés |
+| `registries` | `map[string]RegistrySource` | `{username SecretSource, secret SecretSource}` |
+| `bindings` | `map[string]bindings.Binding` | non exploré au-delà de la forme |
+| `mcp` | `MCPConfig` | **`servers: []MCPServer` et rien d'autre** |
+| `ports` | `[]PortBinding` | `{host int, sandbox int, protocol string}` |
+| `sandboxOptions` | `SandboxOptions` | **`{cpus int, memory string, profile string, template string}` et rien d'autre** |
+
+Refusées à la racine, chacune par `field … not found in type sbxenv.Config` : `clone`, `cpus`,
+`credentials`, `egress`, `environment`, `image`, `memory`, `mixins`, `mounts`, `network`, `options`,
+`permissions`, `policy`, `registry`, `sandbox`, `template`, `workspaces`, `allow`, `deny`,
+`denyNetwork`, `deny_network`, `dns`, `kit`, `label`, `labels`, `mixin`, `profile`, `publish`,
+`resources`, `skills`, `staticMCP`, `static_mcp`, `volumes`, `containerSettings`.
+
+### `kits:` préserve l'ordre déclaré, et les séquences CONCATÈNENT à la fusion
+
+Deux fichiers, un kit chacun, `sbx env create -D base.yaml over.yaml` :
+
+```
+── LOAD ENVIRONMENT
+   merging 2 environment files, each overriding the one before…
+── RESOLVE SETUP
+     sandbox    den-probe-merge
+     kit        …/kitA
+                …/kitB
+── CONFIGURE AGENT
+   → register 3 startup command(s), run on every container start
+     + sh -c command -v apt-get > /dev/null 2>&1 && (apt-get updat… (kit=shell, user=root)
+     + /bin/sh -lc echo A >> /tmp/den-order.txt (kit=den-probe-kit-a, user=1000)
+     + /bin/sh -lc echo B >> /tmp/den-order.txt (kit=den-probe-kit-b, user=1000)
+```
+
+La preuve primaire est la numérotation que sbx assigne lui-même dans la VM :
+
+```
+$ sbx exec den-probe-merge sh -lc 'ls -1 /etc/durable-startup.d'
+001-startup-shell
+002-startup-den-probe-kit-a
+003-startup-den-probe-kit-b
+run.sh
+$ sbx exec den-probe-merge cat /tmp/den-order.txt
+A
+B
+```
+
+Contrôle, liste inversée dans un fichier unique (`kits: [kitB, kitA]`, sandbox `den-probe-rev`) :
+`002-startup-den-probe-kit-b`, `003-startup-den-probe-kit-a`, et `/tmp/den-order.txt` répond `B` puis
+`A`. **Le kit de l'agent est toujours `001`.**
+
+**Les séquences concatènent, elles ne remplacent pas** — la sémantique docker-compose aurait prédit
+l'inverse. Sonde discriminante : le fichier de base déclarait un kit inexistant, la surcharge un kit
+valide, et c'est l'entrée du fichier *antérieur* qui a fait échouer la résolution.
+
+```
+ERROR: resolve kits: kit "…/kit-does-not-exist": resolve reference:
+kit reference "…/kit-does-not-exist": path does not exist
+```
+
+Cette résolution tombe **avant tout effet de bord** : aucune sandbox créée, aucune image tirée.
+
+### Un `kit:` peut pointer un répertoire généré
+
+Chemin absolu vers un répertoire écrit à la main (`spec.yaml`, `schemaVersion: 2`, `kind: mixin`) :
+accepté. Un chemin absent : refusé, message ci-dessus.
+
+### Aucun egress, aucune policy — mais le kit, lui, la porte
+
+Aucun champ réseau nulle part : ni dans `Config`, ni dans `SandboxOptions`, ni dans `MCPConfig`
+(qui n'a que `servers`). En revanche un kit listé dans `kits:` porte bien
+`permissions.network.allow`, et la règle atteint le moteur de policy scopé à la sandbox exactement
+comme via `sbx create --kit`. `kitB` déclarait `allow: [example.invalid]` :
+
+```
+$ sbx policy check network --sandbox den-probe-merge --json example.invalid
+{ "allowed": true, "context": "sandbox:den-probe-merge", … }
+
+$ sbx policy check network --sandbox den-probe-merge --json not-in-the-kit.invalid
+{ "allowed": false, "deny_kind": "implicit",
+  "reason": "No matching allow rule (default deny)", … }
+```
+
+(`github.com` répond aussi `allowed: true`, mais depuis le preset machine, pas depuis le kit : la
+liste d'allow est additive par-dessus le preset.)
+
+**`sbx env` n'offre rien qui remplace le settle-loop du §7.** La propagation reste asynchrone et
+aucune sous-commande ne l'attend.
+
+### `name:` gagne sur le chemin
+
+Répertoire `merge/`, fichier déclarant `name: den-probe-merge` :
+
+```
+$ sbx ls --json
+{ "name": "den-probe-merge", "agent": "shell", "status": "running",
+  "workspaces": ["…/scratchpad/merge"] }
+```
+
+Sans `name:`, le défaut est `<agent>-<basename(répertoire)>` — répertoire `noname/`, agent `shell`
+→ sandbox `shell-noname`. `<nest>[.<instance>]` survit donc intact.
+
+### Sémantique de fusion, par type
+
+- **scalaires** : le dernier fichier gagne ; un fichier peut omettre la clé et hériter. Mesuré : la
+  surcharge omettait `agent:` et aucun `agent is required` n'a été levé.
+- **maps** : fusion clé à clé, le dernier gagne par clé. Mesuré dans la VM :
+  `DEN_FROM_BASE=base`, `DEN_FROM_OVER=over`, `DEN_OVERRIDDEN=over`.
+- **séquences** : concaténation, dans l'ordre des fichiers (ci-dessus).
+
+### Les autres faits mesurés
+
+- **`env create` n'est PAS créer-ou-attacher.** Sur un nom existant :
+  `ERROR: sandbox 'den-probe-rev' already exists. Use 'sbx run --name den-probe-rev' to connect to it`.
+  Créer-ou-attacher, c'est `env run`, qui attache.
+- **`workspace` par défaut, c'est le répertoire du fichier d'environnement.**
+- **Les chemins de workspace doivent être absolus ou interpolés.** Un chemin relatif n'a résolu ni
+  contre le répertoire du fichier, ni contre le cwd du processus, dans deux essais.
+- **`${VAR}` / `${VAR:-defaut}` fonctionne**, y compris dans les chemins.
+- **Un workspace inexistant déclenche une invite INTERACTIVE** :
+  `The selected workspace does not exist. Would you like to create it? (y/N):`, puis
+  `ERROR: user cancelled operation`. En automatisation, ça bloque.
+- **`sandboxOptions.template` écrase l'image dérivée de l'agent.** Le bloc de résolution affiche
+  `image  den-probe-no-such-template`, puis
+  `ERROR: request failed: 403 Forbidden: pull failed for image "den-probe-no-such-template"` —
+  refus côté serveur, APRÈS le pull, même forme qu'au §14.2 pour `--memory 512m`.
+- **`env rm`** retire la sandbox et ses secrets scopés : `Sandbox 'den-probe-rev' removed` /
+  `Removed secrets scoped to "den-probe-rev"`.
+- `sbx env` est **EXPERIMENTAL** sur ses quatre sous-commandes.
+
+### Ce qui reste NON MESURÉ
+
+- Le cycle de vie réel de `secrets:` et `bindings:` au-delà de leur forme YAML.
+- Le comportement de `ports:` : le schéma est connu, la publication à la création est **déduite**,
+  pas observée.
+- Ce que `sbx env` fait d'un kit dont la validation échoue *après* la création de la VM.
+- La stabilité de `schemaVersion 1` dans le temps — c'est une prédiction, pas un fait.
+
+---
+
+## 14.4 Sonde du 2026-08-24 — #88 (relevée par l'axe 2) — `sbx mcp ls` / `sbx skills ls`
+
+Consignée ici parce que l'axe 2 l'a menée en passant ; l'analyse appartient à l'axe 1 (#88), qui
+peut écrire sa propre sous-section sans conflit avec celle-ci.
+
+**Ni l'une ni l'autre n'a de `--json` en v0.39.0.** La forme d'un lecteur en dépend entièrement :
+il faudrait analyser du texte décoré, pas du JSON.
+
+```
+$ sbx mcp ls --json
+ERROR: unknown flag: --json
+
+$ sbx mcp ls
+LOCAL · managed by you · ✓ on
+
+No MCP servers registered
+  add one   sbx mcp add <name> --url <url>
+
+$ sbx skills ls --json
+ERROR: unknown flag: --json
+
+$ sbx skills ls
+Skills store: /Users/polochon/Library/Application Support/com.docker.sandboxes/sandboxes/agent-skills
+No skills found. Use 'sbx skills import' to add skills.
+```
+
+`sbx skills ls` est marquée **EXPERIMENTAL** ; `sbx mcp ls` ne l'est pas. Le magasin de skills est
+le même chemin que le §14.2 avait relevé vide, et il l'est toujours — le `[q]` du 2026-08-23 n'a
+toujours rien importé.
