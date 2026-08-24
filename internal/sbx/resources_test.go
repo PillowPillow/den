@@ -46,7 +46,10 @@ func TestParseMemoryGrammar(t *testing.T) {
 
 func TestParseMemoryRefusesNonSizes(t *testing.T) {
 	// "abc" is measured: sbx answered `invalid size: 'abc'`.
-	for _, in := range []string{"abc", "", "   ", "g", "1x", "-1g", "1.2.3g", "1 000m"} {
+	for _, in := range []string{"abc", "", "   ", "g", "1x", "-1g", "1.2.3g", "1 000m",
+		// `b` is not a unit letter, only a suffix: sbx refuses `1bb` too, and
+		// den must not be the wider of the two.
+		"1bb"} {
 		if _, err := ParseMemory(in); err == nil {
 			t.Errorf("ParseMemory(%q) accepted it, expected a refusal", in)
 		}

@@ -2062,6 +2062,31 @@ func showMemory(v string) string {
 	return v
 }
 
+// memoryDiffers reports whether two `memory:` values name different SIZES.
+//
+// Absence is compared as absence: an empty string is "sbx chose", which is a
+// different fact from any number, and no parse can bridge the two.
+//
+// When either side does not parse — a hand-edited record, or a den from the
+// future whose grammar widened — the comparison falls back on the strings.
+// Fail-LOUD, deliberately: an unparseable pair reported as "no drift" would be
+// silence exactly where den knows least, and the whole point of this warning
+// is that a live VM cannot be asked what it was made with.
+func memoryDiffers(was, want string) bool {
+	if (was == "") != (want == "") {
+		return true
+	}
+	if was == want {
+		return false
+	}
+	wasBytes, err1 := sbx.ParseMemory(was)
+	wantBytes, err2 := sbx.ParseMemory(want)
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	return wasBytes != wantBytes
+}
+
 // reportResourceDrift warns when a LIVE sandbox runs with a size the current
 // configuration no longer asks for.
 //
@@ -2096,14 +2121,20 @@ func reportResourceDrift(out io.Writer, sandboxName string, recorded *manifest.R
 		diffs = append(diffs, fmt.Sprintf("cpus: %s at creation, %s now",
 			showCPUs(was.CPUs), showCPUs(want.CPUs)))
 	}
-	// The SPELLING is compared, not the byte count: `8g` and `8192m` are the
-	// same size, and reporting them as drift would fire a warning on a
-	// reformatted line. They are equal here only if written the same way —
-	// accepted, and cheap to live with: the message quotes both spellings, so
-	// a reader sees at once that nothing really changed. Parsing to compare
-	// would instead make the message lie in the other direction, calling `8g`
-	// and `8589934592` identical when the second is what the user has to fix.
-	if was.Memory != want.Memory {
+	// The SIZE is compared, not the spelling: `8g` and `8192m` are the same
+	// number of bytes, the VM is the same VM, and there is nothing to fix — so
+	// calling a reformatted line "drift" would light a warning that fires on
+	// every attach until the user destroys a sandbox that was never wrong.
+	// That is the failure mode mountWorkspace's own comment names: a permanent
+	// warning stops being read, including the day it tells the truth.
+	//
+	// The costs are asymmetric, which is what decides it: comparing bytes can
+	// only ever MISS a difference that is not one, while comparing strings
+	// MANUFACTURES a warning nothing can silence.
+	//
+	// The spellings are still what the message quotes — `8g` is the line the
+	// user has to find in their nest, not 8589934592.
+	if memoryDiffers(was.Memory, want.Memory) {
 		diffs = append(diffs, fmt.Sprintf("memory: %s at creation, %s now",
 			showMemory(was.Memory), showMemory(want.Memory)))
 	}

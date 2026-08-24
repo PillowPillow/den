@@ -44,12 +44,17 @@ const MinMemoryBytes int64 = 1 << 30
 // would refuse `2gb`, `4G` and `2048MiB`, all of which work. That trades a
 // saved image pull for a refusal of working configuration, which is the worse
 // half of the bargain.
-var memoryGrammar = regexp.MustCompile(`^(\d+(?:\.\d+)?) ?([bkmgtpBKMGTP])?(?:[iI]?[bB])?$`)
+//
+// No narrower — and no WIDER either. `b` is deliberately absent from the unit
+// class, exactly as it is from go-units': the trailing `[iI]?[bB]` group is
+// what makes `1b` one byte, and admitting `b` as a unit as well would let
+// `1bb` through here for sbx to refuse server-side, after the image pull —
+// the very cost this parser exists to avoid.
+var memoryGrammar = regexp.MustCompile(`^(\d+(?:\.\d+)?) ?([kmgtpKMGTP])?(?:[iI]?[bB])?$`)
 
 // memoryUnits is binary throughout — sbx's help says "binary units", and
 // `1024m` is exactly the 1 GiB minimum, which decides it.
 var memoryUnits = map[byte]float64{
-	'b': 1,
 	'k': 1 << 10,
 	'm': 1 << 20,
 	'g': 1 << 30,

@@ -214,6 +214,32 @@ func TestSpawnSaysNothingWhenResourcesAreUnchanged(t *testing.T) {
 	}
 }
 
+// A REFORMATTED size is not drift: `8g` and `8192m` are the same number of
+// bytes, so the VM is the same VM and there is nothing to fix. Warning here
+// would fire on every attach until the user destroyed a sandbox that was never
+// wrong — the permanent warning that stops being read.
+func TestSpawnSaysNothingWhenTheMemoryIsOnlyRespelled(t *testing.T) {
+	denHome, repo := denTest(t)
+	nestWithResources(t, denHome, repo, "resources:\n  memory: 8g\n")
+	f, d := fakeDeps()
+	var out bytes.Buffer
+	d.Out = &out
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+	nestWithResources(t, denHome, repo, "resources:\n  memory: 8192m\n")
+	liveAfterCreate(f, "api", repo)
+	out.Reset()
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("second spawn: %v", err)
+	}
+	if strings.Contains(out.String(), "memory") {
+		t.Errorf("8g and 8192m are the same size; output:\n%s", out.String())
+	}
+}
+
 // A sandbox created BEFORE `resources:` existed records none. Declaring one
 // now is a real divergence — the VM keeps the size sbx chose for it — and
 // saying so is the whole point of the warning.
