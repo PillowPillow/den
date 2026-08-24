@@ -343,23 +343,33 @@ chemin fantôme ; côté git, c'est le chemin unique.
 **Ce qui ne bouge pas :** den ne supprime jamais un fichier qu'il n'a pas su lire — il peut
 appartenir à un den plus récent (§11 de la spec mère).
 
-**Un point ouvert, honnêtement : `--force` porte alors deux sens.** Aujourd'hui il veut dire
-« retire les worktrees même sales ». Il voudrait en plus dire « détruis par le nom quand
-l'enregistrement est illisible ». Un drapeau à deux sens est une odeur, et l'utilisateur qui force
-pour la première raison hérite de la seconde sans l'avoir demandée. Trois issues, à trancher à la
-relecture :
+### 5.9 `--force` porte deux sens, et c'est assumé
 
-1. **Un seul `--force`, deux sens** — le plus simple, et le seul qui ne rajoute pas de surface. Les
-   deux sens partagent la même intention (« passe outre, je sais ce que je fais »), et les deux
-   avertissent bruyamment de ce qu'ils ont contourné.
-2. **Un drapeau dédié** (`--by-name`) — précis, mais c'est une surface de plus pour un cas de
-   panne, et den en a déjà deux sur `rm`.
-3. **Aucune échappatoire** — la lecture la plus stricte de la §5.7. Rejetée : elle produit
-   exactement l'impasse que T13/T16 interdit.
+Aujourd'hui `--force` veut dire « retire les worktrees même sales ». Il veut désormais dire aussi
+« détruis par le nom quand l'enregistrement est illisible ». **Un seul drapeau, deux sens :
+tranché le 2026-08-24.**
 
-**Proposition : l'option 1**, parce qu'elle est la seule qui n'ajoute rien. Elle se paie d'un
-message : quand `--force` sert au second sens, den le dit explicitement plutôt que de l'appliquer
-en silence.
+Rejetés : un drapeau dédié `--by-name` — une surface de plus pour un cas de panne, et `den rm` en
+porte déjà deux ; et l'absence totale d'échappatoire — la lecture la plus stricte de la §5.7, qui
+produit exactement l'impasse que T13/T16 interdit.
+
+La raison du choix : c'est le seul qui n'ajoute rien. Les deux sens portent la même intention —
+*passe outre, je sais ce que je fais* — et un drapeau par mode de panne ferait de `den rm` un
+tableau de bord au lieu d'une commande.
+
+**Le prix, et la contrepartie obligatoire.** L'utilisateur qui force pour la première raison hérite
+de la seconde sans l'avoir demandée. den doit donc **dire lequel des deux sens il a exercé**, à
+chaque fois, plutôt que de l'appliquer en silence. Deux exigences sur les messages :
+
+1. Quand `--force` sert au second sens, den l'annonce avant d'agir : l'enregistrement est
+   illisible, la destruction se fait par le nom, les secrets scopés restent en place — et la
+   commande qui les retirerait est nommée.
+2. Quand `--force` ne sert qu'au premier sens, den ne dit rien du second. Un avertissement qui se
+   déclenche toujours n'est plus lu, et la §2 de la spec mère refuse le bruit autant que le
+   silence.
+
+Cette exigence n'est pas cosmétique : elle est ce qui rend le double sens acceptable. Sans elle,
+`--force` deviendrait un interrupteur dont l'utilisateur ne connaît plus la portée.
 
 ---
 
@@ -459,8 +469,10 @@ Le dépôt atteste le comportement de `sbx`, il ne l'extrapole pas.
     pas mesuré ; la part de `internal/converge` qui pourrait partir reste un candidat, pas une
     décision. (§5.4, §5.5, §7)
 11. **Les sources ne changent pas de forme.** Seul `den lint` gagne une vérification. (§6)
+12. **`--force` porte deux sens, sur un seul drapeau.** Contrepartie obligatoire : den annonce
+    lequel des deux il exerce, et se tait sur le second quand il ne s'applique pas. (§5.9)
 
-**Reste ouvert, à trancher à la relecture :** le double sens de `--force` sur `den rm` (§5.8).
+Aucune décision de ce spec n'est laissée ouverte.
 
 ---
 
