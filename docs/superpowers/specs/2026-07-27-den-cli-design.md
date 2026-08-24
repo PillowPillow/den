@@ -1835,3 +1835,83 @@ Ce qui reste **NON VÉRIFIÉ**, et ce que la sonde ne pouvait pas atteindre : ce
 on répond `[enter]`, et si `~/.ssh/config` est alors modifié par sbx lui-même. C'est la même
 frontière que les sondes 3 et 4 de #87 — elle se paie en pollution réelle, et den ne la franchit
 pas pour l'instant.
+
+## 14.3 Sonde du 2026-08-24 — `sbx mcp ls` et `sbx skills ls`, issue #88
+
+Même binaire que le §14.2 : `/opt/homebrew/bin/sbx`, `sbx version` →
+`sbx version: v0.39.0 def8cb0523a77e757bdd6ef52b459fe374f3783e`. Ajout seul : ce relevé ne
+ré-atteste rien du §14.0, du §14.1 ni du §14.2.
+
+La question posée par #88 est étroite et sa réponse décide la forme du lecteur : **ces deux
+commandes savent-elles sortir du JSON ?**
+
+### La réponse est NON, pour les deux
+
+| Commande | code | stdout | stderr |
+|---|---|---|---|
+| `sbx mcp ls --json` | 0 | `ERROR: unknown flag: --json` | vide |
+| `sbx skills ls --json` | 0 | `ERROR: unknown flag: --json` | vide |
+
+Deux faits à retenir au-delà du refus lui-même :
+
+- **Le refus part sur stdout, et le code de sortie est 0.** Un lecteur qui déciderait « drapeau
+  accepté » sur le code de sortie conclurait à tort. C'est aussi pourquoi la sonde a été refaite
+  flux séparés : le premier passage, en `2>&1 | head`, rendait le code de `head` et non celui de
+  `sbx`.
+- L'aide le confirme, elle ne se contredit pas : `sbx mcp ls --help` ne déclare que `-h/--help`,
+  `sbx skills ls --help` de même, et les seuls drapeaux globaux sont `-D/--debug`. Il n'existe
+  aucun `--json` global qui rattraperait l'absence.
+
+`sbx mcp inspect <name>` existe et pourrait porter le détail d'un serveur, mais il n'annonce pas
+davantage de `--json` et il exige un nom — il ne remplace pas un inventaire.
+
+### Ce que les deux commandes rendent sur cette machine
+
+`sbx mcp ls` — l'en-tête de passerelle est imprimé **même à vide** :
+
+```
+LOCAL · managed by you · ✓ on
+
+No MCP servers registered
+  add one   sbx mcp add <name> --url <url>
+```
+
+`sbx skills ls` :
+
+```
+Skills store: /Users/polochon/Library/Application Support/com.docker.sandboxes/sandboxes/agent-skills
+No skills found. Use 'sbx skills import' to add skills.
+```
+
+Cohérent avec le §14.2 : le `[q]` du 2026-08-23 n'a rien importé. `agent-skills/` est toujours
+vide au 2026-08-24. Le marqueur frère `first-run-import.json` porte, lui, la date de la sonde 1
+du §14.2 (`2026-08-24T14:44:53Z`) — c'est cette sonde qui l'a réécrit, comme elle le dit.
+
+`sbx skills` porte en tête de son aide : **`EXPERIMENTAL: this command may change or be removed in
+future releases.`** Sa sortie n'est donc pas un contrat.
+
+### ⚠️ Ce que cette sonde n'a PAS observé, et pourquoi c'est décisif
+
+**La forme peuplée d'aucune des deux sorties n'a été vue.** Cette machine n'a ni serveur MCP
+enregistré ni skill importée, et la voir exigerait d'écrire dans le registre même que #88 cherche
+à rendre visible — `sbx mcp add` pour l'un, `sbx skills import` pour l'autre. C'est le prix des
+sondes 3 et 4 de #87, refusé pour la même raison.
+
+Conséquence pour l'implémentation, et c'est la phrase porteuse de ce paragraphe : **den ne peut
+pas écrire d'analyseur de colonnes pour ces deux surfaces**, parce que personne n'a mesuré les
+colonnes. Un analyseur ancré sur en-tête comme `parseSecretList` serait ici une **supposition**,
+pas un relevé — et le §14.0 comme le §14.2 valent précisément parce qu'ils ne supposent rien.
+
+Ce que den peut faire sans rien supposer : reconnaître la **sentinelle négative** que chaque
+commande imprime quand elle n'a rien à lister (`No MCP servers registered`,
+`No skills found. …`), et traiter tout le reste comme « quelque chose est là ». Le sens de
+l'échec est alors le bon : une sortie que den ne reconnaît pas devient « den n'a pas pu lire cette
+surface » et jamais « cette surface est vide » — la confusion exacte que `Observation` sépare
+depuis le prototype du 2026-08-14.
+
+Un test d'inanité (« la sortie est non vide donc il y a des serveurs ») serait faux ici : la
+passerelle imprime son en-tête à vide, comme la sortie ci-dessus le montre. C'est la sentinelle
+qui décide, pas la longueur.
+
+Enfin, comme pour `secret ls -g` (§ `ReadSbxState`), la bannière de mise à jour de sbx atterrit
+sur stdout : `sbx.StripUpdateBanner` s'applique avant toute reconnaissance.
