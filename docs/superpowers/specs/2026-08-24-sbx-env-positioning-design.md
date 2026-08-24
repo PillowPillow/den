@@ -297,28 +297,69 @@ state/sandboxes/<sandbox>/
 
 `state/` reste ce qu'il est : jamais purgé, jamais confondu avec `cache/`.
 
-### 5.7 `den rm` ne doit JAMAIS refuser — le repli, explicitement
+### 5.7 Un seul moteur — pas de chemin fantôme autour de `sbx env`
+
+**Principe directeur, et il arbitre toutes les tensions qui suivront.** Si den prend `sbx env`
+comme moteur, il en accepte les limitations. Il ne construit pas, en parallèle, un second chemin
+qui contournerait le moteur au premier inconfort.
+
+C'est le principe qui donne son sens au reste du spec. Un repli permanent vers `sbx create` /
+`sbx rm` par le nom, « au cas où », serait un deuxième chemin de création et de destruction à
+maintenir, à tester et à garder synchrone — c'est-à-dire précisément le coût que la §2 cherche à
+solder. Un moteur qu'on double n'est pas un moteur, c'est une dépendance optionnelle, et une
+dépendance optionnelle coûte plus cher que les deux options prises séparément.
+
+Corollaire : **une limitation de `sbx env` se documente, elle ne se contourne pas.** Elle devient
+soit une contrainte assumée du spec, soit une sonde à mener, soit une issue amont chez Docker.
+
+### 5.8 `den rm` — le refus est la règle, `--force` est la seule échappatoire
 
 `sbx env rm` résout la sandbox **depuis le jeu de fichiers passé** (§14.3). Le `.sbxenv.yaml` émis
-devient donc une entrée dure du teardown, alors qu'aujourd'hui `den rm` re-dérive et ne refuse
-jamais. C'est exactement le piège que `manifest.LaxMounts` existe pour éviter, et le laisser ouvert
-contredirait la doctrine T13/T16 que la §5.4 invoque.
+est donc une entrée dure du teardown, et la §5.7 interdit de lui inventer un contournement
+silencieux.
 
-**Le repli est nommé, et il est inconditionnel.** Quand `state/sandboxes/<sandbox>/.sbxenv.yaml`
-est absent, tronqué, ou écrit par un den plus récent :
+**Le chemin normal.** `den rm <sandbox>` lit `state/sandboxes/<sandbox>/.sbxenv.yaml` et appelle
+`sbx env rm` avec. Fichier absent, tronqué, ou écrit par un den plus récent ⇒ **den refuse**, en
+nommant le fichier fautif et le remède : `den rm --force <sandbox>`. C'est la doctrine ordinaire du
+§2 de la spec mère — den refuse plutôt que de normaliser en silence.
 
-1. den **n'appelle pas** `sbx env rm`. Il appelle `sbx rm --force <sandbox>`, par le nom de
-   sandbox — l'identité que den possède de toute façon (§3.4), et qui ne dépend d'aucun fichier.
-2. den **avertit explicitement** que les secrets scopés à cette sandbox n'ont pas été retirés, et
-   nomme la commande qui le ferait. Un avertissement, jamais un refus : un secret orphelin est
-   récupérable, une VM orpheline avec ses worktrees bloqués ne l'est pas.
-3. La corbeille des worktrees suit son chemin habituel, depuis `manifest.yaml`, qui est un fichier
-   distinct et peut être lisible quand l'autre ne l'est pas.
-4. den **ne supprime jamais** un fichier qu'il n'a pas su lire — il peut appartenir à un den plus
-   récent (même règle qu'au §11 de la spec mère).
+**L'échappatoire.** `--force` bascule sur `sbx rm --force <sandbox>`, par le nom de sandbox, qui ne
+dépend d'aucun fichier. den **avertit alors** que les secrets scopés n'ont pas été retirés et nomme
+la commande qui le ferait. Ce repli est **concédé, pas conçu** : il existe parce qu'une VM qu'on ne
+peut plus détruire est un cul-de-sac, pas parce qu'il serait souhaitable.
 
-Autrement dit : le fichier émis rend le teardown *meilleur* quand il est là, et ne le rend jamais
-*impossible* quand il ne l'est pas.
+**Pourquoi ce n'est pas une violation de T13/T16.** La doctrine interdit à `den rm` de laisser
+l'utilisateur avec une VM vivante qu'il ne peut plus détruire. Un refus qui **nomme, dans son
+propre message, le drapeau qui débloque la même commande** ne produit pas cette impasse : la sortie
+est immédiate, documentée, et dans la commande où on se trouve déjà. Ce que T13/T16 interdit, c'est
+le refus sans issue.
+
+**L'asymétrie avec la moitié git est délibérée.** `cleanWorktrees` garde son repli sans refus vers
+la dérivation (`cleanWorktreesLegacy`) : le worktree est le domaine propre de den, il n'y a pas de
+moteur externe à doubler, et rien de ce que fait ce repli n'existe ailleurs. Les deux moitiés
+suivent donc deux règles différentes, et pour une raison nommée : côté sbx, un repli serait un
+chemin fantôme ; côté git, c'est le chemin unique.
+
+**Ce qui ne bouge pas :** den ne supprime jamais un fichier qu'il n'a pas su lire — il peut
+appartenir à un den plus récent (§11 de la spec mère).
+
+**Un point ouvert, honnêtement : `--force` porte alors deux sens.** Aujourd'hui il veut dire
+« retire les worktrees même sales ». Il voudrait en plus dire « détruis par le nom quand
+l'enregistrement est illisible ». Un drapeau à deux sens est une odeur, et l'utilisateur qui force
+pour la première raison hérite de la seconde sans l'avoir demandée. Trois issues, à trancher à la
+relecture :
+
+1. **Un seul `--force`, deux sens** — le plus simple, et le seul qui ne rajoute pas de surface. Les
+   deux sens partagent la même intention (« passe outre, je sais ce que je fais »), et les deux
+   avertissent bruyamment de ce qu'ils ont contourné.
+2. **Un drapeau dédié** (`--by-name`) — précis, mais c'est une surface de plus pour un cas de
+   panne, et den en a déjà deux sur `rm`.
+3. **Aucune échappatoire** — la lecture la plus stricte de la §5.7. Rejetée : elle produit
+   exactement l'impasse que T13/T16 interdit.
+
+**Proposition : l'option 1**, parce qu'elle est la seule qui n'ajoute rien. Elle se paie d'un
+message : quand `--force` sert au second sens, den le dit explicitement plutôt que de l'appliquer
+en silence.
 
 ---
 
@@ -406,14 +447,20 @@ Le dépôt atteste le comportement de `sbx`, il ne l'extrapole pas.
    (§3.5)
 5. **`schemaVersion` est épinglé à `1` et vérifié.** Une valeur non mesurée est un refus. (§5.5)
 6. **Le manifeste git survit** à côté du fichier émis. (§5.4, §5.6)
-7. **`den rm` ne refuse jamais.** Fichier émis illisible ou absent ⇒ `sbx rm --force <sandbox>` par
-   le nom, avertissement sur les secrets non retirés, corbeille des worktrees inchangée, et aucun
-   fichier illisible n'est supprimé. (§5.7)
-8. **`ports:` n'est pas émis** tant que son effet n'est pas mesuré. (§5.5, §7)
-9. **`secrets:`, `registries:`, `bindings:` ne sont pas émis** tant que leur cycle de vie n'est pas
-   mesuré ; la part de `internal/converge` qui pourrait partir reste un candidat, pas une décision.
-   (§5.4, §5.5, §7)
-10. **Les sources ne changent pas de forme.** Seul `den lint` gagne une vérification. (§6)
+7. **Un seul moteur, aucun chemin fantôme.** Prendre `sbx env` comme moteur, c'est en accepter les
+   limitations. Une limitation se documente, se sonde ou remonte chez Docker — elle ne se contourne
+   pas par un second chemin permanent. (§5.7)
+8. **`den rm` refuse quand l'enregistrement est illisible**, en nommant `--force` comme remède.
+   `--force` bascule sur `sbx rm --force <sandbox>` par le nom et avertit que les secrets scopés
+   n'ont pas été retirés. Le repli est concédé, pas conçu. La moitié git garde son repli sans
+   refus, et l'asymétrie est délibérée. (§5.8)
+9. **`ports:` n'est pas émis** tant que son effet n'est pas mesuré. (§5.5, §7)
+10. **`secrets:`, `registries:`, `bindings:` ne sont pas émis** tant que leur cycle de vie n'est
+    pas mesuré ; la part de `internal/converge` qui pourrait partir reste un candidat, pas une
+    décision. (§5.4, §5.5, §7)
+11. **Les sources ne changent pas de forme.** Seul `den lint` gagne une vérification. (§6)
+
+**Reste ouvert, à trancher à la relecture :** le double sens de `--force` sur `den rm` (§5.8).
 
 ---
 
