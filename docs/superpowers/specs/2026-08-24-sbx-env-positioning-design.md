@@ -6,7 +6,7 @@
 **Statut :** validé en brainstorming, **en attente de relecture humaine** avant tout plan
 d'implémentation
 **Spec mère :** `2026-07-27-den-cli-design.md` — ce document l'étend, il ne la remplace pas. Les
-mesures qui le fondent vivent au **§14.3** de la spec mère ; ce document ne les recopie pas, il les
+mesures qui le fondent vivent au **§14.4** de la spec mère ; ce document ne les recopie pas, il les
 cite.
 
 **Ce document ne décrit aucun code écrit.** Aucun fichier sous `internal/` n'a été modifié pour le
@@ -40,15 +40,15 @@ Sous le critère de maintenance, le statu quo coûte l'entretien perpétuel de t
 y compris de ce que sbx fait maintenant à sa place.
 
 Un poste de coût domine tous les autres, et il est récurrent : **den re-sonde `sbx create --help`
-à chaque release de sbx.** C'est littéralement pourquoi la spec mère porte un §14.0, un §14.1, un
-§14.2 et maintenant un §14.3. Un argv n'est pas un contrat. Un fichier portant un `schemaVersion`
+à chaque release de sbx.** C'est littéralement pourquoi la spec mère porte six relevés datés, du
+§14.0 au §14.5. Un argv n'est pas un contrat. Un fichier portant un `schemaVersion`
 et validé par un décodeur strict qui **nomme le type refusé** en est un.
 
 ---
 
 ## 3. Ce que la mesure a tranché
 
-Détail complet et sorties verbatim au **§14.3** de la spec mère. Résumé des quatre inconnues
+Détail complet et sorties verbatim au **§14.4** de la spec mère. Résumé des quatre inconnues
 bloquantes de #89, chacune avec la mesure qui l'a réglée.
 
 ### 3.1 `kits:` préserve l'ordre déclaré — OUI
@@ -279,7 +279,7 @@ tort :**
    main, inutile et dangereuse dans un fichier généré.
 3. **Le mixin en dernier, structurellement.** L'émetteur reçoit les kits de stack et le mixin dans
    deux paramètres distincts, comme `sbx.Create` aujourd'hui, et c'est lui qui les met bout à bout.
-4. **Aucune clé que den n'a pas mesurée.** L'émetteur n'écrit que les champs du §14.3.
+4. **Aucune clé que den n'a pas mesurée.** L'émetteur n'écrit que les champs du §14.4.
 5. **`ports:` n'est pas émis.** Le modèle de den est la publication à la demande, et le
    comportement de `ports:` à la création n'est pas mesuré (§7).
 6. **`secrets:`, `registries:` et `bindings:` ne sont pas émis** tant que leur cycle de vie n'est
@@ -314,7 +314,7 @@ soit une contrainte assumée du spec, soit une sonde à mener, soit une issue am
 
 ### 5.8 `den rm` — le refus est la règle, `--force` est la seule échappatoire
 
-`sbx env rm` résout la sandbox **depuis le jeu de fichiers passé** (§14.3). Le `.sbxenv.yaml` émis
+`sbx env rm` résout la sandbox **depuis le jeu de fichiers passé** (§14.4). Le `.sbxenv.yaml` émis
 est donc une entrée dure du teardown, et la §5.7 interdit de lui inventer un contournement
 silencieux.
 

@@ -1838,7 +1838,116 @@ pas pour l'instant.
 
 ---
 
-## 14.3 Sonde du 2026-08-24 — #89 — le schéma réel de `.sbxenv.yaml`
+> **Trois relevés du même jour, numérotés par ordre d'issue.** Les §14.3 (#88), §14.4 (#89) et
+> §14.5 (#90) ont été écrits en parallèle par trois axes, qui ont chacun réclamé « 14.3 ». La
+> collision est arbitrée ici, dans la branche qui intègre, en renumérotant les EN-TÊTES et rien
+> d'autre : le corps d'un relevé est une mesure datée, et le réécrire le falsifierait.
+
+## 14.3 Sonde du 2026-08-24 — `sbx mcp ls` et `sbx skills ls`, issue #88
+
+Même binaire que le §14.2 : `/opt/homebrew/bin/sbx`, `sbx version` →
+`sbx version: v0.39.0 def8cb0523a77e757bdd6ef52b459fe374f3783e`. Ajout seul : ce relevé ne
+ré-atteste rien du §14.0, du §14.1 ni du §14.2.
+
+La question posée par #88 est étroite et sa réponse décide la forme du lecteur : **ces deux
+commandes savent-elles sortir du JSON ?**
+
+### La réponse est NON, pour les deux
+
+| Commande | code | stdout | stderr |
+|---|---|---|---|
+| `sbx mcp ls --json` | 0 | `ERROR: unknown flag: --json` | vide |
+| `sbx skills ls --json` | 0 | `ERROR: unknown flag: --json` | vide |
+
+Deux faits à retenir au-delà du refus lui-même :
+
+- **Le refus part sur stdout, et le code de sortie est 0.** Un lecteur qui déciderait « drapeau
+  accepté » sur le code de sortie conclurait à tort. C'est aussi pourquoi la sonde a été refaite
+  flux séparés : le premier passage, en `2>&1 | head`, rendait le code de `head` et non celui de
+  `sbx`.
+- L'aide le confirme, elle ne se contredit pas : `sbx mcp ls --help` ne déclare que `-h/--help`,
+  `sbx skills ls --help` de même, et les seuls drapeaux globaux sont `-D/--debug`. Il n'existe
+  aucun `--json` global qui rattraperait l'absence.
+
+`sbx mcp inspect <name>` existe et pourrait porter le détail d'un serveur, mais il n'annonce pas
+davantage de `--json` et il exige un nom — il ne remplace pas un inventaire.
+
+### Ce que les deux commandes rendent sur cette machine
+
+`sbx mcp ls` — l'en-tête de passerelle est imprimé **même à vide** :
+
+```
+LOCAL · managed by you · ✓ on
+
+No MCP servers registered
+  add one   sbx mcp add <name> --url <url>
+```
+
+`sbx skills ls` :
+
+```
+Skills store: /Users/polochon/Library/Application Support/com.docker.sandboxes/sandboxes/agent-skills
+No skills found. Use 'sbx skills import' to add skills.
+```
+
+Cohérent avec le §14.2 : le `[q]` du 2026-08-23 n'a rien importé. `agent-skills/` est toujours
+vide au 2026-08-24. Le marqueur frère `first-run-import.json` porte, lui, la date de la sonde 1
+du §14.2 (`2026-08-24T14:44:53Z`) — c'est cette sonde qui l'a réécrit, comme elle le dit.
+
+`sbx skills` porte en tête de son aide : **`EXPERIMENTAL: this command may change or be removed in
+future releases.`** Sa sortie n'est donc pas un contrat.
+
+### ⚠️ Ce que cette sonde n'a PAS observé, et pourquoi c'est décisif
+
+**La forme peuplée d'aucune des deux sorties n'a été vue.** Cette machine n'a ni serveur MCP
+enregistré ni skill importée, et la voir exigerait d'écrire dans le registre même que #88 cherche
+à rendre visible — `sbx mcp add` pour l'un, `sbx skills import` pour l'autre. C'est le prix des
+sondes 3 et 4 de #87, refusé pour la même raison.
+
+Conséquence pour l'implémentation, et c'est la phrase porteuse de ce paragraphe : **den ne peut
+pas écrire d'analyseur de colonnes pour ces deux surfaces**, parce que personne n'a mesuré les
+colonnes. Un analyseur ancré sur en-tête comme `parseSecretList` serait ici une **supposition**,
+pas un relevé — et le §14.0 comme le §14.2 valent précisément parce qu'ils ne supposent rien.
+
+Ce que den peut faire sans rien supposer : reconnaître la **sentinelle négative** que chaque
+commande imprime quand elle n'a rien à lister (`No MCP servers registered`,
+`No skills found. …`), et traiter tout le reste comme « quelque chose est là ». Le sens de
+l'échec est alors le bon : une sortie que den ne reconnaît pas devient « den n'a pas pu lire cette
+surface » et jamais « cette surface est vide » — la confusion exacte que `Observation` sépare
+depuis le prototype du 2026-08-14.
+
+Un test d'inanité (« la sortie est non vide donc il y a des serveurs ») serait faux ici : la
+passerelle imprime son en-tête à vide, comme la sortie ci-dessus le montre. C'est la sentinelle
+qui décide, pas la longueur.
+
+Enfin, comme pour `secret ls -g` (§ `ReadSbxState`), la bannière de mise à jour de sbx atterrit
+sur stdout : `sbx.StripUpdateBanner` s'applique avant toute reconnaissance.
+
+### Ce que la mécanique rend sur cette machine (vérification, même jour)
+
+`den doctor` construit avec ce relevé, sur `~/.den` réel :
+
+```
+[ok  ] sbx secrets      1 of 4 present, undeclared: service anthropic — not written by den,
+                        which never removes what it did not create; `sbx secret ls -g` shows the detail
+[ok  ] sbx mcp servers  nothing on this machine
+[ok  ] sbx skills       nothing on this machine
+```
+
+Trois faits mesurés, et non supposés :
+
+- le magasin global porte **4 secrets**, dont **3 sont déclarés** par la source `dg` ;
+- le quatrième, `service anthropic`, n'est déclaré par aucune source — c'est exactement l'angle
+  mort que #88 ferme, et il existait pour de vrai sur cette machine ;
+- les deux magasins opaques répondent leur sentinelle négative, donc « rien » — ce qui confirme la
+  reconnaissance côté den contre la sortie réelle, et pas seulement contre un double.
+
+`den doctor` reste **vert** (`all good`) : l'état non déclaré est de l'information, jamais un
+défaut. Rien n'a été supprimé, et aucune commande mutante n'a été lancée.
+
+---
+
+## 14.4 Sonde du 2026-08-24 — #89 — le schéma réel de `.sbxenv.yaml`
 
 Même binaire qu'au §14.2 : `/opt/homebrew/bin/sbx`, `v0.39.0 def8cb0`. Cette sous-section ne dit
 que ce qui a été **mesuré** ; l'analyse de positionnement qui s'en déduit vit dans son propre spec,
@@ -2026,139 +2135,7 @@ Sans `name:`, le défaut est `<agent>-<basename(répertoire)>` — répertoire `
 
 ---
 
-## 14.4 Sonde du 2026-08-24 — #88 (relevée par l'axe 2) — `sbx mcp ls` / `sbx skills ls`
-
-Consignée ici parce que l'axe 2 l'a menée en passant ; l'analyse appartient à l'axe 1 (#88), qui
-peut écrire sa propre sous-section sans conflit avec celle-ci.
-
-**Ni l'une ni l'autre n'a de `--json` en v0.39.0.** La forme d'un lecteur en dépend entièrement :
-il faudrait analyser du texte décoré, pas du JSON.
-
-```
-$ sbx mcp ls --json
-ERROR: unknown flag: --json
-
-$ sbx mcp ls
-LOCAL · managed by you · ✓ on
-
-No MCP servers registered
-  add one   sbx mcp add <name> --url <url>
-
-$ sbx skills ls --json
-ERROR: unknown flag: --json
-
-$ sbx skills ls
-Skills store: /Users/polochon/Library/Application Support/com.docker.sandboxes/sandboxes/agent-skills
-No skills found. Use 'sbx skills import' to add skills.
-```
-
-`sbx skills ls` est marquée **EXPERIMENTAL** ; `sbx mcp ls` ne l'est pas. Le magasin de skills est
-le même chemin que le §14.2 avait relevé vide, et il l'est toujours — le `[q]` du 2026-08-23 n'a
-toujours rien importé.
-
-## 14.3 Sonde du 2026-08-24 — `sbx mcp ls` et `sbx skills ls`, issue #88
-
-Même binaire que le §14.2 : `/opt/homebrew/bin/sbx`, `sbx version` →
-`sbx version: v0.39.0 def8cb0523a77e757bdd6ef52b459fe374f3783e`. Ajout seul : ce relevé ne
-ré-atteste rien du §14.0, du §14.1 ni du §14.2.
-
-La question posée par #88 est étroite et sa réponse décide la forme du lecteur : **ces deux
-commandes savent-elles sortir du JSON ?**
-
-### La réponse est NON, pour les deux
-
-| Commande | code | stdout | stderr |
-|---|---|---|---|
-| `sbx mcp ls --json` | 0 | `ERROR: unknown flag: --json` | vide |
-| `sbx skills ls --json` | 0 | `ERROR: unknown flag: --json` | vide |
-
-Deux faits à retenir au-delà du refus lui-même :
-
-- **Le refus part sur stdout, et le code de sortie est 0.** Un lecteur qui déciderait « drapeau
-  accepté » sur le code de sortie conclurait à tort. C'est aussi pourquoi la sonde a été refaite
-  flux séparés : le premier passage, en `2>&1 | head`, rendait le code de `head` et non celui de
-  `sbx`.
-- L'aide le confirme, elle ne se contredit pas : `sbx mcp ls --help` ne déclare que `-h/--help`,
-  `sbx skills ls --help` de même, et les seuls drapeaux globaux sont `-D/--debug`. Il n'existe
-  aucun `--json` global qui rattraperait l'absence.
-
-`sbx mcp inspect <name>` existe et pourrait porter le détail d'un serveur, mais il n'annonce pas
-davantage de `--json` et il exige un nom — il ne remplace pas un inventaire.
-
-### Ce que les deux commandes rendent sur cette machine
-
-`sbx mcp ls` — l'en-tête de passerelle est imprimé **même à vide** :
-
-```
-LOCAL · managed by you · ✓ on
-
-No MCP servers registered
-  add one   sbx mcp add <name> --url <url>
-```
-
-`sbx skills ls` :
-
-```
-Skills store: /Users/polochon/Library/Application Support/com.docker.sandboxes/sandboxes/agent-skills
-No skills found. Use 'sbx skills import' to add skills.
-```
-
-Cohérent avec le §14.2 : le `[q]` du 2026-08-23 n'a rien importé. `agent-skills/` est toujours
-vide au 2026-08-24. Le marqueur frère `first-run-import.json` porte, lui, la date de la sonde 1
-du §14.2 (`2026-08-24T14:44:53Z`) — c'est cette sonde qui l'a réécrit, comme elle le dit.
-
-`sbx skills` porte en tête de son aide : **`EXPERIMENTAL: this command may change or be removed in
-future releases.`** Sa sortie n'est donc pas un contrat.
-
-### ⚠️ Ce que cette sonde n'a PAS observé, et pourquoi c'est décisif
-
-**La forme peuplée d'aucune des deux sorties n'a été vue.** Cette machine n'a ni serveur MCP
-enregistré ni skill importée, et la voir exigerait d'écrire dans le registre même que #88 cherche
-à rendre visible — `sbx mcp add` pour l'un, `sbx skills import` pour l'autre. C'est le prix des
-sondes 3 et 4 de #87, refusé pour la même raison.
-
-Conséquence pour l'implémentation, et c'est la phrase porteuse de ce paragraphe : **den ne peut
-pas écrire d'analyseur de colonnes pour ces deux surfaces**, parce que personne n'a mesuré les
-colonnes. Un analyseur ancré sur en-tête comme `parseSecretList` serait ici une **supposition**,
-pas un relevé — et le §14.0 comme le §14.2 valent précisément parce qu'ils ne supposent rien.
-
-Ce que den peut faire sans rien supposer : reconnaître la **sentinelle négative** que chaque
-commande imprime quand elle n'a rien à lister (`No MCP servers registered`,
-`No skills found. …`), et traiter tout le reste comme « quelque chose est là ». Le sens de
-l'échec est alors le bon : une sortie que den ne reconnaît pas devient « den n'a pas pu lire cette
-surface » et jamais « cette surface est vide » — la confusion exacte que `Observation` sépare
-depuis le prototype du 2026-08-14.
-
-Un test d'inanité (« la sortie est non vide donc il y a des serveurs ») serait faux ici : la
-passerelle imprime son en-tête à vide, comme la sortie ci-dessus le montre. C'est la sentinelle
-qui décide, pas la longueur.
-
-Enfin, comme pour `secret ls -g` (§ `ReadSbxState`), la bannière de mise à jour de sbx atterrit
-sur stdout : `sbx.StripUpdateBanner` s'applique avant toute reconnaissance.
-
-### Ce que la mécanique rend sur cette machine (vérification, même jour)
-
-`den doctor` construit avec ce relevé, sur `~/.den` réel :
-
-```
-[ok  ] sbx secrets      1 of 4 present, undeclared: service anthropic — not written by den,
-                        which never removes what it did not create; `sbx secret ls -g` shows the detail
-[ok  ] sbx mcp servers  nothing on this machine
-[ok  ] sbx skills       nothing on this machine
-```
-
-Trois faits mesurés, et non supposés :
-
-- le magasin global porte **4 secrets**, dont **3 sont déclarés** par la source `dg` ;
-- le quatrième, `service anthropic`, n'est déclaré par aucune source — c'est exactement l'angle
-  mort que #88 ferme, et il existait pour de vrai sur cette machine ;
-- les deux magasins opaques répondent leur sentinelle négative, donc « rien » — ce qui confirme la
-  reconnaissance côté den contre la sortie réelle, et pas seulement contre un double.
-
-`den doctor` reste **vert** (`all good`) : l'état non déclaré est de l'information, jamais un
-défaut. Rien n'a été supprimé, et aucune commande mutante n'a été lancée.
-
-## 14.3 Sondes du 2026-08-24 — la grammaire de `--memory` (issue #90)
+## 14.5 Sondes du 2026-08-24 — la grammaire de `--memory` (issue #90)
 
 > **Append-only.** Cette sous-section est celle de l'axe 3 (#90). Elle ne modifie rien de §14.0,
 > §14.1 ni §14.2 : elle ajoute ce que celles-ci ne mesuraient pas.
