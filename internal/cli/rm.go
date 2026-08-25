@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/PillowPillow/den/internal/config"
@@ -485,17 +484,19 @@ func newMountGuard(home, self string) mountGuard {
 		// worktrees forever, over a record den is about to leave behind
 		// anyway. den is removing THIS sandbox; its own record never speaks
 		// for a third party.
-		sandbox := strings.TrimSuffix(filepath.Base(b.Path), ".yaml")
+		sandbox := manifest.SandboxOf(b.Path)
 		if sandbox == self {
 			continue
 		}
-		// manifest.List admits ANY entry ending in ".yaml", including a file
-		// named exactly ".yaml", whose trim leaves no sandbox name at all.
-		// Such a file names nobody, so it can hold no mount under a name the
-		// user could act on — and it is not a record den wrote. It is counted
-		// as an unknown sharer rather than read: the cautious path exists for
-		// exactly the files den cannot account for, and the alternative (a
-		// nameless claim) is the entry claim refuses to store above.
+		// manifest.SandboxOf answers "" for a file that names nobody — a
+		// legacy file called exactly ".yaml"; the directory layout's basename
+		// is always "manifest.yaml", which SandboxOf resolves from the parent
+		// directory instead. Such a file names nobody, so it can hold no mount
+		// under a name the user could act on — and it is not a record den
+		// wrote. It is counted as an unknown sharer rather than read: the
+		// cautious path exists for exactly the files den cannot account for,
+		// and the alternative (a nameless claim) is the entry claim refuses to
+		// store above.
 		if sandbox == "" {
 			unreadable = append(unreadable, b)
 			continue
