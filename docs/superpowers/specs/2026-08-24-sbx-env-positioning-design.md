@@ -271,7 +271,7 @@ La cascade reste lisible là où elle est vraie : dans `nests/` et `stacks/`, le
 **Candidat, mais NON décidé ici :** une part de `internal/converge`. Le schéma porte bien
 `secrets:`, `registries:` et `bindings:`, provisionnés au scope de la sandbox et retirés par
 `env rm`. Mais le §7 dit que leur cycle de vie réel **n'est pas mesuré**, et ce spec ne verrouille
-aucune suppression sur une déduction. La §5.5 point 4 interdit donc à l'émetteur d'écrire ces trois
+aucune suppression sur une déduction. La §5.5 point 6 interdit donc à l'émetteur d'écrire ces trois
 champs pour l'instant : den continue de converger comme aujourd'hui. **Une sonde dédiée est le
 préalable**, et elle mérite sa propre issue — la même règle que pour `ports:`.
 
