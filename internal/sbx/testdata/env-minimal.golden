@@ -1,0 +1,11 @@
+schemaVersion: "1"
+agent: shell
+name: api
+workspace:
+  path: /dev/api
+additionalWorkspaces:
+  - path: /home/me/.den/agents/claude
+kits:
+  - /den/cache/mixins/api
+sandboxOptions:
+  template: devx:v1
