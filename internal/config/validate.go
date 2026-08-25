@@ -184,8 +184,8 @@ func (g *Global) Validate() []error {
 		// TrimSpace catches what the loader's `== ""` check let through.
 		if strings.TrimSpace(a.ConfigDir) == "" {
 			errs = append(errs, fmt.Errorf(
-				"agents.%s.config_dir: blank — it would reach `sbx create` as an empty "+
-					"positional argument and mount nothing; remove the key to use the default, "+
+				"agents.%s.config_dir: blank — it would be emitted as an empty workspace in "+
+					"`.sbxenv.yaml` and mount nothing; remove the key to use the default, "+
 					"or set a real path", name))
 		}
 		// TrimSpace, not `== ""`: agent.FreshnessCommand judges on TrimSpace

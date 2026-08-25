@@ -310,6 +310,17 @@ func TestSpawnCreatesThroughSbxEnv(t *testing.T) {
 	if !strings.Contains(string(content), `schemaVersion: "1"`) {
 		t.Errorf("the emitted file is not a pinned .sbxenv.yaml:\n%s", content)
 	}
+	// 0600, like the manifest beside it: the file lists every path den
+	// mounts, and nothing justifies making that world-readable. Nothing else
+	// in this suite reads Mode() — an accidental 0o644 in a later refactor
+	// would ship green without this assertion.
+	info, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("stat the emitted file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("the emitted file's mode = %o, want 0600", got)
+	}
 }
 
 // D1 (T10, hostile config #14): Global.Validate() used to be called only by
@@ -2138,9 +2149,9 @@ func TestSpawnPropagatesCascadeOptions(t *testing.T) {
 	}
 }
 
-// A failed `sbx create` must be recontextualized. Exec.Run's raw message
-// is prefixed with the FULL argv — a giant line with every --kit and every
-// workspace — in which the failed step becomes unreadable.
+// A failed `sbx env create` must be recontextualized. Exec.Run's raw message
+// is prefixed with the call's own argv — `env create <path>` — which names
+// neither the step nor the sandbox, only a long file path.
 func TestSpawnNamesTheStepWhenCreateFails(t *testing.T) {
 	denHome, _ := denTest(t)
 	f, d := fakeDeps()
@@ -4412,7 +4423,7 @@ func TestAttachReportsNoDriftWhenTheMountHostIsNotCanonical(t *testing.T) {
 		t.Errorf("den rewrote the host it records in the mixin: every sandbox created "+
 			"before the upgrade now drifts forever, with `sbx rm --force` as its remedy;\n%s", got)
 	}
-	if strings.Contains(got, "running with the mixin from its `sbx create`") {
+	if strings.Contains(got, "running with the mixin from its creation") {
 		t.Errorf("no mixin drift is expected on an unchanged configuration;\n%s", got)
 	}
 }

@@ -438,7 +438,8 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 	if !filepath.IsAbs(denHome) {
 		return nil, fmt.Errorf(
 			"den home %q: not an absolute path (derived paths go as-is to "+
-				"git worktree and sbx create, where cwd is no longer guaranteed)", denHome)
+				"git worktree and the emitted .sbxenv.yaml, where cwd is no longer guaranteed)",
+			denHome)
 	}
 
 	// TrimSpace on both halves, not `== ""`: since defaults.stack became

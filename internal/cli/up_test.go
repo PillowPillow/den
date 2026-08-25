@@ -811,12 +811,19 @@ func TestUpStillReadsDenHomeBeforeTheSubcommand(t *testing.T) {
 	if _, err := executeCmd(t, NewRootCmdWith(deps), "--den-home", home, "up", "api", "--detach"); err != nil {
 		t.Fatalf("den --den-home <home> up api: unexpected error: %v", err)
 	}
-	if !f.HasCalled("env", "create") {
+	// `env create <path>` is the same call shape for every spawn — it's the
+	// PATH that carries the meaning, since it's built from the den home under
+	// test.
+	wantPath, err := manifest.SbxEnvPath(home, "api")
+	if err != nil {
+		t.Fatalf("SbxEnvPath: %v", err)
+	}
+	if !f.HasCalled("env", "create", wantPath) {
 		t.Errorf("the spawn read no den home to create from; calls: %v", f.Calls)
 	}
 
 	empty := t.TempDir()
-	_, err := executeCmd(t, NewRootCmdWith(deps), "--den-home", empty, "up", "api", "--detach")
+	_, err = executeCmd(t, NewRootCmdWith(deps), "--den-home", empty, "up", "api", "--detach")
 	if err == nil {
 		t.Fatal("an empty den home must fail the spawn")
 	}

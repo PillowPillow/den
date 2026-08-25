@@ -2042,7 +2042,7 @@ func reportDrift(out io.Writer, sandboxName string, previous agent.Mixin, previo
 		return
 	}
 	fmt.Fprintf(out,
-		"warning: sandbox %s is running with the mixin from its `sbx create`, not the current configuration:\n",
+		"warning: sandbox %s is running with the mixin from its creation, not the current configuration:\n",
 		sandboxName)
 	for _, line := range diffs {
 		fmt.Fprintf(out, "  - %s\n", line)
@@ -2163,7 +2163,7 @@ func reportResourceDrift(out io.Writer, sandboxName string, recorded *manifest.R
 		return
 	}
 	fmt.Fprintf(out,
-		"warning: sandbox %s is running with the size from its `sbx create`, not the current "+
+		"warning: sandbox %s is running with the size from its creation, not the current "+
 			"configuration:\n", sandboxName)
 	for _, line := range diffs {
 		fmt.Fprintf(out, "  - %s\n", line)
