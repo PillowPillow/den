@@ -136,6 +136,71 @@ func writeEnvRecord(t *testing.T, denHome, sandbox string) string {
 	return path
 }
 
+// writeEnvRecordAt puts a well-formed, readable `.sbxenv.yaml` at the path
+// `den rm atSandbox` will look for, but carrying `name: describesSandbox` —
+// reproducing the one case CheckEnvFile's second argument exists to catch: a
+// record den can decode perfectly, sitting under the right sandbox's
+// directory, that nonetheless does NOT describe that sandbox.
+func writeEnvRecordAt(t *testing.T, denHome, atSandbox, describesSandbox string) string {
+	t.Helper()
+	out, err := sbx.EnvFile(sbx.Env{
+		Name:       describesSandbox,
+		Image:      "devx:v1",
+		MixinKit:   filepath.Join(denHome, "cache", "mixins", describesSandbox),
+		Workspaces: []string{"/dev/api", "/profile/claude"},
+	})
+	if err != nil {
+		t.Fatalf("EnvFile: %v", err)
+	}
+	path, err := manifest.SbxEnvPath(denHome, atSandbox)
+	if err != nil {
+		t.Fatalf("SbxEnvPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The name-mismatch protection (task 5, CheckEnvFile's second argument) is
+// pinned by a unit test in internal/sbx alone (fix round 1, finding 2's own
+// test suite) — nothing in internal/cli fails if that argument is dropped or
+// mis-wired. This is the integration test that closes the hole: a record
+// under state/sandboxes/api/ that reads fine but names "web" must still make
+// `den rm api` refuse, on EITHER route (with or without --force is not the
+// point here — plain `den rm api` must never reach a destroy call at all),
+// because `sbx env rm` resolves the sandbox FROM the file, and handing it
+// this file would destroy web while the user typed `den rm api`.
+func TestRmRefusesARecordNamingAnotherSandbox(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecordAt(t, denHome, "api", "web")
+
+	f := &sbx.Fake{Responses: lsWith("api")}
+	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api")
+
+	if err == nil {
+		t.Fatal("den destroyed a sandbox whose record names a different sandbox")
+	}
+	if !strings.Contains(err.Error(), "api") || !strings.Contains(err.Error(), "web") {
+		t.Errorf("the refusal does not name the mismatch (api vs web): %v", err)
+	}
+	if !strings.Contains(err.Error(), envPath) {
+		t.Errorf("the refusal does not name the file: %v", err)
+	}
+	// Nothing destroyed, on either route: web must not go, and neither must api.
+	if f.HasCalled("env", "rm") || f.HasCalled("rm", "--force") {
+		t.Errorf("den destroyed after refusing; calls: %v", f.Calls)
+	}
+	// The record survives: den never deletes a file it could not vouch for.
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not vouch for: %v", err)
+	}
+}
+
 // The normal path: den hands sbx the file it emitted, and `-f` is not optional
 // — `sbx env rm` prompts for confirmation without it (measured 2026-08-25), and
 // a prompt in a non-interactive `den rm` blocks forever.
@@ -248,6 +313,102 @@ func TestRmRefusesAnAbsentEnvRecordAndNamesForce(t *testing.T) {
 	}
 	if f.HasCalled("env", "rm") || f.HasCalled("rm", "--force", "api") {
 		t.Errorf("den destroyed after refusing; calls: %v", f.Calls)
+	}
+}
+
+// The absent-record cause, on the --force side this time — the commonest case
+// in the whole plan (a pre-switchover sandbox, created before the emitter
+// shipped) taking the announcement branch. It must read as the same fact
+// TestRmRefusesAnAbsentEnvRecordAndNamesForce pins for the refusal: "predates
+// the emitter", never a raw os.ReadFile "no such file or directory" and never
+// wrapped in an "unreadable" label — the file is not unreadable, it does not
+// exist.
+func TestRmForceAnnouncesTheByNameDestructionForAnAbsentRecord(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	// No writeEnvRecord at all.
+	envPath, err := manifest.SbxEnvPath(denHome, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "--force", "api")
+	if err != nil {
+		t.Fatalf("--force must destroy, not refuse: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "api") {
+		t.Errorf("--force did not destroy by name; calls: %v", f.Calls)
+	}
+	if !strings.Contains(out, "predates the emitter") {
+		t.Errorf("the absent cause must read as a fact about age, not a corruption report:\n%s", out)
+	}
+	if strings.Contains(out, "no such file or directory") {
+		t.Errorf("the raw os.ReadFile diagnosis is CheckEnvFile's UNREADABLE-file sentence, not "+
+			"the ABSENT one:\n%s", out)
+	}
+	if !strings.Contains(out, envPath) {
+		t.Errorf("the announcement does not name the file den looked for:\n%s", out)
+	}
+	if !strings.Contains(out, "by name") {
+		t.Errorf("the announcement does not say the destruction is by name:\n%s", out)
+	}
+	if !strings.Contains(out, "sbx secret ls --sandbox api") {
+		t.Errorf("the announcement does not name how to see the secrets left behind:\n%s", out)
+	}
+}
+
+// Second sense exercised: den says so BEFORE acting, names why, and names what
+// is left behind. `sbx env rm` is what removes the sandbox-scoped secrets; a
+// destruction by name does not, so the user has to be told and given the
+// command.
+func TestRmForceAnnouncesTheByNameDestruction(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecord(t, denHome, "api")
+	if err := os.WriteFile(envPath, []byte("schemaVersion: \"9\"\nagent: shell\nname: api\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &sbx.Fake{Responses: lsWith("api")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "--force", "api")
+	if err != nil {
+		t.Fatalf("--force must destroy, not refuse: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "api") {
+		t.Errorf("--force did not destroy by name; calls: %v", f.Calls)
+	}
+	if !strings.Contains(out, envPath) {
+		t.Errorf("the announcement does not name the unreadable record:\n%s", out)
+	}
+	if !strings.Contains(out, "by name") {
+		t.Errorf("the announcement does not say the destruction is by name:\n%s", out)
+	}
+	if !strings.Contains(out, "sbx secret ls --sandbox api") {
+		t.Errorf("the announcement does not name how to see the secrets left behind:\n%s", out)
+	}
+	// The unreadable file SURVIVES: den never deletes what it could not read.
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not read: %v", err)
+	}
+}
+
+// First sense only: `--force` used to reclaim a dirty worktree on a sandbox
+// whose record reads fine must say NOTHING about the second sense. A warning
+// that fires on every forced removal stops being read.
+func TestRmForceStaysSilentAboutTheSecondSense(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	writeEnvRecord(t, denHome, "api") // READABLE: --force serves the first sense alone
+	f := &sbx.Fake{Responses: lsWith("api")}
+	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "--den-home", denHome, "rm", "--force", "api")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout + stderr
+	for _, noise := range []string{"by name", "sbx secret", "scoped secrets"} {
+		if strings.Contains(out, noise) {
+			t.Errorf("den mentions the second sense of --force when it did not exercise it (%q):\n%s", noise, out)
+		}
 	}
 }
 

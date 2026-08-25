@@ -91,20 +91,30 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 				return err
 			}
 			envErr := sbx.CheckEnvFile(envPath, name)
-			if envErr != nil && !force {
-				// Two causes, and they read as different surprises even though the
-				// remedy is identical (fix round 1, finding 1): an ABSENT record
-				// means this sandbox predates the emitter (or was never created by
-				// den at all) — a fact, not a corruption report — while an
-				// UNREADABLE one is CheckEnvFile's own diagnosis, verbatim. Told
-				// apart by errors.Is rather than by string-matching CheckEnvFile's
-				// message, because the wrapping (os.ReadFile → CheckEnvFile) must
-				// keep working even if that message's wording changes.
-				cause := envErr.Error()
+			// Two causes, and they read as different surprises even though the
+			// remedy is identical (fix round 1, finding 1): an ABSENT record
+			// means this sandbox predates the emitter (or was never created by
+			// den at all) — a fact, not a corruption report — while an
+			// UNREADABLE one is CheckEnvFile's own diagnosis, verbatim. Told
+			// apart by errors.Is rather than by string-matching CheckEnvFile's
+			// message, because the wrapping (os.ReadFile → CheckEnvFile) must
+			// keep working even if that message's wording changes.
+			//
+			// Computed once, ahead of both branches below: the refusal (!force)
+			// and the announcement (force) name the very same cause, and a
+			// pre-switchover sandbox — no file at all — is the COMMONEST case in
+			// the whole plan. Saying "no such file or directory" to that user
+			// would read as corruption; "predates the emitter" reads as the fact
+			// it is.
+			var cause string
+			if envErr != nil {
+				cause = envErr.Error()
 				if errors.Is(envErr, fs.ErrNotExist) {
 					cause = fmt.Sprintf("no %s: this sandbox predates the emitter (or was not "+
 						"created by den)", envPath)
 				}
+			}
+			if envErr != nil && !force {
 				// The remedy is named IN the message, and that is what keeps this
 				// refusal on the right side of doctrine T13/T16: what the doctrine
 				// forbids is a refusal with no way out, not a refusal. The exit is
@@ -112,6 +122,41 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 				return fmt.Errorf("%s\nden cannot hand this record to `sbx env rm`, which resolves "+
 					"the sandbox from the file it is given.\nto destroy %s by name instead, run: "+
 					"den rm --force %s", cause, name, args[0])
+			}
+
+			if envErr != nil && force {
+				// Printed BEFORE anything is destroyed, and only on this branch.
+				// `--force` carries two senses (spec §5.9) — "reclaim a dirty
+				// worktree" and "destroy by name when the record is unreadable" —
+				// and the user who asked for the first inherits the second without
+				// asking. Saying which one den exercises is what makes one flag
+				// with two senses acceptable; a silent second sense would make
+				// --force a switch whose reach the user no longer knows.
+				//
+				// The mirror rule matters as much: when --force serves the first
+				// sense ALONE, den says nothing about the second. A warning that
+				// fires on every forced removal stops being read.
+				//
+				// `cause` is printed bare, exactly as the refusal branch above
+				// prints it, and NOT wrapped in a "creation record unreadable"
+				// label: cause is already a complete sentence in every branch,
+				// and the label is flatly wrong for two of the three causes it
+				// covers — an ABSENT record ("predates the emitter") is not
+				// unreadable, it does not exist, and a NAME MISMATCH record
+				// reads perfectly fine, den just cannot vouch for it describing
+				// this sandbox. Only the schema/decode cause is genuinely
+				// "unreadable", and even that one already says so in its own
+				// words. A near-identical "records unreadable:" label already
+				// exists for a different concept (nameUnknownSharers, about the
+				// records DIRECTORY) — reusing similar wording here for a single
+				// FILE would invite conflating the two.
+				fmt.Fprintf(out, "%s\n", cause)
+				fmt.Fprintf(out, "--force: destroying %s by name instead — sbx removes the "+
+					"sandbox, and the secrets scoped to it are left in place\n", name)
+				fmt.Fprintf(out, "  to see them:    sbx secret ls --sandbox %s\n", name)
+				fmt.Fprintf(out, "  to remove one:  sbx secret rm <service> --sandbox %s\n", name)
+				fmt.Fprintf(out, "  den leaves %s alone: it may belong to another version of den\n",
+					envPath)
 			}
 
 			// Worktrees first: if one is dirty we stop BEFORE destroying the
