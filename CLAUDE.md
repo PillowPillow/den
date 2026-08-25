@@ -27,10 +27,11 @@ go test ./internal/spawn/ -run TestSpawnAddsNoWorkspaceOutsideMountMode -count=1
 **Identity is the sandbox name** `<nest>[.<instance>]`. Component 2 is the INSTANCE — the `--as`
 label, or the flattened branch of `-w`, or empty — not necessarily a worktree branch
 (`sbx.Sandbox.Instance()`'s own comment: "It is NOT 'the worktree'"). `sbx create` has no `--label`
-(probed 2026-07-28), so that string is the only handle: `den ls`/`sh`/`rm`/`ports`, scoped policy,
-the mixin cache and the worktree trash all key off it. `sbx.SandboxName` / `sbx.SplitName` own the
-format; `-w` flattens a branch name into a legal component (`feature/123` → sandbox
-`api.feature-123`) while git keeps the branch as typed.
+(probed 2026-07-28), and the fact still holds under the emitter: `envDoc` (`internal/sbx/env.go`)
+carries no label field either, only `name:`. So that string is the only handle: `den ls`/`sh`/`rm`/
+`ports`, scoped policy, the mixin cache and the worktree trash all key off it. `sbx.SandboxName` /
+`sbx.SplitName` own the format; `-w` flattens a branch name into a legal component (`feature/123` →
+sandbox `api.feature-123`) while git keeps the branch as typed.
 
 **Config cascade**: global (`~/.den/config.yaml`) ← stack (`stacks/<n>/stack.yaml`) ← nest
 (`nests/<n>.yaml`) ← flags, resolved by `nest.Resolve` into a `*nest.Resolved` that spawn consumes.
@@ -101,10 +102,15 @@ is where `manifest.yaml` and the `.sbxenv.yaml` sbx consumes live side by side, 
 remove both as one unit. `internal/manifest.LegacyPath` — the old flat
 `<denHome>/state/sandboxes/<sandbox>.yaml` a pre-directory-layout den left — is still read,
 **permanently**, not as a migration phase: `state/` is never purged, so every sandbox created before
-this change keeps its record only there, and den converts nothing. Every reader falls back on the
-old derivation when neither file is readable — `den rm` must never refuse and strand a live VM
-(doctrine T13/T16), and den never deletes a record it could not read (it may belong to a newer
-den). `state/` is not `cache/`: it is never purged.
+this change keeps its record only there, and den converts nothing. Two DIFFERENT fallbacks, not one:
+`manifest.Read` itself falls back from the new path to `LegacyPath` only when the new file is
+ABSENT — that is the legacy-format read, still a real record. `den rm`'s worktree cleanup goes one
+step further and falls back on the OLD DERIVATION (re-deriving mounts from the nest and
+`config.yaml`, saying so) only when the manifest it ends up with — after that first fallback — is
+still unreadable, whether because both paths are missing or because what it found does not decode.
+Never a refusal either way: `den rm` must never strand a live VM (doctrine T13/T16), and den never
+deletes a record it could not read (it may belong to a newer den). `state/` is not `cache/`: it is
+never purged.
 
 **`~/.den` is the single source of truth, and `den doctor` now says where it is NOT** (#88). sbx
 writes machine state den does not own — the global secret store, the MCP registry, the agent-skills
@@ -199,6 +205,24 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   descriptors through. Measured 2026-08-24, §14.2 carries the table. Do not repeat the first
   reading of that probe, which used `stdin=/dev/null` throughout and wrongly concluded the wizard
   could never reach den.
+- The same mother spec's §4-§6, written before the emitter shipped, still describe den's SPAWN as an
+  `sbx create` argv assembly, in at least seven places: the naming constraint pinned to `sbx create
+  --name` (lines 53, 58), `image:`'s comment "passé à `sbx create --template` au spawn" (line 144),
+  the repo-selection basename check pinned to "une position dans l'argv de `sbx create`" (line 260),
+  §6 point 6's whole `sbx create` assembly paragraph (lines 281-285), the ssh agent-forward table
+  headed "flags de `sbx create`" and its "avant le `sbx create`" warning timing (lines 781, 820), and
+  the TDD section's "assemblage de l'argv `sbx create`" golden-file strategy for spawn (line 993).
+  Per this file's own doctrine above, that is now a bug in the spec, not a phase — but it stays
+  UNREWRITTEN, for the same reason the dated handoffs and plans above are: it is a 2026-07-27
+  snapshot, extended (not superseded) by the 2026-08-24 positioning spec, and rewriting it would blur
+  which document is authoritative for the era it describes. Translate `sbx create` → `sbx env
+  create` / `.sbxenv.yaml` at each of those seven sites when reading them. Checked and NOT stale in
+  the same document, on purpose: line 146 (`base:`'s comment) names `sbx create`'s positional AGENT
+  too, but that one is genuinely a BUILD-time concept — `internal/build` still assembles that argv,
+  unchanged — so it is left alone deliberately, not by oversight. Likewise the build sequence table
+  (lines 370, 382, 404) and the measured `sbx create` surface at §14.0-§14.2 (flags, `--label`, the
+  setup-wizard gate) describe the sbx BINARY or the build engine, not den's spawn engine, and both
+  stay true regardless of which engine spawn runs.
 - `.claude/worktrees/feat+spawn-interactive/` is a full shadow copy of the tree. Exclude it from
   greps or every search returns doubled hits.
 - Il n'y a plus de `Makefile` : le runner est `Taskfile.yml` depuis le 2026-08-04. Les plans

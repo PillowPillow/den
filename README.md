@@ -262,19 +262,24 @@ the nest nor `config.yaml` changed since. Under the `per-repo` layout a leftover
 sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den added to that
 repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to remove.
 
-**A sandbox created before den grew this record has no `.sbxenv.yaml` either, and you will hit that
-once.** den destroys through `sbx env rm`, handed the `.sbxenv.yaml` it wrote at creation next to
-`manifest.yaml`, and refuses to destroy without a readable one it can vouch for — a sandbox from
-before this change has neither file, so its `den rm` refuses, naming the escape hatch: `den rm
---force <sandbox>`, which destroys it **by name** through `sbx rm --force` instead. That is not a
-defect; it is the same fallback the missing-manifest case above takes, one file over. There is no
-migration: `~/.den/state/` is never purged and den converts nothing, so a sandbox missing either
-record — the manifest, the `.sbxenv.yaml`, or both — stays exactly as it is, permanently.
+**A sandbox created before den emitted `.sbxenv.yaml` has none, and you will hit that once, at
+teardown.** Its manifest, if it has one, still reads fine — from the old flat path above, which den
+keeps reading — so the worktree record is intact; only the destroy step is affected. den destroys
+through `sbx env rm`, handed the `.sbxenv.yaml` it wrote at creation next to `manifest.yaml`, and
+refuses outright, **before touching anything**, when that file is missing or unreadable — unlike the
+worktree record above, this step never falls back quietly. `den rm` then names the escape hatch:
+`den rm --force <sandbox>`, which destroys it **by name** through `sbx rm --force` instead. That is
+not a defect; it is `den rm` correctly refusing a destroy it cannot vouch for. There is no migration:
+`~/.den/state/` is never purged and den converts nothing, so a sandbox from before this change keeps
+missing its `.sbxenv.yaml` permanently.
 
 Options of `den rm`: `--keep-worktrees` (keep the worktrees, and their record, so `den doctor` can
-still find them), `--force` (reclaim them even if they carry uncommitted changes, **and** — when the
-`.sbxenv.yaml` is missing or unreadable — destroy by name instead of refusing; without it, den
-refuses **before** touching the VM).
+still find them), `--force` — **one flag, two senses, and asking for either one can get you both.**
+It reclaims worktrees even if they carry uncommitted changes, AND it destroys by name — skipping the
+`.sbxenv.yaml` check above — when that file is missing or unreadable. Ask for the first while the
+record is also bad and den announces the substitution before it destroys anything; ask for the
+second while a worktree is also dirty and den reclaims it too, **without a separate warning** — the
+same `--force` reaches both checks. Without it at all, den refuses **before** touching the VM.
 
 `den doctor` reports records whose sandbox is gone — a `sbx rm` run outside den, a failed boot, a
 `den rm --keep-worktrees` — as a warning naming the directories still on disk; `den doctor --fix`
@@ -396,8 +401,9 @@ both survive:
 - **`memory:` uses sbx's grammar**, binary units: `1024m`, `8g`, `2gib`, `4G`, or a bare number of
   bytes. **The minimum is 1 GiB**, and den refuses a smaller value itself — sbx refuses it too, but
   only after pulling the image, by which point den has already created your worktrees.
-- **`cpus:` omitted sends no flag at all.** `cpus: 0` is sbx's own *auto: all host CPUs*, and it is
-  written when you want a nest to give a stack's fixed count back to the host default.
+- **`cpus:` omitted writes no `cpus:` key in `sandboxOptions` at all.** `cpus: 0` is sbx's own
+  *auto: all host CPUs*, and it is written when you want a nest to give a stack's fixed count back
+  to the host default.
 - **Nothing resizes a running VM.** Edit `resources:` on a nest whose sandbox is live and the next
   `den up` warns that the sandbox runs with the size from its creation, naming both numbers. To
   apply the new one: `sbx rm --force <sandbox>`, then relaunch.
