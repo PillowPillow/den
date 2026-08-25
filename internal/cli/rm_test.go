@@ -108,39 +108,24 @@ func TestRmDestroysTheSandbox(t *testing.T) {
 	}
 }
 
-// writeEnvRecord puts a .sbxenv.yaml where den will look for it. Written
-// through sbx.EnvFile rather than by hand: a hand-written fixture would drift
-// from what den really emits, and this test's whole subject is that den reads
-// back its own emission.
+// writeEnvRecord puts a .sbxenv.yaml where den will look for it, describing
+// exactly that sandbox — the ordinary case. A thin facade over
+// writeEnvRecordAt (atSandbox == describesSandbox): one body to maintain
+// rather than two copies that would drift the day sbx.EnvFile's required
+// fields change.
 func writeEnvRecord(t *testing.T, denHome, sandbox string) string {
 	t.Helper()
-	out, err := sbx.EnvFile(sbx.Env{
-		Name:       sandbox,
-		Image:      "devx:v1",
-		MixinKit:   filepath.Join(denHome, "cache", "mixins", sandbox),
-		Workspaces: []string{"/dev/api", "/profile/claude"},
-	})
-	if err != nil {
-		t.Fatalf("EnvFile: %v", err)
-	}
-	path, err := manifest.SbxEnvPath(denHome, sandbox)
-	if err != nil {
-		t.Fatalf("SbxEnvPath: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, out, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return writeEnvRecordAt(t, denHome, sandbox, sandbox)
 }
 
 // writeEnvRecordAt puts a well-formed, readable `.sbxenv.yaml` at the path
 // `den rm atSandbox` will look for, but carrying `name: describesSandbox` —
 // reproducing the one case CheckEnvFile's second argument exists to catch: a
 // record den can decode perfectly, sitting under the right sandbox's
-// directory, that nonetheless does NOT describe that sandbox.
+// directory, that nonetheless does NOT describe that sandbox. Written through
+// sbx.EnvFile rather than by hand: a hand-written fixture would drift from
+// what den really emits, and half of this file's tests are precisely about
+// den reading back its own emission.
 func writeEnvRecordAt(t *testing.T, denHome, atSandbox, describesSandbox string) string {
 	t.Helper()
 	out, err := sbx.EnvFile(sbx.Env{
@@ -356,6 +341,40 @@ func TestRmForceAnnouncesTheByNameDestructionForAnAbsentRecord(t *testing.T) {
 	if !strings.Contains(out, "sbx secret ls --sandbox api") {
 		t.Errorf("the announcement does not name how to see the secrets left behind:\n%s", out)
 	}
+	if f.HasCalled("env", "rm") {
+		t.Errorf("den handed sbx a record it could not vouch for; calls: %v", f.Calls)
+	}
+	// ORDER, proven the only way that has real teeth: by making the destroy
+	// call ITSELF fail. A string-position check against the final success
+	// line does NOT catch "the announce block moved to sit after
+	// runner.Run(ctx, \"rm\", \"--force\", name)" (fix round 1, finding 1) —
+	// both prints still land, in the same relative order to EACH OTHER, no
+	// matter which side of that Run call they sit on; only their order
+	// relative to the Run call itself is the property under test, and that is
+	// not observable from string positions in a successful run. Scripting the
+	// destroy call to fail makes it observable: if the announcement runs
+	// AFTER runner.Run, the failing call returns before den ever reaches it,
+	// and `out` (which keeps whatever was written before the early return)
+	// would not carry it.
+	f2 := &sbx.Fake{Responses: lsWith("api")}
+	f2.Responses["rm --force api"] = sbx.Response{Err: errors.New("sbx: boom")}
+	out2, err2 := executeCmdWithSbx(t, f2, "--den-home", denHome, "rm", "--force", "api")
+	if err2 == nil {
+		t.Fatal("expected the destroy call's failure to propagate")
+	}
+	// Same cause as phase one — the absent-record token, not a generic "by
+	// name": confirms this second run took the same branch, not some other
+	// path that also happens to print "by name".
+	if !strings.Contains(out2, "predates the emitter") || !strings.Contains(out2, "by name") {
+		t.Errorf("the announcement was not printed before the (failing) destroy call:\n%s", out2)
+	}
+	// The other half of the property: den must NOT have reached the success
+	// line. Without this, a change that swallowed the Run error would leave
+	// this test green while den printed "destroyed" for a sandbox it never
+	// destroyed.
+	if strings.Contains(out2, "destroyed (the agent profile is kept)") {
+		t.Errorf("den announced success after a failed destroy call:\n%s", out2)
+	}
 }
 
 // Second sense exercised: den says so BEFORE acting, names why, and names what
@@ -386,9 +405,102 @@ func TestRmForceAnnouncesTheByNameDestruction(t *testing.T) {
 	if !strings.Contains(out, "sbx secret ls --sandbox api") {
 		t.Errorf("the announcement does not name how to see the secrets left behind:\n%s", out)
 	}
+	if f.HasCalled("env", "rm") {
+		t.Errorf("den handed sbx a record it could not vouch for; calls: %v", f.Calls)
+	}
+	// ORDER, same technique as TestRmForceAnnouncesTheByNameDestructionForAnAbsentRecord
+	// (see its comment for why a string-position check against the success
+	// line does not actually catch the announce block moving to after
+	// runner.Run): make the destroy call fail, and check the announcement
+	// still reached `out` before den returned the propagated error.
+	f2 := &sbx.Fake{Responses: lsWith("api")}
+	f2.Responses["rm --force api"] = sbx.Response{Err: errors.New("sbx: boom")}
+	out2, err2 := executeCmdWithSbx(t, f2, "--den-home", denHome, "rm", "--force", "api")
+	if err2 == nil {
+		t.Fatal("expected the destroy call's failure to propagate")
+	}
+	// Same cause as phase one — schemaVersion, the unreadable-file token, not
+	// a generic "by name": confirms this second run took the same branch.
+	if !strings.Contains(out2, "schemaVersion") || !strings.Contains(out2, "by name") {
+		t.Errorf("the announcement was not printed before the (failing) destroy call:\n%s", out2)
+	}
+	if strings.Contains(out2, "destroyed (the agent profile is kept)") {
+		t.Errorf("den announced success after a failed destroy call:\n%s", out2)
+	}
 	// The unreadable file SURVIVES: den never deletes what it could not read.
 	if _, err := os.Stat(envPath); err != nil {
 		t.Errorf("den deleted a record it could not read: %v", err)
+	}
+}
+
+// The third cause on the --force side (fix round 1, finding 2): a record
+// den can decode perfectly, sitting under state/sandboxes/api/, but whose
+// `name:` says "web". The behaviour is right by construction — the guard is
+// `envErr != nil && force`, and `cause` is computed once above both branches
+// — but until this test, no announce-side assertion pinned it: only the
+// refusal test (TestRmRefusesARecordNamingAnotherSandbox) covered the
+// mismatch cause, and only on the !force route. This one matters more than
+// the other two announce tests: the wording has to carry, correctly, that
+// den is about to destroy "api" by name PRECISELY BECAUSE the file could not
+// be proven to describe "api" — not because it is corrupt or absent.
+func TestRmForceAnnouncesTheByNameDestructionForAMismatchedRecord(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecordAt(t, denHome, "api", "web")
+
+	f := &sbx.Fake{Responses: lsWith("api")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "--force", "api")
+	if err != nil {
+		t.Fatalf("--force must destroy, not refuse: %v", err)
+	}
+	// By NAME: "api", the sandbox the user typed — never "web", the name the
+	// mismatched file claims. `sbx rm` resolves by the argument it is given,
+	// unlike `sbx env rm`, which is exactly why this fallback exists.
+	if !f.HasCalled("rm", "--force", "api") {
+		t.Errorf("--force did not destroy \"api\" by name; calls: %v", f.Calls)
+	}
+	if f.HasCalled("rm", "--force", "web") {
+		t.Errorf("den destroyed \"web\", the name the mismatched file claims, instead of \"api\", "+
+			"the name the user typed; calls: %v", f.Calls)
+	}
+	// The cause-specific sentence: CheckEnvFile's own mismatch diagnosis,
+	// naming both sandboxes, not a generic "unreadable" or "absent" wording.
+	if !strings.Contains(out, "web") || !strings.Contains(out, "api") {
+		t.Errorf("the announcement does not name the mismatch (api vs web):\n%s", out)
+	}
+	if !strings.Contains(out, "does not describe the sandbox") {
+		t.Errorf("the announcement does not carry CheckEnvFile's mismatch diagnosis:\n%s", out)
+	}
+	if !strings.Contains(out, envPath) {
+		t.Errorf("the announcement does not name the file:\n%s", out)
+	}
+	if !strings.Contains(out, "by name") {
+		t.Errorf("the announcement does not say the destruction is by name:\n%s", out)
+	}
+	if !strings.Contains(out, "sbx secret ls --sandbox api") {
+		t.Errorf("the announcement does not name how to see the secrets left behind:\n%s", out)
+	}
+	if f.HasCalled("env", "rm") {
+		t.Errorf("den handed sbx a record it could not vouch for; calls: %v", f.Calls)
+	}
+	// ORDER, same technique as TestRmForceAnnouncesTheByNameDestructionForAnAbsentRecord.
+	f2 := &sbx.Fake{Responses: lsWith("api")}
+	f2.Responses["rm --force api"] = sbx.Response{Err: errors.New("sbx: boom")}
+	out2, err2 := executeCmdWithSbx(t, f2, "--den-home", denHome, "rm", "--force", "api")
+	if err2 == nil {
+		t.Fatal("expected the destroy call's failure to propagate")
+	}
+	// Same cause as phase one — the mismatch diagnosis, not a generic "by
+	// name": confirms this second run took the same branch.
+	if !strings.Contains(out2, "does not describe the sandbox") || !strings.Contains(out2, "by name") {
+		t.Errorf("the announcement was not printed before the (failing) destroy call:\n%s", out2)
+	}
+	if strings.Contains(out2, "destroyed (the agent profile is kept)") {
+		t.Errorf("den announced success after a failed destroy call:\n%s", out2)
+	}
+	// The mismatched file SURVIVES: den never deletes what it could not vouch for.
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not vouch for: %v", err)
 	}
 }
 
@@ -405,7 +517,12 @@ func TestRmForceStaysSilentAboutTheSecondSense(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := stdout + stderr
-	for _, noise := range []string{"by name", "sbx secret", "scoped secrets"} {
+	// "secrets scoped", not "scoped secrets": the message reads "the secrets
+	// scoped to it are left in place" (rm.go), so a token that doesn't occur
+	// verbatim in den's own output can never fail this assertion — it was
+	// carried over from the brief without checking the exact wording; caught
+	// by fix round 1, finding 3.
+	for _, noise := range []string{"by name", "sbx secret", "secrets scoped"} {
 		if strings.Contains(out, noise) {
 			t.Errorf("den mentions the second sense of --force when it did not exercise it (%q):\n%s", noise, out)
 		}
