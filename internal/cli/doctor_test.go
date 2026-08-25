@@ -331,6 +331,70 @@ func TestDoctorFixReclaimsOrphanedWorktrees(t *testing.T) {
 	}
 }
 
+// Final review, Critical 1: `den doctor --fix` reaches manifest.Remove through
+// the SAME shared body as `den rm` (cleanFromManifest), but `den rm`'s leak
+// fix (f9820be) is gated on `envErr == nil` — a gate only rm.go's RunE
+// computes. Without the mirror here, manifest.Remove deletes manifest.yaml,
+// os.Remove(dir) fails on the surviving .sbxenv.yaml, and the directory goes
+// invisible to manifest.List (which correctly skips a directory with no
+// manifest.yaml) — permanently, since state/ is never purged and nothing will
+// ever call --fix on an orphan already reclaimed. Reproduced empirically by
+// the final reviewer: after --fix, a second `den doctor` answered "all good".
+//
+// CheckEnvFile is the SAME doctrine rm.go:219 applies to its own primary
+// route: den only deletes a file it could vouch for. Here that means the
+// orphan's OWN sandbox name, exactly as CheckEnvFile validates on the `den
+// rm` path — a mismatched or unreadable file must not be deleted just because
+// it happens to sit in the directory of a sandbox that is now gone.
+func TestDoctorFixRemovesTheSbxEnvRecordOfAnOrphan(t *testing.T) {
+	home := testDenHome(t)
+	wt := orphanFixture(t, home, "api.feat12")
+	envPath := writeEnvRecord(t, home, "api.feat12")
+	f := &sbx.Fake{Responses: lsWith()}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f, "--fix")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the orphaned worktree must be reclaimed: %v", err)
+	}
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Errorf("the .sbxenv.yaml must not survive --fix: stat = %v", err)
+	}
+	if dir, err := manifest.SandboxDir(home, "api.feat12"); err != nil {
+		t.Fatal(err)
+	} else if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Errorf("the sandbox directory must not survive --fix: %s (stat = %v)", dir, statErr)
+	}
+}
+
+// The mirror case, same doctrine as `--force` on `den rm`: a record den
+// cannot vouch for must SURVIVE, even under --fix. den never deletes a file
+// it could not read (spec §11) — the orphan's directory being reclaimable is
+// not a reason to relax that for the one file inside it den cannot vouch for.
+func TestDoctorFixLeavesAnUnvouchableSbxEnvRecordAlone(t *testing.T) {
+	home := testDenHome(t)
+	wt := orphanFixture(t, home, "api.feat12")
+	envPath := writeEnvRecord(t, home, "api.feat12")
+	// A NEWER den's file: good YAML, a schemaVersion this den does not emit.
+	if err := os.WriteFile(envPath, []byte("schemaVersion: \"9\"\nagent: shell\nname: api.feat12\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &sbx.Fake{Responses: lsWith()}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f, "--fix")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the orphaned worktree must still be reclaimed: %v", err)
+	}
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not vouch for: %v", err)
+	}
+}
+
 // Proof 13 — a dirty worktree stops --fix, exactly as it stops rm. --force is
 // the same consent, with the same effect: the trash, never deletion.
 func TestDoctorFixRefusesADirtyWorktreeUnlessForced(t *testing.T) {
@@ -434,5 +498,71 @@ func TestDoctorPassesWhenTheNetworkPolicyAnswers(t *testing.T) {
 	}
 	if !strings.Contains(out, "[ok  ] sbx policy") {
 		t.Errorf("the check is missing from a healthy report:\n%s", out)
+	}
+}
+
+// Issue #88's own property, end to end: `den doctor` NAMES the machine state
+// no source declares, and stays out of the exit code while doing it.
+//
+// The home holds no source at all, which is the case the report must handle
+// rather than skip: den declares nothing, sbx wrote something, and every entry
+// present is therefore undeclared. A doctor silent here would describe a
+// machine reachable by three other authors as a machine den fully describes —
+// the blind spot spec §2 forbids.
+func TestDoctorNamesTheSbxStateNoSourceDeclares(t *testing.T) {
+	home := testDenHome(t)
+	m := sbx.NewMachine()
+	m.Services["github"] = true
+	m.Registries["ghcr.io:443"] = true
+	m.MCPServers["notion"] = true
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), m)
+	if err != nil {
+		t.Fatalf("undeclared state must not fail the report: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "[warn] sbx secrets") || strings.Contains(out, "[FAIL] sbx secrets") {
+		t.Errorf("the undeclared-state report weighs on the exit contract:\n%s", out)
+	}
+	secrets := reportLine(t, out, "sbx secrets")
+	for _, want := range []string{"present, undeclared", "service github", "registry ghcr.io:443"} {
+		if !strings.Contains(secrets, want) {
+			t.Errorf("the secrets line %q is missing %q", secrets, want)
+		}
+	}
+	if mcp := reportLine(t, out, "sbx mcp servers"); !strings.Contains(mcp, "present, undeclared") {
+		t.Errorf("a registered MCP server is not reported: %q", mcp)
+	}
+	// The skills store is empty on this machine, and "empty" must read as
+	// empty rather than as one more thing to go and look at.
+	if skills := reportLine(t, out, "sbx skills"); strings.Contains(skills, "undeclared") {
+		t.Errorf("an empty skills store is reported as undeclared: %q", skills)
+	}
+	// The report is a diagnosis, never a cleanup: den removes nothing it did
+	// not create, here or anywhere.
+	if m.HasCalled("mcp", "rm") || m.HasCalled("secret", "rm") {
+		t.Errorf("den removed sbx state it did not create: %v", m.Calls)
+	}
+}
+
+// Without sbx there is no surface to report, and the `sbx` check already says
+// so. Three more lines restating it in other words make the report harder to
+// act on — the rule networkPolicyChecks follows, pinned here because the skip
+// is easy to lose while adding a fourth surface.
+func TestDoctorSaysNothingAboutUndeclaredStateWithoutSbx(t *testing.T) {
+	home := testDenHome(t)
+	deps := doctor.FakeDeps()
+	// A plain error, not exec.ErrNotFound: internal/ports/hermeticity_test.go
+	// locks internal/cli out of os/exec, and importing it here to spell one
+	// sentinel would be the import that breaks the graph.
+	deps.LookPath = func(string) (string, error) { return "", errors.New("executable file not found in $PATH") }
+
+	out, err := runDoctorWithSbx(t, home, deps, sbx.NewMachine())
+	if err == nil {
+		t.Fatalf("a missing sbx must fail den doctor:\n%s", out)
+	}
+	for _, name := range []string{"sbx secrets", "sbx mcp servers", "sbx skills"} {
+		if strings.Contains(out, name) {
+			t.Errorf("the %q line restates a missing sbx:\n%s", name, out)
+		}
 	}
 }

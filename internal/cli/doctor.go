@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
@@ -88,7 +89,31 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 			// failed for different reasons (review PR82, I1). The source lines
 			// now deduplicate among themselves; see sourceChecks.
 			checks = append(checks, networkPolicyChecks(cmd.Context(), deps, runner)...)
-			checks = append(checks, sourceChecks(cmd.Context(), home, runner, g)...)
+			// ONE observation of the machine for every check that needs one.
+			// It used to be read inside sourceChecks, which is where it was
+			// needed and nowhere else; the undeclared-state report needs the
+			// same inventory, and a second read would run the same subprocess
+			// for a verdict that cannot differ — machine state, not source
+			// state, the very argument PR82 settled one level down.
+			//
+			// Read UNCONDITIONALLY, sbx missing from the PATH included, and
+			// that is for ONE of the two callers: sourceChecks needs sbx's own
+			// failure verbatim, which it turns into an unobserved plan — never
+			// an empty one, which would report a configured machine as broken.
+			// undeclaredChecks does NOT need it there; it skips itself when sbx
+			// is absent, because the `sbx` check already failed on that and a
+			// second line restating it only makes the report harder to act on.
+			//
+			// So a home with no manifested source and no sbx pays two reads
+			// nobody consumes. Left that way rather than guarded: both resolve
+			// on exec.ErrNotFound without starting a process, and the guard
+			// would mean synthesizing an observation error here — a second
+			// wording for a failure sbx already words itself.
+			state, observeErr := converge.ReadSbxState(cmd.Context(), runner)
+			checks = append(checks, sourceChecks(cmd.Context(), home, runner, g,
+				state, observeErr)...)
+			checks = append(checks, undeclaredChecks(cmd.Context(), home, deps, runner,
+				state, observeErr)...)
 
 			failures, warnings := 0, 0
 			for _, c := range checks {
@@ -161,6 +186,37 @@ func reclaimOrphans(ctx context.Context, home string, orphans []doctor.Orphan,
 		if err := cleanFromManifest(ctx, home, byName[o.Sandbox], g, force, out); err != nil {
 			return err
 		}
+		// Final review, Critical 1: `den rm`'s primary route deletes the
+		// .sbxenv.yaml it just consumed (rm.go's f9820be leak fix), gated on
+		// `envErr == nil` — a gate only rm.go's RunE computes, from `sbx env
+		// rm` having just succeeded. `den doctor --fix` never calls `sbx env
+		// rm` at all — the sandbox is already gone, that is what ORPHAN
+		// means — so it applies the SAME doctrine directly: delete the file
+		// only when den can still vouch for it belonging to THIS sandbox
+		// (CheckEnvFile, the identical check rm.go:93 makes), then retry the
+		// directory `manifest.Remove` (called from cleanFromManifest, ABOVE
+		// this point) already tried and found non-empty because this file
+		// was still in it.
+		//
+		// Without this, manifest.Remove deletes manifest.yaml, os.Remove(dir)
+		// fails on the surviving .sbxenv.yaml, and manifest.List — correctly
+		// — skips a directory with no manifest.yaml: the orphan becomes
+		// permanently invisible to `den ls` and `den doctor` alike, in
+		// state/, which is never purged. Reproduced empirically (2026-08-25):
+		// a second plain `den doctor` after --fix answered "all good".
+		//
+		// Both errors dropped, same reasoning as rm.go: the worktrees are
+		// already reclaimed and the manifest already gone by this point, so
+		// failing `den doctor --fix` now over local housekeeping would refuse
+		// a completed reclaim (doctrine T13/T16).
+		if envPath, err := manifest.SbxEnvPath(home, o.Sandbox); err == nil {
+			if sbx.CheckEnvFile(envPath, o.Sandbox) == nil {
+				_ = os.Remove(envPath)
+				if dir, err := manifest.SandboxDir(home, o.Sandbox); err == nil {
+					_ = os.Remove(dir)
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -227,8 +283,12 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 // states the machine cause on no source line at all — as it did before this
 // dedup existed. The cause is still `den source status <name>`, and the `sbx
 // policy` line when the policy read is what failed.
+// state and observeErr are the caller's single observation of the machine (see
+// the read in RunE). They are PARAMETERS rather than a read of its own for the
+// reason this function already gives below about re-reading per source: the
+// verdict is machine state, and two reads of it can disagree.
 func sourceChecks(ctx context.Context, home string, runner sbx.Runner,
-	g worktree.Git) []doctor.Check {
+	g worktree.Git, state *converge.SbxState, observeErr error) []doctor.Check {
 	names, err := source.Names(home)
 	if err != nil {
 		// A home with no sources/ directory is the normal case, not a fault.
@@ -256,7 +316,6 @@ func sourceChecks(ctx context.Context, home string, runner sbx.Runner,
 	// A FAILED observation lands in every source's plan, so it is stated on the
 	// first line that can state it and pointed at from the rest — see
 	// sourceDetail below.
-	state, observeErr := converge.ReadSbxState(ctx, runner)
 	var checks []doctor.Check
 	// statedBy is the source whose line already printed that cause, empty
 	// while none has. The sorted iteration is what makes the pointer honest:
@@ -337,4 +396,96 @@ func sourceDetail(p *converge.Plan, statedBy string) (string, bool) {
 		return detail + fmt.Sprintf(" — `den source status %s` says what is missing", p.Source), false
 	}
 	return detail, false
+}
+
+// undeclaredChecks reports the machine state sbx writes and no den source
+// declares — the governance gap issue #88 exists to close.
+//
+// den's model is that `~/.den` is the single source of truth. sbx v0.39.0
+// ships three other authors writing to the same machine (`sbx setup` /
+// `sbx secret set`, `sbx skills import`, `sbx mcp add`), and den said nothing
+// about any of them. Silence is the one answer spec §2 forbids: den refuses
+// rather than normalizing without saying so, and here it did neither — it
+// simply did not look.
+//
+// Nothing is ever removed, here or behind `--fix`. den never deletes what it
+// did not create; naming it is the entire remedy, and the user decides.
+//
+// Read HERE and not in internal/doctor, like the live list, the policy check
+// and the source lines above: that package promises "no side effects, no
+// network" in its first line. cli owns the runner; doctor owns the verdict
+// (doctor.UndeclaredCheck).
+//
+// Skipped entirely when sbx is not on the PATH, the same rule
+// networkPolicyChecks follows: the `sbx` check already failed on that, and
+// three more lines restating it in other words only make the report harder to
+// act on.
+func undeclaredChecks(ctx context.Context, home string, deps doctor.Deps, runner sbx.Runner,
+	state *converge.SbxState, observeErr error) []doctor.Check {
+
+	if _, err := deps.LookPath("sbx"); err != nil {
+		return nil
+	}
+	var checks []doctor.Check
+	// Secrets first: it is the one surface den can name entry by entry, and
+	// the only one where "undeclared" is a comparison rather than a
+	// tautology.
+	if observeErr != nil {
+		checks = append(checks, doctor.UndeclaredCheck(
+			doctor.UnobservedSurface("sbx secrets", "sbx secret ls -g")))
+	} else {
+		checks = append(checks, doctor.UndeclaredCheck(doctor.NamedSurface(
+			"sbx secrets", "sbx secret ls -g", state.SecretEntries(), declaredSecrets(home))))
+	}
+	// The opaque surfaces. Each read is its OWN subprocess and its own
+	// failure: one unreadable store must not delete the report of the others,
+	// which is the same reason doctor.Run never stops at the first problem.
+	for _, store := range sbx.Stores {
+		occupied, err := sbx.ReadStore(ctx, runner, store)
+		if err != nil {
+			checks = append(checks, doctor.UndeclaredCheck(
+				doctor.UnobservedSurface(store.Name, store.Look)))
+			continue
+		}
+		checks = append(checks, doctor.UndeclaredCheck(
+			doctor.OpaqueSurface(store.Name, store.Look, occupied)))
+	}
+	return checks
+}
+
+// declaredSecrets collects the secret identities every manifested source in
+// this home claims.
+//
+// A source whose manifest den cannot READ contributes nothing, and the
+// direction of that concession is deliberate: a credential then shows up as
+// undeclared — a line too many — where swallowing the failure would hide a
+// present credential, which is the blind spot this whole report repairs. The
+// unreadable manifest is not lost either: sourceChecks above already fails
+// that source's own line, which is where the remedy belongs.
+//
+// Legacy sources (no manifest at all) declare nothing by construction. That is
+// not a defect of theirs: they predate the resource vocabulary, and den has
+// never claimed to converge them.
+func declaredSecrets(home string) map[string]bool {
+	names, err := source.Names(home)
+	if err != nil {
+		// No sources/ directory is the normal case. Everything present is then
+		// undeclared, which is the honest answer on a machine with no source.
+		return nil
+	}
+	declared := map[string]bool{}
+	for _, name := range names {
+		root := source.Dir(home, name)
+		if !source.HasManifest(root) {
+			continue
+		}
+		m, err := source.LoadManifest(root)
+		if err != nil {
+			continue
+		}
+		for _, id := range converge.DeclaredSecrets(m) {
+			declared[id] = true
+		}
+	}
+	return declared
 }

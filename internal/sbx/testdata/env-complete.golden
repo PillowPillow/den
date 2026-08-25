@@ -1,0 +1,15 @@
+schemaVersion: "1"
+agent: shell
+name: api.feat12
+workspace:
+  path: /den/worktrees/feat12/api
+additionalWorkspaces:
+  - path: /den/worktrees/feat12/front
+  - path: /home/me/.den/agents/claude
+  - path: /home/me/.ssh_sbx
+kits:
+  - /den/kits/ssh-known-hosts
+  - /den/stacks/dgdevx/kit
+  - /den/cache/mixins/api.feat12
+sandboxOptions:
+  template: docker.io/library/dgdevx:v1

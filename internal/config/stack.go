@@ -45,6 +45,16 @@ type Stack struct {
 	// ORDER IS SIGNIFICANT: it's an sbx layering order, not a set — never sort it.
 	Kits   []string `yaml:"kits"`
 	Egress []string `yaml:"egress"`
+	// Resources sizes the microVM a spawn of this stack gets, unless a nest or
+	// a flag restates a field (see Resources — the merge is field by field).
+	// A stack is where a TOOLCHAIN's floor belongs: "this image needs 8 GiB to
+	// link" is a property of the recipe, not of any one nest.
+	//
+	// It applies to SPAWNS only. `den build` assembles its own `sbx create`
+	// (internal/build/sandbox.go) and deliberately does not read this: a build
+	// VM is den's, transient, and sizing it from a field meant for the user's
+	// working sandbox would make one number answer two unrelated questions.
+	Resources Resources `yaml:"resources"`
 
 	// Base is the sbx AGENT positional, and applies to ROOT stacks only — the
 	// ones with no `parent:`, which therefore get no `--template`. There the
@@ -93,7 +103,7 @@ type Stack struct {
 //
 // SOLE SOURCE of "which kits this stack declares, in what order". The order
 // is a SAFETY property, not display convenience: sbx layers kits in `--kit`
-// order, and the mixin — appended AFTER this list by sbx.CreateArgv — must
+// order, and the mixin — appended AFTER this list by sbx.EnvFile — must
 // stay last so its freshness command is the last startup step run (spec §9.1).
 func (s *Stack) DeclaredKits() []string {
 	kits := make([]string, 0, len(s.Kits)+1)
@@ -174,7 +184,7 @@ func LoadStack(denHome, name string) (*Stack, error) {
 	//     user has already applied. Worse, it fires in the whole-chain
 	//     pre-flight, so one stack missing `image:` refuses the entire
 	//     `den build`.
-	//   - a PULLABLE stack does reach sbx.CreateArgv's own empty-image guard,
+	//   - a PULLABLE stack does reach sbx.EnvFile's own empty-image guard,
 	//     but only at the spawn's `create` — after the worktrees and the agent
 	//     profile exist. Refusing at LOAD time is the ordering internal/spawn
 	//     states at length: everything rejectable from config alone is rejected
@@ -182,7 +192,7 @@ func LoadStack(denHome, name string) (*Stack, error) {
 	//     the boundary guard its own doc says it is, rather than the only thing
 	//     between the user and a late, half-materialized refusal.
 	//
-	// TrimSpace and not `== ""`: sbx.CreateArgv guards the same question the
+	// TrimSpace and not `== ""`: sbx.EnvFile guards the same question the
 	// same way, and two guards on one question must not disagree over
 	// `image: "  "`.
 	if strings.TrimSpace(s.Image) == "" {

@@ -4,10 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -88,10 +88,10 @@ func TestNonSandboxableWorktreeIsRefusedWithoutCreatingAnything(t *testing.T) {
 
 // Case 7 of the table — a nest with no repo at all.
 //
-// The question the brief asked: does `sbx create` still get at least one
+// The question the brief asked: does `sbx env create` still get at least one
 // workspace? Measured answer: yes, the agent's profile. This test pins it,
-// because CreateArgv REJECTS a create with no workspace ("sbx create requires
-// at least one path"): if the profile ever stopped being mounted, a
+// because EnvFile REJECTS an emission with no workspace ("sbx env create
+// requires at least one path"): if the profile ever stopped being mounted, a
 // repo-less nest would become unsandboxable, and the message would talk about
 // missing workspaces without saying the profile is what vanished.
 func TestANestWithNoRepoStillMountsTheAgentProfile(t *testing.T) {
@@ -105,24 +105,28 @@ func TestANestWithNoRepoStillMountsTheAgentProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a nest with no repo must stay spawnable: %v", err)
 	}
-	if !f.HasCalled("create") {
-		t.Fatalf("no `sbx create`; calls: %v", f.Calls)
+	if !f.HasCalled("env", "create") {
+		t.Fatalf("no `sbx env create`; calls: %v", f.Calls)
 	}
-	var create []string
-	for _, a := range f.Calls {
-		if len(a) > 0 && a[0] == "create" {
-			create = a
-		}
+	envPath, err := manifest.SbxEnvPath(home, "api")
+	if err != nil {
+		t.Fatalf("SbxEnvPath: %v", err)
 	}
-	// The agent's profile is the fallback workspace, and the only one here.
+	content, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("the emitted file is missing: %v", err)
+	}
+	// The agent's profile is the fallback workspace, and the only one here —
+	// it must render as `workspace:`, the FIRST and only workspace key: a
+	// second entry would spill into `additionalWorkspaces:`, which a create
+	// with only the profile must never emit.
 	profile := filepath.Join(home, "agents", "claude")
-	if !slices.Contains(create, profile) {
-		t.Errorf("the agent's profile (%s) must be mounted; create argv = %v", profile, create)
+	if !strings.Contains(string(content), "workspace:\n  path: "+profile+"\n") {
+		t.Errorf("the agent's profile (%s) must be the workspace; .sbxenv.yaml =\n%s",
+			profile, content)
 	}
-	// And it is the LAST positional argument, hence a workspace: a create with
-	// no workspace at all would be rejected by CreateArgv.
-	if create[len(create)-1] != profile {
-		t.Errorf("last workspace = %q, expected profile %q", create[len(create)-1], profile)
+	if strings.Contains(string(content), "additionalWorkspaces:") {
+		t.Errorf("the profile must be the ONLY workspace; .sbxenv.yaml =\n%s", content)
 	}
 }
 
@@ -226,7 +230,7 @@ func TestABrokenStackDoesNotPreventSpawningAHealthyNest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nest api uses devx, healthy: the spawn must succeed; got: %v", err)
 	}
-	if !f.HasCalled("create") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("no `sbx create`; calls: %v", f.Calls)
 	}
 }
@@ -256,7 +260,7 @@ func TestANestWhoseStackIsBrokenFailsNamingTheFault(t *testing.T) {
 		t.Errorf("the stack exists: \"not found\" would send the user to create a file "+
 			"that is already present; got: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("no sandbox must be created; calls: %v", f.Calls)
 	}
 }

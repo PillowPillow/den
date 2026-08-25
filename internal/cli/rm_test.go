@@ -97,13 +97,533 @@ func createTestRepo(t *testing.T, dir string) {
 func TestRmDestroysTheSandbox(t *testing.T) {
 	denHome := t.TempDir()
 	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecord(t, denHome, "api")
 	f := &sbx.Fake{Responses: lsWith("api")}
 
 	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.HasCalled("rm", "--force", "api") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("calls: %v", f.Calls)
+	}
+}
+
+// writeEnvRecord puts a .sbxenv.yaml where den will look for it, describing
+// exactly that sandbox — the ordinary case. A thin facade over
+// writeEnvRecordAt (atSandbox == describesSandbox): one body to maintain
+// rather than two copies that would drift the day sbx.EnvFile's required
+// fields change.
+func writeEnvRecord(t *testing.T, denHome, sandbox string) string {
+	t.Helper()
+	return writeEnvRecordAt(t, denHome, sandbox, sandbox)
+}
+
+// writeEnvRecordAt puts a well-formed, readable `.sbxenv.yaml` at the path
+// `den rm atSandbox` will look for, but carrying `name: describesSandbox` —
+// reproducing the one case CheckEnvFile's second argument exists to catch: a
+// record den can decode perfectly, sitting under the right sandbox's
+// directory, that nonetheless does NOT describe that sandbox. Written through
+// sbx.EnvFile rather than by hand: a hand-written fixture would drift from
+// what den really emits, and half of this file's tests are precisely about
+// den reading back its own emission.
+func writeEnvRecordAt(t *testing.T, denHome, atSandbox, describesSandbox string) string {
+	t.Helper()
+	out, err := sbx.EnvFile(sbx.Env{
+		Name:       describesSandbox,
+		Image:      "devx:v1",
+		MixinKit:   filepath.Join(denHome, "cache", "mixins", describesSandbox),
+		Workspaces: []string{"/dev/api", "/profile/claude"},
+	})
+	if err != nil {
+		t.Fatalf("EnvFile: %v", err)
+	}
+	path, err := manifest.SbxEnvPath(denHome, atSandbox)
+	if err != nil {
+		t.Fatalf("SbxEnvPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The name-mismatch protection (task 5, CheckEnvFile's second argument) is
+// pinned by a unit test in internal/sbx alone (fix round 1, finding 2's own
+// test suite) — nothing in internal/cli fails if that argument is dropped or
+// mis-wired. This is the integration test that closes the hole: a record
+// under state/sandboxes/api/ that reads fine but names "web" must still make
+// `den rm api` refuse, on EITHER route (with or without --force is not the
+// point here — plain `den rm api` must never reach a destroy call at all),
+// because `sbx env rm` resolves the sandbox FROM the file, and handing it
+// this file would destroy web while the user typed `den rm api`.
+func TestRmRefusesARecordNamingAnotherSandbox(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecordAt(t, denHome, "api", "web")
+
+	f := &sbx.Fake{Responses: lsWith("api")}
+	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api")
+
+	if err == nil {
+		t.Fatal("den destroyed a sandbox whose record names a different sandbox")
+	}
+	if !strings.Contains(err.Error(), "api") || !strings.Contains(err.Error(), "web") {
+		t.Errorf("the refusal does not name the mismatch (api vs web): %v", err)
+	}
+	if !strings.Contains(err.Error(), envPath) {
+		t.Errorf("the refusal does not name the file: %v", err)
+	}
+	// Nothing destroyed, on either route: web must not go, and neither must api.
+	if f.HasCalled("env", "rm") || f.HasCalled("rm", "--force") {
+		t.Errorf("den destroyed after refusing; calls: %v", f.Calls)
+	}
+	// The record survives: den never deletes a file it could not vouch for.
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not vouch for: %v", err)
+	}
+}
+
+// The normal path: den hands sbx the file it emitted, and `-f` is not optional
+// — `sbx env rm` prompts for confirmation without it (measured 2026-08-25), and
+// a prompt in a non-interactive `den rm` blocks forever.
+func TestRmRemovesThroughSbxEnvRm(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecord(t, denHome, "api")
+
+	f := &sbx.Fake{Responses: lsWith("api")}
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !f.HasCalled("env", "rm", "-f", envPath) {
+		t.Errorf("den did not destroy through `sbx env rm`; calls: %v", f.Calls)
+	}
+	if f.HasCalled("rm", "--force", "api") {
+		t.Errorf("den destroyed by name on the normal path; calls: %v", f.Calls)
+	}
+	// Post-probe leak fix (2026-08-25): a real `sbx env rm -f` was measured to
+	// NOT delete the .sbxenv.yaml it is handed — `sbx env rm --help` never
+	// claims to. This is the PRIMARY route: CheckEnvFile passed, so den could
+	// read this file, and it has just successfully consumed it — the opposite
+	// of the spec §11 case ("never delete a record den could NOT read"), so
+	// den removes it itself. Without this, state/sandboxes/api/ — a directory
+	// §11 promises is never purged — would keep a stale file after every
+	// successful `den rm` forever, invisible to `den ls`/`den doctor` (task 2's
+	// manifest.List already treats a directory with no manifest.yaml as the
+	// ordinary shape a forced removal leaves).
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Errorf("den left the .sbxenv.yaml behind after successfully consuming it: stat = %v", err)
+	}
+	// The directory itself must go too: manifest.Remove already tried to clear
+	// it (called from cleanWorktrees, upstream of the destroy call) and found
+	// it non-empty because THIS file was still in it — removing the file and
+	// retrying is what finishes that job, and a leftover empty directory is
+	// still a leak in a never-purged tree.
+	if dir, err := manifest.SandboxDir(denHome, "api"); err != nil {
+		t.Fatal(err)
+	} else if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Errorf("den left an empty sandbox directory behind: %s (stat = %v)", dir, statErr)
+	}
+}
+
+// The refusal, and the whole point of it: `sbx env rm` resolves the sandbox FROM
+// the file, so an unreadable file is not a detail den can route around (§5.7 —
+// a limitation is documented, never worked around by a second permanent path).
+// The message must name the file AND the flag that unblocks the same command.
+func TestRmRefusesAnUnreadableEnvRecordAndNamesForce(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecord(t, denHome, "api")
+	// A NEWER den's file: good YAML, a schemaVersion this den does not emit.
+	if err := os.WriteFile(envPath, []byte("schemaVersion: \"9\"\nagent: shell\nname: api\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api")}
+	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api")
+
+	if err == nil {
+		t.Fatal("den destroyed a sandbox whose record it could not read")
+	}
+	if !strings.Contains(err.Error(), envPath) {
+		t.Errorf("the refusal does not name the file: %v", err)
+	}
+	if !strings.Contains(err.Error(), "den rm --force api") {
+		t.Errorf("the refusal does not name the remedy: %v", err)
+	}
+	// Nothing was destroyed, on either route.
+	if f.HasCalled("env", "rm", "-f", envPath) || f.HasCalled("rm", "--force", "api") {
+		t.Errorf("den destroyed after refusing; calls: %v", f.Calls)
+	}
+	// And the record it could not read survives (spec §11).
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not read: %v", err)
+	}
+
+	// The composition fix round 1 (finding 5) found untested at the `den rm`
+	// level: unreadable record + --force + the file is still there afterward.
+	// --force is what a sandbox with no vouchable record has always needed
+	// (§5.8) — it is not "trust this file anyway", it is "destroy by name
+	// instead", and the file this den could not read is never the thing
+	// --force authorizes touching.
+	f2 := &sbx.Fake{Responses: lsWith("api")}
+	if _, err := executeCmdWithSbx(t, f2, "--den-home", denHome, "rm", "api", "--force"); err != nil {
+		t.Fatalf("with --force, the rm must succeed despite the unreadable record: %v", err)
+	}
+	if !f2.HasCalled("rm", "--force", "api") {
+		t.Errorf("--force must destroy through the conceded fallback, by name; calls: %v", f2.Calls)
+	}
+	if f2.HasCalled("env", "rm") {
+		t.Errorf("den must not hand sbx a record it could not vouch for, even under --force; "+
+			"calls: %v", f2.Calls)
+	}
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not read, even under --force: %v", err)
+	}
+}
+
+// The other cause, and it must read differently: no file at all means this
+// sandbox predates the emitter (or was never created by den), which is a fact
+// about WHEN the sandbox was made — not a corruption report about a file the
+// user never knew existed. Both causes name the same remedy.
+func TestRmRefusesAnAbsentEnvRecordAndNamesForce(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	// No writeEnvRecord at all: this sandbox has no .sbxenv.yaml, the ordinary
+	// state of every sandbox created before the emitter shipped.
+	envPath, err := manifest.SbxEnvPath(denHome, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api")}
+	_, err = executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api")
+
+	if err == nil {
+		t.Fatal("den destroyed a sandbox with no record to hand sbx")
+	}
+	if !strings.Contains(err.Error(), "predates the emitter") {
+		t.Errorf("the absent cause must read as a fact about age, not a corruption report: %v", err)
+	}
+	if strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("the raw os.ReadFile diagnosis is CheckEnvFile's UNREADABLE-file sentence, not "+
+			"the ABSENT one: %v", err)
+	}
+	if !strings.Contains(err.Error(), envPath) {
+		t.Errorf("the refusal does not name the file den looked for: %v", err)
+	}
+	if !strings.Contains(err.Error(), "den rm --force api") {
+		t.Errorf("the refusal does not name the remedy: %v", err)
+	}
+	if f.HasCalled("env", "rm") || f.HasCalled("rm", "--force", "api") {
+		t.Errorf("den destroyed after refusing; calls: %v", f.Calls)
+	}
+}
+
+// The absent-record cause, on the --force side this time — the commonest case
+// in the whole plan (a pre-switchover sandbox, created before the emitter
+// shipped) taking the announcement branch. It must read as the same fact
+// TestRmRefusesAnAbsentEnvRecordAndNamesForce pins for the refusal: "predates
+// the emitter", never a raw os.ReadFile "no such file or directory" and never
+// wrapped in an "unreadable" label — the file is not unreadable, it does not
+// exist.
+func TestRmForceAnnouncesTheByNameDestructionForAnAbsentRecord(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	// No writeEnvRecord at all.
+	envPath, err := manifest.SbxEnvPath(denHome, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "--force", "api")
+	if err != nil {
+		t.Fatalf("--force must destroy, not refuse: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "api") {
+		t.Errorf("--force did not destroy by name; calls: %v", f.Calls)
+	}
+	if !strings.Contains(out, "predates the emitter") {
+		t.Errorf("the absent cause must read as a fact about age, not a corruption report:\n%s", out)
+	}
+	if strings.Contains(out, "no such file or directory") {
+		t.Errorf("the raw os.ReadFile diagnosis is CheckEnvFile's UNREADABLE-file sentence, not "+
+			"the ABSENT one:\n%s", out)
+	}
+	if !strings.Contains(out, envPath) {
+		t.Errorf("the announcement does not name the file den looked for:\n%s", out)
+	}
+	if !strings.Contains(out, "by name") {
+		t.Errorf("the announcement does not say the destruction is by name:\n%s", out)
+	}
+	if !strings.Contains(out, "sbx secret ls --sandbox api") {
+		t.Errorf("the announcement does not name how to see the secrets left behind:\n%s", out)
+	}
+	if f.HasCalled("env", "rm") {
+		t.Errorf("den handed sbx a record it could not vouch for; calls: %v", f.Calls)
+	}
+	// Final review, Important 1: the "leaves it alone" sentence promises den is
+	// preserving a FILE — untrue when there is no file at all. `cause` already
+	// said so, several lines above; repeating the opposite claim contradicts it.
+	if strings.Contains(out, "may belong to another version of den") {
+		t.Errorf("den claims to leave a file alone that it already said does not exist:\n%s", out)
+	}
+	// ORDER, proven the only way that has real teeth: by making the destroy
+	// call ITSELF fail. A string-position check against the final success
+	// line does NOT catch "the announce block moved to sit after
+	// runner.Run(ctx, \"rm\", \"--force\", name)" (fix round 1, finding 1) —
+	// both prints still land, in the same relative order to EACH OTHER, no
+	// matter which side of that Run call they sit on; only their order
+	// relative to the Run call itself is the property under test, and that is
+	// not observable from string positions in a successful run. Scripting the
+	// destroy call to fail makes it observable: if the announcement runs
+	// AFTER runner.Run, the failing call returns before den ever reaches it,
+	// and `out` (which keeps whatever was written before the early return)
+	// would not carry it.
+	f2 := &sbx.Fake{Responses: lsWith("api")}
+	f2.Responses["rm --force api"] = sbx.Response{Err: errors.New("sbx: boom")}
+	out2, err2 := executeCmdWithSbx(t, f2, "--den-home", denHome, "rm", "--force", "api")
+	if err2 == nil {
+		t.Fatal("expected the destroy call's failure to propagate")
+	}
+	// Same cause as phase one — the absent-record token, not a generic "by
+	// name": confirms this second run took the same branch, not some other
+	// path that also happens to print "by name".
+	if !strings.Contains(out2, "predates the emitter") || !strings.Contains(out2, "by name") {
+		t.Errorf("the announcement was not printed before the (failing) destroy call:\n%s", out2)
+	}
+	// The other half of the property: den must NOT have reached the success
+	// line. Without this, a change that swallowed the Run error would leave
+	// this test green while den printed "destroyed" for a sandbox it never
+	// destroyed.
+	if strings.Contains(out2, "destroyed (the agent profile is kept)") {
+		t.Errorf("den announced success after a failed destroy call:\n%s", out2)
+	}
+}
+
+// Second sense exercised: den says so BEFORE acting, names why, and names what
+// is left behind. `sbx env rm` is what removes the sandbox-scoped secrets; a
+// destruction by name does not, so the user has to be told and given the
+// command.
+func TestRmForceAnnouncesTheByNameDestruction(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecord(t, denHome, "api")
+	if err := os.WriteFile(envPath, []byte("schemaVersion: \"9\"\nagent: shell\nname: api\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &sbx.Fake{Responses: lsWith("api")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "--force", "api")
+	if err != nil {
+		t.Fatalf("--force must destroy, not refuse: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "api") {
+		t.Errorf("--force did not destroy by name; calls: %v", f.Calls)
+	}
+	if !strings.Contains(out, envPath) {
+		t.Errorf("the announcement does not name the unreadable record:\n%s", out)
+	}
+	if !strings.Contains(out, "by name") {
+		t.Errorf("the announcement does not say the destruction is by name:\n%s", out)
+	}
+	if !strings.Contains(out, "sbx secret ls --sandbox api") {
+		t.Errorf("the announcement does not name how to see the secrets left behind:\n%s", out)
+	}
+	if f.HasCalled("env", "rm") {
+		t.Errorf("den handed sbx a record it could not vouch for; calls: %v", f.Calls)
+	}
+	// ORDER, same technique as TestRmForceAnnouncesTheByNameDestructionForAnAbsentRecord
+	// (see its comment for why a string-position check against the success
+	// line does not actually catch the announce block moving to after
+	// runner.Run): make the destroy call fail, and check the announcement
+	// still reached `out` before den returned the propagated error.
+	f2 := &sbx.Fake{Responses: lsWith("api")}
+	f2.Responses["rm --force api"] = sbx.Response{Err: errors.New("sbx: boom")}
+	out2, err2 := executeCmdWithSbx(t, f2, "--den-home", denHome, "rm", "--force", "api")
+	if err2 == nil {
+		t.Fatal("expected the destroy call's failure to propagate")
+	}
+	// Same cause as phase one — schemaVersion, the unreadable-file token, not
+	// a generic "by name": confirms this second run took the same branch.
+	if !strings.Contains(out2, "schemaVersion") || !strings.Contains(out2, "by name") {
+		t.Errorf("the announcement was not printed before the (failing) destroy call:\n%s", out2)
+	}
+	if strings.Contains(out2, "destroyed (the agent profile is kept)") {
+		t.Errorf("den announced success after a failed destroy call:\n%s", out2)
+	}
+	// The unreadable file SURVIVES: den never deletes what it could not read.
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not read: %v", err)
+	}
+}
+
+// The third cause on the --force side (fix round 1, finding 2): a record
+// den can decode perfectly, sitting under state/sandboxes/api/, but whose
+// `name:` says "web". The behaviour is right by construction — the guard is
+// `envErr != nil && force`, and `cause` is computed once above both branches
+// — but until this test, no announce-side assertion pinned it: only the
+// refusal test (TestRmRefusesARecordNamingAnotherSandbox) covered the
+// mismatch cause, and only on the !force route. This one matters more than
+// the other two announce tests: the wording has to carry, correctly, that
+// den is about to destroy "api" by name PRECISELY BECAUSE the file could not
+// be proven to describe "api" — not because it is corrupt or absent.
+func TestRmForceAnnouncesTheByNameDestructionForAMismatchedRecord(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecordAt(t, denHome, "api", "web")
+
+	f := &sbx.Fake{Responses: lsWith("api")}
+	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "--force", "api")
+	if err != nil {
+		t.Fatalf("--force must destroy, not refuse: %v", err)
+	}
+	// By NAME: "api", the sandbox the user typed — never "web", the name the
+	// mismatched file claims. `sbx rm` resolves by the argument it is given,
+	// unlike `sbx env rm`, which is exactly why this fallback exists.
+	if !f.HasCalled("rm", "--force", "api") {
+		t.Errorf("--force did not destroy \"api\" by name; calls: %v", f.Calls)
+	}
+	if f.HasCalled("rm", "--force", "web") {
+		t.Errorf("den destroyed \"web\", the name the mismatched file claims, instead of \"api\", "+
+			"the name the user typed; calls: %v", f.Calls)
+	}
+	// The cause-specific sentence: CheckEnvFile's own mismatch diagnosis,
+	// naming both sandboxes, not a generic "unreadable" or "absent" wording.
+	if !strings.Contains(out, "web") || !strings.Contains(out, "api") {
+		t.Errorf("the announcement does not name the mismatch (api vs web):\n%s", out)
+	}
+	if !strings.Contains(out, "does not describe the sandbox") {
+		t.Errorf("the announcement does not carry CheckEnvFile's mismatch diagnosis:\n%s", out)
+	}
+	if !strings.Contains(out, envPath) {
+		t.Errorf("the announcement does not name the file:\n%s", out)
+	}
+	if !strings.Contains(out, "by name") {
+		t.Errorf("the announcement does not say the destruction is by name:\n%s", out)
+	}
+	if !strings.Contains(out, "sbx secret ls --sandbox api") {
+		t.Errorf("the announcement does not name how to see the secrets left behind:\n%s", out)
+	}
+	if f.HasCalled("env", "rm") {
+		t.Errorf("den handed sbx a record it could not vouch for; calls: %v", f.Calls)
+	}
+	// ORDER, same technique as TestRmForceAnnouncesTheByNameDestructionForAnAbsentRecord.
+	f2 := &sbx.Fake{Responses: lsWith("api")}
+	f2.Responses["rm --force api"] = sbx.Response{Err: errors.New("sbx: boom")}
+	out2, err2 := executeCmdWithSbx(t, f2, "--den-home", denHome, "rm", "--force", "api")
+	if err2 == nil {
+		t.Fatal("expected the destroy call's failure to propagate")
+	}
+	// Same cause as phase one — the mismatch diagnosis, not a generic "by
+	// name": confirms this second run took the same branch.
+	if !strings.Contains(out2, "does not describe the sandbox") || !strings.Contains(out2, "by name") {
+		t.Errorf("the announcement was not printed before the (failing) destroy call:\n%s", out2)
+	}
+	if strings.Contains(out2, "destroyed (the agent profile is kept)") {
+		t.Errorf("den announced success after a failed destroy call:\n%s", out2)
+	}
+	// The mismatched file SURVIVES: den never deletes what it could not vouch for.
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not vouch for: %v", err)
+	}
+}
+
+// First sense only: `--force` used to reclaim a dirty worktree on a sandbox
+// whose record reads fine must say NOTHING about the second sense. A warning
+// that fires on every forced removal stops being read.
+func TestRmForceStaysSilentAboutTheSecondSense(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	writeEnvRecord(t, denHome, "api") // READABLE: --force serves the first sense alone
+	f := &sbx.Fake{Responses: lsWith("api")}
+	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "--den-home", denHome, "rm", "--force", "api")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout + stderr
+	// "secrets scoped", not "scoped secrets": the message reads "the secrets
+	// scoped to it are left in place" (rm.go), so a token that doesn't occur
+	// verbatim in den's own output can never fail this assertion — it was
+	// carried over from the brief without checking the exact wording; caught
+	// by fix round 1, finding 3.
+	for _, noise := range []string{"by name", "sbx secret", "secrets scoped"} {
+		if strings.Contains(out, noise) {
+			t.Errorf("den mentions the second sense of --force when it did not exercise it (%q):\n%s", noise, out)
+		}
+	}
+}
+
+// The real decision of this task, pinned: the order. A worktree that is
+// CLEAN (not dirty — that refusal is TestRmDoesNotDestroyTheSandboxWhenAWorktreeIsDirty's
+// subject) must survive an unreadable `.sbxenv.yaml` untouched. Validating the
+// record happens BEFORE any worktree reclaim: the reverse would move the
+// worktree to the trash and only then refuse, and a refusal that has already
+// acted is not a refusal.
+func TestRmRefusesBeforeReclaimingAnyWorktree(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, `agents:
+  claude:
+    config_dir: /profile/claude
+    update: "claude update"
+defaults:
+  agent: claude
+  stack: devx
+worktree_layout: central
+worktree_root: `+filepath.Join(denHome, "worktrees")+`
+`)
+	writeStack(t, denHome, "devx", "image: devx:v1\n")
+
+	repo := filepath.Join(t.TempDir(), "api")
+	createTestRepo(t, repo)
+	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+
+	path, err := worktree.Ensure(context.Background(), worktree.NewGit(),
+		"central", filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo)
+	if err != nil {
+		t.Fatalf("preparing the worktree: %v", err)
+	}
+	draft := filepath.Join(path, "draft.txt")
+	if err := os.WriteFile(draft, []byte("clean, and committed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addCmd := exec.Command("git", "add", "-A")
+	addCmd.Dir = path
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+	commitCmd := exec.Command("git", "commit", "-m", "draft")
+	commitCmd.Dir = path
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
+	// A NEWER den's file: good YAML, a schemaVersion this den does not emit.
+	if err := os.WriteFile(envPath, []byte("schemaVersion: \"9\"\nagent: shell\nname: api.feat12\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api.feat12")}
+	_, err = executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
+
+	if err == nil {
+		t.Fatal("den destroyed a sandbox whose record it could not read")
+	}
+	if !strings.Contains(err.Error(), envPath) {
+		t.Errorf("the refusal does not name the file: %v", err)
+	}
+	// THE property: the worktree is untouched. A refusal that had already
+	// moved it to the trash would not be a refusal.
+	if _, err := os.Stat(draft); err != nil {
+		t.Errorf("a refusal that already reclaimed the worktree is not a refusal: %v", err)
+	}
+	if f.HasCalled("env", "rm") || f.HasCalled("rm", "--force") {
+		t.Errorf("den destroyed after refusing; calls: %v", f.Calls)
 	}
 }
 
@@ -112,6 +632,7 @@ func TestRmDestroysTheSandbox(t *testing.T) {
 func TestRmNeverTouchesTheAgentProfile(t *testing.T) {
 	denHome := t.TempDir()
 	writeConfig(t, denHome, minimalConfig)
+	writeEnvRecord(t, denHome, "api")
 	profile := filepath.Join(denHome, "agents", "claude")
 	if err := os.MkdirAll(profile, 0o755); err != nil {
 		t.Fatal(err)
@@ -138,8 +659,8 @@ func TestRmUnknownName(t *testing.T) {
 	if !strings.Contains(err.Error(), "api") || !strings.Contains(err.Error(), "web") {
 		t.Errorf("the message must list ALL live sandboxes; got: %v", err)
 	}
-	if f.HasCalled("rm") {
-		t.Errorf("no rm must be attempted; calls: %v", f.Calls)
+	if f.HasCalled("rm") || f.HasCalled("env", "rm") {
+		t.Errorf("no destruction must be attempted; calls: %v", f.Calls)
 	}
 }
 
@@ -159,6 +680,7 @@ func TestRmKeepWorktreesLeavesDiskUntouched(t *testing.T) {
 	if err := os.MkdirAll(wt, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome,
@@ -168,7 +690,7 @@ func TestRmKeepWorktreesLeavesDiskUntouched(t *testing.T) {
 	if _, err := os.Stat(wt); err != nil {
 		t.Errorf("--keep-worktrees must preserve %s: %v", wt, err)
 	}
-	if !f.HasCalled("rm", "--force", "api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -180,6 +702,7 @@ func TestRmWithNoWorktreeCleansUpNothing(t *testing.T) {
 	writeConfig(t, denHome, minimalConfig)
 	writeStack(t, denHome, "devx", "image: devx:v1\n")
 	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	writeEnvRecord(t, denHome, "api")
 	f := &sbx.Fake{Responses: lsWith("api")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api")
@@ -217,8 +740,8 @@ func TestRmRejectsANonCanonicalSandboxName(t *testing.T) {
 	if err == nil {
 		t.Fatal("a non-canonical sandbox name must be refused")
 	}
-	if f.HasCalled("rm", "--force", foreignName) {
-		t.Errorf("no rm must be attempted on a non-canonical name; calls: %v", f.Calls)
+	if f.HasCalled("rm", "--force", foreignName) || f.HasCalled("env", "rm") {
+		t.Errorf("no destruction must be attempted on a non-canonical name; calls: %v", f.Calls)
 	}
 	// No assertion on the escape path itself (worktree.Path(..., "../../escape",
 	// repo)): in this minimal reproduction, no worktree really exists there
@@ -235,6 +758,13 @@ func TestRmUnreadableNestDoesNotPreventDestruction(t *testing.T) {
 	denHome := t.TempDir()
 	writeConfig(t, denHome, minimalConfig)
 	// No writeNest("api", ...): nest "api" is absent from ~/.den/nests.
+	//
+	// A READABLE .sbxenv.yaml is written despite the broken nest: this test's
+	// subject is the nest fallback, not the env-record refusal, and the two
+	// must not be conflated — giving it no record would make den refuse for
+	// the WRONG reason before ever reaching the nest resolution this test
+	// means to exercise.
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -251,7 +781,7 @@ func TestRmUnreadableNestDoesNotPreventDestruction(t *testing.T) {
 		t.Errorf("the output must say where the abandoned worktree was left (%s); got:\n%s",
 			expectedWhere, out)
 	}
-	if !f.HasCalled("rm", "--force", "api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -284,12 +814,13 @@ ssh:
 	writeConfig(t, denHome, faultyConfigOutsideWorktrees)
 	writeStack(t, denHome, "devx", "image: devx:v1\n")
 	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
 		t.Fatalf("a config fault unrelated to worktrees must not prevent destroying a live sandbox: %v", err)
 	}
-	if !f.HasCalled("rm", "--force", "api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox must have been destroyed; calls: %v", f.Calls)
 	}
 }
@@ -304,6 +835,10 @@ func TestRmRejectsAnUnknownWorktreeLayout(t *testing.T) {
 	writeConfig(t, denHome, minimalConfig+"worktree_layout: centrl\n")
 	writeStack(t, denHome, "devx", "image: devx:v1\n")
 	writeNest(t, denHome, "api", "stack: devx\nrepos: []\n")
+	// Readable, so the refusal this test checks for is the layout's, not the
+	// env-record precheck's — the two run in that order and must not be
+	// conflated.
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -316,10 +851,10 @@ func TestRmRejectsAnUnknownWorktreeLayout(t *testing.T) {
 	if !strings.Contains(err.Error(), "centrl") {
 		t.Errorf("error = %q, expected the faulty value named", err.Error())
 	}
-	// And nothing was destroyed: we do not remove a sandbox whose worktrees we
-	// cannot clean up.
-	if f.HasCalled("rm") {
-		t.Errorf("no rm must be attempted; calls: %v", f.Calls)
+	// And nothing was destroyed, on EITHER route: we do not remove a sandbox
+	// whose worktrees we cannot clean up.
+	if f.HasCalled("rm") || f.HasCalled("env", "rm") {
+		t.Errorf("no destruction must be attempted; calls: %v", f.Calls)
 	}
 }
 
@@ -332,6 +867,7 @@ func TestRmUnreadableNestWritesToStderr(t *testing.T) {
 	denHome := t.TempDir()
 	writeConfig(t, denHome, minimalConfig)
 	// No writeNest("api", ...): nest "api" is absent from ~/.den/nests.
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 	deps := SystemDeps()
 	deps.Sbx = f
@@ -371,6 +907,9 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	repo := filepath.Join(t.TempDir(), "api")
 	createTestRepo(t, repo)
 	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	// Readable: this test's subject is the dirty-worktree refusal, not the
+	// env-record precheck, and the record check runs first.
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 
 	path, err := worktree.Ensure(context.Background(), worktree.NewGit(),
 		"central", filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo)
@@ -390,8 +929,10 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	if !strings.Contains(err.Error(), path) {
 		t.Errorf("the message must name the offending worktree; got: %v", err)
 	}
-	// THE property: the sandbox is INTACT, and so is the worktree.
-	if f.HasCalled("rm", "--force", "api.feat12") {
+	// THE property: the sandbox is INTACT, and so is the worktree. Checked on
+	// BOTH destruction routes: the primary one (env record present) and the
+	// conceded fallback, since a bug could reach either.
+	if f.HasCalled("rm", "--force", "api.feat12") || f.HasCalled("env", "rm") {
 		t.Errorf("the sandbox must NOT have been destroyed; calls: %v", f.Calls)
 	}
 	if _, err := os.Stat(filepath.Join(path, "draft.txt")); err != nil {
@@ -403,13 +944,17 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	// a name that carries the sandbox's FULL identity (nest AND worktree), not
 	// just the nest (M12 in review: otherwise two worktrees of different
 	// worktrees of the same nest would collide in the trash).
+	//
+	// The env record is still present and readable, so --force here overrides
+	// only the DIRTY-WORKTREE refusal — the destruction itself still goes
+	// through the normal `sbx env rm` route, not the conceded fallback.
 	f2 := &sbx.Fake{Responses: lsWith("api.feat12")}
 	out, err := executeCmdWithSbx(t, f2, "--den-home", denHome,
 		"rm", "api.feat12", "--force")
 	if err != nil {
 		t.Fatalf("with --force, the rm must succeed: %v", err)
 	}
-	if !f2.HasCalled("rm", "--force", "api.feat12") {
+	if !f2.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("calls: %v", f2.Calls)
 	}
 	if !strings.Contains(out, filepath.Join(denHome, "trash")) {
@@ -461,6 +1006,7 @@ worktree_layout: per-repo
 		t.Fatalf("worktree.Ensure returned %q, expected %q", path, expected)
 	}
 
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -468,7 +1014,7 @@ worktree_layout: per-repo
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("the per-repo worktree must have been moved from %s; stat: %v", path, err)
 	}
-	if !f.HasCalled("rm", "--force", "api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("calls: %v", f.Calls)
 	}
 }
@@ -505,6 +1051,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 		t.Fatal(err)
 	}
 
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
 	if err != nil {
@@ -513,7 +1060,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	if strings.Contains(out, "moved to trash") {
 		t.Errorf("no trash announcement must appear for a directory already gone; got:\n%s", out)
 	}
-	if !f.HasCalled("rm", "--force", "api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("calls: %v", f.Calls)
 	}
 }
@@ -567,6 +1114,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 		"central", filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
 		t.Fatalf("preparing the worktree: %v", err)
 	}
+	writeEnvRecord(t, denHome, "api.feat12")
 
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 	deps := SystemDeps()
@@ -587,23 +1135,48 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	if !strings.Contains(err.Error(), trash) {
 		t.Errorf("the error must name the trash where the work landed; got: %v", err)
 	}
-	if f.HasCalled("rm", "--force", "api.feat12") {
+	// Checked on both destruction routes: cleanWorktrees fails before either is
+	// ever reached, so neither must have run.
+	if f.HasCalled("rm", "--force", "api.feat12") || f.HasCalled("env", "rm") {
 		t.Errorf("the sandbox must not be destroyed if cleanup fails; calls: %v", f.Calls)
 	}
 }
 
-// A failure of `sbx rm` (locked VM, sbx down...) must surface as-is, not be
-// silently swallowed.
+// A failure of `sbx env rm` (locked VM, sbx down...) must surface as-is, not
+// be silently swallowed. Scripted on the PRIMARY route (env record present):
+// without a record this would instead exercise the env-record refusal, which
+// is a different failure with a different message — TestRmRefusesAnUnreadableEnvRecordAndNamesForce
+// already covers that one.
 func TestRmSbxFailureSurfaces(t *testing.T) {
 	denHome := t.TempDir()
 	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecord(t, denHome, "api")
 	responses := lsWith("api")
-	responses["rm --force api"] = sbx.Response{Err: fmt.Errorf("fake sbx rm: simulated failure")}
+	responses["env rm -f "+envPath] = sbx.Response{Err: fmt.Errorf("fake sbx env rm: simulated failure")}
 	f := &sbx.Fake{Responses: responses}
 
 	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api")
 	if err == nil {
-		t.Fatal("a failure of sbx rm must surface")
+		t.Fatal("a failure of sbx env rm must surface")
+	}
+	// Fix round 1 (finding 3): `err == nil` alone would go green again on the
+	// env-record REFUSAL if `writeEnvRecord` above were ever lost — that
+	// refusal also returns a non-nil error, for an entirely different reason.
+	// Pinned to the actual failure text AND to the call having been reached at
+	// all, so the two causes cannot be confused with each other.
+	if !strings.Contains(err.Error(), "simulated failure") {
+		t.Errorf("the scripted sbx failure must surface verbatim, not some other error: %v", err)
+	}
+	if !f.HasCalled("env", "rm", "-f", envPath) {
+		t.Errorf("the failure must come from the primary route actually being attempted; calls: %v",
+			f.Calls)
+	}
+	// Post-probe leak fix (2026-08-25), third case: a destruction that did NOT
+	// happen must not lose its record. den only deletes the .sbxenv.yaml after
+	// `sbx env rm` returns success — here it returned an error instead, so the
+	// file (den's only trace of what it would need to retry) must survive.
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted the record despite the destruction failing: %v", err)
 	}
 }
 
@@ -619,6 +1192,7 @@ func TestRmBoundsGitProbesWithADeadline(t *testing.T) {
 	writeStack(t, denHome, "devx", "image: devx:v1\n")
 	repo := filepath.Join(t.TempDir(), "api")
 	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
+	writeEnvRecord(t, denHome, "api.feat12")
 
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 	git := &fakeGit{}
@@ -695,6 +1269,7 @@ func TestRmGivesAFreshDeadlineToEachRepo(t *testing.T) {
 	alpha := filepath.Join(t.TempDir(), "alpha")
 	beta := filepath.Join(t.TempDir(), "beta")
 	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+alpha+" }\n  - { path: "+beta+" }\n")
+	writeEnvRecord(t, denHome, "api.feat12")
 
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 	git := &fakeGitTwoRepoDeadlines{sleepOnFirstCall: 700 * time.Millisecond}
@@ -738,12 +1313,13 @@ func TestRmGivesAFreshDeadlineToEachRepo(t *testing.T) {
 func TestRmAcceptsASourceReference(t *testing.T) {
 	denHome := t.TempDir()
 	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecord(t, denHome, "corp-api")
 	f := &sbx.Fake{Responses: lsWith("corp-api")}
 
 	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp:api"); err != nil {
 		t.Fatalf("den rm corp:api: %v", err)
 	}
-	if !f.HasCalled("rm", "--force", "corp-api") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("expected the flattened sandbox corp-api to be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -776,6 +1352,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 		filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
 		t.Fatalf("preparing the worktree: %v", err)
 	}
+	envPath := writeEnvRecord(t, denHome, "corp-api.feat12")
 
 	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp-api.feat12")
@@ -785,7 +1362,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	if !strings.Contains(out, "moved to trash") {
 		t.Errorf("the source nest's worktree must be cleaned up, not warned about; got:\n%s", out)
 	}
-	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -795,13 +1372,14 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 func TestRmAcceptsAWorktreedSourceReference(t *testing.T) {
 	denHome := t.TempDir()
 	writeConfig(t, denHome, minimalConfig)
+	envPath := writeEnvRecord(t, denHome, "corp-api.feat12")
 	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
 
 	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome,
 		"rm", "corp:api.feat12", "--keep-worktrees"); err != nil {
 		t.Fatalf("den rm corp:api.feat12: %v", err)
 	}
-	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("expected corp-api.feat12 to be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -834,6 +1412,7 @@ repos:
 		filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
 		t.Fatalf("preparing the worktree: %v", err)
 	}
+	writeEnvRecord(t, denHome, "corp-api.feat12")
 
 	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp-api.feat12")
@@ -868,6 +1447,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	envPath := writeEnvRecord(t, denHome, "corp-api.feat12")
 
 	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
 	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f,
@@ -881,7 +1461,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	if !strings.Contains(stderr, "api") {
 		t.Errorf("the skipped repo must be named on stderr; got:\n%s", stderr)
 	}
-	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
 	}
 	_ = stdout
@@ -914,6 +1494,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 		filepath.Join(denHome, "worktrees"), worktree.Name{Dir: "feat12", Branch: "feat12"}, repo); err != nil {
 		t.Fatalf("preparing the worktree: %v", err)
 	}
+	envPath := writeEnvRecord(t, denHome, "corp-api.feat12")
 
 	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "corp:api.feat12")
@@ -929,7 +1510,7 @@ worktree_root: `+filepath.Join(denHome, "worktrees")+`
 	if !strings.Contains(out, "corp-api.feat12-api") {
 		t.Errorf("the trash entry must name the source nest's declared repo; got:\n%s", out)
 	}
-	if !f.HasCalled("rm", "--force", "corp-api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -988,6 +1569,7 @@ func TestRmReclaimsACommandLineRepoWorktree(t *testing.T) {
 			Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
@@ -1016,6 +1598,7 @@ func TestRmNeverTouchesARepoMountedAsIs(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: repo, Worktree: false,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api")
 	f := &sbx.Fake{Responses: lsWith("api")}
 
 	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api"); err != nil {
@@ -1049,6 +1632,7 @@ func TestRmCleansUpEvenWhenTheNestWasDeleted(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1083,6 +1667,7 @@ func TestRmReclaimsTheOriginalDirectoryAfterWorktreeRootMoved(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
@@ -1117,6 +1702,7 @@ func TestRmReclaimsAWorktreeWhoseKeyIsNoLongerMapped(t *testing.T) {
 			Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1156,6 +1742,7 @@ func TestRmDoesNotReclaimARepoTheSpawnExcluded(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: api, Mount: mounted, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12"); err != nil {
@@ -1187,6 +1774,7 @@ func TestRmKeepWorktreesKeepsTheManifest(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome,
@@ -1221,6 +1809,10 @@ func TestRmFallsBackAndSaysSoWithoutAManifest(t *testing.T) {
 	createTestRepo(t, repo)
 	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 	wt := createWorktree(t, repo, root, "feat12")
+	// No manifest.Manifest: that absence is what sends this `den rm` down the
+	// LEGACY derivation. The .sbxenv.yaml is a separate record and does not
+	// touch that — this test's subject is unaffected by writing one.
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1258,6 +1850,9 @@ func TestRmWarnsAndStillDestroysOnACorruptManifest(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A corrupt MANIFEST, not a corrupt .sbxenv.yaml — the two records are
+	// separate files, and this test's subject is the manifest fallback.
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1270,7 +1865,7 @@ func TestRmWarnsAndStillDestroysOnACorruptManifest(t *testing.T) {
 	if _, err := os.Stat(wt); !os.IsNotExist(err) {
 		t.Errorf("the derivation must take over and reclaim the worktree: %v", err)
 	}
-	if !f.HasCalled("rm", "--force", "api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
 	}
 	// den read nothing of that file, so it cannot know it is worthless: a
@@ -1319,6 +1914,9 @@ func TestRmLeavesAMountAnotherRecordStillNames(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	// Only for the sandbox being REMOVED: the sibling's own .sbxenv.yaml plays
+	// no role in this test.
+	envPath := writeEnvRecord(t, denHome, "api.reco")
 	f := &sbx.Fake{Responses: lsWith("api.feature-123", "api.reco")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.reco")
@@ -1338,7 +1936,7 @@ func TestRmLeavesAMountAnotherRecordStillNames(t *testing.T) {
 	if !strings.Contains(out, "api.feature-123") {
 		t.Errorf("the message must name the sandbox that still holds the worktree; got:\n%s", out)
 	}
-	if !f.HasCalled("rm", "--force", "api.reco") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -1362,6 +1960,7 @@ func TestRmSingleRecordStillReclaimsItsWorktree(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1420,6 +2019,7 @@ func TestRmLeavesAMountAnUndecodableRecordStillNames(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	envPath := writeEnvRecord(t, denHome, "api.reco")
 	f := &sbx.Fake{Responses: lsWith("api.feature-123", "api.reco")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.reco")
@@ -1438,7 +2038,7 @@ func TestRmLeavesAMountAnUndecodableRecordStillNames(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(manifest.Dir(denHome), "api.feature-123.yaml")); err != nil {
 		t.Errorf("den never deletes a record it could not read: %v", err)
 	}
-	if !f.HasCalled("rm", "--force", "api.reco") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -1469,6 +2069,7 @@ func TestRmReclaimsNothingWhenARecordCannotBeParsedAtAll(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	envPath := writeEnvRecord(t, denHome, "api.reco")
 	f := &sbx.Fake{Responses: lsWith("api.feature-123", "api.reco")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.reco")
@@ -1495,7 +2096,7 @@ func TestRmReclaimsNothingWhenARecordCannotBeParsedAtAll(t *testing.T) {
 		t.Errorf("a surviving record after a `den rm` is surprising enough to be said, with "+
 			"what will act on it; got:\n%s", out)
 	}
-	if !f.HasCalled("rm", "--force", "api.reco") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -1533,6 +2134,7 @@ func TestRmNeverTellsTheUserToReclaimAMountAnotherRecordNames(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.reco")
 	f := &sbx.Fake{Responses: lsWith("api.feature-123", "api.reco", "web.feat9")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.reco")
@@ -1582,6 +2184,7 @@ func TestRmStillReclaimsDespiteABrokenRecordNamingAnotherMount(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12", "web.feat9")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1603,6 +2206,13 @@ func TestRmStillReclaimsDespiteABrokenRecordNamingAnotherMount(t *testing.T) {
 // a config, a stack, a nest declaring the repo, and a real worktree where the
 // layout says it goes. The sandbox it describes deliberately gets NO creation
 // record — that absence is what sends `den rm` down cleanWorktreesLegacy.
+//
+// "record" here, and in every `…WithoutARecord…` test name below, means the
+// MANIFEST (internal/manifest.Manifest) alone: since this task, the same
+// sandbox directory can ALSO hold a `.sbxenv.yaml` (written separately, by
+// `writeEnvRecord` where a test needs `den rm` to reach past the env-record
+// precheck) without affecting which cleanup branch runs — that choice is
+// still driven purely by the manifest's absence.
 func legacyNest(t *testing.T, denHome string) (repo, root, wt string) {
 	t.Helper()
 	root = filepath.Join(denHome, "worktrees")
@@ -1649,6 +2259,10 @@ func TestRmWithoutARecordLeavesAMountAnotherRecordStillNames(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	// The sandbox being removed has no manifest.Manifest (that is what sends it
+	// down the legacy path), but it DOES need a .sbxenv.yaml — a separate file
+	// — for den to hand `sbx env rm` a record it can vouch for.
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12", "api.reco")}
 
 	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1676,7 +2290,7 @@ func TestRmWithoutARecordLeavesAMountAnotherRecordStillNames(t *testing.T) {
 	if _, err := manifest.Read(denHome, "api.reco"); err != nil {
 		t.Errorf("the sibling's own record must be untouched: %v", err)
 	}
-	if !f.HasCalled("rm", "--force", "api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -1686,6 +2300,7 @@ func TestRmWithoutARecordLeavesAMountAnotherRecordStillNames(t *testing.T) {
 func TestRmWithoutARecordStillReclaimsItsWorktree(t *testing.T) {
 	denHome := t.TempDir()
 	_, _, wt := legacyNest(t, denHome)
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1711,6 +2326,7 @@ func TestRmReclaimsDespiteItsOwnUnreadableRecord(t *testing.T) {
 	denHome := t.TempDir()
 	_, _, wt := legacyNest(t, denHome)
 	badPath := writeRawManifest(t, denHome, "api.feat12", "repos: [ {mount: "+wt+"\n")
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1737,6 +2353,7 @@ func TestRmWithoutARecordKeepsWhatAnUnreadableRecordMayName(t *testing.T) {
 	denHome := t.TempDir()
 	_, _, wt := legacyNest(t, denHome)
 	badPath := writeRawManifest(t, denHome, "web.feat9", "repos: [ {mount: /elsewhere\n")
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12", "web.feat9")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1759,7 +2376,7 @@ func TestRmWithoutARecordKeepsWhatAnUnreadableRecordMayName(t *testing.T) {
 	if _, err := os.Stat(badPath); err != nil {
 		t.Errorf("den never deletes a record it could not read: %v", err)
 	}
-	if !f.HasCalled("rm", "--force", "api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -1775,6 +2392,7 @@ func TestRmWithoutARecordSaysNothingOfADerivedPathThatIsNotThere(t *testing.T) {
 		t.Fatal(err)
 	}
 	badPath := writeRawManifest(t, denHome, "web.feat9", "repos: [ {mount: /elsewhere\n")
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12", "web.feat9")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1788,7 +2406,7 @@ func TestRmWithoutARecordSaysNothingOfADerivedPathThatIsNotThere(t *testing.T) {
 	if reg := registeredWorktrees(t, repo); strings.Contains(reg, wt) {
 		t.Errorf("worktree.Remove must still run and prune the stale registration; got:\n%s", reg)
 	}
-	if !f.HasCalled("rm", "--force", "api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -1816,6 +2434,7 @@ func TestRmTreatsANamelessRecordAsAnUnknownSharer(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1870,6 +2489,7 @@ func TestRmANamelessRecordNeverMasksARealHolder(t *testing.T) {
 			Name: "api", Origin: manifest.OriginPath, Repo: repo, Mount: wt, Worktree: true,
 		}},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12", "api.reco")}
 
 	out, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1895,6 +2515,7 @@ func TestRmWithoutAReadableRecordKeepsWhatAThirdPartyMayName(t *testing.T) {
 	_, _, wt := legacyNest(t, denHome)
 	ownPath := writeRawManifest(t, denHome, "api.feat12", "schema: 9999\nsandbox: api.feat12\n")
 	badPath := writeRawManifest(t, denHome, "web.feat9", "repos: [ {mount: /elsewhere\n")
+	envPath := writeEnvRecord(t, denHome, "api.feat12")
 	f := &sbx.Fake{Responses: lsWith("api.feat12", "web.feat9")}
 
 	out, warn, err := executeCmdWithSbxSeparateStreams(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -1926,7 +2547,7 @@ func TestRmWithoutAReadableRecordKeepsWhatAThirdPartyMayName(t *testing.T) {
 			t.Errorf("den never deletes a record it could not read: %v", err)
 		}
 	}
-	if !f.HasCalled("rm", "--force", "api.feat12") {
+	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the sandbox itself must still be destroyed; calls: %v", f.Calls)
 	}
 }
@@ -1973,13 +2594,19 @@ func TestMountGuardHoldsBackWhenTheRecordsDirectoryCannotBeEnumerated(t *testing
 // T13/T16). There is no record to keep here — the same ENOTDIR is why den fell
 // back on the derivation — but what IS on disk under state/ survives untouched:
 // den never deletes what it could not read.
-func TestRmKeepsEveryWorktreeWhenTheRecordsDirectoryCannotBeEnumerated(t *testing.T) {
+// blockRecordsDir replaces state/sandboxes (denHome) with a FILE — the very
+// directory a `.sbxenv.yaml` would need to live under. No record can be
+// written there at all, so this run cannot reach the primary route; --force
+// is what a sandbox with no vouchable record has always needed (§5.8), and it
+// is what lets this test reach the legacy enumeration failure it means to
+// exercise rather than stopping earlier on the env-record refusal.
+func TestRmForceKeepsEveryWorktreeWhenTheRecordsDirectoryCannotBeEnumerated(t *testing.T) {
 	denHome := t.TempDir()
 	_, _, wt := legacyNest(t, denHome)
 	dir := blockRecordsDir(t, denHome)
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 
-	out, _, err := executeCmdWithSbxSeparateStreams(t, f, "--den-home", denHome, "rm", "api.feat12")
+	out, _, err := executeCmdWithSbxSeparateStreams(t, f, "--den-home", denHome, "rm", "api.feat12", "--force")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2063,6 +2690,7 @@ exports:
 func TestRmWithoutARecordResolvesKeysThroughTheSourceMapping(t *testing.T) {
 	denHome := t.TempDir()
 	_, wt := sourceNestFixture(t, denHome, true)
+	writeEnvRecord(t, denHome, "corp-api.feat12")
 	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
 
 	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f,
@@ -2082,6 +2710,7 @@ func TestRmWithoutARecordResolvesKeysThroughTheSourceMapping(t *testing.T) {
 func TestRmWithoutARecordNamesTheSourceConfigurationOfAnUnmappedKey(t *testing.T) {
 	denHome := t.TempDir()
 	_, wt := sourceNestFixture(t, denHome, false)
+	writeEnvRecord(t, denHome, "corp-api.feat12")
 	f := &sbx.Fake{Responses: lsWith("corp-api.feat12")}
 
 	_, stderr, err := executeCmdWithSbxSeparateStreams(t, f,
@@ -2129,6 +2758,9 @@ func TestRmMovesNothingWhenALaterWorktreeIsDirty(t *testing.T) {
 			{Name: "front", Origin: manifest.OriginPath, Repo: dirty, Mount: dirtyWt, Worktree: true},
 		},
 	})
+	// Readable: this test's subject is the dirty-worktree refusal, which runs
+	// AFTER the env-record precheck.
+	writeEnvRecord(t, denHome, "api.feat12")
 
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")
@@ -2144,7 +2776,9 @@ func TestRmMovesNothingWhenALaterWorktreeIsDirty(t *testing.T) {
 	if _, statErr := os.Stat(dirtyWt); statErr != nil {
 		t.Errorf("the dirty worktree must still be in place: %v", statErr)
 	}
-	if f.HasCalled("rm", "--force", "api.feat12") {
+	// Checked on both destruction routes: cleanWorktrees fails before either is
+	// ever reached, so neither must have run.
+	if f.HasCalled("rm", "--force", "api.feat12") || f.HasCalled("env", "rm") {
 		t.Errorf("the sandbox must NOT have been destroyed; calls: %v", f.Calls)
 	}
 	// And the message names the repo that blocks, not just a path the user
@@ -2186,6 +2820,7 @@ func TestRmNamesEveryDirtyWorktreeAtOnce(t *testing.T) {
 			{Name: "front", Origin: manifest.OriginPath, Repo: front, Mount: frontWt, Worktree: true},
 		},
 	})
+	writeEnvRecord(t, denHome, "api.feat12")
 
 	f := &sbx.Fake{Responses: lsWith("api.feat12")}
 	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.feat12")

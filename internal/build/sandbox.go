@@ -35,9 +35,10 @@ func ScratchDir(denHome, stack string) string {
 
 // CreateArgv is the `sbx create` of a BUILD sandbox.
 //
-// Deliberately NOT sbx.CreateArgv, which assembles a spawn: no generated
-// mixin, no stack kits, no repo workspaces. Every one of those serves a VM the
-// user attaches to and keeps; this one is destroyed at step 5 of the sequence.
+// Deliberately NOT sbx.EnvFile, which renders a spawn's `.sbxenv.yaml`: no
+// generated mixin, no stack kits, no repo workspaces. Every one of those
+// serves a VM the user attaches to and keeps; this one is destroyed at step 5
+// of the sequence.
 // Sharing the builder would have meant weakening its guards — it refuses a
 // create with no mixin, and rightly so for a spawn.
 //
@@ -77,7 +78,7 @@ func CreateArgv(s *config.Stack, parentImage, scratch string) ([]string, error) 
 		// `den build`. Measured 2026-08-03, closed in config.LoadStack.
 		//
 		// Kept as a BOUNDARY guard: CreateArgv is exported and takes a struct
-		// anyone can fill, the doctrine sbx.CreateArgv states for its own inputs.
+		// anyone can fill, the doctrine sbx.EnvFile states for its own inputs.
 		return nil, notBuildableOriginError(s)
 	}
 	return append(argv, positional, scratch), nil

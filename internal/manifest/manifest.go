@@ -66,6 +66,40 @@ type Manifest struct {
 	Worktree *Worktree `yaml:"worktree,omitempty"`
 	Repos    []Repo    `yaml:"repos"`
 	GitDirs  []string  `yaml:"git_dirs,omitempty"`
+	// Resources is the microVM size den asked sbx for, and it is here because
+	// nothing else can answer for it: `sbx ls --json` carries exactly
+	// {agent, id, name, status, workspaces} (four sandboxes verified,
+	// 2026-08-24), so a live VM cannot be asked how big it was made. The mixin
+	// is not that record either — it is a kit, and a kit sets no resources; a
+	// resources block written into it would claim something it does not do.
+	//
+	// A POINTER, like Worktree above and for the same reason: a spawn that
+	// declared no `resources:` renders no block at all, rather than one of zero
+	// values that reads like a size someone chose.
+	//
+	// What it is FOR: the attach branch reapplies nothing to a live VM
+	// (spec §6), so a `resources:` edited after creation can only be WARNED
+	// about — and a warning needs the number the sandbox was actually created
+	// with.
+	Resources *Resources `yaml:"resources,omitempty"`
+}
+
+// Resources is what `sbx create` received as `--cpus` and `--memory`.
+//
+// The manifest's OWN type rather than config.Resources, the way Repo and
+// Worktree are the manifest's own: this file records an EVENT — the flags one
+// `sbx create` was given — while config.Resources is a schema the cascade
+// merges. They happen to hold the same two values today, and a shared type
+// would make every later change to the schema silently rewrite the meaning of
+// records already on disk.
+//
+// Both fields are omitempty, and CPUs is a pointer for the reason it is one
+// everywhere else: a written `cpus: 0` is sbx's "auto", a distinct fact from
+// no cpus at all, and a record that flattened them would report drift where
+// there is none.
+type Resources struct {
+	CPUs   *int   `yaml:"cpus,omitempty"`
+	Memory string `yaml:"memory,omitempty"`
 }
 
 // Nest records BOTH spellings, because they answer different questions: Ref is
@@ -127,17 +161,72 @@ func Dir(denHome string) string {
 	return filepath.Join(denHome, "state", "sandboxes")
 }
 
-// Path validates the name BEFORE composing a path with it. sbx.SplitName is
-// deliberately total and validates nothing (it also serves sandboxes created
-// outside den), and filepath.Join CLEANS a ".." into a real traversal instead
-// of rejecting it — so `den rm` on a hostile name listed by `sbx ls` would
-// otherwise read and delete a file outside state/. Defense in depth: Spawn
-// already refuses these names upstream via sbx.SandboxName.
+// SandboxDir is where BOTH records of one sandbox live: the manifest den
+// replays, and the .sbxenv.yaml sbx consumes (spec 2026-08-24 §5.6). A
+// directory rather than two sibling files because `den rm` removes them as one
+// unit, and a directory is what makes "removed both, or neither" expressible.
+//
+// Name validation happens here for the reason Path's own doc gives:
+// sbx.SplitName is total and validates nothing, and filepath.Join CLEANS a
+// ".." into a real traversal instead of rejecting it.
+func SandboxDir(denHome, sandboxName string) (string, error) {
+	if err := sbx.ValidateSandboxName(sandboxName); err != nil {
+		return "", err
+	}
+	return filepath.Join(Dir(denHome), sandboxName), nil
+}
+
+// Path is where the manifest lives TODAY. Write only ever produces this one.
 func Path(denHome, sandboxName string) (string, error) {
+	dir, err := SandboxDir(denHome, sandboxName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "manifest.yaml"), nil
+}
+
+// LegacyPath is where a den older than the directory layout left the manifest,
+// and reading it is PERMANENT — not a migration phase anyone gets to delete
+// later. state/ is never purged, so every sandbox created before this change
+// still has its record here; and den never deletes a record it could not read
+// (spec §11), so den never converts one either. A den that stopped reading this
+// path would silently lose the mount table of every older sandbox — which is
+// how `den rm` starts guessing, and guessing wrong moves a live VM's workspace
+// to the trash (doctrine T13/T16).
+func LegacyPath(denHome, sandboxName string) (string, error) {
 	if err := sbx.ValidateSandboxName(sandboxName); err != nil {
 		return "", err
 	}
 	return filepath.Join(Dir(denHome), sandboxName+".yaml"), nil
+}
+
+// SbxEnvPath is the .sbxenv.yaml den emits for this sandbox — sbx's half of the
+// record, and a hard input of `den rm` (spec §5.8).
+func SbxEnvPath(denHome, sandboxName string) (string, error) {
+	dir, err := SandboxDir(denHome, sandboxName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ".sbxenv.yaml"), nil
+}
+
+// SandboxOf recovers a sandbox name from the path of one of its records, in
+// EITHER layout.
+//
+// It replaces `strings.TrimSuffix(filepath.Base(p), ".yaml")`, which ls.go and
+// rm.go each did by hand: under the directory layout every basename is
+// "manifest.yaml", so that trim would name every record "manifest" — one name
+// for all of them, colliding in rm's mountGuard map and naming the wrong
+// sandbox in `den ls`.
+//
+// An empty result means "this path names nobody" — a file called exactly
+// ".yaml". Callers already treat that as an unknown sharer rather than a claim.
+func SandboxOf(recordPath string) string {
+	base := filepath.Base(recordPath)
+	if base == "manifest.yaml" {
+		return filepath.Base(filepath.Dir(recordPath))
+	}
+	return strings.TrimSuffix(base, ".yaml")
 }
 
 // Write materializes the manifest. It stamps Schema itself, so no caller can
@@ -178,6 +267,17 @@ func Read(denHome, sandboxName string) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("reading manifest: %w", err)
 	}
 	content, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		// The legacy layout, and the ORDER is the decision: Write only ever
+		// produces the directory layout, so a legacy file beside one is the
+		// older truth. Falling back rather than merging keeps that unambiguous.
+		legacy, lerr := LegacyPath(denHome, sandboxName)
+		if lerr != nil {
+			return Manifest{}, fmt.Errorf("reading manifest: %w", lerr)
+		}
+		path = legacy
+		content, err = os.ReadFile(legacy)
+	}
 	if err != nil {
 		return Manifest{}, fmt.Errorf("reading manifest %s: %w", path, &config.FileError{Err: err})
 	}
@@ -253,7 +353,8 @@ func LaxMounts(path string) ([]string, error) {
 	return mounts, nil
 }
 
-// Remove deletes the manifest. An already-absent file is NOT an error: rm
+// Remove deletes the manifest, the legacy file, and — if nothing else is left
+// in it — the sandbox directory. An already-absent file is NOT an error: rm
 // removes it after reclaiming what it listed, and failing there would refuse a
 // `den rm` that did everything it was asked (doctrine T13/T16).
 func Remove(denHome, sandboxName string) error {
@@ -264,6 +365,24 @@ func Remove(denHome, sandboxName string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("removing %s: %w", path, err)
 	}
+	legacy, err := LegacyPath(denHome, sandboxName)
+	if err != nil {
+		return fmt.Errorf("removing manifest: %w", err)
+	}
+	if err := os.Remove(legacy); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("removing %s: %w", legacy, err)
+	}
+	// os.Remove on a directory succeeds ONLY when it is empty, and that is the
+	// whole mechanism: a .sbxenv.yaml den could not read is still sitting there,
+	// the removal fails, and the file survives — den never deletes what it could
+	// not read (spec §11). The error is deliberately DROPPED: `den rm` did
+	// everything it was asked, and failing here would refuse a completed
+	// removal (doctrine T13/T16).
+	dir, err := SandboxDir(denHome, sandboxName)
+	if err != nil {
+		return fmt.Errorf("removing manifest: %w", err)
+	}
+	_ = os.Remove(dir)
 	return nil
 }
 
@@ -286,10 +405,24 @@ func List(denHome string) ([]Manifest, []Broken, error) {
 	var out []Manifest
 	var broken []Broken
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+		path := filepath.Join(Dir(denHome), e.Name())
+		if e.IsDir() {
+			// One level, never a walk: the layout is exactly
+			// state/sandboxes/<sandbox>/manifest.yaml, and a walk would start
+			// reporting whatever else a user dropped under state/.
+			//
+			// A directory with NO manifest is skipped, not broken: `den rm
+			// --force` leaves exactly that shape behind when it keeps an
+			// unreadable .sbxenv.yaml, and reporting it forever would train the
+			// user to ignore the row (spec §2 refuses noise as much as
+			// silence).
+			path = filepath.Join(path, "manifest.yaml")
+			if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+		} else if !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
-		path := filepath.Join(Dir(denHome), e.Name())
 		content, err := os.ReadFile(path)
 		if err != nil {
 			broken = append(broken, Broken{Path: path, Err: err})

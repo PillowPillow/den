@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -49,9 +48,10 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			// switch below — so it earns the same sentence `den doctor`
 			// already prints for it, on stderr, rather than a second dialect
 			// for the same state. unreadable is keyed by SANDBOX name, not
-			// path: manifest.Path is the sole place a record's file name is
-			// composed as "<sandbox>.yaml", so trimming the suffix recovers
-			// exactly the string the switch below compares against b.Name.
+			// path: manifest.SandboxOf is the sole place a record's path is
+			// turned back into a sandbox name, in EITHER layout — under the
+			// directory layout every basename is "manifest.yaml", so trimming
+			// ".yaml" off it would name every broken record "manifest".
 			//
 			// Named brokenManifests, not `broken`: nest.ListNests further down
 			// returns its OWN broken list into a variable named `broken`, and
@@ -63,7 +63,7 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "creation record %s unreadable: %v — den leaves "+
 					"it alone (it may belong to another version of den); delete it by hand once "+
 					"its sandbox is gone\n", b.Path, b.Err)
-				unreadable[strings.TrimSuffix(filepath.Base(b.Path), ".yaml")] = true
+				unreadable[manifest.SandboxOf(b.Path)] = true
 			}
 
 			if len(boxes) == 0 {

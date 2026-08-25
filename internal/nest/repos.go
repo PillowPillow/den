@@ -269,14 +269,14 @@ func parseRepoArgs(cwd string, raws []string) ([]Repo, error) {
 //  2. ExpandPath, like `repos:`, `ssh.dir` and `config_dir`. It handles the
 //     tilde and NOTHING else.
 //  3. absolutize against cwd. This step, and only this step, is what makes
-//     `den up scratch --repo .` work: sbx.checkWorkspace rejects every relative path,
-//     because it would resolve against a working directory nothing guarantees
-//     by the time sbx uses it.
+//     `den up scratch --repo .` work: sbx.checkEnvWorkspace rejects every
+//     relative path, because it would resolve against a working directory
+//     nothing guarantees by the time sbx uses it.
 func parseRepoArg(cwd, raw string) (Repo, error) {
 	if strings.TrimSpace(raw) == "" {
 		return Repo{}, fmt.Errorf(
-			"empty repo path on the command line — `sbx create` would receive an empty positional, " +
-				"which mounts nothing")
+			"empty repo path on the command line — it would be emitted as an empty workspace " +
+				"in `.sbxenv.yaml`, which mounts nothing")
 	}
 	if strings.HasSuffix(strings.TrimSpace(raw), ":ro") {
 		return Repo{}, fmt.Errorf(

@@ -27,10 +27,11 @@ go test ./internal/spawn/ -run TestSpawnAddsNoWorkspaceOutsideMountMode -count=1
 **Identity is the sandbox name** `<nest>[.<instance>]`. Component 2 is the INSTANCE — the `--as`
 label, or the flattened branch of `-w`, or empty — not necessarily a worktree branch
 (`sbx.Sandbox.Instance()`'s own comment: "It is NOT 'the worktree'"). `sbx create` has no `--label`
-(probed 2026-07-28), so that string is the only handle: `den ls`/`sh`/`rm`/`ports`, scoped policy,
-the mixin cache and the worktree trash all key off it. `sbx.SandboxName` / `sbx.SplitName` own the
-format; `-w` flattens a branch name into a legal component (`feature/123` → sandbox
-`api.feature-123`) while git keeps the branch as typed.
+(probed 2026-07-28), and the fact still holds under the emitter: `envDoc` (`internal/sbx/env.go`)
+carries no label field either, only `name:`. So that string is the only handle: `den ls`/`sh`/`rm`/
+`ports`, scoped policy, the mixin cache and the worktree trash all key off it. `sbx.SandboxName` /
+`sbx.SplitName` own the format; `-w` flattens a branch name into a legal component (`feature/123` →
+sandbox `api.feature-123`) while git keeps the branch as typed.
 
 **Config cascade**: global (`~/.den/config.yaml`) ← stack (`stacks/<n>/stack.yaml`) ← nest
 (`nests/<n>.yaml`) ← flags, resolved by `nest.Resolve` into a `*nest.Resolved` that spawn consumes.
@@ -54,17 +55,75 @@ from config alone (flag contradictions, sandbox name, missing repos / `ssh.dir` 
 *before the first side effect*, so a refusal never leaves an orphaned worktree; the fail-closed
 settle-loop runs *before* attach, including under `--detach`. On the attach branch nothing is
 reapplied to a live VM — den warns about mixin drift and missing git dirs instead of recreating.
+Size is a third drift den warns about and never fixes: nothing resizes a running VM, and
+`sbx ls --json` carries no size field, so `spawn.reportResourceDrift` compares the **creation
+record** — by BYTES, not by spelling, or `8g` vs `8192m` would warn forever about a VM that is
+right.
+
+**`resources:` is a cascade level, not a flag passthrough** (shipped with #90). `resources: {cpus,
+memory}` merges **field by field** across `config.yaml` ← `stack.yaml` ← `nests/<n>.yaml` ←
+flags — a stack pinning a memory floor and a nest asking for more CPUs are two independent
+statements. `cpus:` is a **pointer** on purpose: `--cpus 0` is sbx's documented *auto*, so "written
+zero" must stay distinguishable from "absent". `internal/sbx/resources.go` re-implements docker's
+`go-units` grammar rather than taking the dependency, because sbx refuses a too-small `--memory`
+**server-side, after the image pull** — den refuses it in `nest.Resolve` instead, before the first
+side effect. Keep that parser **no narrower and no wider than sbx's**: narrower refuses `2gb` /
+`4G` / `2048MiB`, which work; wider lets `1bb` through for the server to refuse after the pull.
+`den nest show` prints the resolved block, which is the only way to see which cascade level won.
+
+**den compiles a nest into a `.sbxenv.yaml`; it no longer assembles an `sbx create` argv.** Spec
+`docs/superpowers/specs/2026-08-24-sbx-env-positioning-design.md` (#89) — implemented, plan
+`docs/superpowers/plans/2026-08-25-sbxenv-emitter.md` — settled it on maintenance surface, not
+risk: an argv is not a contract, a `schemaVersion` behind a strict decoder is. `internal/sbx/env.go`
+is the emitter: `EnvFile(Env) ([]byte, error)`, and `EnvSchemaVersion = "1"` is a **string** — sbx
+answers `unsupported schemaVersion "2" (supported: 1)`, and an unquoted `1` round-trips as a scalar
+sbx refuses. `internal/sbx/argv.go` is **deleted**. The emitted file lives at
+`<denHome>/state/sandboxes/<sandbox>/.sbxenv.yaml`, mode 0600, beside den's own `manifest.yaml` in
+the same directory (see below). den creates with `sbx env create <path>` and destroys with `sbx env
+rm -f <path>` — `sbx env rm` does not delete the file it is handed, so den removes it itself after a
+successful removal. `sbx.CheckEnvFile` refuses to hand `sbx env rm` a record it cannot vouch for —
+absent (the sandbox predates the emitter), unreadable, or naming a different sandbox — and `den rm`
+then refuses too, naming the escape hatch: `den rm --force <sandbox>`, which falls back to
+destroying by name through `sbx rm --force` and names the commands to list and remove the secrets
+scoped to that sandbox, which are left in place. The
+`resources:` cascade above survives verbatim; it now emits into `sandboxOptions.cpus` /
+`sandboxOptions.memory` instead of `--cpus` / `--memory` flags. `internal/build` still drives `sbx
+create` — a build sandbox is a different object with its own lifecycle, a named non-objective, not
+a leftover.
 
 **Ports publish on demand only.** `internal/spawn` must never import `internal/ports`, and
 `internal/cli` must import none of `net`, `hash/fnv`, `os/exec` — both invariants are locked by
 `internal/ports/hermeticity_test.go`, which fails with an import-graph message if you break them.
 
 **What den mounted is recorded, not re-derived.** `internal/manifest` writes
-`<denHome>/state/sandboxes/<sandbox>.yaml` on the create branch, before `sbx create`; `den rm`,
-`den ls` and `den doctor` replay it. Every reader falls back on the old derivation when the file is
-absent or unreadable — `den rm` must never refuse and strand a live VM (doctrine T13/T16), and den
-never deletes a record it could not read (it may belong to a newer den). `state/` is not `cache/`:
-it is never purged.
+`<denHome>/state/sandboxes/<sandbox>/manifest.yaml` on the create branch, before `sbx env create`;
+`den rm`, `den ls` and `den doctor` replay it. The directory (not a single file) is deliberate: it
+is where `manifest.yaml` and the `.sbxenv.yaml` sbx consumes live side by side, so `den rm` can
+remove both as one unit. `internal/manifest.LegacyPath` — the old flat
+`<denHome>/state/sandboxes/<sandbox>.yaml` a pre-directory-layout den left — is still read,
+**permanently**, not as a migration phase: `state/` is never purged, so every sandbox created before
+this change keeps its record only there, and den converts nothing. Two DIFFERENT fallbacks, not one:
+`manifest.Read` itself falls back from the new path to `LegacyPath` only when the new file is
+ABSENT — that is the legacy-format read, still a real record. `den rm`'s worktree cleanup goes one
+step further and falls back on the OLD DERIVATION (re-deriving mounts from the nest and
+`config.yaml`, saying so) whenever `manifest.Read` returns any error at all, past that first
+fallback: both paths absent, a present file it cannot even read (a permission bit, an I/O error —
+`os.ReadFile` failing before decode is ever reached), or one it reads but cannot decode.
+Never a refusal either way: `den rm` must never strand a live VM (doctrine T13/T16), and den never
+deletes a record it could not read (it may belong to a newer den). `state/` is not `cache/`: it is
+never purged.
+
+**`~/.den` is the single source of truth, and `den doctor` now says where it is NOT** (#88). sbx
+writes machine state den does not own — the global secret store, the MCP registry, the agent-skills
+store — and `internal/doctor/undeclared.go` reports each as "present, undeclared" at **LevelOK**,
+never a warning: a user who ran `sbx setup` has a correct machine, and a permanent warning stops
+being read. den removes nothing it did not create; there is no `--fix` behind this check. A fourth
+sbx surface must be a **row in `sbx.Stores`**, not a fourth parser. Two grades of observation, kept
+apart on purpose: a surface den can enumerate is reported by identity, one it can only probe
+carries a boolean. `sbx.ReadStore` matches the **negative sentinel** (`No MCP servers registered`,
+`No skills found`) and treats everything else as occupied — neither command accepts `--json`, no
+populated output has ever been observed, so a column parser would be a supposition. An emptiness
+test would be wrong too: `sbx mcp ls` prints its gateway header with nothing registered.
 
 **Team sources** live under `sources/<n>/` (`internal/source`) — plain git clones carrying the
 den-home partial layout (`stacks/`, `lib/`, `kits/`, `nests/`, no `config.yaml`: personal config
@@ -127,8 +186,16 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   reports still say `sbx` is not installed on this machine. It is (`/opt/homebrew/bin/sbx`,
   **v0.39.0 `def8cb0`** as of 2026-08-24 — the v0.35.0 this note used to record is three releases
   behind). The spec `docs/superpowers/specs/2026-07-27-den-cli-design.md` remains the source of
-  truth, and its §14.0 / §14.1 / **§14.2** the only place that says what a real `sbx` has actually
-  answered. §14.2 is the current one: it records the v0.39.0 surface, and it settles probes 1 and 2
+  truth, and its **§14.0 → §14.5** the only place that says what a real `sbx` has actually
+  answered. Three of those subsections were written the same day (2026-08-24) by three parallel
+  axes that each claimed the number `14.3`; the collision is arbitrated **by issue number**, and
+  the numbers below are the ones to cite: **§14.3** = `sbx mcp ls` / `sbx skills ls` (#88, neither
+  accepts `--json`), **§14.4** = the real `.sbxenv.yaml` schema (#89), **§14.5** = the `--memory`
+  grammar and the `--profile` probe (#90). Doc comments in `internal/sbx/store.go`,
+  `store_test.go`, `machine.go` and `internal/doctor/undeclared_test.go` cite §14.3 and are
+  correct. `docs/superpowers/handoffs/2026-08-24-axe3-PR-body.md` says §14.3 for the `--memory`
+  grammar and means §14.5 — it carries a header note saying so, and its body is not rewritten.
+  §14.2 remains the v0.39.0 surface, and it settles probes 1 and 2
   of issue #87. The `sbx setup` wizard is one-shot per machine (marker
   `~/Library/Application Support/com.docker.sandboxes/sandboxes/first-run-import.json`, keyed on
   `offeredAt` — *offered*, not accepted, so `[q]` closes it). Its gate is
@@ -139,6 +206,26 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   descriptors through. Measured 2026-08-24, §14.2 carries the table. Do not repeat the first
   reading of that probe, which used `stdin=/dev/null` throughout and wrongly concluded the wizard
   could never reach den.
+- The same mother spec, written before the emitter shipped, still describes den's SPAWN as an `sbx
+  create` argv assembly, at seven sites spread across FIVE different sections — not confined to any
+  one range: the naming constraint pinned to `sbx create --name` (**§2**, lines 53, 58), `image:`'s
+  comment "passé à `sbx create --template` au spawn" (**§4.2**, line 144), the repo-selection
+  basename check pinned to "une position dans l'argv de `sbx create`" (**§6**, line 260), §6 point
+  6's whole `sbx create` assembly paragraph (**§6**, lines 281-285), the ssh agent-forward table
+  headed "flags de `sbx create`" and its "avant le `sbx create`" warning timing (**§10**, lines 781,
+  820), and the TDD section's "assemblage de l'argv `sbx create`" golden-file strategy for spawn
+  (**§12**, line 993). Per this file's own doctrine above, that is now a bug in the spec, not a
+  phase — but it stays UNREWRITTEN, for the same reason the dated handoffs and plans above are: it
+  is a 2026-07-27 snapshot, extended (not superseded) by the 2026-08-24 positioning spec, and
+  rewriting it would blur which document is authoritative for the era it describes. Translate `sbx
+  create` → `sbx env create` / `.sbxenv.yaml` at each of those seven sites when reading them.
+  Checked and NOT stale in the same document, on purpose: line 146 (**§4.2**, `base:`'s comment)
+  names `sbx create`'s positional AGENT too, but that one is genuinely a BUILD-time concept —
+  `internal/build` still assembles that argv, unchanged — so it is left alone deliberately, not by
+  oversight. Likewise the Build DAG subsection of §6 (lines 370, 382, 404) and the measured `sbx
+  create` surface at §14.0-§14.2 (flags, `--label`, the setup-wizard gate) describe the sbx BINARY
+  or the build engine, not den's spawn engine, and both stay true regardless of which engine spawn
+  runs.
 - `.claude/worktrees/feat+spawn-interactive/` is a full shadow copy of the tree. Exclude it from
   greps or every search returns doubled hits.
 - Il n'y a plus de `Makefile` : le runner est `Taskfile.yml` depuis le 2026-08-04. Les plans

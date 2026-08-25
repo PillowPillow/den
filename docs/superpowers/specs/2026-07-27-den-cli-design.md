@@ -1835,3 +1835,497 @@ Ce qui reste **NON VÉRIFIÉ**, et ce que la sonde ne pouvait pas atteindre : ce
 on répond `[enter]`, et si `~/.ssh/config` est alors modifié par sbx lui-même. C'est la même
 frontière que les sondes 3 et 4 de #87 — elle se paie en pollution réelle, et den ne la franchit
 pas pour l'instant.
+
+---
+
+> **Trois relevés du même jour, numérotés par ordre d'issue.** Les §14.3 (#88), §14.4 (#89) et
+> §14.5 (#90) ont été écrits en parallèle par trois axes, qui ont chacun réclamé « 14.3 ». La
+> collision est arbitrée ici, dans la branche qui intègre, en renumérotant les EN-TÊTES et rien
+> d'autre : le corps d'un relevé est une mesure datée, et le réécrire le falsifierait.
+
+## 14.3 Sonde du 2026-08-24 — `sbx mcp ls` et `sbx skills ls`, issue #88
+
+Même binaire que le §14.2 : `/opt/homebrew/bin/sbx`, `sbx version` →
+`sbx version: v0.39.0 def8cb0523a77e757bdd6ef52b459fe374f3783e`. Ajout seul : ce relevé ne
+ré-atteste rien du §14.0, du §14.1 ni du §14.2.
+
+La question posée par #88 est étroite et sa réponse décide la forme du lecteur : **ces deux
+commandes savent-elles sortir du JSON ?**
+
+### La réponse est NON, pour les deux
+
+| Commande | code | stdout | stderr |
+|---|---|---|---|
+| `sbx mcp ls --json` | 0 | `ERROR: unknown flag: --json` | vide |
+| `sbx skills ls --json` | 0 | `ERROR: unknown flag: --json` | vide |
+
+Deux faits à retenir au-delà du refus lui-même :
+
+- **Le refus part sur stdout, et le code de sortie est 0.** Un lecteur qui déciderait « drapeau
+  accepté » sur le code de sortie conclurait à tort. C'est aussi pourquoi la sonde a été refaite
+  flux séparés : le premier passage, en `2>&1 | head`, rendait le code de `head` et non celui de
+  `sbx`.
+- L'aide le confirme, elle ne se contredit pas : `sbx mcp ls --help` ne déclare que `-h/--help`,
+  `sbx skills ls --help` de même, et les seuls drapeaux globaux sont `-D/--debug`. Il n'existe
+  aucun `--json` global qui rattraperait l'absence.
+
+`sbx mcp inspect <name>` existe et pourrait porter le détail d'un serveur, mais il n'annonce pas
+davantage de `--json` et il exige un nom — il ne remplace pas un inventaire.
+
+### Ce que les deux commandes rendent sur cette machine
+
+`sbx mcp ls` — l'en-tête de passerelle est imprimé **même à vide** :
+
+```
+LOCAL · managed by you · ✓ on
+
+No MCP servers registered
+  add one   sbx mcp add <name> --url <url>
+```
+
+`sbx skills ls` :
+
+```
+Skills store: /Users/polochon/Library/Application Support/com.docker.sandboxes/sandboxes/agent-skills
+No skills found. Use 'sbx skills import' to add skills.
+```
+
+Cohérent avec le §14.2 : le `[q]` du 2026-08-23 n'a rien importé. `agent-skills/` est toujours
+vide au 2026-08-24. Le marqueur frère `first-run-import.json` porte, lui, la date de la sonde 1
+du §14.2 (`2026-08-24T14:44:53Z`) — c'est cette sonde qui l'a réécrit, comme elle le dit.
+
+`sbx skills` porte en tête de son aide : **`EXPERIMENTAL: this command may change or be removed in
+future releases.`** Sa sortie n'est donc pas un contrat.
+
+### ⚠️ Ce que cette sonde n'a PAS observé, et pourquoi c'est décisif
+
+**La forme peuplée d'aucune des deux sorties n'a été vue.** Cette machine n'a ni serveur MCP
+enregistré ni skill importée, et la voir exigerait d'écrire dans le registre même que #88 cherche
+à rendre visible — `sbx mcp add` pour l'un, `sbx skills import` pour l'autre. C'est le prix des
+sondes 3 et 4 de #87, refusé pour la même raison.
+
+Conséquence pour l'implémentation, et c'est la phrase porteuse de ce paragraphe : **den ne peut
+pas écrire d'analyseur de colonnes pour ces deux surfaces**, parce que personne n'a mesuré les
+colonnes. Un analyseur ancré sur en-tête comme `parseSecretList` serait ici une **supposition**,
+pas un relevé — et le §14.0 comme le §14.2 valent précisément parce qu'ils ne supposent rien.
+
+Ce que den peut faire sans rien supposer : reconnaître la **sentinelle négative** que chaque
+commande imprime quand elle n'a rien à lister (`No MCP servers registered`,
+`No skills found. …`), et traiter tout le reste comme « quelque chose est là ». Le sens de
+l'échec est alors le bon : une sortie que den ne reconnaît pas devient « den n'a pas pu lire cette
+surface » et jamais « cette surface est vide » — la confusion exacte que `Observation` sépare
+depuis le prototype du 2026-08-14.
+
+Un test d'inanité (« la sortie est non vide donc il y a des serveurs ») serait faux ici : la
+passerelle imprime son en-tête à vide, comme la sortie ci-dessus le montre. C'est la sentinelle
+qui décide, pas la longueur.
+
+Enfin, comme pour `secret ls -g` (§ `ReadSbxState`), la bannière de mise à jour de sbx atterrit
+sur stdout : `sbx.StripUpdateBanner` s'applique avant toute reconnaissance.
+
+### Ce que la mécanique rend sur cette machine (vérification, même jour)
+
+`den doctor` construit avec ce relevé, sur `~/.den` réel :
+
+```
+[ok  ] sbx secrets      1 of 4 present, undeclared: service anthropic — not written by den,
+                        which never removes what it did not create; `sbx secret ls -g` shows the detail
+[ok  ] sbx mcp servers  nothing on this machine
+[ok  ] sbx skills       nothing on this machine
+```
+
+Trois faits mesurés, et non supposés :
+
+- le magasin global porte **4 secrets**, dont **3 sont déclarés** par la source `dg` ;
+- le quatrième, `service anthropic`, n'est déclaré par aucune source — c'est exactement l'angle
+  mort que #88 ferme, et il existait pour de vrai sur cette machine ;
+- les deux magasins opaques répondent leur sentinelle négative, donc « rien » — ce qui confirme la
+  reconnaissance côté den contre la sortie réelle, et pas seulement contre un double.
+
+`den doctor` reste **vert** (`all good`) : l'état non déclaré est de l'information, jamais un
+défaut. Rien n'a été supprimé, et aucune commande mutante n'a été lancée.
+
+---
+
+## 14.4 Sonde du 2026-08-24 — #89 — le schéma réel de `.sbxenv.yaml`
+
+Même binaire qu'au §14.2 : `/opt/homebrew/bin/sbx`, `v0.39.0 def8cb0`. Cette sous-section ne dit
+que ce qui a été **mesuré** ; l'analyse de positionnement qui s'en déduit vit dans son propre spec,
+`2026-08-24-sbx-env-positioning-design.md`.
+
+Trois sandboxes jetables créées, mesurées et détruites (`den-probe-merge`, `den-probe-rev`,
+`shell-noname`) ; `sbx ls --json` ne montre aucun résidu après coup. `sbx env run` n'a **jamais**
+été appelé nu : il attache, et l'attache depuis un terminal est la branche que le §14.2 a mesurée
+comme celle qui ouvre l'assistant. Le marqueur `first-run-import.json` est resté au 2026-08-23 tout
+du long, vérifié après les sondes.
+
+### Le levier : le décodeur est strict et nomme son type Go
+
+```
+$ cat .sbxenv.yaml
+schemaVersion: "1"
+agent: shell
+bogusKey: 42
+$ sbx env create .
+ERROR: parse …/.sbxenv.yaml: yaml: unmarshal errors:
+  line 2: field bogusKey not found in type sbxenv.Config
+```
+
+C'est la même doctrine qu'au §12 de den. Elle rend le schéma **énumérable par sondage de clés**, et
+l'erreur nomme aussi les types imbriqués. Tout ce qui suit a été obtenu ainsi, puis confirmé par un
+comportement réel.
+
+⚠️ **Les numéros de ligne de ces erreurs ne sont pas fiables** : les erreurs de clé inconnue
+reviennent re-triées par ordre alphabétique du nom de champ, et la numérotation est décorrélée du
+fichier. Lire les messages, jamais les positions.
+
+### Les champs, mesurés
+
+`schemaVersion` est **obligatoire** (`schemaVersion is required`) et n'accepte que `1` :
+
+```
+ERROR: invalid …/.sbxenv.yaml: unsupported schemaVersion "2" (supported: 1)
+```
+
+`agent` est **obligatoire** (`agent is required`). Le reste de `sbxenv.Config` :
+
+| Clé | Type | Notes |
+|---|---|---|
+| `schemaVersion` | string | obligatoire, `"1"` seul |
+| `agent` | string | obligatoire |
+| `name` | string | nomme la sandbox ; défaut `<agent>-<basename(dir)>` |
+| `workspace` | `WorkspaceSpec` | unmarshaler custom : *« workspace must be a string or a mapping with 'path'/'clone' »* ; `path` string, `clone` bool |
+| `additionalWorkspaces` | `[]WorkspaceMount` | `WorkspaceMount` porte **`path` seul** — ni `ro`, ni `target`, ni `clone` |
+| `kits` | `[]string` | ordonné, cf. plus bas |
+| `env` | `map[string]string` | |
+| `secrets` | `map[string]SecretSource` | `SecretSource` = `{command string, value string}` ; `env`/`file`/`prompt` refusés |
+| `registries` | `map[string]RegistrySource` | `{username SecretSource, secret SecretSource}` |
+| `bindings` | `map[string]bindings.Binding` | non exploré au-delà de la forme |
+| `mcp` | `MCPConfig` | **`servers: []MCPServer` et rien d'autre** |
+| `ports` | `[]PortBinding` | `{host int, sandbox int, protocol string}` |
+| `sandboxOptions` | `SandboxOptions` | **`{cpus int, memory string, profile string, template string}` et rien d'autre** |
+
+Refusées à la racine, chacune par `field … not found in type sbxenv.Config` : `clone`, `cpus`,
+`credentials`, `egress`, `environment`, `image`, `memory`, `mixins`, `mounts`, `network`, `options`,
+`permissions`, `policy`, `registry`, `sandbox`, `template`, `workspaces`, `allow`, `deny`,
+`denyNetwork`, `deny_network`, `dns`, `kit`, `label`, `labels`, `mixin`, `profile`, `publish`,
+`resources`, `skills`, `staticMCP`, `static_mcp`, `volumes`, `containerSettings`.
+
+### `kits:` préserve l'ordre déclaré, et les séquences CONCATÈNENT à la fusion
+
+Deux fichiers, un kit chacun, `sbx env create -D base.yaml over.yaml` :
+
+```
+── LOAD ENVIRONMENT
+   merging 2 environment files, each overriding the one before…
+── RESOLVE SETUP
+     sandbox    den-probe-merge
+     kit        …/kitA
+                …/kitB
+── CONFIGURE AGENT
+   → register 3 startup command(s), run on every container start
+     + sh -c command -v apt-get > /dev/null 2>&1 && (apt-get updat… (kit=shell, user=root)
+     + /bin/sh -lc echo A >> /tmp/den-order.txt (kit=den-probe-kit-a, user=1000)
+     + /bin/sh -lc echo B >> /tmp/den-order.txt (kit=den-probe-kit-b, user=1000)
+```
+
+La preuve primaire est la numérotation que sbx assigne lui-même dans la VM :
+
+```
+$ sbx exec den-probe-merge sh -lc 'ls -1 /etc/durable-startup.d'
+001-startup-shell
+002-startup-den-probe-kit-a
+003-startup-den-probe-kit-b
+run.sh
+$ sbx exec den-probe-merge cat /tmp/den-order.txt
+A
+B
+```
+
+Contrôle, liste inversée dans un fichier unique (`kits: [kitB, kitA]`, sandbox `den-probe-rev`) :
+`002-startup-den-probe-kit-b`, `003-startup-den-probe-kit-a`, et `/tmp/den-order.txt` répond `B` puis
+`A`. **Le kit de l'agent est toujours `001`.**
+
+**Les séquences concatènent, elles ne remplacent pas** — la sémantique docker-compose aurait prédit
+l'inverse. Sonde discriminante : le fichier de base déclarait un kit inexistant, la surcharge un kit
+valide, et c'est l'entrée du fichier *antérieur* qui a fait échouer la résolution.
+
+```
+ERROR: resolve kits: kit "…/kit-does-not-exist": resolve reference:
+kit reference "…/kit-does-not-exist": path does not exist
+```
+
+Cette résolution tombe **avant tout effet de bord** : aucune sandbox créée, aucune image tirée.
+
+### Un `kit:` peut pointer un répertoire généré
+
+Chemin absolu vers un répertoire écrit à la main (`spec.yaml`, `schemaVersion: 2`, `kind: mixin`) :
+accepté. Un chemin absent : refusé, message ci-dessus.
+
+### Aucun egress, aucune policy — mais le kit, lui, la porte
+
+Aucun champ réseau nulle part : ni dans `Config`, ni dans `SandboxOptions`, ni dans `MCPConfig`
+(qui n'a que `servers`). En revanche un kit listé dans `kits:` porte bien
+`permissions.network.allow`, et la règle atteint le moteur de policy scopé à la sandbox exactement
+comme via `sbx create --kit`. `kitB` déclarait `allow: [example.invalid]` :
+
+```
+$ sbx policy check network --sandbox den-probe-merge --json example.invalid
+{ "allowed": true, "context": "sandbox:den-probe-merge", … }
+
+$ sbx policy check network --sandbox den-probe-merge --json not-in-the-kit.invalid
+{ "allowed": false, "deny_kind": "implicit",
+  "reason": "No matching allow rule (default deny)", … }
+```
+
+(`github.com` répond aussi `allowed: true`, mais depuis le preset machine, pas depuis le kit : la
+liste d'allow est additive par-dessus le preset.)
+
+**`sbx env` n'offre rien qui remplace le settle-loop du §7.** La propagation reste asynchrone et
+aucune sous-commande ne l'attend.
+
+### `name:` gagne sur le chemin
+
+Répertoire `merge/`, fichier déclarant `name: den-probe-merge` :
+
+```
+$ sbx ls --json
+{ "name": "den-probe-merge", "agent": "shell", "status": "running",
+  "workspaces": ["…/scratchpad/merge"] }
+```
+
+Sans `name:`, le défaut est `<agent>-<basename(répertoire)>` — répertoire `noname/`, agent `shell`
+→ sandbox `shell-noname`. `<nest>[.<instance>]` survit donc intact.
+
+### Sémantique de fusion, par type
+
+- **scalaires** : le dernier fichier gagne ; un fichier peut omettre la clé et hériter. Mesuré : la
+  surcharge omettait `agent:` et aucun `agent is required` n'a été levé.
+- **maps** : fusion clé à clé, le dernier gagne par clé. Mesuré dans la VM :
+  `DEN_FROM_BASE=base`, `DEN_FROM_OVER=over`, `DEN_OVERRIDDEN=over`.
+- **séquences** : concaténation, dans l'ordre des fichiers (ci-dessus).
+
+### Les autres faits mesurés
+
+- **`env create` n'est PAS créer-ou-attacher.** Sur un nom existant :
+  `ERROR: sandbox 'den-probe-rev' already exists. Use 'sbx run --name den-probe-rev' to connect to it`.
+  Créer-ou-attacher, c'est `env run`, qui attache.
+- **`workspace` par défaut, c'est le répertoire du fichier d'environnement.**
+- **Les chemins de workspace doivent être absolus ou interpolés.** Un chemin relatif n'a résolu ni
+  contre le répertoire du fichier, ni contre le cwd du processus, dans deux essais.
+- **`${VAR}` / `${VAR:-defaut}` fonctionne**, y compris dans les chemins.
+- **Un workspace inexistant déclenche une invite INTERACTIVE** :
+  `The selected workspace does not exist. Would you like to create it? (y/N):`, puis
+  `ERROR: user cancelled operation`. En automatisation, ça bloque.
+- **`sandboxOptions.template` écrase l'image dérivée de l'agent.** Le bloc de résolution affiche
+  `image  den-probe-no-such-template`, puis
+  `ERROR: request failed: 403 Forbidden: pull failed for image "den-probe-no-such-template"` —
+  refus côté serveur, APRÈS le pull, même forme qu'au §14.2 pour `--memory 512m`.
+- **`env rm`** retire la sandbox et ses secrets scopés : `Sandbox 'den-probe-rev' removed` /
+  `Removed secrets scoped to "den-probe-rev"`.
+- `sbx env` est **EXPERIMENTAL** sur ses quatre sous-commandes.
+
+### Ce qui reste NON MESURÉ
+
+- Le cycle de vie réel de `secrets:` et `bindings:` au-delà de leur forme YAML.
+- Le comportement de `ports:` : le schéma est connu, la publication à la création est **déduite**,
+  pas observée.
+- Ce que `sbx env` fait d'un kit dont la validation échoue *après* la création de la VM.
+- La stabilité de `schemaVersion 1` dans le temps — c'est une prédiction, pas un fait.
+
+### Sonde du 2026-08-25 — `:ro` dans un `path` de workspace
+
+Même binaire : `/opt/homebrew/bin/sbx`, `sbx version` répond `v0.39.0
+def8cb0523a77e757bdd6ef52b459fe374f3783e`. Le §14.4 mesure `WorkspaceMount` (le type qui porte
+`additionalWorkspaces`) comme ne portant que `path` — ni `ro`, ni `target`, ni `clone`. `den`
+construit aujourd'hui `host + ":ro"` pour un mount en lecture seule (`spawn.mountWorkspace`,
+`internal/spawn/spawn.go:1989`), en s'appuyant sur le fait que `sbx create` accepte ce suffixe dans
+un positionnel. Cette sonde vérifie si `sbx env create` interprète le même suffixe dans
+`additionalWorkspaces[].path`, ou s'il le traite comme un chemin littéral — ce qui compilerait un
+`ro: true` déclaré côté nest en montage écriture, en silence.
+
+Fichier de sonde, hors repo (`/private/tmp/claude-501/den-sbxenv-probe/.sbxenv.yaml`), workspace
+`ws-a` sans suffixe comme témoin, `ws-b` avec `:ro` :
+
+```
+schemaVersion: "1"
+agent: shell
+name: den-probe-ro
+workspace:
+  path: /private/tmp/claude-501/den-sbxenv-probe/ws-a
+additionalWorkspaces:
+  - path: /private/tmp/claude-501/den-sbxenv-probe/ws-b:ro
+```
+
+`sbx env create … < /dev/null` (stdin fermé, cf. §14.4 ci-dessus sur l'invite interactive) résout
+le suffixe **avant** tout effet de bord — le bloc `RESOLVE SETUP` l'affiche déjà tranché :
+
+```
+── RESOLVE SETUP
+   resolving configuration…
+     sandbox    den-probe-ro
+     agent      shell
+     workspace  /private/tmp/claude-501/den-sbxenv-probe/ws-a (rw)
+                /private/tmp/claude-501/den-sbxenv-probe/ws-b (ro)
+     …
+   ✓ configuration resolved
+── CREATE SANDBOX
+   ✓ Created sandbox den-probe-ro
+```
+
+La preuve primaire est dans la VM, pas dans l'affichage : `mount` y montre les deux workspaces
+montés sous leur chemin hôte identique (pas de re-mapping vers `/ws-a`, `/ws-b`), avec des drapeaux
+différents :
+
+```
+$ sbx exec den-probe-ro sh -lc 'mount | grep -i ws'
+host on /private/tmp/claude-501/den-sbxenv-probe/ws-a type virtiofs (rw,nosuid,nodev,relatime)
+host on /private/tmp/claude-501/den-sbxenv-probe/ws-b type virtiofs (ro,nosuid,nodev,relatime)
+```
+
+Même verdict côté hôte : `sbx ls --json` renvoie le suffixe `:ro` intact dans la liste des
+workspaces de la sandbox créée —
+
+```
+$ sbx ls --json
+{
+  "sandboxes": [
+    {
+      "name": "den-probe-ro",
+      "id": "c95ebb3d-92ed-4df8-9e4a-05f8c9db7d1d",
+      "agent": "shell",
+      "status": "running",
+      "workspaces": [
+        "/private/tmp/claude-501/den-sbxenv-probe/ws-a",
+        "/private/tmp/claude-501/den-sbxenv-probe/ws-b:ro"
+      ]
+    },
+    …
+  ]
+}
+```
+
+Témoin (`ws-a`, sans `:ro`) : l'écriture réussit —
+
+```
+$ sbx exec den-probe-ro sh -lc 'touch /private/tmp/claude-501/den-sbxenv-probe/ws-a/probe-write 2>&1; echo rc=$?; ls -la /private/tmp/claude-501/den-sbxenv-probe/ws-a'
+rc=0
+total 4
+drwxr-xr-x+  1 agent agent   96 Aug 25 09:16 .
+drwxr-xr-x   4 root  root  4096 Aug 25 09:15 ..
+-rw-r--r--+  1 agent agent    0 Aug 25 09:16 probe-write
+```
+
+Sonde (`ws-b:ro`) : l'écriture est refusée par le noyau invité, pas par une couche applicative —
+
+```
+$ sbx exec den-probe-ro sh -lc 'ls -1 /private/tmp/claude-501/den-sbxenv-probe/ws-b 2>&1; touch /private/tmp/claude-501/den-sbxenv-probe/ws-b/probe-write 2>&1; echo rc=$?'
+touch: cannot touch '/private/tmp/claude-501/den-sbxenv-probe/ws-b/probe-write': Read-only file system
+rc=1
+```
+
+Nettoyage : `sbx env rm -f …/.sbxenv.yaml` (`Sandbox 'den-probe-ro' removed`,
+`Removed secrets scoped to "den-probe-ro"`), puis `sbx ls --json` sans `den-probe-ro`, puis
+suppression du répertoire de sonde.
+
+**Verdict : OUI** — `sbx env create` interprète `:ro` en fin de `path` dans `additionalWorkspaces`
+exactement comme `sbx create` l'interprète dans un positionnel, et le monte effectivement en lecture
+seule ; l'émetteur peut donc produire `host + ":ro"` dans `path` sans perte de la garantie
+lecture-seule. Retenu par conduite de fail-closed (§5.7) malgré le résultat positif : un OUI est
+issu de quatre lectures concordantes — l'affichage de résolution, `sbx ls --json` côté hôte, le
+drapeau `mount` dans la VM, et le refus d'écriture effectif — et non d'une seule d'entre elles.
+
+---
+
+## 14.5 Sondes du 2026-08-24 — la grammaire de `--memory` (issue #90)
+
+> **Append-only.** Cette sous-section est celle de l'axe 3 (#90). Elle ne modifie rien de §14.0,
+> §14.1 ni §14.2 : elle ajoute ce que celles-ci ne mesuraient pas.
+
+Le §14.2 établit que `-m/--memory` refuse en dessous de 1 GiB, **côté serveur**, après
+`✓ image ready`. Il ne dit pas ce que la grammaire ACCEPTE. den doit le savoir, parce qu'il valide
+la valeur lui-même : un validateur plus étroit que sbx transformerait un tirage d'image épargné en
+un refus de configuration qui marche.
+
+Quatre sondes, `sbx create` réel, v0.39.0 `def8cb0`, chacune sur un répertoire jetable. **Aucune ne
+crée de sandbox** : toutes échouent au contrôle du minimum ou à l'analyse de la valeur.
+
+| Valeur envoyée | Réponse de sbx | Ce que ça prouve |
+|---|---|---|
+| `abc` | `invalid memory "abc": invalid memory value "abc": invalid size: 'abc'` | grammaire REFUSÉE |
+| `1kib` | `memory 1kib is below the minimum of 1 GiB` | grammaire ACCEPTÉE (suffixe `ib`) |
+| `1024` | `memory 1024 is below the minimum of 1 GiB` | grammaire ACCEPTÉE (nombre nu = OCTETS) |
+| `0.5g` | `memory 0.5g is below the minimum of 1 GiB` | grammaire ACCEPTÉE (décimal) |
+
+Les trois dernières atteignent le contrôle du **minimum**, donc l'analyse a réussi. La première
+meurt avant. Le diagnostic `invalid size: '…'` est celui de `go-units.RAMInBytes` (docker), mot pour
+mot : la grammaire est donc `<nombre décimal>` + unité optionnelle parmi `b k m g t p` + suffixe
+optionnel `b`/`ib`, insensible à la casse, un espace toléré, un nombre nu valant des octets, base
+binaire (1024).
+
+`sbx create --help` n'en donne que deux exemples (`1024m`, `8g`). **Un den qui n'accepterait que
+ceux-là refuserait `2gb`, `4G` et `2048MiB`, qui marchent.** `internal/sbx/resources.go` réimplémente
+la grammaire mesurée plutôt que de prendre la dépendance : ~20 lignes contre un module de plus dans
+`go.mod`, pour une grammaire figée par un test.
+
+Le seuil est `>=` et non `>` : le serveur dit « **below** the minimum », donc `1g` et `1024m` —
+exactement 1073741824 octets — passent.
+
+**Non sondé, délibérément** : le comportement d'un `--cpus` négatif. den le refuse quand même, sans
+mesure : un compte de CPU négatif n'est pas une demande dont sbx aurait une lecture, et den refuse
+plutôt que de normaliser en silence (§2). `--cpus 0` reste ce que l'aide dit — *auto: all host
+CPUs* — et den ne l'envoie que s'il est ÉCRIT.
+
+### Ce que #90 a livré, et ce que la mesure a décidé
+
+- `resources: {cpus, memory}` à chaque niveau de la cascade (`config.yaml` ← `stack.yaml` ←
+  `nests/<n>.yaml` ← drapeaux), fusionné **champ par champ**, résolu par `nest.Resolve`, émis par
+  `sbx.CreateArgv` en `--cpus` / `--memory`.
+- Refus **avant le premier effet de bord** (§6) : le refus serveur coûte un tirage d'image, et
+  arrive après que den a créé ses worktrees.
+- `cpus:` est un **pointeur** : `--cpus 0` est une valeur qu'on peut vouloir dire, un `cpus:` absent
+  n'envoie aucun drapeau. Les deux sont équivalents pour sbx aujourd'hui, par coïncidence.
+- La branche attach ne réapplique **rien** : un `resources:` modifié **avertit** de la dérive. La
+  référence est le registre de création (`internal/manifest`), parce que `sbx ls --json` ne porte
+  aucun champ de taille (§14.2, inchangé) — une VM vivante ne peut pas être interrogée sur sa
+  taille.
+
+### `--deny-network` à la création : TRANCHÉ — non (issue #90, §4.2 du handoff)
+
+L'aide de `sbx create` dit d'un deny local qu'il *« can only narrow, never widen, egress »*, ce qui
+le rend sûr sous la doctrine fail-closed de den (§7). La question n'est pas la sûreté, c'est le
+nombre de mécanismes.
+
+**den n'en ajoute pas.** L'egress de den est une **allowlist** : `egress:` fusionne baseline ∪ stack
+∪ nest, et la settle-loop attend que la politique soit posée avant tout attach. Un `deny:` à côté
+ferait deux mécanismes pour un concept, et la question « pourquoi cet hôte est-il injoignable ? »
+aurait alors deux réponses à lire dans deux endroits — le mode de défaillance exact que
+`unionEgress` (une liste, un ordre, un golden) existe pour fermer.
+
+Un deny n'est utile que là où il **restreint une allowlist trop large**. Celle de den ne l'est pas :
+elle est écrite à la main, hôte par hôte, et un hôte de trop se retire en supprimant sa ligne. Le
+jour où une source d'équipe imposerait une allowlist qu'une machine doit rétrécir sans pouvoir la
+modifier, la question se rouvre — et c'est une question de **gouvernance**, la même que `--profile`
+ci-dessous, pas un drapeau de plus sur `sbx create`.
+
+### `--profile` : SONDÉ, sans objet sur cette machine (issue #90, §4.3 du handoff)
+
+Personne ne savait ce qu'était un « profil de gouvernance » sbx. Mesuré le 2026-08-24 :
+
+```
+$ sbx policy profile --help
+Manage policy profiles provided by remote governance policies.
+Profiles can be selected when creating sandboxes to apply a specific policy profile.
+
+$ sbx policy profile ls
+No policy profiles found
+```
+
+Un profil est donc fourni par une **politique de gouvernance distante**, pas déclaré localement.
+Cette machine n'en a aucun, et il n'existe aucune sous-commande pour en créer un : `sbx policy
+profile` n'offre que `ls`. den n'a donc **rien à quoi faire pointer `--profile`**, et aucun moyen
+d'observer l'effet du drapeau s'il l'envoyait.
+
+**Reporté**, pour la raison qui a écarté `--no-share-skills` au §14.2 : livrer un drapeau dont
+l'effet n'est pas observable brouille la prémisse. La sonde à refaire le jour où une organisation
+pousse des profils est celle ci-dessus, en une ligne.

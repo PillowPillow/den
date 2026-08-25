@@ -513,10 +513,10 @@ func TestValidateMounts(t *testing.T) {
 		// sugar's `$HOME/.ssh` and slip past the collision refusal below.
 		{"link ${HOME} refused", []Mount{{Host: "/tmp/x", Link: "${HOME}/.ssh"}},
 			"mounts[0].link: must be absolute"},
-		// A relative host reaches `sbx create`'s argv verbatim. Refused with the
-		// SAME shape as worktree_root: the alternative is a refusal from
-		// sbx.CreateArgv, which fires after den has already created worktrees
-		// and branches the user then has to clean up by hand.
+		// A relative host reaches the emitted `.sbxenv.yaml` verbatim. Refused
+		// with the SAME shape as worktree_root: the alternative is a refusal
+		// from sbx.EnvFile, which fires after den has already created
+		// worktrees and branches the user then has to clean up by hand.
 		{"host must be absolute", []Mount{{Host: ".secrets", Link: "$HOME/.secrets"}},
 			"mounts[0].host: \".secrets\" is not an absolute path"},
 		// ONE fault, ONE line: a blank host must not also raise the

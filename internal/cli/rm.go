@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/PillowPillow/den/internal/config"
@@ -83,6 +83,92 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 
 			out := cmd.OutOrStdout()
 
+			// BEFORE any reclaim, and that order is the decision: the reverse
+			// would move worktrees to the trash and only then refuse — a refusal
+			// that has already acted is not a refusal.
+			envPath, err := manifest.SbxEnvPath(home, name)
+			if err != nil {
+				return err
+			}
+			envErr := sbx.CheckEnvFile(envPath, name)
+			// Two causes, and they read as different surprises even though the
+			// remedy is identical (fix round 1, finding 1): an ABSENT record
+			// means this sandbox predates the emitter (or was never created by
+			// den at all) — a fact, not a corruption report — while an
+			// UNREADABLE one is CheckEnvFile's own diagnosis, verbatim. Told
+			// apart by errors.Is rather than by string-matching CheckEnvFile's
+			// message, because the wrapping (os.ReadFile → CheckEnvFile) must
+			// keep working even if that message's wording changes.
+			//
+			// Computed once, ahead of both branches below: the refusal (!force)
+			// and the announcement (force) name the very same cause, and a
+			// pre-switchover sandbox — no file at all — is the COMMONEST case in
+			// the whole plan. Saying "no such file or directory" to that user
+			// would read as corruption; "predates the emitter" reads as the fact
+			// it is.
+			var cause string
+			if envErr != nil {
+				cause = envErr.Error()
+				if errors.Is(envErr, fs.ErrNotExist) {
+					cause = fmt.Sprintf("no %s: this sandbox predates the emitter (or was not "+
+						"created by den)", envPath)
+				}
+			}
+			if envErr != nil && !force {
+				// The remedy is named IN the message, and that is what keeps this
+				// refusal on the right side of doctrine T13/T16: what the doctrine
+				// forbids is a refusal with no way out, not a refusal. The exit is
+				// immediate, documented, and in the command the user is already in.
+				return fmt.Errorf("%s\nden cannot hand this record to `sbx env rm`, which resolves "+
+					"the sandbox from the file it is given.\nto destroy %s by name instead, run: "+
+					"den rm --force %s", cause, name, args[0])
+			}
+
+			if envErr != nil && force {
+				// Printed BEFORE anything is destroyed, and only on this branch.
+				// `--force` carries two senses (spec §5.9) — "reclaim a dirty
+				// worktree" and "destroy by name when the record is unreadable" —
+				// and the user who asked for the first inherits the second without
+				// asking. Saying which one den exercises is what makes one flag
+				// with two senses acceptable; a silent second sense would make
+				// --force a switch whose reach the user no longer knows.
+				//
+				// The mirror rule matters as much: when --force serves the first
+				// sense ALONE, den says nothing about the second. A warning that
+				// fires on every forced removal stops being read.
+				//
+				// `cause` is printed bare, exactly as the refusal branch above
+				// prints it, and NOT wrapped in a "creation record unreadable"
+				// label: cause is already a complete sentence in every branch,
+				// and the label is flatly wrong for two of the three causes it
+				// covers — an ABSENT record ("predates the emitter") is not
+				// unreadable, it does not exist, and a NAME MISMATCH record
+				// reads perfectly fine, den just cannot vouch for it describing
+				// this sandbox. Only the schema/decode cause is genuinely
+				// "unreadable", and even that one already says so in its own
+				// words. A near-identical "records unreadable:" label already
+				// exists for a different concept (nameUnknownSharers, about the
+				// records DIRECTORY) — reusing similar wording here for a single
+				// FILE would invite conflating the two.
+				fmt.Fprintf(out, "%s\n", cause)
+				fmt.Fprintf(out, "--force: destroying %s by name instead — sbx removes the "+
+					"sandbox, and the secrets scoped to it are left in place\n", name)
+				fmt.Fprintf(out, "  to see them:    sbx secret ls --sandbox %s\n", name)
+				fmt.Fprintf(out, "  to remove one:  sbx secret rm <service> --sandbox %s\n", name)
+				// Final review, Important 1: gated on the SAME errors.Is check
+				// `cause` used above, and for the same reason — an ABSENT file
+				// has nothing to "leave alone". Ungated, the two lines
+				// contradicted each other on the COMMONEST cause in the whole
+				// plan: line 1 (`cause`) already says the file does not exist,
+				// and this line used to say den is leaving it alone because it
+				// may belong to another version of den — true only when a file
+				// actually exists to belong to someone.
+				if !errors.Is(envErr, fs.ErrNotExist) {
+					fmt.Fprintf(out, "  den leaves %s alone: it may belong to another version of den\n",
+						envPath)
+				}
+			}
+
 			// Worktrees first: if one is dirty we stop BEFORE destroying the
 			// sandbox. The reverse would leave the user with no VM and an error
 			// about a directory.
@@ -100,8 +186,64 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 				return err
 			}
 
-			if _, err := runner.Run(cmd.Context(), "rm", "--force", name); err != nil {
-				return err
+			if envErr == nil {
+				// `-f` is not optional: `sbx env rm` prompts for confirmation
+				// without it (measured 2026-08-25), and a prompt in a
+				// non-interactive `den rm` blocks forever.
+				//
+				// --prune-bindings is deliberately NOT passed: it removes the
+				// bindings THIS environment declares, and den declares none
+				// (decision 10 — bindings are not emitted while their lifecycle
+				// is unmeasured). Passing it would ask sbx to prune a set den
+				// never wrote.
+				if _, err := runner.Run(cmd.Context(), "env", "rm", "-f", envPath); err != nil {
+					return err
+				}
+				// Measured 2026-08-25 against a real sbx v0.39.0: `sbx env rm -f`
+				// does NOT delete the .sbxenv.yaml it is handed — `sbx env rm
+				// --help` never claims to. Left alone, state/sandboxes/<name>/ —
+				// a directory spec §11 promises den never purges — keeps a stale
+				// file after every successful `den rm`, forever: manifest.List
+				// (task 2) already treats a directory with no manifest.yaml as
+				// the ordinary shape a FORCED removal legitimately leaves, so
+				// neither `den ls` nor `den doctor` would ever surface this as
+				// an orphan. A silent, unbounded leak in the one place den
+				// promises never to purge.
+				//
+				// Deleting HERE is consistent with §11, not a violation of it:
+				// the doctrine is "never delete a record den could NOT read",
+				// and reaching this branch (envErr == nil) is proof den COULD
+				// read this one — CheckEnvFile is what gated it. The fallback
+				// branch below is the opposite case by construction (envErr !=
+				// nil) and must keep leaving its file untouched; the two
+				// branches must never be merged into one removal.
+				//
+				// Both errors dropped like manifest.Remove's own directory
+				// cleanup does: sbx just confirmed the sandbox is gone, so
+				// failing `den rm` now over local housekeeping would refuse a
+				// completed removal (doctrine T13/T16). manifest.Remove (called
+				// from cleanWorktrees, ABOVE this point) already tried to clear
+				// this same directory and found it non-empty because THIS file
+				// was still in it — removing the file and retrying the
+				// directory is what finishes that job.
+				_ = os.Remove(envPath)
+				// os.Remove, deliberately never os.RemoveAll (final review,
+				// deferred (a)): --keep-worktrees skips cleanWorktrees above, so
+				// manifest.yaml is still sitting in this same directory ON
+				// PURPOSE — that is the whole point of --keep-worktrees keeping
+				// the record (see the branch above, "worktrees kept, and so is
+				// their record"). os.Remove simply fails on that non-empty
+				// directory and the error is dropped, which is exactly right;
+				// os.RemoveAll would delete the kept manifest.yaml too.
+				if dir, err := manifest.SandboxDir(home, name); err == nil {
+					_ = os.Remove(dir)
+				}
+			} else {
+				// The conceded fallback of §5.8 — conceded, not designed. See the
+				// warning next task prints before we get here.
+				if _, err := runner.Run(cmd.Context(), "rm", "--force", name); err != nil {
+					return err
+				}
 			}
 			fmt.Fprintf(out, "sandbox %s destroyed (the agent profile is kept)\n", name)
 			return nil
@@ -485,17 +627,19 @@ func newMountGuard(home, self string) mountGuard {
 		// worktrees forever, over a record den is about to leave behind
 		// anyway. den is removing THIS sandbox; its own record never speaks
 		// for a third party.
-		sandbox := strings.TrimSuffix(filepath.Base(b.Path), ".yaml")
+		sandbox := manifest.SandboxOf(b.Path)
 		if sandbox == self {
 			continue
 		}
-		// manifest.List admits ANY entry ending in ".yaml", including a file
-		// named exactly ".yaml", whose trim leaves no sandbox name at all.
-		// Such a file names nobody, so it can hold no mount under a name the
-		// user could act on — and it is not a record den wrote. It is counted
-		// as an unknown sharer rather than read: the cautious path exists for
-		// exactly the files den cannot account for, and the alternative (a
-		// nameless claim) is the entry claim refuses to store above.
+		// manifest.SandboxOf answers "" for a file that names nobody — a
+		// legacy file called exactly ".yaml"; the directory layout's basename
+		// is always "manifest.yaml", which SandboxOf resolves from the parent
+		// directory instead. Such a file names nobody, so it can hold no mount
+		// under a name the user could act on — and it is not a record den
+		// wrote. It is counted as an unknown sharer rather than read: the
+		// cautious path exists for exactly the files den cannot account for,
+		// and the alternative (a nameless claim) is the entry claim refuses to
+		// store above.
 		if sandbox == "" {
 			unreadable = append(unreadable, b)
 			continue

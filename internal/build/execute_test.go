@@ -558,7 +558,7 @@ func TestExecuteEmptiesTheScratchBeforeEachBuild(t *testing.T) {
 // either side collapses it — to the SHARED `cache/build` root, whose RemoveAll
 // would wipe every stack's scratch, or to a RELATIVE path under whatever
 // directory den runs from. Unreachable through the CLI, guarded anyway: Deps
-// and Step are exported bare structs, the doctrine sbx.CreateArgv states for
+// and Step are exported bare structs, the doctrine sbx.EnvFile states for
 // its own inputs.
 //
 // The refusal lands in the PRE-FLIGHT, so not one sbx process runs first — not

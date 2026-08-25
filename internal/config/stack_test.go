@@ -174,7 +174,7 @@ func TestLoadStackRefusesAPullableStackWithNoImage(t *testing.T) {
 	}
 }
 
-// Whitespace is not a reference. sbx.CreateArgv guards the same question with
+// Whitespace is not a reference. sbx.EnvFile guards the same question with
 // the same TrimSpace, and two guards on one question must not disagree: an
 // `image: "  "` that LoadStack let through would reach `sbx template save` as
 // a blank argument.
@@ -324,7 +324,7 @@ func TestStackDeclaredKits(t *testing.T) {
 	}{
 		{
 			// The LAYERING order: `kits:` (cross-cutting) then `kit:`. The
-			// mixin is appended afterward by sbx.CreateArgv and must stay last.
+			// mixin is appended afterward by sbx.EnvFile and must stay last.
 			"layering order: kits: then kit:",
 			Stack{Kits: []string{"/k/transverse", "/k/other"}, Kit: "/k/devx"},
 			[]string{"/k/transverse", "/k/other", "/k/devx"},

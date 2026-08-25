@@ -184,8 +184,8 @@ func (g *Global) Validate() []error {
 		// TrimSpace catches what the loader's `== ""` check let through.
 		if strings.TrimSpace(a.ConfigDir) == "" {
 			errs = append(errs, fmt.Errorf(
-				"agents.%s.config_dir: blank — it would reach `sbx create` as an empty "+
-					"positional argument and mount nothing; remove the key to use the default, "+
+				"agents.%s.config_dir: blank — it would be emitted as an empty workspace in "+
+					"`.sbxenv.yaml` and mount nothing; remove the key to use the default, "+
 					"or set a real path", name))
 		}
 		// TrimSpace, not `== ""`: agent.FreshnessCommand judges on TrimSpace
@@ -264,14 +264,14 @@ func (g *Global) Validate() []error {
 		case !filepath.IsAbs(m.Host):
 			// Same fault, same shape as worktree_root below, and it must be
 			// refused in the SAME place: LoadGlobalUnvalidated's ExpandPath only
-			// touches a leading "~", so a hand-written relative host survives to
-			// `sbx create`'s argv. Spawn's own pre-flight os.Stat does not catch
-			// it — a relative path resolves against den's cwd and can very well
-			// exist there — so the only refusal left was sbx.CreateArgv's, which
-			// fires AFTER worktrees and branches have been created, leaving the
-			// user to clean up by hand what den just made.
+			// touches a leading "~", so a hand-written relative host survives
+			// into the emitted `.sbxenv.yaml`. Spawn's own pre-flight os.Stat
+			// does not catch it — a relative path resolves against den's cwd
+			// and can very well exist there — so the only refusal left was
+			// sbx.EnvFile's, which fires AFTER worktrees and branches have been
+			// created, leaving the user to clean up by hand what den just made.
 			errs = append(errs, fmt.Errorf(
-				"mounts[%d].host: %q is not an absolute path — den hands it to `sbx create` "+
+				"mounts[%d].host: %q is not an absolute path — den emits it into `.sbxenv.yaml` "+
 					"verbatim, where it would resolve against a directory den does not control; "+
 					"write an absolute path, or \"~/...\"", i, m.Host))
 		}

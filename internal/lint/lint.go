@@ -1,8 +1,16 @@
 // Package lint validates a stacks/nests checkout — a team source repo or a
-// clone of one — without touching git, sbx or the network. ONE implementation,
-// three consumers (spec 2026-08-04 §5): the team repo's CI (`den lint`),
-// `den source add` (post-clone) and `den source update` (pre-fast-forward,
-// the fail-closed gate).
+// clone of one — without touching the sbx BINARY, git or the network: it
+// imports internal/sbx for its pure validators (ValidateMemory, ValidateCPUs
+// — neither shells out), the same way it already imports internal/config and
+// internal/nest, to judge under the compiler role (spec 2026-08-24 §6.4) what
+// `sbx env create` would later refuse. SandboxName is deliberately NOT among
+// them: the nest-level name check it used to back was removed (see checkNest,
+// below), because nest.LoadNest already validates the charset before a *Nest
+// reaches this package, and the length floor belongs at the point sbx sees
+// the assembled name, not here. ONE implementation, three consumers (spec
+// 2026-08-04 §5): the team repo's CI (`den lint`), `den source add`
+// (post-clone) and `den source update` (pre-fast-forward, the fail-closed
+// gate).
 package lint
 
 import (
@@ -15,6 +23,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
+	"github.com/PillowPillow/den/internal/sbx"
 )
 
 // Run validates the checkout rooted at root and returns EVERY finding, in a
@@ -164,6 +173,9 @@ func judge(root string, stacks, parents config.Stacks, nests []*nest.Nest) []err
 	// only `stacks` is guaranteed to hold every root's real load.
 	for _, name := range stacks.Names() {
 		errs = append(errs, checkStack(root, parents, stacks.Healthy[name])...)
+		// checkStackResources runs ONLY here, over the JUDGED set, never in
+		// the closure loop below — see its own doc for why.
+		errs = append(errs, checkStackResources(stacks.Healthy[name])...)
 	}
 	// The ancestor closure of the JUDGED stacks, resolved through `parents`:
 	// for Run, stacks == parents == the full scan, so every healthy stack is
@@ -303,6 +315,50 @@ func checkStack(root string, parents config.Stacks, s *config.Stack) []error {
 	return errs
 }
 
+// checkStackResources judges the `resources:` a stack DECLARES, on its own,
+// without reading anywhere else in the cascade. Deliberately NOT called from
+// checkStack: checkStack runs over every healthy stack judge decides is
+// worth judging, roots AND the ancestor closure a `parent:` chain reaches
+// (see judge's doc) — but `parent:` is a build-DAG edge, not field
+// inheritance (config.Stack's own doc), so a stack that is ONLY a parent, and
+// never a nest's own `stack:`, has its `resources:` read by nothing:
+// nest.Resolve merges the global, the NEST'S OWN stack (never an ancestor)
+// and the nest, and `den build` emits neither `--memory` nor `--cpus` at all.
+// Refusing over a value no spawn and no build ever sends would delete a
+// clone (`den source add`) over dead configuration. So this is called only
+// from judge's roots loop, over `stacks.Names()` — the JUDGED set, which for
+// RunCatalogue is exactly the exported stacks, never the unexported parents
+// the closure loop also runs checkStack over.
+//
+// This is also why the check stays SEPARATE from nest.Resolve's own
+// (`resolveResources`, internal/nest/resources.go): that function
+// deliberately validates only the CASCADE WINNER — the merged value a spawn
+// actually sends — with its own comment stating the same reasoning in the
+// other direction (refusing over a value nothing sends refuses a
+// configuration that works). Both rules are right, and they diverge on
+// purpose: a consumer nest that writes no `resources:` of its own INHERITS
+// the stack's value, so an exported stack's OWN `memory: 512m` is exactly
+// the case where lint's stricter, source-side judgment earns its keep —
+// `den source add` refuses it before any consumer ever resolves a cascade
+// that would relay it.
+func checkStackResources(s *config.Stack) []error {
+	var errs []error
+	// The SAME validators nest.Resolve uses, at a better occasion: `den
+	// source add` refuses and deletes the clone, `den source update` refuses
+	// before the fast-forward. An illegal size must die at the source, once,
+	// not N times on its consumers — and sbx only refuses it server-side,
+	// after the image pull (§14.5).
+	if s.Resources.CPUs != nil {
+		if err := sbx.ValidateCPUs(*s.Resources.CPUs); err != nil {
+			errs = append(errs, fmt.Errorf("stack %q: %w", s.Name, err))
+		}
+	}
+	if err := sbx.ValidateMemory(s.Resources.Memory); err != nil {
+		errs = append(errs, fmt.Errorf("stack %q: %w", s.Name, err))
+	}
+	return errs
+}
+
 // checkDeclaredPath judges one path declared under key ("kit", "kits",
 // "provision.includes" or "provision.steps"). Three refusals, checked in an
 // order chosen so each error names the clearest possible cause:
@@ -394,7 +450,11 @@ func checkCycles(stacks config.Stacks, startNames []string) []error {
 }
 
 // checkNest judges one loadable nest: its stack reference must be bare and
-// resolvable in THIS checkout.
+// resolvable in THIS checkout, and its own `resources:` (a cascade level in
+// its own right, not only a stack's) must be a size sbx would accept. It
+// does NOT re-check the sandbox-name charset — nest.LoadNest already did,
+// and does not check name LENGTH at all — see the comment at the decision
+// site below for why that check does not belong here.
 func checkNest(root string, stacks config.Stacks, n *nest.Nest) []error {
 	var errs []error
 	// A switch, not three early returns: the three `stack:` faults exclude one
@@ -418,6 +478,48 @@ func checkNest(root string, stacks config.Stacks, n *nest.Nest) []error {
 			errs = append(errs, fmt.Errorf("nest %q: %w", n.Name, err))
 		}
 	}
+
+	// NO check here against sbx's whole-name length floor
+	// (sbx.SandboxName's MinNameLength), and deliberately so (Task 7 fix
+	// round 1, review finding #1) — the charset half of "would this name a
+	// legal sandbox" IS checked, just earlier and elsewhere: nest.LoadNest
+	// already runs config.ValidateSandboxComponent("nest", n.Name) before a
+	// *Nest ever reaches this function, so by the time checkNest sees
+	// n.Name it has already passed the ONLY thing sbx.SandboxName(n.Name,
+	// "") would check beyond length, given an empty worktree.
+	//
+	// The length floor itself does not belong here because `den lint`
+	// validates a SOURCE checkout, never a personal one
+	// (internal/cli/lint.go: "lint never reads the personal
+	// configuration") — and a nest loaded FROM a source never spawns under
+	// its bare n.Name at all: spawn.go flattens it to "<srcName>-<bareNest>"
+	// first (internal/spawn/spawn.go's sandbox-naming comment, above its
+	// FlattenSandboxComponent("nest", o.Nest) call), which is at least four
+	// characters before instance is even considered. So
+	// SandboxName(n.Name, "") was refusing a name no spawn of an installed
+	// source ever sends — deleting a clone (`den source add`) over a false
+	// positive. The name sbx actually sees is checked where it is finally
+	// ASSEMBLED: spawn.go's own sbx.SandboxName(nestComponent, instance)
+	// call, after flattening and instance are both applied.
+
+	// The SAME resources check as checkStack's, for the SAME reason, one
+	// cascade level up: `resources:` on a nest is not a personal-config-only
+	// field (spec §12 lists `nests/<n>.yaml` as one of the four cascade
+	// levels, alongside `stack.yaml`), so a team nest can ship an illegal
+	// `memory:` just as easily as a team stack can. nest.Resolve refuses it
+	// at every spawn regardless of which level supplied it — but that is
+	// still N refusals on N consumer machines. Skipping this level would
+	// leave exactly the gap task 7 exists to close, one field over from
+	// where the spec's own §6.4 example (a stack's `memory:`) points.
+	if n.Resources.CPUs != nil {
+		if err := sbx.ValidateCPUs(*n.Resources.CPUs); err != nil {
+			errs = append(errs, fmt.Errorf("nest %q: %w", n.Name, err))
+		}
+	}
+	if err := sbx.ValidateMemory(n.Resources.Memory); err != nil {
+		errs = append(errs, fmt.Errorf("nest %q: %w", n.Name, err))
+	}
+
 	return append(errs, checkNestRepos(n)...)
 }
 

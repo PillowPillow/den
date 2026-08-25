@@ -25,6 +25,7 @@ import (
 	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
+	"gopkg.in/yaml.v3"
 )
 
 // denTest builds a complete temporary ~/.den home backed by a real git repo.
@@ -247,8 +248,12 @@ func TestSpawnRunsTheNominalSequence(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !f.HasCalled("create", "--name", "api", "--template", "devx:v1") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("a create must have happened; calls: %v", f.Calls)
+	}
+	if doc := envDocOf(t, denHome, "api"); doc.Name != "api" || doc.SandboxOptions.Template != "devx:v1" {
+		t.Errorf("expected sandbox api, image devx:v1; got name %q, template %q",
+			doc.Name, doc.SandboxOptions.Template)
 	}
 	if !f.HasCalled("policy", "check", "network", "--sandbox", "api", "--json", "github.com") {
 		t.Errorf("the settle-loop must have run on the cascade's egress; calls: %v", f.Calls)
@@ -257,6 +262,64 @@ func TestSpawnRunsTheNominalSequence(t *testing.T) {
 	// place of an Attach would hand the user a mute shell, with no tty.
 	if !f.HasAttached("exec", "-it", "-w", repo, "api", "bash", "-l") {
 		t.Errorf("the attach must have happened; attaches: %v", f.Attaches)
+	}
+}
+
+// The engine change, stated where a reader looks for it: den emits a resolved
+// file and hands its PATH to `sbx env create`. `sbx env run` is never called
+// (decision 4) — it attaches, and an attach from a terminal is the branch that
+// opens the `sbx setup` wizard (§14.2).
+func TestSpawnCreatesThroughSbxEnv(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	home := denHome
+
+	var envCreate []string
+	for _, call := range f.Calls {
+		if len(call) >= 2 && call[0] == "env" && call[1] == "create" {
+			envCreate = call
+		}
+		if call[0] == "create" {
+			t.Errorf("den still drives `sbx create`: %v", call)
+		}
+		if len(call) >= 2 && call[0] == "env" && call[1] == "run" {
+			t.Errorf("`sbx env run` is never called (decision 4): %v", call)
+		}
+	}
+	if envCreate == nil {
+		t.Fatal("no `sbx env create` call")
+	}
+	if len(envCreate) != 3 {
+		t.Fatalf("env create takes exactly one path: %v", envCreate)
+	}
+	want, err := manifest.SbxEnvPath(home, "api")
+	if err != nil {
+		t.Fatalf("SbxEnvPath: %v", err)
+	}
+	if envCreate[2] != want {
+		t.Errorf("env create %q, want %q", envCreate[2], want)
+	}
+	// The file is on disk BEFORE the call, and it is the record `den rm` reads.
+	content, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("the emitted file is missing: %v", err)
+	}
+	if !strings.Contains(string(content), `schemaVersion: "1"`) {
+		t.Errorf("the emitted file is not a pinned .sbxenv.yaml:\n%s", content)
+	}
+	// 0600, like the manifest beside it: the file lists every path den
+	// mounts, and nothing justifies making that world-readable. Nothing else
+	// in this suite reads Mode() — an accidental 0o644 in a later refactor
+	// would ship green without this assertion.
+	info, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("stat the emitted file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("the emitted file's mode = %o, want 0600", got)
 	}
 }
 
@@ -306,7 +369,7 @@ func TestSpawnAttachesAfterTheSettleLoop(t *testing.T) {
 
 	iCreate, iPolicy, iExec := -1, -1, -1
 	for i, a := range f.Calls {
-		if len(a) > 0 && a[0] == "create" && iCreate < 0 {
+		if len(a) >= 2 && a[0] == "env" && a[1] == "create" && iCreate < 0 {
 			iCreate = i
 		}
 		if len(a) > 0 && a[0] == "policy" && iPolicy < 0 {
@@ -361,7 +424,7 @@ func TestSpawnAttachesWithoutRecreatingWhenSandboxExists(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
 	}
 	// The settle-loop must run on THIS branch too — it's the one every spawn
@@ -395,7 +458,7 @@ func TestSpawnLooksUpTheWorktreeNameAmongLiveSandboxes(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("no create must happen on a live api.feat12; calls: %v", f.Calls)
 	}
 	if !f.HasAttached("exec", "-it", "-w", "/w", "api.feat12", "bash", "-l") {
@@ -514,7 +577,7 @@ func TestSpawnResumesAStoppedSandbox(t *testing.T) {
 		t.Errorf("resuming must attach in the VM's workdir; attaches: %v", f.Attaches)
 	}
 	// And definitely no create: the name is held by a VM carrying work.
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("no create on a name already taken; calls: %v", f.Calls)
 	}
 	// Resuming takes several seconds: silent, it looks like a hang.
@@ -927,7 +990,7 @@ func TestSpawnRefusesASandboxThatIsNotRunning(t *testing.T) {
 			}
 			// No create (the name is taken) and no settle-loop: den stops
 			// dead.
-			if f.HasCalled("create") {
+			if f.HasCalled("env", "create") {
 				t.Errorf("no create must be attempted on a name already taken; calls: %v", f.Calls)
 			}
 		})
@@ -957,7 +1020,7 @@ func TestSpawnWarnsWhenConfigHasDriftedUnderTheSandbox(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
 		t.Fatalf("first spawn: unexpected error: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Fatalf("the first spawn must create the sandbox; calls: %v", f.Calls)
 	}
 
@@ -1035,7 +1098,7 @@ func TestSpawnDoesNotWarnOnTheCreateBranch(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
 		t.Fatalf("second spawn: unexpected error: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Fatalf("the second spawn must create; calls: %v", f.Calls)
 	}
 	if out := log.String(); strings.Contains(out, "warning") {
@@ -1199,16 +1262,20 @@ func TestSpawnWithWorktree(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !f.HasCalled("create", "--name", "api.feat12") {
-		t.Errorf("the name must carry the worktree; calls: %v", f.Calls)
+	if !f.HasCalled("env", "create") {
+		t.Errorf("no `env create`; calls: %v", f.Calls)
 	}
 	worktreePath := filepath.Join(denHome, "worktrees", "feat12", "api")
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Errorf("the worktree must exist at %s: %v", worktreePath, err)
 	}
+	doc := envDocOf(t, denHome, "api.feat12")
+	if doc.Name != "api.feat12" {
+		t.Errorf("the name must carry the worktree")
+	}
 	// And it's the worktree, not the repo, that's mounted — as the first
-	// positional.
-	ws := workspacesOf(callStartingWith(f, "create"))
+	// workspace.
+	ws := workspacesOf(doc)
 	if len(ws) == 0 || ws[0] != worktreePath {
 		t.Errorf("the worktree must be the first workspace; workspaces = %v", ws)
 	}
@@ -1284,13 +1351,13 @@ func TestSpawnMountsEachRepoGitDirWithAWorktree(t *testing.T) {
 	createRepo(t, repoB)
 	write(t, filepath.Join(denHome, "nests", "api.yaml"),
 		"stack: devx\nrepos:\n  - { path: "+repoA+" }\n  - { path: "+repoB+" }\n")
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	ws := workspacesOf(callStartingWith(f, "create"))
+	ws := workspacesOf(envDocOf(t, denHome, "api.feat12"))
 	expected := []string{
 		filepath.Join(denHome, "worktrees", "feat12", "api"),
 		filepath.Join(denHome, "worktrees", "feat12", "web"),
@@ -1408,13 +1475,13 @@ func TestSpawnReportsNothingWhenGitDirsAreMounted(t *testing.T) {
 // being.
 func TestSpawnMountsNoGitDirWithoutAWorktree(t *testing.T) {
 	denHome, repo := denTest(t)
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	ws := workspacesOf(callStartingWith(f, "create"))
+	ws := workspacesOf(envDocOf(t, denHome, "api"))
 	expected := []string{repo, filepath.Join(denHome, "agents", "claude")}
 	if !slices.Equal(ws, expected) {
 		t.Errorf("workspaces = %v, expected %v", ws, expected)
@@ -1443,7 +1510,7 @@ func TestSpawnMountsTheRepoBeforeTheAgentProfileAndSSH(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	ws := workspacesOf(callStartingWith(f, "create"))
+	ws := workspacesOf(envDocOf(t, denHome, "api"))
 	expected := []string{repo, filepath.Join(denHome, "agents", "claude"), sshDir}
 	if !slices.Equal(ws, expected) {
 		t.Errorf("workspaces = %v, expected %v", ws, expected)
@@ -1504,11 +1571,11 @@ func TestSpawnMountsEveryConfigMountAfterTheRepos(t *testing.T) {
 	// instead of the code.
 	dir := t.TempDir()
 	denHome, repo := denTestMounts(t, "mounts:\n  - host: "+dir+"\n    link: $HOME/x\n")
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	ws := workspacesOf(callStartingWith(f, "create"))
+	ws := workspacesOf(envDocOf(t, denHome, "api"))
 	if ws[0] != repo {
 		t.Fatalf("workspace[0] = %q, want the repo", ws[0])
 	}
@@ -1521,11 +1588,11 @@ func TestSpawnAppendsROSuffixForReadOnlyMounts(t *testing.T) {
 	// `<path>:ro` is sbx's own read-only syntax, documented in `sbx create --help`.
 	dir := t.TempDir()
 	denHome, _ := denTestMounts(t, "mounts:\n  - host: "+dir+"\n    ro: true\n")
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	ws := workspacesOf(callStartingWith(f, "create"))
+	ws := workspacesOf(envDocOf(t, denHome, "api"))
 	if got := ws[len(ws)-1]; got != dir+":ro" {
 		t.Fatalf("last workspace = %q, want %q", got, dir+":ro")
 	}
@@ -1669,7 +1736,7 @@ func TestSpawnAddsNoWorkspaceOutsideMountMode(t *testing.T) {
 	shapeOf := func(mode string) []string {
 		t.Helper()
 		denHome, repo := denTestSSH(t, "  mode: "+mode+"\n  dir: "+sshDir+"\n")
-		f, d := fakeDeps()
+		_, d := fakeDeps()
 		if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 			t.Fatalf("mode %q: unexpected error: %v", mode, err)
 		}
@@ -1679,7 +1746,7 @@ func TestSpawnAddsNoWorkspaceOutsideMountMode(t *testing.T) {
 			sshDir: "<ssh.dir>",
 		}
 		var shape []string
-		for _, w := range workspacesOf(callStartingWith(f, "create")) {
+		for _, w := range workspacesOf(envDocOf(t, denHome, "api")) {
 			role, known := roles[w]
 			if !known {
 				role = "<unknown:" + w + ">"
@@ -1752,7 +1819,7 @@ func TestSpawnRefusesAMissingKit(t *testing.T) {
 }
 
 // An EMPTY entry in `kits:` (plural) must be ignored, as it already is by
-// doctor and by sbx.CreateArgv. F3's first pass filtered only the
+// doctor and by sbx.EnvFile. F3's first pass filtered only the
 // SINGULAR `kit:` when empty: `kits: ["", "transverse"]` passed
 // `den doctor` as "all clear" yet made `den spawn` refuse with a
 // "kit not found: " on an empty path — two judges of the same field
@@ -1765,14 +1832,14 @@ func TestSpawnIgnoresAnEmptyEntryInKits(t *testing.T) {
 	denHome, _ := denTest(t)
 	write(t, filepath.Join(denHome, "stacks", "devx", "stack.yaml"),
 		"image: devx:v1\nkits: [\"\", transverse]\nkit: devx-kit\n")
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("an empty entry in kits: must be ignored, not refused: %v", err)
 	}
-	// And it must not slip into the argv either: a `--kit ""` would reach
-	// sbx.
-	kits := kitsOf(callStartingWith(f, "create"))
+	// And it must not slip into the emitted file either: a `- ""` kit would
+	// reach sbx.
+	kits := kitsOf(envDocOf(t, denHome, "api"))
 	for i, k := range kits {
 		if k == "" {
 			t.Errorf("--kit #%d is empty; kits = %v", i, kits)
@@ -1823,8 +1890,11 @@ func TestSpawnFlattensTheSandboxNameAndKeepsTheBranch(t *testing.T) {
 		t.Fatalf("\"feature/123\" is a legitimate branch name: %v", err)
 	}
 
-	if !f.HasCalled("create", "--name", "api.feature-123") {
-		t.Errorf("the sandbox name must be flattened; calls: %v", f.Calls)
+	if !f.HasCalled("env", "create") {
+		t.Errorf("no `env create`; calls: %v", f.Calls)
+	}
+	if doc := envDocOf(t, denHome, "api.feature-123"); doc.Name != "api.feature-123" {
+		t.Errorf("the sandbox name must be flattened; got %q", doc.Name)
 	}
 	// The settle-loop and the attach must target the SAME name: flattening
 	// applied only at `create` would leave the policy scoped on a name sbx
@@ -1987,7 +2057,7 @@ func TestSpawnDetachDoesNotAttach(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("the create must happen; calls: %v", f.Calls)
 	}
 	if !f.HasCalled("policy", "check", "network", "--sandbox", "api") {
@@ -2015,7 +2085,7 @@ func TestSpawnCreatesTheAgentProfile(t *testing.T) {
 
 func TestSpawnWritesTheMixin(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2037,8 +2107,8 @@ func TestSpawnWritesTheMixin(t *testing.T) {
 		filepath.Join(stackDir, "devx-kit"),
 		filepath.Dir(spec),
 	}
-	if k := kitsOf(callStartingWith(f, "create")); !slices.Equal(k, expected) {
-		t.Errorf("--kit = %v, expected %v", k, expected)
+	if k := kitsOf(envDocOf(t, denHome, "api")); !slices.Equal(k, expected) {
+		t.Errorf("kits = %v, expected %v", k, expected)
 	}
 }
 
@@ -2079,9 +2149,9 @@ func TestSpawnPropagatesCascadeOptions(t *testing.T) {
 	}
 }
 
-// A failed `sbx create` must be recontextualized. Exec.Run's raw message
-// is prefixed with the FULL argv — a giant line with every --kit and every
-// workspace — in which the failed step becomes unreadable.
+// A failed `sbx env create` must be recontextualized. Exec.Run's raw message
+// is prefixed with the call's own argv — `env create <path>` — which names
+// neither the step nor the sandbox, only a long file path.
 func TestSpawnNamesTheStepWhenCreateFails(t *testing.T) {
 	denHome, _ := denTest(t)
 	f, d := fakeDeps()
@@ -2137,7 +2207,7 @@ func TestSpawnToleratesANilOut(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("the spawn must have run; calls: %v", f.Calls)
 	}
 }
@@ -2169,7 +2239,7 @@ func TestSpawnToleratesANilErr(t *testing.T) {
 	if !probed {
 		t.Fatal("the warning path was never reached; this test would prove nothing about a nil Err")
 	}
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("the spawn must have run; calls: %v", f.Calls)
 	}
 }
@@ -2211,7 +2281,7 @@ func TestSpawnWarnsOnStderrWhenTheForwardedAgentIsEmpty(t *testing.T) {
 		t.Fatalf("an empty agent must warn, not block: %v", err)
 	}
 	// The spawn happened despite the warning.
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("the spawn must run despite the warning; calls: %v", f.Calls)
 	}
 	out := errBuf.String()
@@ -2288,7 +2358,7 @@ func TestSpawnWarnsOnStderrWhenTheForwardedAgentIsUnreachable(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("an unreachable agent must warn, not block: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("the spawn must run despite the warning; calls: %v", f.Calls)
 	}
 	if out := errBuf.String(); !strings.Contains(out, "warning") || !strings.Contains(out, "unreachable") {
@@ -2321,7 +2391,7 @@ func TestSpawnWarnsOnTheAttachBranchWhenTheForwardedAgentIsEmpty(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("an empty agent must warn, not block: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Fatalf("no create must happen on a live sandbox — this test would stop "+
 			"exercising the attach branch; calls: %v", f.Calls)
 	}
@@ -2396,7 +2466,7 @@ func TestSpawnWarnsWithoutProbingWhenTheSSHSocketIsAbsent(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("an absent socket must warn, not block: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("the spawn must run despite the warning; calls: %v", f.Calls)
 	}
 	if probed {
@@ -2429,7 +2499,7 @@ func TestSpawnDoesNotWarnWhenTheForwardedAgentHasKeys(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Fatalf("the spawn must have run; calls: %v", f.Calls)
 	}
 	if strings.Contains(errBuf.String(), "warning") {
@@ -2477,7 +2547,7 @@ func TestSpawnDoesNotProbeTheAgentOutsideAgentForward(t *testing.T) {
 			// gave up before reaching the probe at all — the silence would
 			// prove nothing about the mode. The create is what makes the
 			// absence of a probe a decision rather than an early exit.
-			if !f.HasCalled("create", "--name", "api") {
+			if !f.HasCalled("env", "create") {
 				t.Errorf("mode %q: the spawn must have run; calls: %v", mode, f.Calls)
 			}
 		})
@@ -2495,7 +2565,7 @@ func TestSpawnToleratesANilSSHAgentProbe(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("a nil probe must be tolerated: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("the spawn must have run; calls: %v", f.Calls)
 	}
 }
@@ -2664,34 +2734,73 @@ func TestWarnEmptySSHAgentOnReentryToleratesANilProbe(t *testing.T) {
 	}
 }
 
-func callStartingWith(f *sbx.Fake, head string) []string {
-	for _, a := range f.Calls {
-		if len(a) > 0 && a[0] == head {
-			return a
-		}
-	}
-	return nil
+// sbxEnvDoc mirrors sbx.envDoc's ON-DISK shape, redefined here rather than
+// exported from internal/sbx: a rename of a §14.4 key in that package SHOULD
+// break this file, which is testing what actually lands on disk, not an
+// internal Go type. The duplication is the doctrine `sbx.Env`'s own doc
+// states for itself, applied to the consumer side.
+type sbxEnvDoc struct {
+	SchemaVersion        string            `yaml:"schemaVersion"`
+	Agent                string            `yaml:"agent"`
+	Name                 string            `yaml:"name"`
+	Workspace            sbxEnvWorkspace   `yaml:"workspace"`
+	AdditionalWorkspaces []sbxEnvWorkspace `yaml:"additionalWorkspaces"`
+	Kits                 []string          `yaml:"kits"`
+	SandboxOptions       struct {
+		CPUs     *int   `yaml:"cpus"`
+		Memory   string `yaml:"memory"`
+		Template string `yaml:"template"`
+	} `yaml:"sandboxOptions"`
 }
 
-// kitsOf extracts the `--kit` values of an argv, in order.
-func kitsOf(argv []string) []string {
-	var out []string
-	for i, a := range argv {
-		if a == "--kit" && i+1 < len(argv) {
-			out = append(out, argv[i+1])
-		}
+type sbxEnvWorkspace struct {
+	Path string `yaml:"path"`
+}
+
+// envFileOf reads back the `.sbxenv.yaml` den emitted for one sandbox — the
+// content-based counterpart callStartingWith(f, "create") became once den
+// started handing sbx a PATH instead of an argv: what a test needs to assert
+// on now lives on disk, not in f.Calls.
+func envFileOf(t *testing.T, denHome, sandboxName string) []byte {
+	t.Helper()
+	path, err := manifest.SbxEnvPath(denHome, sandboxName)
+	if err != nil {
+		t.Fatalf("SbxEnvPath: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the emitted file is missing: %v", err)
+	}
+	return content
+}
+
+// envDocOf is envFileOf, decoded. Structural fields (kits ORDER, which
+// workspace is `workspace:` vs `additionalWorkspaces:`) are exactly what a
+// byte-string Contains loses, and both are load-bearing (the mixin must be
+// the last kit; the first workspace is what Sandbox.Workdir depends on).
+func envDocOf(t *testing.T, denHome, sandboxName string) sbxEnvDoc {
+	t.Helper()
+	var doc sbxEnvDoc
+	if err := yaml.Unmarshal(envFileOf(t, denHome, sandboxName), &doc); err != nil {
+		t.Fatalf("decoding the emitted file: %v", err)
+	}
+	return doc
+}
+
+// kitsOf extracts the `kits:` list of a decoded .sbxenv.yaml, in order.
+func kitsOf(doc sbxEnvDoc) []string {
+	return doc.Kits
+}
+
+// workspacesOf extracts every workspace of a decoded .sbxenv.yaml, in order:
+// `workspace:` first, then `additionalWorkspaces:` — the same order
+// EnvFile.Workspaces was given in.
+func workspacesOf(doc sbxEnvDoc) []string {
+	out := []string{doc.Workspace.Path}
+	for _, w := range doc.AdditionalWorkspaces {
+		out = append(out, w.Path)
 	}
 	return out
-}
-
-// workspacesOf extracts the positionals of a `sbx create`, i.e. everything
-// after the positional agent.
-func workspacesOf(argv []string) []string {
-	i := slices.Index(argv, sbx.PositionalAgent)
-	if i < 0 {
-		return nil
-	}
-	return argv[i+1:]
 }
 
 // branchOf returns a worktree's checked-out branch. Goes through git
@@ -2756,7 +2865,7 @@ func TestSpawnRefusesAStackImageThatWasNeverBuilt(t *testing.T) {
 			t.Errorf("message = %q, want it to contain %q", msg, want)
 		}
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("no create may follow the refusal; calls: %v", f.Calls)
 	}
 }
@@ -2797,7 +2906,7 @@ func TestSpawnCreatesWhenTheImageIsBuilt(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("`image: devx:v1` must match the `docker.io/library/devx` + `v1` sbx reports: %v", err)
 	}
-	if !f.HasCalled("create") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("a create must have happened; calls: %v", f.Calls)
 	}
 }
@@ -2846,7 +2955,7 @@ func TestSpawnDoesNotCheckADigestPinnedImage(t *testing.T) {
 	if f.HasCalled("template", "ls", "--json") {
 		t.Errorf("an inventory that carries no digest cannot answer, so it must not be read; calls: %v", f.Calls)
 	}
-	if !f.HasCalled("create") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("a create must have happened; calls: %v", f.Calls)
 	}
 }
@@ -2863,7 +2972,7 @@ func TestSpawnCreatesAnywayWhenTheImageInventoryIsUnreadable(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("an unreadable inventory must not refuse the spawn: %v", err)
 	}
-	if !f.HasCalled("create") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("a create must have happened; calls: %v", f.Calls)
 	}
 }
@@ -2924,8 +3033,13 @@ func TestSpawnFromSourceNest(t *testing.T) {
 	}
 	// The sandbox name is the FLATTENED reference: ":" is not in sbx's
 	// `--name` charset.
-	if !f.HasCalled("create", "--name", "corp-api", "--template", "teamstack:v1") {
-		t.Errorf("expected a create for sandbox corp-api, image teamstack:v1; calls: %v", f.Calls)
+	if !f.HasCalled("env", "create") {
+		t.Errorf("expected an `env create`; calls: %v", f.Calls)
+	}
+	doc := envDocOf(t, denHome, "corp-api")
+	if doc.Name != "corp-api" || doc.SandboxOptions.Template != "teamstack:v1" {
+		t.Errorf("expected sandbox corp-api, image teamstack:v1; got name %q, template %q",
+			doc.Name, doc.SandboxOptions.Template)
 	}
 }
 
@@ -2946,12 +3060,12 @@ func TestSpawnFromSourceNestMountsCommandLineRepos(t *testing.T) {
 	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
 		"stack: teamstack\nrepos:\n  - { path: "+declared+" }\n")
 
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "corp:api", Repos: []string{hotfix}, Detach: true}, d); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	got := workspacesOf(callStartingWith(f, "create"))
+	got := workspacesOf(envDocOf(t, denHome, "corp-api"))
 	expected := []string{hotfix, declared, filepath.Join(denHome, "agents", "claude")}
 	if !slices.Equal(got, expected) {
 		t.Errorf("workspaces = %v, expected %v — the positional comes first, the source "+
@@ -3121,15 +3235,17 @@ func TestSpawnLocalNestWithSourceStack(t *testing.T) {
 	write(t, filepath.Join(denHome, "nests", "nn.yaml"),
 		"stack: corp:teamstack\nrepos:\n  - { path: "+repo+" }\n")
 
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 	if err := Spawn(context.Background(), denHome, Options{Nest: "nn", Detach: true}, d); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 	// "nn", not "n": sbx refuses any name under two characters, so a
 	// one-character nest is no longer a name den can build (sbx.MinNameLength).
 	// What this test asserts is unchanged — the name stays UNFLATTENED.
-	if !f.HasCalled("create", "--name", "nn", "--template", "teamstack:v1") {
-		t.Errorf("expected sandbox name to stay \"nn\" (unflattened); calls: %v", f.Calls)
+	doc := envDocOf(t, denHome, "nn")
+	if doc.Name != "nn" || doc.SandboxOptions.Template != "teamstack:v1" {
+		t.Errorf("expected sandbox name to stay \"nn\" (unflattened), image teamstack:v1; "+
+			"got name %q, template %q", doc.Name, doc.SandboxOptions.Template)
 	}
 }
 
@@ -3287,14 +3403,14 @@ func TestSpawnMountsCommandLineRepos(t *testing.T) {
 	denHome, repo := denTest(t)
 	hotfix := filepath.Join(t.TempDir(), "hotfix")
 	createRepo(t, hotfix)
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "api", Repos: []string{hotfix}}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got := workspacesOf(callStartingWith(f, "create"))
+	got := workspacesOf(envDocOf(t, denHome, "api"))
 	expected := []string{hotfix, repo, filepath.Join(denHome, "agents", "claude")}
 	if !slices.Equal(got, expected) {
 		t.Errorf("workspaces = %v, expected %v — the positional comes first, because "+
@@ -3312,14 +3428,14 @@ func TestSpawnMountsSeveralCommandLineReposInOrder(t *testing.T) {
 	b := filepath.Join(t.TempDir(), "b")
 	createRepo(t, a)
 	createRepo(t, b)
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "scratch", Repos: []string{a, b}}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got := workspacesOf(callStartingWith(f, "create"))
+	got := workspacesOf(envDocOf(t, denHome, "scratch"))
 	expected := []string{a, b, filepath.Join(denHome, "agents", "claude")}
 	if !slices.Equal(got, expected) {
 		t.Errorf("workspaces = %v, expected %v", got, expected)
@@ -3342,7 +3458,7 @@ func TestSpawnRefusesAMissingCommandLineRepoWithoutBlamingTheNestFile(t *testing
 	if strings.Contains(err.Error(), "repos:") {
 		t.Errorf("error = %q, expected it NOT to quote `repos:`", err)
 	}
-	if callStartingWith(f, "create") != nil {
+	if f.HasCalled("env", "create") {
 		t.Error("a sandbox was created despite the refusal: everything rejectable from config " +
 			"alone must be rejected before the first side effect")
 	}
@@ -3432,7 +3548,7 @@ func TestSpawnRefusesANonGitRepoUnderWorktreeBeforeCreatingAnything(t *testing.T
 		t.Errorf("%s exists: a worktree was created before the refusal, which is the orphan "+
 			"this ordering exists to prevent", wt)
 	}
-	if callStartingWith(f, "create") != nil {
+	if f.HasCalled("env", "create") {
 		t.Error("a sandbox was created despite the refusal")
 	}
 }
@@ -3441,14 +3557,14 @@ func TestSpawnGivesACommandLineRepoAWorktreeAndItsGitDir(t *testing.T) {
 	denHome, repo := denTest(t)
 	hotfix := filepath.Join(t.TempDir(), "hotfix")
 	createRepo(t, hotfix)
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "api", Worktree: "feat", Repos: []string{hotfix}}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got := workspacesOf(callStartingWith(f, "create"))
+	got := workspacesOf(envDocOf(t, denHome, "api.feat"))
 	expected := []string{
 		filepath.Join(denHome, "worktrees", "feat", "hotfix"),
 		filepath.Join(denHome, "worktrees", "feat", filepath.Base(repo)),
@@ -3506,7 +3622,7 @@ func TestSpawnWarnsThatALiveSandboxMountsNeitherTheNewRepoNorMovesTheShell(t *te
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if callStartingWith(f, "create") != nil {
+	if f.HasCalled("env", "create") {
 		t.Fatal("a live sandbox must be attached, never re-created")
 	}
 	log := out.String()
@@ -3564,7 +3680,7 @@ func TestSpawnTreatsTwoDifferentPositionalSetsAsTheSameSandbox(t *testing.T) {
 		Options{Nest: "scratch", Repos: []string{b}, Detach: true}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if callStartingWith(f, "create") != nil {
+	if f.HasCalled("env", "create") {
 		t.Fatal("a second sandbox was created: positionals do not compose the identity, " +
 			"which is <nest>[.<worktree>] and nothing else")
 	}
@@ -3605,7 +3721,7 @@ func TestSpawnWarnsThatTheShellStartsElsewhereEvenWhenEveryRepoIsMounted(t *test
 		Options{Nest: "scratch", Repos: []string{b}, Detach: true}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if callStartingWith(f, "create") != nil {
+	if f.HasCalled("env", "create") {
 		t.Fatal("a live sandbox must be attached, never re-created")
 	}
 	log := out.String()
@@ -3644,7 +3760,7 @@ func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEverythingInOrder(t *testing.T)
 		Options{Nest: "scratch", Repos: []string{a, b}, Detach: true}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if callStartingWith(f, "create") != nil {
+	if f.HasCalled("env", "create") {
 		t.Fatal("a live sandbox must be attached, never re-created")
 	}
 	if strings.Contains(out.String(), "den rm scratch") {
@@ -3960,7 +4076,7 @@ func TestAttachUnderWorktreeDoesNotProbeARepoItWillNotTouch(t *testing.T) {
 	if !strings.Contains(err.Error(), data) || !strings.Contains(err.Error(), "-w") {
 		t.Errorf("the refusal must keep naming the flag and the path: %v", err)
 	}
-	if cf.HasCalled("create") {
+	if cf.HasCalled("env", "create") {
 		t.Errorf("a sandbox was created despite the refusal; calls: %v", cf.Calls)
 	}
 }
@@ -3998,7 +4114,7 @@ func TestSpawnWarnsWhenALiveSandboxDoesNotMountANewLinklessMount(t *testing.T) {
 		Options{Nest: "api", Detach: true}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if callStartingWith(f, "create") != nil {
+	if f.HasCalled("env", "create") {
 		t.Fatal("a live sandbox must be attached, never re-created")
 	}
 
@@ -4307,7 +4423,7 @@ func TestAttachReportsNoDriftWhenTheMountHostIsNotCanonical(t *testing.T) {
 		t.Errorf("den rewrote the host it records in the mixin: every sandbox created "+
 			"before the upgrade now drifts forever, with `sbx rm --force` as its remedy;\n%s", got)
 	}
-	if strings.Contains(got, "running with the mixin from its `sbx create`") {
+	if strings.Contains(got, "running with the mixin from its creation") {
 		t.Errorf("no mixin drift is expected on an unchanged configuration;\n%s", got)
 	}
 }
@@ -4927,27 +5043,19 @@ repos:
 `)
 	installManifestedSource(t, denHome, "corp", "1.0.0", "api", sourceRepo)
 
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 	if err := Spawn(context.Background(), denHome, Options{Nest: "corp:api", Detach: true}, d); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	// The workspace is a POSITIONAL of `sbx create`, so the assertion is on
-	// the path's presence in that argv, not on a flag.
-	mounted := false
-	for _, c := range f.Calls {
-		if len(c) > 0 && c[0] == "create" && slices.Contains(c, sourceRepo) {
-			mounted = true
-		}
+	// The workspace is a `path:` entry of the emitted `.sbxenv.yaml`, so the
+	// assertion is on its presence in that file, not on a flag.
+	content := string(envFileOf(t, denHome, "corp-api"))
+	if !strings.Contains(content, sourceRepo) {
+		t.Errorf("expected the SOURCE's mapping (%s) in the emitted file; .sbxenv.yaml =\n%s",
+			sourceRepo, content)
 	}
-	if !mounted {
-		t.Errorf("expected the SOURCE's mapping (%s) in the create argv; calls: %v", sourceRepo, f.Calls)
-	}
-	for _, c := range f.Calls {
-		for _, arg := range c {
-			if arg == globalRepo {
-				t.Fatalf("the global config.yaml.repos answered for a manifested source: %v", c)
-			}
-		}
+	if strings.Contains(content, globalRepo) {
+		t.Fatalf("the global config.yaml.repos answered for a manifested source: %s", content)
 	}
 }
 

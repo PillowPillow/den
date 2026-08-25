@@ -347,16 +347,24 @@ func TestInteractiveProducesTheSameArgvAsTheEquivalentWithout(t *testing.T) {
 		Options{Nest: "api", Interactive: true}, interactiveDeps); err != nil {
 		t.Fatalf("interactive spawn: %v", err)
 	}
+	// Captured BEFORE the second spawn overwrites the SAME file: both runs
+	// target the same denHome and the same sandbox name ("api"), so the
+	// emitted call — `env create <path>` — is identical between the two
+	// regardless of what either spawn actually selected. Comparing Calls alone
+	// would be vacuous; the file's CONTENT is what actually proves the two
+	// selections converged.
+	interactiveContent := envFileOf(t, denHome, "api")
 
 	flagFake, flagDeps := fakeDeps()
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "api", Without: []string{"docs"}}, flagDeps); err != nil {
 		t.Fatalf("--without spawn: %v", err)
 	}
+	flagContent := envFileOf(t, denHome, "api")
 
-	if !slices.EqualFunc(interactiveFake.Calls, flagFake.Calls, slices.Equal) {
-		t.Errorf("-i and the equivalent --without must produce the SAME sbx calls\n-i:      %v\n--without: %v",
-			interactiveFake.Calls, flagFake.Calls)
+	if !bytes.Equal(interactiveContent, flagContent) {
+		t.Errorf("-i and the equivalent --without must emit the SAME .sbxenv.yaml\n-i:      %s\n--without: %s",
+			interactiveContent, flagContent)
 	}
 	if !slices.EqualFunc(interactiveFake.Attaches, flagFake.Attaches, slices.Equal) {
 		t.Errorf("-i and the equivalent --without must attach identically\n-i:      %v\n--without: %v",
@@ -364,7 +372,7 @@ func TestInteractiveProducesTheSameArgvAsTheEquivalentWithout(t *testing.T) {
 	}
 	// Guard on the guard: an assertion comparing two empty lists would pass
 	// whatever the selection did.
-	if !interactiveFake.HasCalled("create") {
+	if !interactiveFake.HasCalled("env", "create") {
 		t.Fatalf("no create to compare; calls: %v", interactiveFake.Calls)
 	}
 }
@@ -458,7 +466,7 @@ func TestSpawnContinuesWhenTheNestHasNoOptionalRepo(t *testing.T) {
 	if !strings.Contains(out.String(), "optional") {
 		t.Errorf("den must say why it asked nothing:\n%s", out.String())
 	}
-	if !f.HasCalled("create") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("the spawn must go on; calls: %v", f.Calls)
 	}
 }
@@ -518,18 +526,24 @@ func TestPromptModeProducesTheSameArgvAsTheEquivalentOnly(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, promptDeps); err != nil {
 		t.Fatalf("prompting spawn: %v", err)
 	}
+	// Captured BEFORE the second spawn overwrites the SAME file — see
+	// TestInteractiveProducesTheSameArgvAsTheEquivalentWithout for why the
+	// path alone (identical for both: same denHome, same sandbox "generic")
+	// would make a Calls comparison vacuous.
+	promptContent := envFileOf(t, denHome, "generic")
 
-	flagFake, flagDeps := fakeDeps()
+	_, flagDeps := fakeDeps()
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "generic", Only: []string{"api", "worker"}}, flagDeps); err != nil {
 		t.Fatalf("--only spawn: %v", err)
 	}
+	flagContent := envFileOf(t, denHome, "generic")
 
-	if !slices.EqualFunc(promptFake.Calls, flagFake.Calls, slices.Equal) {
-		t.Errorf("select: prompt and the equivalent --only must produce the SAME sbx calls\nprompt: %v\n--only: %v",
-			promptFake.Calls, flagFake.Calls)
+	if !bytes.Equal(promptContent, flagContent) {
+		t.Errorf("select: prompt and the equivalent --only must emit the SAME .sbxenv.yaml\nprompt: %s\n--only: %s",
+			promptContent, flagContent)
 	}
-	if !promptFake.HasCalled("create") {
+	if !promptFake.HasCalled("env", "create") {
 		t.Fatalf("no create to compare; calls: %v", promptFake.Calls)
 	}
 }
@@ -549,7 +563,7 @@ func TestPromptModeRefusesWithoutATerminal(t *testing.T) {
 	if !strings.Contains(err.Error(), "--only") {
 		t.Errorf("the refusal must name the non-interactive form, got: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("refused, yet something was created: %v", f.Calls)
 	}
 }
@@ -611,7 +625,7 @@ func TestPromptModeWithOnlyNeedsNoTerminal(t *testing.T) {
 		Options{Nest: "generic", Only: []string{"api"}}, d); err != nil {
 		t.Fatalf("--only on a prompting nest must not need a terminal: %v", err)
 	}
-	if !f.HasCalled("create") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("nothing was created: %v", f.Calls)
 	}
 }
@@ -740,7 +754,7 @@ func TestInteractiveDoesNotPromptWhenAttaching(t *testing.T) {
 		Options{Nest: "api", Interactive: true}, d); err != nil {
 		t.Fatalf("attaching spawn: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
 	}
 	if !strings.Contains(out.String(), "already live") {
@@ -868,7 +882,7 @@ func TestPromptModeAttachRebuildsTheSelectionFromTheRecord(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, d); err != nil {
 		t.Fatalf("attaching a prompting nest must not refuse over a repo it was never created with: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
 	}
 }
@@ -1079,7 +1093,7 @@ func TestInteractiveAttachRebuildsTheSelectionFromTheRecord(t *testing.T) {
 		Options{Nest: "crm", Interactive: true}, d); err != nil {
 		t.Fatalf("-i on a live sandbox must not refuse over a repo it was never created with: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
 	}
 }
@@ -1193,7 +1207,7 @@ func TestSpawnRefusesWithoutOnAPromptingNest(t *testing.T) {
 		Options{Nest: "api", Without: []string{"docs"}}, od); err != nil {
 		t.Fatalf("--without on an ordinary nest must keep working: %v", err)
 	}
-	if !ordinary.HasCalled("create") {
+	if !ordinary.HasCalled("env", "create") {
 		t.Errorf("nothing was created; calls: %v", ordinary.Calls)
 	}
 }
@@ -1299,7 +1313,7 @@ func TestAttachRefusalOnAnUnmappedKeyNamesTheRemedyThatWorks(t *testing.T) {
 			if strings.Contains(err.Error(), c.avoid) {
 				t.Errorf("the remedy must be a command that works on this nest; got: %v", err)
 			}
-			if f.HasCalled("create") {
+			if f.HasCalled("env", "create") {
 				t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 			}
 		})
@@ -1328,7 +1342,7 @@ func TestOnlyAttachesAPromptingNestWithNoRecord(t *testing.T) {
 		Options{Nest: "crm", Only: []string{"api"}}, d); err != nil {
 		t.Fatalf("--only must attach where the unmapped key it leaves out would refuse: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("the sandbox is live: it must be attached, not recreated; calls: %v", f.Calls)
 	}
 }
@@ -1435,7 +1449,7 @@ func TestPromptModeAttachIgnoresAdHocMountsWhenRebuilding(t *testing.T) {
 	if err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, d); err != nil {
 		t.Fatalf("an ad-hoc mount must not pass for the declared repo of the same name: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
 	}
 }
@@ -1461,8 +1475,11 @@ func TestPromptModeComposesWithAnInstanceLabel(t *testing.T) {
 		Options{Nest: "generic", Instance: "leo-fix"}, d); err != nil {
 		t.Fatalf("prompting nest with --as: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "generic.leo-fix") {
-		t.Fatalf("the label must reach the sandbox name; calls: %v", f.Calls)
+	if !f.HasCalled("env", "create") {
+		t.Fatalf("no `env create`; calls: %v", f.Calls)
+	}
+	if doc := envDocOf(t, denHome, "generic.leo-fix"); doc.Name != "generic.leo-fix" {
+		t.Fatalf("the label must reach the sandbox name; got %q", doc.Name)
 	}
 	// The record is written under the LABELLED name, which is what makes the
 	// rebuild below read this selection rather than the unlabelled sandbox's.
@@ -1488,7 +1505,7 @@ func TestPromptModeComposesWithAnInstanceLabel(t *testing.T) {
 		Options{Nest: "generic", Instance: "leo-fix"}, attachDeps); err != nil {
 		t.Fatalf("attaching a labelled prompting sandbox: %v", err)
 	}
-	if attachFake.HasCalled("create") {
+	if attachFake.HasCalled("env", "create") {
 		t.Errorf("the labelled sandbox is live: it must be attached, not recreated; calls: %v",
 			attachFake.Calls)
 	}
@@ -1627,13 +1644,7 @@ func TestInteractiveAnnotatesNothingForAMappedLocalKey(t *testing.T) {
 	}
 	// And the spawn really did mount it, so the assertion above is about the
 	// annotation and not about a repo that was dropped.
-	mounted := false
-	for _, c := range fake.Calls {
-		if c[0] == "create" && slices.Contains(c, optional) {
-			mounted = true
-		}
-	}
-	if !mounted {
+	if !strings.Contains(string(envFileOf(t, denHome, "api")), optional) {
 		t.Errorf("the mapped optional repo was not mounted; calls: %v", fake.Calls)
 	}
 }

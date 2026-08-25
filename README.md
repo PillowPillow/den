@@ -250,11 +250,11 @@ creating anything otherwise.
 den refuses the whole spawn with `repo "<name>" unknown in this nest`.
 
 **`den rm` reclaims the worktree of a repo given on the command line too.** At creation den writes
-down what it actually mounted, under `~/.den/state/sandboxes/<sandbox>.yaml`, and the teardown
-replays that record instead of re-deriving it from today's configuration. So a positional — declared
-in no file at all — is reclaimed like the rest, and so is a worktree whose `worktree_root` moved,
-whose repo key stopped being mapped, or whose nest was deleted since the spawn. A repo mounted
-as-is, that den did not create, is never touched.
+down what it actually mounted, under `~/.den/state/sandboxes/<sandbox>/manifest.yaml`, and the
+teardown replays that record instead of re-deriving it from today's configuration. So a positional —
+declared in no file at all — is reclaimed like the rest, and so is a worktree whose `worktree_root`
+moved, whose repo key stopped being mapped, or whose nest was deleted since the spawn. A repo
+mounted as-is, that den did not create, is never touched.
 
 A sandbox created before the records existed (or outside den) has none: `den rm` then falls back on
 the old derivation through the nest's `repos:`, saying so — that answer is only accurate if neither
@@ -262,9 +262,25 @@ the nest nor `config.yaml` changed since. Under the `per-repo` layout a leftover
 sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den added to that
 repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to remove.
 
+**A sandbox created before den emitted `.sbxenv.yaml` has none, and you will hit that once, at
+teardown.** Its manifest, if it has one, still reads fine — den still reads the old flat path,
+`~/.den/state/sandboxes/<sandbox>.yaml`, so the worktree record is intact — only the destroy step is
+affected. den destroys through `sbx env rm`, handed the `.sbxenv.yaml` it wrote at creation next to
+`manifest.yaml`, and refuses outright, **before touching anything**, when that file is missing or
+unreadable — unlike the worktree record above, which falls back and proceeds anyway, this step
+refuses instead. `den rm` then names the escape hatch: `den rm --force <sandbox>`, which destroys it
+**by name** through `sbx rm --force` instead. That is not a defect; it is `den rm` correctly
+refusing a destroy it cannot vouch for. There is no migration:
+`~/.den/state/` is never purged and den converts nothing, so a sandbox from before this change keeps
+missing its `.sbxenv.yaml` permanently.
+
 Options of `den rm`: `--keep-worktrees` (keep the worktrees, and their record, so `den doctor` can
-still find them), `--force` (reclaim them even if they carry uncommitted changes; without it, den
-refuses **before** touching the VM).
+still find them), `--force` — **one flag, two senses, and asking for either one can get you both.**
+It reclaims worktrees even if they carry uncommitted changes, AND it destroys by name — skipping the
+`.sbxenv.yaml` check above — when that file is missing or unreadable. Ask for the first while the
+record is also bad and den announces the substitution before it destroys anything; ask for the
+second while a worktree is also dirty and den reclaims it too, **without a separate warning** — the
+same `--force` reaches both checks. Without it at all, den refuses **before** touching the VM.
 
 `den doctor` reports records whose sandbox is gone — a `sbx rm` run outside den, a failed boot, a
 `den rm --keep-worktrees` — as a warning naming the directories still on disk; `den doctor --fix`
@@ -352,6 +368,46 @@ both ways: the same host is allowed for the nest that declared it and denied for
 not (`No matching allow rule (default deny)`).
 
 Treat `egress:` as *access you would not otherwise have*, not as a sandbox firewall.
+
+## Sizing a sandbox
+
+Without a `resources:` block every sandbox takes sbx's own default — 50% of host memory (capped at
+32 GiB) and every host CPU — so a nest running one test suite and a nest running three services
+plus a database are sized identically. `resources:` says how big *this* nest is.
+
+```yaml
+# ~/.den/nests/backend.yaml
+stack: dgdevx
+resources:
+  cpus: 8
+  memory: 16g
+repos:
+  - { key: api }
+```
+
+It is declarable at **every level of the cascade** — `config.yaml`, `stacks/<name>/stack.yaml`,
+`nests/<name>.yaml` — and the levels merge **field by field**, the later winning. A stack pinning
+the memory its toolchain needs and a nest asking for more CPUs are two independent statements, and
+both survive:
+
+```yaml
+# ~/.den/config.yaml → cpus: 2, memory: 4g
+# ~/.den/stacks/dgdevx/stack.yaml → memory: 8g
+# ~/.den/nests/backend.yaml → cpus: 8
+# resolved: cpus 8, memory 8g
+```
+
+`den nest show <nest>` prints the resolved block, so you can see which level won without spawning.
+
+- **`memory:` uses sbx's grammar**, binary units: `1024m`, `8g`, `2gib`, `4G`, or a bare number of
+  bytes. **The minimum is 1 GiB**, and den refuses a smaller value itself — sbx refuses it too, but
+  only after pulling the image, by which point den has already created your worktrees.
+- **`cpus:` omitted writes no `cpus:` key in `sandboxOptions` at all.** `cpus: 0` is sbx's own
+  *auto: all host CPUs*, and it is written when you want a nest to give a stack's fixed count back
+  to the host default.
+- **Nothing resizes a running VM.** Edit `resources:` on a nest whose sandbox is live and the next
+  `den up` warns that the sandbox runs with the size from its creation, naming both numbers. To
+  apply the new one: `sbx rm --force <sandbox>`, then relaunch.
 
 ## Agent profile — a `.claude` dedicated to den
 
@@ -656,10 +712,11 @@ stack) are always **bare** and resolve within that source itself — a prefixed 
 lint failure, because the install name (`--name`) is chosen per machine and the team repo's own CI
 knows none.
 
-`:` is not legal in an `sbx create --name`, so a nest loaded from a source spawns under a
-flattened sandbox name: `corp:backend` becomes sandbox `corp-backend` — the same flattening `-w`
-already applies to branch names. A flattening collision (a local nest already named `corp-backend`,
-say) is refused at spawn, never silently renamed.
+`:` is not legal in an sbx sandbox name — the `name:` den writes into `.sbxenv.yaml`, consumed by
+`sbx env create` — so a nest loaded from a source spawns under a flattened sandbox name:
+`corp:backend` becomes sandbox `corp-backend` — the same flattening `-w` already applies to branch
+names. A flattening collision (a local nest already named `corp-backend`, say) is refused at spawn,
+never silently renamed.
 
 `den exec`, `den shell`, `den rm` and `den ports` take **either** spelling: the reference you typed
 (`corp:backend`, `corp:backend.feat12`) or the literal name `den ls` prints (`corp-backend`,

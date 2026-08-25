@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -244,5 +245,188 @@ func TestLaxMountsFailsOnAFileItCannotRead(t *testing.T) {
 func TestRemoveToleratesAnAbsentFile(t *testing.T) {
 	if err := Remove(t.TempDir(), "api"); err != nil {
 		t.Errorf("removing an absent manifest must not fail: %v", err)
+	}
+}
+
+// The two layouts coexist for good: den never deletes a record it could not
+// read (spec §11), so the legacy reader is permanent, not a migration phase.
+func TestReadFindsBothLayouts(t *testing.T) {
+	home := t.TempDir()
+
+	// New layout, written by Write.
+	if err := Write(home, Manifest{Sandbox: "api", Nest: Nest{Ref: "api", File: "api"}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := Read(home, "api"); err != nil {
+		t.Errorf("reading back what Write wrote: %v", err)
+	}
+
+	// Legacy layout, hand-written where a pre-directory den left it.
+	legacy, err := LegacyPath(home, "front")
+	if err != nil {
+		t.Fatalf("LegacyPath: %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte("schema: 1\nsandbox: front\nnest:\n  ref: front\n  file: front\n"), 0o600); err != nil {
+		t.Fatalf("writing the legacy record: %v", err)
+	}
+	m, err := Read(home, "front")
+	if err != nil {
+		t.Fatalf("reading a legacy record: %v", err)
+	}
+	if m.Sandbox != "front" {
+		t.Errorf("Sandbox = %q, want front", m.Sandbox)
+	}
+}
+
+// The new layout wins when both exist: Write only ever produces the new one, so
+// a legacy file beside it is the OLDER truth.
+func TestReadPrefersTheDirectoryLayout(t *testing.T) {
+	home := t.TempDir()
+	if err := Write(home, Manifest{Sandbox: "api", Nest: Nest{Ref: "current", File: "current"}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	legacy, err := LegacyPath(home, "api")
+	if err != nil {
+		t.Fatalf("LegacyPath: %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte("schema: 1\nsandbox: api\nnest:\n  ref: stale\n  file: stale\n"), 0o600); err != nil {
+		t.Fatalf("writing the legacy record: %v", err)
+	}
+	m, err := Read(home, "api")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if m.Nest.Ref != "current" {
+		t.Errorf("Nest.Ref = %q, want current — the directory layout must win", m.Nest.Ref)
+	}
+}
+
+// The defect this task exists to close: List skipped directories, so a
+// new-layout record was INVISIBLE to `den ls`, `den doctor` and rm's
+// mountGuard — which would then move a live sibling's workspace to the trash.
+func TestListDescendsIntoTheDirectoryLayout(t *testing.T) {
+	home := t.TempDir()
+	if err := Write(home, Manifest{Sandbox: "api", Nest: Nest{Ref: "api", File: "api"}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	legacy, err := LegacyPath(home, "front")
+	if err != nil {
+		t.Fatalf("LegacyPath: %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte("schema: 1\nsandbox: front\nnest:\n  ref: front\n  file: front\n"), 0o600); err != nil {
+		t.Fatalf("writing the legacy record: %v", err)
+	}
+	got, broken, err := List(home)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(broken) != 0 {
+		t.Errorf("broken = %v, want none", broken)
+	}
+	var names []string
+	for _, m := range got {
+		names = append(names, m.Sandbox)
+	}
+	if !slices.Equal(names, []string{"api", "front"}) {
+		t.Errorf("List = %v, want [api front]", names)
+	}
+}
+
+// A directory holding an unreadable manifest is BROKEN, never skipped: the
+// mountGuard reads broken records through LaxMounts, and a skipped one protects
+// no worktree at all.
+func TestListReportsABrokenDirectoryRecord(t *testing.T) {
+	home := t.TempDir()
+	dir, err := SandboxDir(home, "api")
+	if err != nil {
+		t.Fatalf("SandboxDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte("schema: 99\n"), 0o600); err != nil {
+		t.Fatalf("writing the record: %v", err)
+	}
+	_, broken, err := List(home)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(broken) != 1 {
+		t.Fatalf("broken = %v, want exactly one", broken)
+	}
+	if SandboxOf(broken[0].Path) != "api" {
+		t.Errorf("SandboxOf(%q) = %q, want api", broken[0].Path, SandboxOf(broken[0].Path))
+	}
+}
+
+// SandboxOf is what rm.go and ls.go use instead of trimming ".yaml" off a
+// basename: under the directory layout the basename is "manifest.yaml", the
+// same for every sandbox, and trimming it would name every record "manifest".
+func TestSandboxOfBothLayouts(t *testing.T) {
+	for path, want := range map[string]string{
+		"/h/state/sandboxes/api.yaml":                 "api",
+		"/h/state/sandboxes/api.feat12.yaml":          "api.feat12",
+		"/h/state/sandboxes/api/manifest.yaml":        "api",
+		"/h/state/sandboxes/api.feat12/manifest.yaml": "api.feat12",
+		"/h/state/sandboxes/.yaml":                    "",
+	} {
+		if got := SandboxOf(path); got != want {
+			t.Errorf("SandboxOf(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// Remove takes the manifest away and the directory WITH it — but only when the
+// directory is empty. A .sbxenv.yaml den could not read stays, and keeps the
+// directory alive with it (spec §11: den never deletes what it could not read).
+func TestRemoveKeepsADirectoryHoldingAnUnreadableFile(t *testing.T) {
+	home := t.TempDir()
+	if err := Write(home, Manifest{Sandbox: "api", Nest: Nest{Ref: "api", File: "api"}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	dir, err := SandboxDir(home, "api")
+	if err != nil {
+		t.Fatalf("SandboxDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".sbxenv.yaml"), []byte("schemaVersion: \"9\"\n"), 0o600); err != nil {
+		t.Fatalf("writing the env record: %v", err)
+	}
+	if err := Remove(home, "api"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "manifest.yaml")); !os.IsNotExist(err) {
+		t.Errorf("the manifest survived Remove: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".sbxenv.yaml")); err != nil {
+		t.Errorf("den deleted a file it could not read: %v", err)
+	}
+}
+
+// Final review, deferred (c): Remove's LEGACY branch (the flat "<sandbox>.yaml"
+// file a pre-directory-layout den left) was covered by no test at all —
+// TestRemoveToleratesAnAbsentFile exercises a file that never existed, and
+// TestRemoveKeepsADirectoryHoldingAnUnreadableFile exercises the NEW directory
+// layout. That path is permanent by doctrine (spec §11, the pre-switchover
+// fleet's only record) and cheap to lose silently — a future cleanup that
+// "simplified" Remove down to the directory-layout half would pass every
+// existing test in this file.
+func TestRemoveDeletesTheLegacyFlatFile(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(Dir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := LegacyPath(home, "api")
+	if err != nil {
+		t.Fatalf("LegacyPath: %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte("schema: 1\nsandbox: api\nnest:\n  ref: api\n  file: api\n"),
+		0o600); err != nil {
+		t.Fatalf("writing the legacy record: %v", err)
+	}
+	if err := Remove(home, "api"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("the legacy record survived Remove: %v", err)
 	}
 }
