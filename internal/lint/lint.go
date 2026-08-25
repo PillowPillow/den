@@ -169,6 +169,9 @@ func judge(root string, stacks, parents config.Stacks, nests []*nest.Nest) []err
 	// only `stacks` is guaranteed to hold every root's real load.
 	for _, name := range stacks.Names() {
 		errs = append(errs, checkStack(root, parents, stacks.Healthy[name])...)
+		// checkStackResources runs ONLY here, over the JUDGED set, never in
+		// the closure loop below — see its own doc for why.
+		errs = append(errs, checkStackResources(stacks.Healthy[name])...)
 	}
 	// The ancestor closure of the JUDGED stacks, resolved through `parents`:
 	// for Run, stacks == parents == the full scan, so every healthy stack is
@@ -277,20 +280,6 @@ func checkStack(root string, parents config.Stacks, s *config.Stack) []error {
 		}
 	}
 
-	// The SAME validators nest.Resolve uses, at a better occasion: `den source
-	// add` refuses and deletes the clone, `den source update` refuses before
-	// the fast-forward. An illegal size must die at the source, once, not N
-	// times on its consumers — and sbx only refuses it server-side, after the
-	// image pull (§14.5).
-	if s.Resources.CPUs != nil {
-		if err := sbx.ValidateCPUs(*s.Resources.CPUs); err != nil {
-			errs = append(errs, fmt.Errorf("stack %q: %w", s.Name, err))
-		}
-	}
-	if err := sbx.ValidateMemory(s.Resources.Memory); err != nil {
-		errs = append(errs, fmt.Errorf("stack %q: %w", s.Name, err))
-	}
-
 	// Each group is checked under its OWN YAML key, not flattened: a
 	// refusal must name the exact key to fix (`kit:` vs `kits:` vs
 	// `provision.includes:` vs `provision.steps:`), and only the loader
@@ -318,6 +307,50 @@ func checkStack(root string, parents config.Stacks, s *config.Stack) []error {
 			wasAbsolute := i < len(abs) && abs[i]
 			errs = append(errs, checkDeclaredPath(root, s, g.key, p, wasAbsolute)...)
 		}
+	}
+	return errs
+}
+
+// checkStackResources judges the `resources:` a stack DECLARES, on its own,
+// without reading anywhere else in the cascade. Deliberately NOT called from
+// checkStack: checkStack runs over every healthy stack judge decides is
+// worth judging, roots AND the ancestor closure a `parent:` chain reaches
+// (see judge's doc) — but `parent:` is a build-DAG edge, not field
+// inheritance (config.Stack's own doc), so a stack that is ONLY a parent, and
+// never a nest's own `stack:`, has its `resources:` read by nothing:
+// nest.Resolve merges the global, the NEST'S OWN stack (never an ancestor)
+// and the nest, and `den build` emits neither `--memory` nor `--cpus` at all.
+// Refusing over a value no spawn and no build ever sends would delete a
+// clone (`den source add`) over dead configuration. So this is called only
+// from judge's roots loop, over `stacks.Names()` — the JUDGED set, which for
+// RunCatalogue is exactly the exported stacks, never the unexported parents
+// the closure loop also runs checkStack over.
+//
+// This is also why the check stays SEPARATE from nest.Resolve's own
+// (`resolveResources`, internal/nest/resources.go): that function
+// deliberately validates only the CASCADE WINNER — the merged value a spawn
+// actually sends — with its own comment stating the same reasoning in the
+// other direction (refusing over a value nothing sends refuses a
+// configuration that works). Both rules are right, and they diverge on
+// purpose: a consumer nest that writes no `resources:` of its own INHERITS
+// the stack's value, so an exported stack's OWN `memory: 512m` is exactly
+// the case where lint's stricter, source-side judgment earns its keep —
+// `den source add` refuses it before any consumer ever resolves a cascade
+// that would relay it.
+func checkStackResources(s *config.Stack) []error {
+	var errs []error
+	// The SAME validators nest.Resolve uses, at a better occasion: `den
+	// source add` refuses and deletes the clone, `den source update` refuses
+	// before the fast-forward. An illegal size must die at the source, once,
+	// not N times on its consumers — and sbx only refuses it server-side,
+	// after the image pull (§14.5).
+	if s.Resources.CPUs != nil {
+		if err := sbx.ValidateCPUs(*s.Resources.CPUs); err != nil {
+			errs = append(errs, fmt.Errorf("stack %q: %w", s.Name, err))
+		}
+	}
+	if err := sbx.ValidateMemory(s.Resources.Memory); err != nil {
+		errs = append(errs, fmt.Errorf("stack %q: %w", s.Name, err))
 	}
 	return errs
 }
@@ -413,9 +446,11 @@ func checkCycles(stacks config.Stacks, startNames []string) []error {
 }
 
 // checkNest judges one loadable nest: its stack reference must be bare and
-// resolvable in THIS checkout, its derived sandbox name must be one sbx would
-// accept, and its own `resources:` (a cascade level in its own right, not
-// only a stack's) must be a size sbx would accept.
+// resolvable in THIS checkout, and its own `resources:` (a cascade level in
+// its own right, not only a stack's) must be a size sbx would accept. It
+// does NOT re-check the sandbox-name charset — nest.LoadNest already did,
+// and does not check name LENGTH at all — see the comment at the decision
+// site below for why that check does not belong here.
 func checkNest(root string, stacks config.Stacks, n *nest.Nest) []error {
 	var errs []error
 	// A switch, not three early returns: the three `stack:` faults exclude one
@@ -440,21 +475,28 @@ func checkNest(root string, stacks config.Stacks, n *nest.Nest) []error {
 		}
 	}
 
-	// Under the compiler role, a nest must compile to a LEGAL .sbxenv.yaml —
-	// and the name is the half a source can get wrong on its own: `name:` is
-	// what sbx uses to name the sandbox, and its charset is `sbx create
-	// --name`'s. Checked here rather than only at spawn because lint is the
-	// single judge (spec 2026-08-04 §5): it must never accept what a spawn
-	// would later refuse.
+	// NO check here against sbx's whole-name length floor
+	// (sbx.SandboxName's MinNameLength), and deliberately so (Task 7 fix
+	// round 1, review finding #1) — the charset half of "would this name a
+	// legal sandbox" IS checked, just earlier and elsewhere: nest.LoadNest
+	// already runs config.ValidateSandboxComponent("nest", n.Name) before a
+	// *Nest ever reaches this function, so by the time checkNest sees
+	// n.Name it has already passed the ONLY thing sbx.SandboxName(n.Name,
+	// "") would check beyond length, given an empty worktree.
 	//
-	// The INSTANCE is empty here on purpose: a source ships a nest, never a
-	// worktree label, so the shortest name a spawn of it can produce is the
-	// bare nest name — and sbx's own rule is a WHOLE-name one (MinNameLength,
-	// `^[a-zA-Z0-9][a-zA-Z0-9.-]+$`), which per-component validation does not
-	// cover.
-	if _, err := sbx.SandboxName(n.Name, ""); err != nil {
-		errs = append(errs, fmt.Errorf("nest %q: %w", n.Name, err))
-	}
+	// The length floor itself does not belong here because `den lint`
+	// validates a SOURCE checkout, never a personal one
+	// (internal/cli/lint.go: "lint never reads the personal
+	// configuration") — and a nest loaded FROM a source never spawns under
+	// its bare n.Name at all: spawn.go flattens it to "<srcName>-<bareNest>"
+	// first (internal/spawn/spawn.go's sandbox-naming comment, above its
+	// FlattenSandboxComponent("nest", o.Nest) call), which is at least four
+	// characters before instance is even considered. So
+	// SandboxName(n.Name, "") was refusing a name no spawn of an installed
+	// source ever sends — deleting a clone (`den source add`) over a false
+	// positive. The name sbx actually sees is checked where it is finally
+	// ASSEMBLED: spawn.go's own sbx.SandboxName(nestComponent, instance)
+	// call, after flattening and instance are both applied.
 
 	// The SAME resources check as checkStack's, for the SAME reason, one
 	// cascade level up: `resources:` on a nest is not a personal-config-only

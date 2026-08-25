@@ -642,25 +642,27 @@ func TestRunCatalogueIgnoresOrphanCycleOutsideAncestry(t *testing.T) {
 
 // A nest whose derived sandbox name is illegal compiles to a .sbxenv.yaml that
 // `sbx env create` refuses. Catching it at the source is the single-judge
-// property: `den source add` refuses AND deletes the clone, `den source update`
-// refuses before the fast-forward — one refusal there instead of N refusals on
-// every consumer's machine.
-func TestRunNestThatCannotNameASandbox(t *testing.T) {
+// property — REPURPOSED (Task 7 fix round 1, review finding #1): a one-
+// character nest name is NOT a lint refusal. It was, before this fix,
+// checked as `sbx.SandboxName(n.Name, "")` — but a nest loaded from a
+// source never spawns under that bare name: spawn.go always flattens it to
+// "<srcName>-<bareNest>" first, at least four characters before an
+// instance is even considered. So the old check refused a name no real
+// spawn of an installed source ever sends, which under the single-judge
+// property is worse than not checking at all: `den source add` deletes the
+// clone over a false positive. This test pins the fix — the fixture that
+// used to be a refusal must now lint clean.
+func TestRunAcceptsAOneCharacterNestName(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"den-source.yaml":        "name: corp\n",
 		"stacks/devx/stack.yaml": "image: devx:v1\n",
-		// "a" is one character, and sbx's name rule is a WHOLE-name one:
-		// `^[a-zA-Z0-9][a-zA-Z0-9.-]+$` needs two (MinNameLength, measured).
+		// "a" is one character — sbx's whole-name length floor (MinNameLength
+		// = 2) would refuse it in isolation, but a source nest never spawns
+		// under this bare form; see checkNest's comment at the decision site.
 		"nests/a.yaml": "stack: devx\n",
 	})
-	errs := Run(root)
-	// "a" alone would match almost any error string and reduce this to
-	// len(errs) != 0; assert on the message SandboxName actually produces
-	// (its "sandbox name" phrase and the measured MinNameLength) so the test
-	// still catches a regression once this fixture gathers unrelated
-	// findings.
-	if !strings.Contains(errsString(errs), "sandbox name") || !strings.Contains(errsString(errs), "2") {
-		t.Errorf("lint accepted a nest that cannot name a sandbox: %v", errs)
+	if errs := Run(root); len(errs) != 0 {
+		t.Errorf("lint refused a one-character nest name, which a source never spawns bare: %v", errs)
 	}
 }
 
@@ -693,5 +695,35 @@ func TestRunIllegalNestMemory(t *testing.T) {
 	errs := Run(root)
 	if !strings.Contains(errsString(errs), "memory") {
 		t.Errorf("lint accepted a nest memory sbx refuses after the image pull: %v", errs)
+	}
+}
+
+// The `resources:` check must judge only what judge's own doc calls
+// JUDGED: an exported stack, never a stack that is ONLY reached as an
+// unexported `parent:` ancestor (Task 7 fix round 1, review finding #2).
+// `parent:` is a build-DAG edge, not field inheritance — nest.Resolve reads
+// only the nest's OWN resolved stack, never an ancestor, and `den build`
+// emits neither `--memory` nor `--cpus` at all — so a stale `memory:` on a
+// base stack that only exists to be built FROM is read by nothing. Refusing
+// over it would make `den source add` delete a clone over dead
+// configuration. base carries the SAME illegal `512m` as devx so the two
+// assertions below isolate exactly one variable: exported vs. unexported.
+func TestRunCatalogueResourcesOnlyJudgesExportedStacks(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"stacks/base/stack.yaml":     "image: base:v1\nbase: claude\nresources:\n  memory: 512m\n",
+		"stacks/devx/stack.yaml":     "image: devx:v1\nparent: base\nprovision:\n  steps: [./provision/x.sh]\nresources:\n  memory: 512m\n",
+		"stacks/devx/provision/x.sh": "true\n",
+	})
+	// base is deliberately NOT in the catalogue — only devx is exported.
+	errs := RunCatalogue(root, Catalogue{Stacks: []string{"devx"}})
+	joined := errsString(errs)
+	if !strings.Contains(joined, `stack "devx"`) || !strings.Contains(joined, "memory") {
+		t.Fatalf("expected the EXPORTED stack's own illegal memory to be refused, got: %v", errs)
+	}
+	// Named by stack identity, not by counting the word "memory": a bare
+	// substring count would also break (in a way that reads as a regression
+	// of the WRONG check) the day this fixture gains an unrelated finding.
+	if strings.Contains(joined, `stack "base"`) {
+		t.Fatalf("an unexported parent's resources: must not be judged, got: %v", errs)
 	}
 }
