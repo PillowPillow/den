@@ -178,6 +178,11 @@ n'existe pas aujourd'hui, et `sbx env create -D` imprime déjà un bloc de réso
 **Rejetée**, mais elle devient gratuite sous B : l'émetteur existe, `den export` n'est plus qu'un
 point d'entrée.
 
+*Note du 2026-08-25.* La moitié de C qui avait une vraie valeur — **voir la cascade résolue sans
+spawner** — a déjà atterri ailleurs : `den nest show` imprime le bloc résolu, `resources:` compris
+(#90). C'était le besoin réel derrière l'export ; l'export d'un fichier destiné à sbx en était une
+réponse coûteuse. Ce que B ajoute par-dessus est le fichier lui-même, et il sort de toute façon.
+
 ### D — den se rétrécit : il cède l'UX runtime
 
 `den prepare <nest>` fabrique les worktrees, génère le kit mixin et écrit le `.sbxenv.yaml` ;
@@ -446,8 +451,8 @@ interactive — ou pire, un `y` distrait qui crée un répertoire vide et monte 
 | Contenu | Sort |
 |---|---|
 | `kits/` | **Inchangé.** Déjà natif sbx. Le seul répertoire qu'une équipe pourrait distribuer sans den, et il le reste. |
-| `nests/` | **Renforcé, non remplaçable.** C'est le vocabulaire que `sbxenv.Config` refuse : ni `repos:`, ni `key:`, ni `egress:`, ni fenêtre de ports. C'est aussi le seul niveau où une déclaration reste vraie sur toutes les machines. |
-| `stacks/`, `lib/` | **Inchangés.** `sandboxOptions.template` consomme une image, il n'en fabrique pas. |
+| `nests/` | **Renforcé, non remplaçable.** C'est le vocabulaire que `sbxenv.Config` refuse : ni `repos:`, ni `key:`, ni `egress:`, ni fenêtre de ports. C'est aussi le seul niveau où une déclaration reste vraie sur toutes les machines. Une exception honnête, depuis #90 : `resources:` a bien un équivalent sbx (`sandboxOptions`), et den ne le revendique pas comme un apport — il le traduit. |
+| `stacks/`, `lib/` | **Inchangés dans leur rôle, une clé de plus depuis #90.** `sandboxOptions.template` consomme une image, il n'en fabrique pas. `resources:` est désormais déclarable au niveau du stack : c'est le seul niveau où un plancher mémoire de toolchain a du sens pour toute l'équipe, et il reste surchargeable par un nest et par un drapeau. |
 | `den-source.yaml`, `source-config/` | **Inchangés.** Le mapping clé → chemin est ce qui rend un nest partageable. |
 | Adressage `<source>:<nom>` | **Intact.** `name:` est un champ du schéma, `corp:backend` continue de s'aplatir en `corp-backend`. |
 
@@ -461,6 +466,15 @@ compiler vers un `.sbxenv.yaml` légal**. Concrètement, lint vérifie que le no
 respecte le charset de `sbx create --name`, et que chaque référence de kit résout vers un
 répertoire. Sans ça, une source valide au sens actuel pourrait produire une émission que
 `sbx env create` refuse — exactement la divergence que le juge unique existe pour empêcher.
+
+**Un troisième contrôle arrive avec `resources:` (#90), et il ne dépend pas de ce spec.** Un stack
+d'équipe peut maintenant écrire `memory: 512m`, que sbx refuse **côté serveur, après le tirage
+d'image** (§14.5). `nest.Resolve` le refuse déjà avant le premier effet de bord — mais à chaque
+spawn, sur chaque poste, une fois la source installée. `internal/lint` possède les mêmes
+validateurs (`sbx.ValidateMemory` / `ValidateCPUs`) et une occasion bien meilleure : `den source
+add` refuse **et supprime le clone**, `den source update` refuse avant le fast-forward. Une taille
+illégale doit mourir là, chez la source, pas N fois chez ses consommateurs. C'est la propriété du
+juge unique appliquée à une clé qui vient d'apparaître, et elle est vraie que den compile ou non.
 
 ### 6.5 Verdict
 
@@ -526,8 +540,11 @@ Aucune décision de ce spec n'est laissée ouverte.
 ## 9. Ce que ce spec ne fait pas
 
 - Aucun plan d'implémentation. Il vient après relecture humaine, jamais avant (#89).
-- Aucune modification de `internal/**`, ni de `CLAUDE.md`, ni d'une sous-section §14 existante.
-- Le blocage de `den exec -T` reste dans **#87**. La gouvernance et les collisions restent dans
-  **#88**. Les drapeaux de `sbx create` — `--cpus`, `--memory`, `--profile` — restent dans **#90** ;
-  ils deviennent sous B des champs de `sandboxOptions`, ce qui est une convergence heureuse mais ne
-  déplace pas la frontière des axes.
+- **Aucune ligne d'`internal/**` écrite POUR ce spec.** La branche en porte désormais, mais tout
+  vient des axes #88 et #90 fusionnés tels quels : cette conception n'a pas encore de code.
+- Aucune modification de `CLAUDE.md`, ni d'une sous-section §14 **existante** — les trois
+  sous-sections neuves ont vu leurs en-têtes renumérotés, et rien d'autre.
+- Le blocage de `den exec -T` reste dans **#87**. La gouvernance et les collisions viennent de
+  **#88**, fusionné ici. Les drapeaux de `sbx create` — `--cpus`, `--memory` — viennent de **#90**,
+  fusionné ici aussi ; ils deviennent sous B des champs de `sandboxOptions`, ce qui est une
+  convergence heureuse et non une reprise de périmètre. `--profile` reste sans objet (§14.5).
