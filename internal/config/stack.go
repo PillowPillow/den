@@ -45,6 +45,16 @@ type Stack struct {
 	// ORDER IS SIGNIFICANT: it's an sbx layering order, not a set — never sort it.
 	Kits   []string `yaml:"kits"`
 	Egress []string `yaml:"egress"`
+	// Resources sizes the microVM a spawn of this stack gets, unless a nest or
+	// a flag restates a field (see Resources — the merge is field by field).
+	// A stack is where a TOOLCHAIN's floor belongs: "this image needs 8 GiB to
+	// link" is a property of the recipe, not of any one nest.
+	//
+	// It applies to SPAWNS only. `den build` assembles its own `sbx create`
+	// (internal/build/sandbox.go) and deliberately does not read this: a build
+	// VM is den's, transient, and sizing it from a field meant for the user's
+	// working sandbox would make one number answer two unrelated questions.
+	Resources Resources `yaml:"resources"`
 
 	// Base is the sbx AGENT positional, and applies to ROOT stacks only — the
 	// ones with no `parent:`, which therefore get no `--template`. There the

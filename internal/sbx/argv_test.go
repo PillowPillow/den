@@ -231,6 +231,17 @@ func TestCreateArgvGolden(t *testing.T) {
 			Workspaces: []string{"/dev/api", "/home/me/.den/agents/claude"},
 		}},
 		{"create-complete.golden", completeCreate()},
+		// A THIRD file rather than resources added to completeCreate(): the two
+		// above are what proves `resources:` is invisible when nothing declares
+		// it, and folding the flags into the shared fixture would spend that
+		// proof to save a file.
+		{"create-resources.golden", func() Create {
+			c := completeCreate()
+			n := 4
+			c.CPUs = &n
+			c.Memory = "8g"
+			return c
+		}()},
 	}
 	for _, c := range cases {
 		argv, err := CreateArgv(c.c)

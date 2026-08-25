@@ -3,6 +3,7 @@ package sbx
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -32,6 +33,19 @@ type Create struct {
 	// (or its worktree): Sandbox.Workdir depends on it for the attach.
 	// The ":ro" suffix is accepted by sbx.
 	Workspaces []string
+
+	// CPUs is `--cpus`, and NIL means "send no flag at all".
+	//
+	// A pointer for the reason config.Resources states: `sbx create --help`
+	// documents `--cpus 0` as "auto: all host CPUs", so a written 0 is a value
+	// someone can mean, and it must stay distinguishable from silence. den
+	// omits the flag when nothing asked for a count — never sends 0 on its own.
+	// The two are equivalent to sbx v0.39.0 today, by coincidence, and this
+	// field is what keeps den from resting on that.
+	CPUs *int
+	// Memory is `-m/--memory`, VERBATIM in the spelling the user wrote — sbx's
+	// grammar is the authority (ParseMemory mirrors it). Empty sends no flag.
+	Memory string
 }
 
 // CreateArgv assembles the full argv of `sbx create`, without the binary name.
@@ -60,8 +74,39 @@ func CreateArgv(c Create) ([]string, error) {
 			return nil, err
 		}
 	}
+	// BOUNDARY guard, exactly like checkWorkspace above and the empty-kit
+	// filter below: nest.Resolve has already refused these values one layer up,
+	// where the message can name the yaml file to fix — but this function is
+	// exported and takes a struct anyone can fill, and the values it does not
+	// guard are the ones sbx rejects SERVER-side, after pulling the image
+	// (measured 2026-08-24). Removing the guard would make CreateArgv correct
+	// only as long as every caller validates first, a property no test in this
+	// package can verify.
+	if c.CPUs != nil {
+		if err := ValidateCPUs(*c.CPUs); err != nil {
+			return nil, fmt.Errorf("sandbox %q: %w", c.Name, err)
+		}
+	}
+	if err := ValidateMemory(c.Memory); err != nil {
+		return nil, fmt.Errorf("sandbox %q: %w", c.Name, err)
+	}
 
 	argv := []string{"create", "--name", c.Name, "--template", c.Image}
+	// The size flags sit between --template and the kits: they describe the VM
+	// itself, like --name and --template, while everything after --kit is
+	// content laid down inside it. Nothing in sbx depends on the order — the
+	// goldens are what fix it, so a reader diffing two argvs reads them in the
+	// same place every time.
+	//
+	// Absent means ABSENT: a nil CPUs and an empty Memory emit nothing, which
+	// is what leaves a den declaring no `resources:` sending byte-for-byte the
+	// argv it sent before this field existed.
+	if c.CPUs != nil {
+		argv = append(argv, "--cpus", strconv.Itoa(*c.CPUs))
+	}
+	if c.Memory != "" {
+		argv = append(argv, "--memory", c.Memory)
+	}
 	// BOUNDARY guard, not a duplicate of config.Stack.DeclaredKits — which
 	// already filters empty entries at production's one caller.
 	//

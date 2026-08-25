@@ -20,6 +20,15 @@ type Options struct {
 	// NOT addressable by --without/--only — a repo typed by hand is removed by
 	// not typing it.
 	Repos []string
+	// Resources is the cascade's LAST level for `resources:` — what a flag
+	// says, over what the nest, the stack and config.yaml declare.
+	//
+	// No cobra flag fills it yet (issue #90 ships the cascade; the two-line
+	// wiring on `den up`/`den run` is its own change, in internal/cli, which
+	// this pass does not own). The level exists here because leaving it out
+	// would put the flags' precedence in no test at all, and because a level
+	// added later is a level whose order nothing ever asserted.
+	Resources config.Resources
 	// Cwd resolves the relative entries of Repos. A parameter, not an
 	// os.Getwd() inside this package: the resolution stays pure, so `den
 	// scratch .` is assertable without a test having to chdir, and the one
@@ -189,6 +198,12 @@ type Resolved struct {
 	// would break in the VM, far from here. Out of Repos, there is nothing to
 	// forget.
 	UnmappedOptional []*UnmappedRepoKeyError
+
+	// Resources is the microVM's size, fully merged: internal/spawn hands it to
+	// sbx.CreateArgv, which omits `--cpus` when CPUs is nil and `--memory` when
+	// Memory is empty. Already validated — Resolve refuses an unusable value
+	// rather than passing it on, so nothing downstream needs to ask again.
+	Resources config.Resources
 
 	SSHMode string
 	// Mounts carries `ssh.dir` too, as the ssh.mode sugar (resolveMounts). No
@@ -464,6 +479,14 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
 	}
 
+	// Before any repo work, and long before the spawn's first side effect: a
+	// `resources:` sbx would reject is refusable from the configuration alone,
+	// which spec §6 places ahead of everything that creates a worktree.
+	resources, err := resolveResources(denHome, g, s, n, o)
+	if err != nil {
+		return nil, fmt.Errorf("nest %q: %w", n.Name, err)
+	}
+
 	// Which mapping resolves this nest's `key:` entries, and which file a
 	// refusal about them names. Read ONCE, here, and passed down: the two
 	// consumers below (the dry-run's set-aside and the resolution proper) must
@@ -536,6 +559,7 @@ func Resolve(denHome string, g *config.Global, stacks config.Stacks, n *Nest, o 
 		Egress:           unionEgress(g.Egress, s.Egress, n.Egress),
 		Repos:            repos,
 		UnmappedOptional: unmappedOptional,
+		Resources:        resources,
 		SSHMode:          g.SSH.Mode,
 		Mounts:           resolveMounts(g),
 		WorktreeLayout:   g.WorktreeLayout,

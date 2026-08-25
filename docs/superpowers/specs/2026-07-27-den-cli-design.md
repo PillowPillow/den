@@ -2157,3 +2157,96 @@ Trois faits mesurés, et non supposés :
 
 `den doctor` reste **vert** (`all good`) : l'état non déclaré est de l'information, jamais un
 défaut. Rien n'a été supprimé, et aucune commande mutante n'a été lancée.
+
+## 14.3 Sondes du 2026-08-24 — la grammaire de `--memory` (issue #90)
+
+> **Append-only.** Cette sous-section est celle de l'axe 3 (#90). Elle ne modifie rien de §14.0,
+> §14.1 ni §14.2 : elle ajoute ce que celles-ci ne mesuraient pas.
+
+Le §14.2 établit que `-m/--memory` refuse en dessous de 1 GiB, **côté serveur**, après
+`✓ image ready`. Il ne dit pas ce que la grammaire ACCEPTE. den doit le savoir, parce qu'il valide
+la valeur lui-même : un validateur plus étroit que sbx transformerait un tirage d'image épargné en
+un refus de configuration qui marche.
+
+Quatre sondes, `sbx create` réel, v0.39.0 `def8cb0`, chacune sur un répertoire jetable. **Aucune ne
+crée de sandbox** : toutes échouent au contrôle du minimum ou à l'analyse de la valeur.
+
+| Valeur envoyée | Réponse de sbx | Ce que ça prouve |
+|---|---|---|
+| `abc` | `invalid memory "abc": invalid memory value "abc": invalid size: 'abc'` | grammaire REFUSÉE |
+| `1kib` | `memory 1kib is below the minimum of 1 GiB` | grammaire ACCEPTÉE (suffixe `ib`) |
+| `1024` | `memory 1024 is below the minimum of 1 GiB` | grammaire ACCEPTÉE (nombre nu = OCTETS) |
+| `0.5g` | `memory 0.5g is below the minimum of 1 GiB` | grammaire ACCEPTÉE (décimal) |
+
+Les trois dernières atteignent le contrôle du **minimum**, donc l'analyse a réussi. La première
+meurt avant. Le diagnostic `invalid size: '…'` est celui de `go-units.RAMInBytes` (docker), mot pour
+mot : la grammaire est donc `<nombre décimal>` + unité optionnelle parmi `b k m g t p` + suffixe
+optionnel `b`/`ib`, insensible à la casse, un espace toléré, un nombre nu valant des octets, base
+binaire (1024).
+
+`sbx create --help` n'en donne que deux exemples (`1024m`, `8g`). **Un den qui n'accepterait que
+ceux-là refuserait `2gb`, `4G` et `2048MiB`, qui marchent.** `internal/sbx/resources.go` réimplémente
+la grammaire mesurée plutôt que de prendre la dépendance : ~20 lignes contre un module de plus dans
+`go.mod`, pour une grammaire figée par un test.
+
+Le seuil est `>=` et non `>` : le serveur dit « **below** the minimum », donc `1g` et `1024m` —
+exactement 1073741824 octets — passent.
+
+**Non sondé, délibérément** : le comportement d'un `--cpus` négatif. den le refuse quand même, sans
+mesure : un compte de CPU négatif n'est pas une demande dont sbx aurait une lecture, et den refuse
+plutôt que de normaliser en silence (§2). `--cpus 0` reste ce que l'aide dit — *auto: all host
+CPUs* — et den ne l'envoie que s'il est ÉCRIT.
+
+### Ce que #90 a livré, et ce que la mesure a décidé
+
+- `resources: {cpus, memory}` à chaque niveau de la cascade (`config.yaml` ← `stack.yaml` ←
+  `nests/<n>.yaml` ← drapeaux), fusionné **champ par champ**, résolu par `nest.Resolve`, émis par
+  `sbx.CreateArgv` en `--cpus` / `--memory`.
+- Refus **avant le premier effet de bord** (§6) : le refus serveur coûte un tirage d'image, et
+  arrive après que den a créé ses worktrees.
+- `cpus:` est un **pointeur** : `--cpus 0` est une valeur qu'on peut vouloir dire, un `cpus:` absent
+  n'envoie aucun drapeau. Les deux sont équivalents pour sbx aujourd'hui, par coïncidence.
+- La branche attach ne réapplique **rien** : un `resources:` modifié **avertit** de la dérive. La
+  référence est le registre de création (`internal/manifest`), parce que `sbx ls --json` ne porte
+  aucun champ de taille (§14.2, inchangé) — une VM vivante ne peut pas être interrogée sur sa
+  taille.
+
+### `--deny-network` à la création : TRANCHÉ — non (issue #90, §4.2 du handoff)
+
+L'aide de `sbx create` dit d'un deny local qu'il *« can only narrow, never widen, egress »*, ce qui
+le rend sûr sous la doctrine fail-closed de den (§7). La question n'est pas la sûreté, c'est le
+nombre de mécanismes.
+
+**den n'en ajoute pas.** L'egress de den est une **allowlist** : `egress:` fusionne baseline ∪ stack
+∪ nest, et la settle-loop attend que la politique soit posée avant tout attach. Un `deny:` à côté
+ferait deux mécanismes pour un concept, et la question « pourquoi cet hôte est-il injoignable ? »
+aurait alors deux réponses à lire dans deux endroits — le mode de défaillance exact que
+`unionEgress` (une liste, un ordre, un golden) existe pour fermer.
+
+Un deny n'est utile que là où il **restreint une allowlist trop large**. Celle de den ne l'est pas :
+elle est écrite à la main, hôte par hôte, et un hôte de trop se retire en supprimant sa ligne. Le
+jour où une source d'équipe imposerait une allowlist qu'une machine doit rétrécir sans pouvoir la
+modifier, la question se rouvre — et c'est une question de **gouvernance**, la même que `--profile`
+ci-dessous, pas un drapeau de plus sur `sbx create`.
+
+### `--profile` : SONDÉ, sans objet sur cette machine (issue #90, §4.3 du handoff)
+
+Personne ne savait ce qu'était un « profil de gouvernance » sbx. Mesuré le 2026-08-24 :
+
+```
+$ sbx policy profile --help
+Manage policy profiles provided by remote governance policies.
+Profiles can be selected when creating sandboxes to apply a specific policy profile.
+
+$ sbx policy profile ls
+No policy profiles found
+```
+
+Un profil est donc fourni par une **politique de gouvernance distante**, pas déclaré localement.
+Cette machine n'en a aucun, et il n'existe aucune sous-commande pour en créer un : `sbx policy
+profile` n'offre que `ls`. den n'a donc **rien à quoi faire pointer `--profile`**, et aucun moyen
+d'observer l'effet du drapeau s'il l'envoyait.
+
+**Reporté**, pour la raison qui a écarté `--no-share-skills` au §14.2 : livrer un drapeau dont
+l'effet n'est pas observable brouille la prémisse. La sonde à refaire le jour où une organisation
+pousse des profils est celle ci-dessus, en une ligne.
