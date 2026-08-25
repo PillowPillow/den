@@ -106,8 +106,9 @@ this change keeps its record only there, and den converts nothing. Two DIFFERENT
 `manifest.Read` itself falls back from the new path to `LegacyPath` only when the new file is
 ABSENT — that is the legacy-format read, still a real record. `den rm`'s worktree cleanup goes one
 step further and falls back on the OLD DERIVATION (re-deriving mounts from the nest and
-`config.yaml`, saying so) only when the manifest it ends up with — after that first fallback — is
-still unreadable, whether because both paths are missing or because what it found does not decode.
+`config.yaml`, saying so) whenever `manifest.Read` returns any error at all, past that first
+fallback: both paths absent, a present file it cannot even read (a permission bit, an I/O error —
+`os.ReadFile` failing before decode is ever reached), or one it reads but cannot decode.
 Never a refusal either way: `den rm` must never strand a live VM (doctrine T13/T16), and den never
 deletes a record it could not read (it may belong to a newer den). `state/` is not `cache/`: it is
 never purged.
@@ -205,24 +206,26 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   descriptors through. Measured 2026-08-24, §14.2 carries the table. Do not repeat the first
   reading of that probe, which used `stdin=/dev/null` throughout and wrongly concluded the wizard
   could never reach den.
-- The same mother spec's §4-§6, written before the emitter shipped, still describe den's SPAWN as an
-  `sbx create` argv assembly, in at least seven places: the naming constraint pinned to `sbx create
-  --name` (lines 53, 58), `image:`'s comment "passé à `sbx create --template` au spawn" (line 144),
-  the repo-selection basename check pinned to "une position dans l'argv de `sbx create`" (line 260),
-  §6 point 6's whole `sbx create` assembly paragraph (lines 281-285), the ssh agent-forward table
-  headed "flags de `sbx create`" and its "avant le `sbx create`" warning timing (lines 781, 820), and
-  the TDD section's "assemblage de l'argv `sbx create`" golden-file strategy for spawn (line 993).
-  Per this file's own doctrine above, that is now a bug in the spec, not a phase — but it stays
-  UNREWRITTEN, for the same reason the dated handoffs and plans above are: it is a 2026-07-27
-  snapshot, extended (not superseded) by the 2026-08-24 positioning spec, and rewriting it would blur
-  which document is authoritative for the era it describes. Translate `sbx create` → `sbx env
-  create` / `.sbxenv.yaml` at each of those seven sites when reading them. Checked and NOT stale in
-  the same document, on purpose: line 146 (`base:`'s comment) names `sbx create`'s positional AGENT
-  too, but that one is genuinely a BUILD-time concept — `internal/build` still assembles that argv,
-  unchanged — so it is left alone deliberately, not by oversight. Likewise the build sequence table
-  (lines 370, 382, 404) and the measured `sbx create` surface at §14.0-§14.2 (flags, `--label`, the
-  setup-wizard gate) describe the sbx BINARY or the build engine, not den's spawn engine, and both
-  stay true regardless of which engine spawn runs.
+- The same mother spec, written before the emitter shipped, still describes den's SPAWN as an `sbx
+  create` argv assembly, at seven sites spread across FIVE different sections — not confined to any
+  one range: the naming constraint pinned to `sbx create --name` (**§2**, lines 53, 58), `image:`'s
+  comment "passé à `sbx create --template` au spawn" (**§4.2**, line 144), the repo-selection
+  basename check pinned to "une position dans l'argv de `sbx create`" (**§6**, line 260), §6 point
+  6's whole `sbx create` assembly paragraph (**§6**, lines 281-285), the ssh agent-forward table
+  headed "flags de `sbx create`" and its "avant le `sbx create`" warning timing (**§10**, lines 781,
+  820), and the TDD section's "assemblage de l'argv `sbx create`" golden-file strategy for spawn
+  (**§12**, line 993). Per this file's own doctrine above, that is now a bug in the spec, not a
+  phase — but it stays UNREWRITTEN, for the same reason the dated handoffs and plans above are: it
+  is a 2026-07-27 snapshot, extended (not superseded) by the 2026-08-24 positioning spec, and
+  rewriting it would blur which document is authoritative for the era it describes. Translate `sbx
+  create` → `sbx env create` / `.sbxenv.yaml` at each of those seven sites when reading them.
+  Checked and NOT stale in the same document, on purpose: line 146 (**§4.2**, `base:`'s comment)
+  names `sbx create`'s positional AGENT too, but that one is genuinely a BUILD-time concept —
+  `internal/build` still assembles that argv, unchanged — so it is left alone deliberately, not by
+  oversight. Likewise the Build DAG subsection of §6 (lines 370, 382, 404) and the measured `sbx
+  create` surface at §14.0-§14.2 (flags, `--label`, the setup-wizard gate) describe the sbx BINARY
+  or the build engine, not den's spawn engine, and both stay true regardless of which engine spawn
+  runs.
 - `.claude/worktrees/feat+spawn-interactive/` is a full shadow copy of the tree. Exclude it from
   greps or every search returns doubled hits.
 - Il n'y a plus de `Makefile` : le runner est `Taskfile.yml` depuis le 2026-08-04. Les plans

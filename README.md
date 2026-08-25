@@ -263,13 +263,14 @@ sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den
 repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to remove.
 
 **A sandbox created before den emitted `.sbxenv.yaml` has none, and you will hit that once, at
-teardown.** Its manifest, if it has one, still reads fine — from the old flat path above, which den
-keeps reading — so the worktree record is intact; only the destroy step is affected. den destroys
-through `sbx env rm`, handed the `.sbxenv.yaml` it wrote at creation next to `manifest.yaml`, and
-refuses outright, **before touching anything**, when that file is missing or unreadable — unlike the
-worktree record above, this step never falls back quietly. `den rm` then names the escape hatch:
-`den rm --force <sandbox>`, which destroys it **by name** through `sbx rm --force` instead. That is
-not a defect; it is `den rm` correctly refusing a destroy it cannot vouch for. There is no migration:
+teardown.** Its manifest, if it has one, still reads fine — den still reads the old flat path,
+`~/.den/state/sandboxes/<sandbox>.yaml`, so the worktree record is intact — only the destroy step is
+affected. den destroys through `sbx env rm`, handed the `.sbxenv.yaml` it wrote at creation next to
+`manifest.yaml`, and refuses outright, **before touching anything**, when that file is missing or
+unreadable — unlike the worktree record above, which falls back and proceeds anyway, this step
+refuses instead. `den rm` then names the escape hatch: `den rm --force <sandbox>`, which destroys it
+**by name** through `sbx rm --force` instead. That is not a defect; it is `den rm` correctly
+refusing a destroy it cannot vouch for. There is no migration:
 `~/.den/state/` is never purged and den converts nothing, so a sandbox from before this change keeps
 missing its `.sbxenv.yaml` permanently.
 
