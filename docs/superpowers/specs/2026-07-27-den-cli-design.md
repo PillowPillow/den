@@ -2183,18 +2183,44 @@ host on /private/tmp/claude-501/den-sbxenv-probe/ws-a type virtiofs (rw,nosuid,n
 host on /private/tmp/claude-501/den-sbxenv-probe/ws-b type virtiofs (ro,nosuid,nodev,relatime)
 ```
 
+Même verdict côté hôte : `sbx ls --json` renvoie le suffixe `:ro` intact dans la liste des
+workspaces de la sandbox créée —
+
+```
+$ sbx ls --json
+{
+  "sandboxes": [
+    {
+      "name": "den-probe-ro",
+      "id": "c95ebb3d-92ed-4df8-9e4a-05f8c9db7d1d",
+      "agent": "shell",
+      "status": "running",
+      "workspaces": [
+        "/private/tmp/claude-501/den-sbxenv-probe/ws-a",
+        "/private/tmp/claude-501/den-sbxenv-probe/ws-b:ro"
+      ]
+    },
+    …
+  ]
+}
+```
+
 Témoin (`ws-a`, sans `:ro`) : l'écriture réussit —
 
 ```
-$ sbx exec den-probe-ro sh -lc 'touch …/ws-a/probe-write; echo rc=$?'
+$ sbx exec den-probe-ro sh -lc 'touch /private/tmp/claude-501/den-sbxenv-probe/ws-a/probe-write 2>&1; echo rc=$?; ls -la /private/tmp/claude-501/den-sbxenv-probe/ws-a'
 rc=0
+total 4
+drwxr-xr-x+  1 agent agent   96 Aug 25 09:16 .
+drwxr-xr-x   4 root  root  4096 Aug 25 09:15 ..
+-rw-r--r--+  1 agent agent    0 Aug 25 09:16 probe-write
 ```
 
 Sonde (`ws-b:ro`) : l'écriture est refusée par le noyau invité, pas par une couche applicative —
 
 ```
-$ sbx exec den-probe-ro sh -lc 'touch …/ws-b/probe-write; echo rc=$?'
-touch: cannot touch '…/ws-b/probe-write': Read-only file system
+$ sbx exec den-probe-ro sh -lc 'ls -1 /private/tmp/claude-501/den-sbxenv-probe/ws-b 2>&1; touch /private/tmp/claude-501/den-sbxenv-probe/ws-b/probe-write 2>&1; echo rc=$?'
+touch: cannot touch '/private/tmp/claude-501/den-sbxenv-probe/ws-b/probe-write': Read-only file system
 rc=1
 ```
 
@@ -2206,8 +2232,8 @@ suppression du répertoire de sonde.
 exactement comme `sbx create` l'interprète dans un positionnel, et le monte effectivement en lecture
 seule ; l'émetteur peut donc produire `host + ":ro"` dans `path` sans perte de la garantie
 lecture-seule. Retenu par conduite de fail-closed (§5.7) malgré le résultat positif : un OUI est
-issu de trois lectures concordantes — l'affichage de résolution, le drapeau `mount` dans la VM, et
-le refus d'écriture effectif — et non d'une seule d'entre elles.
+issu de quatre lectures concordantes — l'affichage de résolution, `sbx ls --json` côté hôte, le
+drapeau `mount` dans la VM, et le refus d'écriture effectif — et non d'une seule d'entre elles.
 
 ---
 
