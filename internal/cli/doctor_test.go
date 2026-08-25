@@ -436,3 +436,69 @@ func TestDoctorPassesWhenTheNetworkPolicyAnswers(t *testing.T) {
 		t.Errorf("the check is missing from a healthy report:\n%s", out)
 	}
 }
+
+// Issue #88's own property, end to end: `den doctor` NAMES the machine state
+// no source declares, and stays out of the exit code while doing it.
+//
+// The home holds no source at all, which is the case the report must handle
+// rather than skip: den declares nothing, sbx wrote something, and every entry
+// present is therefore undeclared. A doctor silent here would describe a
+// machine reachable by three other authors as a machine den fully describes —
+// the blind spot spec §2 forbids.
+func TestDoctorNamesTheSbxStateNoSourceDeclares(t *testing.T) {
+	home := testDenHome(t)
+	m := sbx.NewMachine()
+	m.Services["github"] = true
+	m.Registries["ghcr.io:443"] = true
+	m.MCPServers["notion"] = true
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), m)
+	if err != nil {
+		t.Fatalf("undeclared state must not fail the report: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "[warn] sbx secrets") || strings.Contains(out, "[FAIL] sbx secrets") {
+		t.Errorf("the undeclared-state report weighs on the exit contract:\n%s", out)
+	}
+	secrets := reportLine(t, out, "sbx secrets")
+	for _, want := range []string{"present, undeclared", "service github", "registry ghcr.io:443"} {
+		if !strings.Contains(secrets, want) {
+			t.Errorf("the secrets line %q is missing %q", secrets, want)
+		}
+	}
+	if mcp := reportLine(t, out, "sbx mcp servers"); !strings.Contains(mcp, "present, undeclared") {
+		t.Errorf("a registered MCP server is not reported: %q", mcp)
+	}
+	// The skills store is empty on this machine, and "empty" must read as
+	// empty rather than as one more thing to go and look at.
+	if skills := reportLine(t, out, "sbx skills"); strings.Contains(skills, "undeclared") {
+		t.Errorf("an empty skills store is reported as undeclared: %q", skills)
+	}
+	// The report is a diagnosis, never a cleanup: den removes nothing it did
+	// not create, here or anywhere.
+	if m.HasCalled("mcp", "rm") || m.HasCalled("secret", "rm") {
+		t.Errorf("den removed sbx state it did not create: %v", m.Calls)
+	}
+}
+
+// Without sbx there is no surface to report, and the `sbx` check already says
+// so. Three more lines restating it in other words make the report harder to
+// act on — the rule networkPolicyChecks follows, pinned here because the skip
+// is easy to lose while adding a fourth surface.
+func TestDoctorSaysNothingAboutUndeclaredStateWithoutSbx(t *testing.T) {
+	home := testDenHome(t)
+	deps := doctor.FakeDeps()
+	// A plain error, not exec.ErrNotFound: internal/ports/hermeticity_test.go
+	// locks internal/cli out of os/exec, and importing it here to spell one
+	// sentinel would be the import that breaks the graph.
+	deps.LookPath = func(string) (string, error) { return "", errors.New("executable file not found in $PATH") }
+
+	out, err := runDoctorWithSbx(t, home, deps, sbx.NewMachine())
+	if err == nil {
+		t.Fatalf("a missing sbx must fail den doctor:\n%s", out)
+	}
+	for _, name := range []string{"sbx secrets", "sbx mcp servers", "sbx skills"} {
+		if strings.Contains(out, name) {
+			t.Errorf("the %q line restates a missing sbx:\n%s", name, out)
+		}
+	}
+}

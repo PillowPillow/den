@@ -1051,11 +1051,19 @@ func TestDoctorReadsTheMachineOnceForEverySource(t *testing.T) {
 	}
 }
 
-// The other half of the same property: a home whose sources are all legacy
-// reads the machine not at all. A legacy source declares nothing doctor could
-// judge, and hoisting the observation out of the loop must not make den pay a
-// subprocess for a loop that turns zero times.
-func TestDoctorReadsNothingForALegacyOnlyHome(t *testing.T) {
+// The other half of the same property, RESTATED by #88: a home whose sources
+// are all legacy still reads the machine ONCE, and only once.
+//
+// It used to read it zero times, and that was right while the observation
+// served the source loop alone — a legacy source declares nothing doctor could
+// judge, and paying a subprocess for a loop that turns zero times is waste.
+// The undeclared-state report changed the premise, not the arithmetic: it is a
+// verdict about the MACHINE, which sbx writes whether or not this home has a
+// single source, so a legacy-only home is exactly a home where every secret
+// present is undeclared. Asserting zero here would now assert the blind spot.
+//
+// One, not two, is still the property: both readers share the single read.
+func TestDoctorReadsTheMachineOnceForALegacyOnlyHome(t *testing.T) {
 	home := testDenHome(t)
 	if out, err := runCLI(t, convergeDeps(convergedSbx()), "source", "add",
 		makeSourceRepo(t), "--name", "corp", "--den-home", home); err != nil {
@@ -1067,8 +1075,42 @@ func TestDoctorReadsNothingForALegacyOnlyHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor: %v\n%s", err, out)
 	}
-	if n := countCalls(f, "secret ls"); n != 0 {
-		t.Errorf("`sbx secret ls` ran %d times on a legacy-only home, want 0", n)
+	if n := countCalls(f, "secret ls"); n != 1 {
+		t.Errorf("`sbx secret ls` ran %d times on a legacy-only home, want 1", n)
+	}
+	if !strings.Contains(out, "sbx secrets") {
+		t.Errorf("the undeclared-state report is missing from a legacy-only home:\n%s", out)
+	}
+}
+
+// The other half of #88's property: a credential a source DOES declare is
+// den's own business and must not be reported as drift. A report crying about
+// what den configured itself is a report the user learns to skip.
+func TestDoctorLeavesADeclaredCredentialOutOfTheUndeclaredReport(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "den")
+	work := t.TempDir()
+	makeWorkRepo(t, work, "api")
+	d := convergeDeps(convergedSbx())
+	installFixture(t, d, home, work)
+	if out, err := runCLI(t, d, "source", "add", makeManifestedSourceRepo(t),
+		"--name", "corp", "--answers", writeAnswerFile(t, work), "--yes",
+		"--den-home", home); err != nil {
+		t.Fatalf("source add corp: %v\n%s", err, out)
+	}
+
+	// The machine holds exactly what the source declares, plus one thing it
+	// does not — so the assertion below discriminates instead of passing on an
+	// empty machine.
+	m := convergedSbx()
+	m.Registries["ghcr.io:443"] = true
+
+	out, _ := runDoctorWithSbx(t, home, doctor.FakeDeps(), m)
+	line := reportLine(t, out, "sbx secrets")
+	if strings.Contains(line, "service github") {
+		t.Errorf("a credential the source declares is reported as undeclared: %q", line)
+	}
+	if !strings.Contains(line, "ghcr.io:443") {
+		t.Errorf("the one entry no source declares is missing: %q", line)
 	}
 }
 
