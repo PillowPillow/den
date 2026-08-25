@@ -250,11 +250,11 @@ creating anything otherwise.
 den refuses the whole spawn with `repo "<name>" unknown in this nest`.
 
 **`den rm` reclaims the worktree of a repo given on the command line too.** At creation den writes
-down what it actually mounted, under `~/.den/state/sandboxes/<sandbox>.yaml`, and the teardown
-replays that record instead of re-deriving it from today's configuration. So a positional — declared
-in no file at all — is reclaimed like the rest, and so is a worktree whose `worktree_root` moved,
-whose repo key stopped being mapped, or whose nest was deleted since the spawn. A repo mounted
-as-is, that den did not create, is never touched.
+down what it actually mounted, under `~/.den/state/sandboxes/<sandbox>/manifest.yaml`, and the
+teardown replays that record instead of re-deriving it from today's configuration. So a positional —
+declared in no file at all — is reclaimed like the rest, and so is a worktree whose `worktree_root`
+moved, whose repo key stopped being mapped, or whose nest was deleted since the spawn. A repo
+mounted as-is, that den did not create, is never touched.
 
 A sandbox created before the records existed (or outside den) has none: `den rm` then falls back on
 the old derivation through the nest's `repos:`, saying so — that answer is only accurate if neither
@@ -262,8 +262,18 @@ the nest nor `config.yaml` changed since. Under the `per-repo` layout a leftover
 sits at `<repo>/.den/<wt>`, inside your own repository, and the `.den/` line den added to that
 repo's `.git/info/exclude` stays too — harmless, local, never committed, but yours to remove.
 
+**A sandbox created before den grew this record has no `.sbxenv.yaml` either, and you will hit that
+once.** den destroys through `sbx env rm`, handed the `.sbxenv.yaml` it wrote at creation next to
+`manifest.yaml`, and refuses to destroy without a readable one it can vouch for — a sandbox from
+before this change has neither file, so its `den rm` refuses, naming the escape hatch: `den rm
+--force <sandbox>`, which destroys it **by name** through `sbx rm --force` instead. That is not a
+defect; it is the same fallback the missing-manifest case above takes, one file over. There is no
+migration: `~/.den/state/` is never purged and den converts nothing, so a sandbox missing either
+record — the manifest, the `.sbxenv.yaml`, or both — stays exactly as it is, permanently.
+
 Options of `den rm`: `--keep-worktrees` (keep the worktrees, and their record, so `den doctor` can
-still find them), `--force` (reclaim them even if they carry uncommitted changes; without it, den
+still find them), `--force` (reclaim them even if they carry uncommitted changes, **and** — when the
+`.sbxenv.yaml` is missing or unreadable — destroy by name instead of refusing; without it, den
 refuses **before** touching the VM).
 
 `den doctor` reports records whose sandbox is gone — a `sbx rm` run outside den, a failed boot, a
@@ -695,10 +705,11 @@ stack) are always **bare** and resolve within that source itself — a prefixed 
 lint failure, because the install name (`--name`) is chosen per machine and the team repo's own CI
 knows none.
 
-`:` is not legal in an `sbx create --name`, so a nest loaded from a source spawns under a
-flattened sandbox name: `corp:backend` becomes sandbox `corp-backend` — the same flattening `-w`
-already applies to branch names. A flattening collision (a local nest already named `corp-backend`,
-say) is refused at spawn, never silently renamed.
+`:` is not legal in an sbx sandbox name — the `name:` den writes into `.sbxenv.yaml`, consumed by
+`sbx env create` — so a nest loaded from a source spawns under a flattened sandbox name:
+`corp:backend` becomes sandbox `corp-backend` — the same flattening `-w` already applies to branch
+names. A flattening collision (a local nest already named `corp-backend`, say) is refused at spawn,
+never silently renamed.
 
 `den exec`, `den shell`, `den rm` and `den ports` take **either** spelling: the reference you typed
 (`corp:backend`, `corp:backend.feat12`) or the literal name `den ls` prints (`corp-backend`,

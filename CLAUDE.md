@@ -70,26 +70,41 @@ side effect. Keep that parser **no narrower and no wider than sbx's**: narrower 
 `4G` / `2048MiB`, which work; wider lets `1bb` through for the server to refuse after the pull.
 `den nest show` prints the resolved block, which is the only way to see which cascade level won.
 
-**A positioning decision is pending on how den drives sbx.** Spec
-`docs/superpowers/specs/2026-08-24-sbx-env-positioning-design.md` (#89) settles that den stops
-assembling an argv and becomes a `.sbxenv.yaml` **emitter**, with `sbx env create` as the engine —
-the reason being maintenance surface, not risk: an argv is not a contract, a `schemaVersion` behind
-a strict decoder is. It is **specified, not implemented**. So `internal/sbx/argv.go` is still the
-live path and still correct — but its `--cpus` / `--memory` emission and
-`testdata/create-resources.golden` are the half scheduled for replacement by `sandboxOptions`, and
-the `resources:` cascade above is the half that survives verbatim. Do not treat `argv.go` as the
-intended long-term design, and do not delete it before the emitter exists.
+**den compiles a nest into a `.sbxenv.yaml`; it no longer assembles an `sbx create` argv.** Spec
+`docs/superpowers/specs/2026-08-24-sbx-env-positioning-design.md` (#89) — implemented, plan
+`docs/superpowers/plans/2026-08-25-sbxenv-emitter.md` — settled it on maintenance surface, not
+risk: an argv is not a contract, a `schemaVersion` behind a strict decoder is. `internal/sbx/env.go`
+is the emitter: `EnvFile(Env) ([]byte, error)`, and `EnvSchemaVersion = "1"` is a **string** — sbx
+answers `unsupported schemaVersion "2" (supported: 1)`, and an unquoted `1` round-trips as a scalar
+sbx refuses. `internal/sbx/argv.go` is **deleted**. The emitted file lives at
+`<denHome>/state/sandboxes/<sandbox>/.sbxenv.yaml`, mode 0600, beside den's own `manifest.yaml` in
+the same directory (see below). den creates with `sbx env create <path>` and destroys with `sbx env
+rm -f <path>` — `sbx env rm` does not delete the file it is handed, so den removes it itself after a
+successful removal. `sbx.CheckEnvFile` refuses to hand `sbx env rm` a record it cannot vouch for —
+absent (the sandbox predates the emitter), unreadable, or naming a different sandbox — and `den rm`
+then refuses too, naming the escape hatch: `den rm --force <sandbox>`, which falls back to
+destroying by name through `sbx rm --force` and names the commands to list and remove the secrets
+scoped to that sandbox, which are left in place. The
+`resources:` cascade above survives verbatim; it now emits into `sandboxOptions.cpus` /
+`sandboxOptions.memory` instead of `--cpus` / `--memory` flags. `internal/build` still drives `sbx
+create` — a build sandbox is a different object with its own lifecycle, a named non-objective, not
+a leftover.
 
 **Ports publish on demand only.** `internal/spawn` must never import `internal/ports`, and
 `internal/cli` must import none of `net`, `hash/fnv`, `os/exec` — both invariants are locked by
 `internal/ports/hermeticity_test.go`, which fails with an import-graph message if you break them.
 
 **What den mounted is recorded, not re-derived.** `internal/manifest` writes
-`<denHome>/state/sandboxes/<sandbox>.yaml` on the create branch, before `sbx create`; `den rm`,
-`den ls` and `den doctor` replay it. Every reader falls back on the old derivation when the file is
-absent or unreadable — `den rm` must never refuse and strand a live VM (doctrine T13/T16), and den
-never deletes a record it could not read (it may belong to a newer den). `state/` is not `cache/`:
-it is never purged.
+`<denHome>/state/sandboxes/<sandbox>/manifest.yaml` on the create branch, before `sbx env create`;
+`den rm`, `den ls` and `den doctor` replay it. The directory (not a single file) is deliberate: it
+is where `manifest.yaml` and the `.sbxenv.yaml` sbx consumes live side by side, so `den rm` can
+remove both as one unit. `internal/manifest.LegacyPath` — the old flat
+`<denHome>/state/sandboxes/<sandbox>.yaml` a pre-directory-layout den left — is still read,
+**permanently**, not as a migration phase: `state/` is never purged, so every sandbox created before
+this change keeps its record only there, and den converts nothing. Every reader falls back on the
+old derivation when neither file is readable — `den rm` must never refuse and strand a live VM
+(doctrine T13/T16), and den never deletes a record it could not read (it may belong to a newer
+den). `state/` is not `cache/`: it is never purged.
 
 **`~/.den` is the single source of truth, and `den doctor` now says where it is NOT** (#88). sbx
 writes machine state den does not own — the global secret store, the MCP registry, the agent-skills

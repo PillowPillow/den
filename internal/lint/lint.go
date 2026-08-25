@@ -1,12 +1,16 @@
 // Package lint validates a stacks/nests checkout — a team source repo or a
 // clone of one — without touching the sbx BINARY, git or the network: it
-// imports internal/sbx for its pure validators (SandboxName, ValidateMemory,
-// ValidateCPUs — none of them shell out), the same way it already imports
-// internal/config and internal/nest, to judge under the compiler role
-// (spec 2026-08-24 §6.4) what `sbx env create` would later refuse. ONE
-// implementation, three consumers (spec 2026-08-04 §5): the team repo's CI
-// (`den lint`), `den source add` (post-clone) and `den source update`
-// (pre-fast-forward, the fail-closed gate).
+// imports internal/sbx for its pure validators (ValidateMemory, ValidateCPUs
+// — neither shells out), the same way it already imports internal/config and
+// internal/nest, to judge under the compiler role (spec 2026-08-24 §6.4) what
+// `sbx env create` would later refuse. SandboxName is deliberately NOT among
+// them: the nest-level name check it used to back was removed (see checkNest,
+// below), because nest.LoadNest already validates the charset before a *Nest
+// reaches this package, and the length floor belongs at the point sbx sees
+// the assembled name, not here. ONE implementation, three consumers (spec
+// 2026-08-04 §5): the team repo's CI (`den lint`), `den source add`
+// (post-clone) and `den source update` (pre-fast-forward, the fail-closed
+// gate).
 package lint
 
 import (

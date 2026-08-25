@@ -3,14 +3,14 @@
 **Date :** 2026-08-24
 **Auteur :** Nicolas Gaignoux (conception assistée)
 **Issue :** #89 — axe 2 de l'évolution de den face à sbx v0.39.0
-**Statut :** validé en brainstorming, **en attente de relecture humaine** avant tout plan
-d'implémentation
+**Statut :** implémenté — plan `docs/superpowers/plans/2026-08-25-sbxenv-emitter.md`, relecture
+humaine du 2026-08-25
 **Spec mère :** `2026-07-27-den-cli-design.md` — ce document l'étend, il ne la remplace pas. Les
 mesures qui le fondent vivent au **§14.4** de la spec mère ; ce document ne les recopie pas, il les
 cite.
 
-**Ce document ne décrit aucun code écrit** — la conception qu'il arrête n'est pas implémentée, et
-ce spec attend une relecture avant tout plan.
+**Ce document a été implémenté** — la relecture humaine a eu lieu le 2026-08-25, et le plan
+`docs/superpowers/plans/2026-08-25-sbxenv-emitter.md` porte les huit tâches qui l'exécutent.
 
 **Mise à jour du 2026-08-25 — cette branche devient le tronc.** Les axes #88 et #90 ne seront pas
 fusionnés dans `main` séparément : leur travail arrive ici ou il est perdu. Les deux sont donc
@@ -539,9 +539,14 @@ Aucune décision de ce spec n'est laissée ouverte.
 
 ## 9. Ce que ce spec ne fait pas
 
-- Aucun plan d'implémentation. Il vient après relecture humaine, jamais avant (#89).
-- **Aucune ligne d'`internal/**` écrite POUR ce spec.** La branche en porte désormais, mais tout
-  vient des axes #88 et #90 fusionnés tels quels : cette conception n'a pas encore de code.
+- Aucun plan d'implémentation **dans ce document** — il vient après relecture humaine, jamais avant
+  (#89), et c'est fait : la relecture a eu lieu le 2026-08-25, et le plan lui-même vit à part, sous
+  `docs/superpowers/plans/2026-08-25-sbxenv-emitter.md`.
+- **Aucune ligne d'`internal/**` écrite POUR ce spec — c'était vrai le 2026-08-24.** À la date
+  d'écriture, la branche ne portait que le code fusionné tel quel des axes #88 et #90 ; cette
+  conception n'avait pas encore le sien. Depuis, le plan
+  `docs/superpowers/plans/2026-08-25-sbxenv-emitter.md` l'a implémentée : `internal/sbx/env.go`
+  (l'émetteur), le layout `state/sandboxes/<sandbox>/`, et le reste des huit tâches.
 - Aucune modification de `CLAUDE.md`, ni d'une sous-section §14 **existante** — les trois
   sous-sections neuves ont vu leurs en-têtes renumérotés, et rien d'autre.
 - Le blocage de `den exec -T` reste dans **#87**. La gouvernance et les collisions viennent de
