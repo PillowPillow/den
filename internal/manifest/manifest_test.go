@@ -401,3 +401,32 @@ func TestRemoveKeepsADirectoryHoldingAnUnreadableFile(t *testing.T) {
 		t.Errorf("den deleted a file it could not read: %v", err)
 	}
 }
+
+// Final review, deferred (c): Remove's LEGACY branch (the flat "<sandbox>.yaml"
+// file a pre-directory-layout den left) was covered by no test at all —
+// TestRemoveToleratesAnAbsentFile exercises a file that never existed, and
+// TestRemoveKeepsADirectoryHoldingAnUnreadableFile exercises the NEW directory
+// layout. That path is permanent by doctrine (spec §11, the pre-switchover
+// fleet's only record) and cheap to lose silently — a future cleanup that
+// "simplified" Remove down to the directory-layout half would pass every
+// existing test in this file.
+func TestRemoveDeletesTheLegacyFlatFile(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(Dir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := LegacyPath(home, "api")
+	if err != nil {
+		t.Fatalf("LegacyPath: %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte("schema: 1\nsandbox: api\nnest:\n  ref: api\n  file: api\n"),
+		0o600); err != nil {
+		t.Fatalf("writing the legacy record: %v", err)
+	}
+	if err := Remove(home, "api"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("the legacy record survived Remove: %v", err)
+	}
+}

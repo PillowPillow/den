@@ -155,8 +155,18 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 					"sandbox, and the secrets scoped to it are left in place\n", name)
 				fmt.Fprintf(out, "  to see them:    sbx secret ls --sandbox %s\n", name)
 				fmt.Fprintf(out, "  to remove one:  sbx secret rm <service> --sandbox %s\n", name)
-				fmt.Fprintf(out, "  den leaves %s alone: it may belong to another version of den\n",
-					envPath)
+				// Final review, Important 1: gated on the SAME errors.Is check
+				// `cause` used above, and for the same reason — an ABSENT file
+				// has nothing to "leave alone". Ungated, the two lines
+				// contradicted each other on the COMMONEST cause in the whole
+				// plan: line 1 (`cause`) already says the file does not exist,
+				// and this line used to say den is leaving it alone because it
+				// may belong to another version of den — true only when a file
+				// actually exists to belong to someone.
+				if !errors.Is(envErr, fs.ErrNotExist) {
+					fmt.Fprintf(out, "  den leaves %s alone: it may belong to another version of den\n",
+						envPath)
+				}
 			}
 
 			// Worktrees first: if one is dirty we stop BEFORE destroying the
@@ -217,6 +227,14 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 				// was still in it — removing the file and retrying the
 				// directory is what finishes that job.
 				_ = os.Remove(envPath)
+				// os.Remove, deliberately never os.RemoveAll (final review,
+				// deferred (a)): --keep-worktrees skips cleanWorktrees above, so
+				// manifest.yaml is still sitting in this same directory ON
+				// PURPOSE — that is the whole point of --keep-worktrees keeping
+				// the record (see the branch above, "worktrees kept, and so is
+				// their record"). os.Remove simply fails on that non-empty
+				// directory and the error is dropped, which is exactly right;
+				// os.RemoveAll would delete the kept manifest.yaml too.
 				if dir, err := manifest.SandboxDir(home, name); err == nil {
 					_ = os.Remove(dir)
 				}

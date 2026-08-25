@@ -331,6 +331,70 @@ func TestDoctorFixReclaimsOrphanedWorktrees(t *testing.T) {
 	}
 }
 
+// Final review, Critical 1: `den doctor --fix` reaches manifest.Remove through
+// the SAME shared body as `den rm` (cleanFromManifest), but `den rm`'s leak
+// fix (f9820be) is gated on `envErr == nil` — a gate only rm.go's RunE
+// computes. Without the mirror here, manifest.Remove deletes manifest.yaml,
+// os.Remove(dir) fails on the surviving .sbxenv.yaml, and the directory goes
+// invisible to manifest.List (which correctly skips a directory with no
+// manifest.yaml) — permanently, since state/ is never purged and nothing will
+// ever call --fix on an orphan already reclaimed. Reproduced empirically by
+// the final reviewer: after --fix, a second `den doctor` answered "all good".
+//
+// CheckEnvFile is the SAME doctrine rm.go:219 applies to its own primary
+// route: den only deletes a file it could vouch for. Here that means the
+// orphan's OWN sandbox name, exactly as CheckEnvFile validates on the `den
+// rm` path — a mismatched or unreadable file must not be deleted just because
+// it happens to sit in the directory of a sandbox that is now gone.
+func TestDoctorFixRemovesTheSbxEnvRecordOfAnOrphan(t *testing.T) {
+	home := testDenHome(t)
+	wt := orphanFixture(t, home, "api.feat12")
+	envPath := writeEnvRecord(t, home, "api.feat12")
+	f := &sbx.Fake{Responses: lsWith()}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f, "--fix")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the orphaned worktree must be reclaimed: %v", err)
+	}
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Errorf("the .sbxenv.yaml must not survive --fix: stat = %v", err)
+	}
+	if dir, err := manifest.SandboxDir(home, "api.feat12"); err != nil {
+		t.Fatal(err)
+	} else if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Errorf("the sandbox directory must not survive --fix: %s (stat = %v)", dir, statErr)
+	}
+}
+
+// The mirror case, same doctrine as `--force` on `den rm`: a record den
+// cannot vouch for must SURVIVE, even under --fix. den never deletes a file
+// it could not read (spec §11) — the orphan's directory being reclaimable is
+// not a reason to relax that for the one file inside it den cannot vouch for.
+func TestDoctorFixLeavesAnUnvouchableSbxEnvRecordAlone(t *testing.T) {
+	home := testDenHome(t)
+	wt := orphanFixture(t, home, "api.feat12")
+	envPath := writeEnvRecord(t, home, "api.feat12")
+	// A NEWER den's file: good YAML, a schemaVersion this den does not emit.
+	if err := os.WriteFile(envPath, []byte("schemaVersion: \"9\"\nagent: shell\nname: api.feat12\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &sbx.Fake{Responses: lsWith()}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f, "--fix")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("the orphaned worktree must still be reclaimed: %v", err)
+	}
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not vouch for: %v", err)
+	}
+}
+
 // Proof 13 — a dirty worktree stops --fix, exactly as it stops rm. --force is
 // the same consent, with the same effect: the trash, never deletion.
 func TestDoctorFixRefusesADirtyWorktreeUnlessForced(t *testing.T) {

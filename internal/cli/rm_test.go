@@ -367,6 +367,12 @@ func TestRmForceAnnouncesTheByNameDestructionForAnAbsentRecord(t *testing.T) {
 	if f.HasCalled("env", "rm") {
 		t.Errorf("den handed sbx a record it could not vouch for; calls: %v", f.Calls)
 	}
+	// Final review, Important 1: the "leaves it alone" sentence promises den is
+	// preserving a FILE — untrue when there is no file at all. `cause` already
+	// said so, several lines above; repeating the opposite claim contradicts it.
+	if strings.Contains(out, "may belong to another version of den") {
+		t.Errorf("den claims to leave a file alone that it already said does not exist:\n%s", out)
+	}
 	// ORDER, proven the only way that has real teeth: by making the destroy
 	// call ITSELF fail. A string-position check against the final success
 	// line does NOT catch "the announce block moved to sit after

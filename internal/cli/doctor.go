@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
@@ -184,6 +185,37 @@ func reclaimOrphans(ctx context.Context, home string, orphans []doctor.Orphan,
 		fmt.Fprintf(out, "\nreclaiming %s...\n", o.Sandbox)
 		if err := cleanFromManifest(ctx, home, byName[o.Sandbox], g, force, out); err != nil {
 			return err
+		}
+		// Final review, Critical 1: `den rm`'s primary route deletes the
+		// .sbxenv.yaml it just consumed (rm.go's f9820be leak fix), gated on
+		// `envErr == nil` — a gate only rm.go's RunE computes, from `sbx env
+		// rm` having just succeeded. `den doctor --fix` never calls `sbx env
+		// rm` at all — the sandbox is already gone, that is what ORPHAN
+		// means — so it applies the SAME doctrine directly: delete the file
+		// only when den can still vouch for it belonging to THIS sandbox
+		// (CheckEnvFile, the identical check rm.go:93 makes), then retry the
+		// directory `manifest.Remove` (called from cleanFromManifest, ABOVE
+		// this point) already tried and found non-empty because this file
+		// was still in it.
+		//
+		// Without this, manifest.Remove deletes manifest.yaml, os.Remove(dir)
+		// fails on the surviving .sbxenv.yaml, and manifest.List — correctly
+		// — skips a directory with no manifest.yaml: the orphan becomes
+		// permanently invisible to `den ls` and `den doctor` alike, in
+		// state/, which is never purged. Reproduced empirically (2026-08-25):
+		// a second plain `den doctor` after --fix answered "all good".
+		//
+		// Both errors dropped, same reasoning as rm.go: the worktrees are
+		// already reclaimed and the manifest already gone by this point, so
+		// failing `den doctor --fix` now over local housekeeping would refuse
+		// a completed reclaim (doctrine T13/T16).
+		if envPath, err := manifest.SbxEnvPath(home, o.Sandbox); err == nil {
+			if sbx.CheckEnvFile(envPath, o.Sandbox) == nil {
+				_ = os.Remove(envPath)
+				if dir, err := manifest.SandboxDir(home, o.Sandbox); err == nil {
+					_ = os.Remove(dir)
+				}
+			}
 		}
 	}
 	return nil
