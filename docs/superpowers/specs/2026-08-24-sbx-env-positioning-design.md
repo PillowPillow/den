@@ -9,9 +9,22 @@ d'implémentation
 mesures qui le fondent vivent au **§14.4** de la spec mère ; ce document ne les recopie pas, il les
 cite.
 
-**Ce document ne décrit aucun code écrit.** Aucun fichier sous `internal/` n'a été modifié pour le
-produire. `internal/sbx/argv.go` appartient à l'axe 3 (#90) : ce spec décrit ce qu'il deviendra,
-il n'y touche pas.
+**Ce document ne décrit aucun code écrit** — la conception qu'il arrête n'est pas implémentée, et
+ce spec attend une relecture avant tout plan.
+
+**Mise à jour du 2026-08-25 — cette branche devient le tronc.** Les axes #88 et #90 ne seront pas
+fusionnés dans `main` séparément : leur travail arrive ici ou il est perdu. Les deux sont donc
+fusionnés dans cette branche, et `internal/` porte désormais leur code. Ce que ça change pour la
+lecture de ce spec, et rien d'autre :
+
+- `internal/sbx/argv.go` n'appartient plus à un autre axe. Il porte maintenant les deux drapeaux
+  `--cpus` / `--memory` de #90, et ce spec dit au §5.4 lequel de ses deux morceaux survit.
+- La cascade `resources:` que #90 a livrée est **une entrée de l'émetteur**, pas un concurrent :
+  §5.5 point 7 dit comment elle sort.
+- Le travail de #88 (`den doctor` nomme l'état sbx non déclaré) est **orthogonal** au changement de
+  moteur : il observe ce que sbx écrit sur la machine, ce que `.sbxenv.yaml` ne touche pas.
+- La collision de numérotation `§14.3` entre les trois axes est arbitrée dans la spec mère, par
+  ordre d'issue : §14.3 = #88, §14.4 = #89 (ce spec), §14.5 = #90.
 
 ---
 
@@ -240,7 +253,12 @@ La cascade reste lisible là où elle est vraie : dans `nests/` et `stacks/`, le
 **Part réellement :**
 
 - `internal/sbx/argv.go` — l'assemblage d'argv, remplacé par un émetteur. Échange à somme nulle en
-  volume, gain net en stabilité (§2). *Fichier de l'axe 3 : décrit ici, pas modifié.*
+  volume, gain net en stabilité (§2). Cela inclut les deux drapeaux `--cpus` / `--memory` que
+  l'axe 3 y a ajoutés, et leur golden `create-resources.golden` : c'est la moitié **émission** de
+  #90, et elle vise le moteur que ce spec retire. Elle reste en place et verte jusqu'à ce que
+  l'émetteur existe — un tronc qui pilote encore `sbx create` est correct tant qu'il n'a pas de
+  remplaçant, ce qui ne le serait pas, c'est de laisser un lecteur la prendre pour la conception
+  visée.
 - La **moitié VM** de `internal/cli/rm.go` — `sbx env rm` retire la sandbox et ses secrets scopés.
 - La **moitié sbx** de `internal/manifest` — l'enregistrement de ce qui a été monté côté sandbox
   devient le `.sbxenv.yaml` émis, dans un format que sbx sait relire.
@@ -260,6 +278,15 @@ tort :**
   résolus, indistinguables entre un worktree, un `.git` et le profil agent. `den rm` ne peut pas
   rendre un worktree sans cette table, et `manifest.LaxMounts` existe précisément pour ne jamais
   deviner (doctrine T13/T16). **Deux enregistrements, deux publics, aucun recouvrement de sens.**
+- **La cascade `resources:` de l'axe 3 survit VERBATIM.** `config.Resources`, `mergeResources` /
+  `resolveResources` et `sbx.ParseMemory` / `ValidateMemory` / `ValidateCPUs` sont de la résolution
+  pure : ils refusent avant le premier effet de bord (§6 de la spec mère) et alimentent
+  `sandboxOptions.cpus` / `.memory` exactement comme ils alimentent deux drapeaux aujourd'hui. Le
+  changement de moteur ne les touche pas — seule l'écriture change de forme.
+- **`spawn.reportResourceDrift` survit VERBATIM**, et pour une raison qui vaut d'être dite : il lit
+  l'**enregistrement de création** (`internal/manifest`), jamais `sbx ls --json`. Le moteur en
+  dessous lui est donc indifférent. Une VM vivante ne sait toujours pas dire avec quelle taille
+  elle a été faite, et `sbx env` n'y change rien.
 - `internal/worktree` — c'est du git.
 - `internal/policy/settle.go` — aucun champ réseau, aucune attente de propagation (§3.3).
 - `internal/agent` — `kits:` liste un kit, il n'en génère aucun et ne garantit pas la position de
@@ -284,6 +311,22 @@ tort :**
    comportement de `ports:` à la création n'est pas mesuré (§7).
 6. **`secrets:`, `registries:` et `bindings:` ne sont pas émis** tant que leur cycle de vie n'est
    pas mesuré. Même règle que le point 5 : den ne relaie pas un champ dont il ignore l'effet.
+7. **`resources:` sort en `sandboxOptions`, et c'est la seule clé de ce bloc que den écrit.**
+   La cascade résolue de l'axe 3 alimente `sandboxOptions.cpus` et `sandboxOptions.memory`. Trois
+   règles, chacune héritée d'une mesure et non d'un goût :
+   - **Une clé absente n'est pas écrite.** `cpus:` est un pointeur précisément pour que « rien de
+     déclaré » reste distinguable de `--cpus 0`, que l'aide de sbx documente comme *auto*. Émettre
+     `cpus: 0` pour une absence dirait une valeur que l'utilisateur pouvait vouloir écrire.
+   - **La validation reste en amont, dans `nest.Resolve`.** Le refus d'un `memory:` trop petit est
+     côté serveur et arrive **après** le tirage d'image (§14.5) ; `sbx env create` ne change pas
+     cette économie, et le §6 de la spec mère veut le refus avant le premier effet de bord.
+   - **`profile:` n'est JAMAIS écrit.** L'axe 3 l'a sondé : un profil vient d'une gouvernance
+     distante, `sbx policy profile ls` répond `No policy profiles found`, et il n'existe aucune
+     sous-commande pour en créer un. den n'a rien à quoi le faire pointer. Même règle que les
+     points 5 et 6 — sauf qu'ici l'absence d'effet est *mesurée*, pas seulement non mesurée.
+
+   `sandboxOptions.template` reste hors de ce point : il porte l'image, il est déjà émis par la
+   voie du stack, et `internal/build` la fabrique (§5.4).
 
 ### 5.6 Où vit le fichier émis
 
@@ -471,6 +514,10 @@ Le dépôt atteste le comportement de `sbx`, il ne l'extrapole pas.
 11. **Les sources ne changent pas de forme.** Seul `den lint` gagne une vérification. (§6)
 12. **`--force` porte deux sens, sur un seul drapeau.** Contrepartie obligatoire : den annonce
     lequel des deux il exerce, et se tait sur le second quand il ne s'applique pas. (§5.9)
+13. **La cascade `resources:` survit et sort en `sandboxOptions`.** Clé absente non écrite,
+    validation en amont dans `nest.Resolve`, `profile:` jamais écrit. Seule la moitié **émission**
+    de #90 — les deux drapeaux dans `argv.go` et leur golden — vise le moteur retiré ; elle reste
+    verte jusqu'à ce que l'émetteur existe. (§5.4, §5.5 point 7)
 
 Aucune décision de ce spec n'est laissée ouverte.
 
