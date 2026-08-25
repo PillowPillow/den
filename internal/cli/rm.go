@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -89,15 +90,28 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 			if err != nil {
 				return err
 			}
-			envErr := sbx.CheckEnvFile(envPath)
+			envErr := sbx.CheckEnvFile(envPath, name)
 			if envErr != nil && !force {
+				// Two causes, and they read as different surprises even though the
+				// remedy is identical (fix round 1, finding 1): an ABSENT record
+				// means this sandbox predates the emitter (or was never created by
+				// den at all) — a fact, not a corruption report — while an
+				// UNREADABLE one is CheckEnvFile's own diagnosis, verbatim. Told
+				// apart by errors.Is rather than by string-matching CheckEnvFile's
+				// message, because the wrapping (os.ReadFile → CheckEnvFile) must
+				// keep working even if that message's wording changes.
+				cause := envErr.Error()
+				if errors.Is(envErr, fs.ErrNotExist) {
+					cause = fmt.Sprintf("no %s: this sandbox predates the emitter (or was not "+
+						"created by den)", envPath)
+				}
 				// The remedy is named IN the message, and that is what keeps this
 				// refusal on the right side of doctrine T13/T16: what the doctrine
 				// forbids is a refusal with no way out, not a refusal. The exit is
 				// immediate, documented, and in the command the user is already in.
-				return fmt.Errorf("%w\nden cannot hand this record to `sbx env rm`, which resolves "+
+				return fmt.Errorf("%s\nden cannot hand this record to `sbx env rm`, which resolves "+
 					"the sandbox from the file it is given.\nto destroy %s by name instead, run: "+
-					"den rm --force %s", envErr, name, args[0])
+					"den rm --force %s", cause, name, args[0])
 			}
 
 			// Worktrees first: if one is dirty we stop BEFORE destroying the

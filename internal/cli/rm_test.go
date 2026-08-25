@@ -190,6 +190,65 @@ func TestRmRefusesAnUnreadableEnvRecordAndNamesForce(t *testing.T) {
 	if _, err := os.Stat(envPath); err != nil {
 		t.Errorf("den deleted a record it could not read: %v", err)
 	}
+
+	// The composition fix round 1 (finding 5) found untested at the `den rm`
+	// level: unreadable record + --force + the file is still there afterward.
+	// --force is what a sandbox with no vouchable record has always needed
+	// (§5.8) — it is not "trust this file anyway", it is "destroy by name
+	// instead", and the file this den could not read is never the thing
+	// --force authorizes touching.
+	f2 := &sbx.Fake{Responses: lsWith("api")}
+	if _, err := executeCmdWithSbx(t, f2, "--den-home", denHome, "rm", "api", "--force"); err != nil {
+		t.Fatalf("with --force, the rm must succeed despite the unreadable record: %v", err)
+	}
+	if !f2.HasCalled("rm", "--force", "api") {
+		t.Errorf("--force must destroy through the conceded fallback, by name; calls: %v", f2.Calls)
+	}
+	if f2.HasCalled("env", "rm") {
+		t.Errorf("den must not hand sbx a record it could not vouch for, even under --force; "+
+			"calls: %v", f2.Calls)
+	}
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted a record it could not read, even under --force: %v", err)
+	}
+}
+
+// The other cause, and it must read differently: no file at all means this
+// sandbox predates the emitter (or was never created by den), which is a fact
+// about WHEN the sandbox was made — not a corruption report about a file the
+// user never knew existed. Both causes name the same remedy.
+func TestRmRefusesAnAbsentEnvRecordAndNamesForce(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	// No writeEnvRecord at all: this sandbox has no .sbxenv.yaml, the ordinary
+	// state of every sandbox created before the emitter shipped.
+	envPath, err := manifest.SbxEnvPath(denHome, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := &sbx.Fake{Responses: lsWith("api")}
+	_, err = executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api")
+
+	if err == nil {
+		t.Fatal("den destroyed a sandbox with no record to hand sbx")
+	}
+	if !strings.Contains(err.Error(), "predates the emitter") {
+		t.Errorf("the absent cause must read as a fact about age, not a corruption report: %v", err)
+	}
+	if strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("the raw os.ReadFile diagnosis is CheckEnvFile's UNREADABLE-file sentence, not "+
+			"the ABSENT one: %v", err)
+	}
+	if !strings.Contains(err.Error(), envPath) {
+		t.Errorf("the refusal does not name the file den looked for: %v", err)
+	}
+	if !strings.Contains(err.Error(), "den rm --force api") {
+		t.Errorf("the refusal does not name the remedy: %v", err)
+	}
+	if f.HasCalled("env", "rm") || f.HasCalled("rm", "--force", "api") {
+		t.Errorf("den destroyed after refusing; calls: %v", f.Calls)
+	}
 }
 
 // The real decision of this task, pinned: the order. A worktree that is
@@ -293,8 +352,8 @@ func TestRmUnknownName(t *testing.T) {
 	if !strings.Contains(err.Error(), "api") || !strings.Contains(err.Error(), "web") {
 		t.Errorf("the message must list ALL live sandboxes; got: %v", err)
 	}
-	if f.HasCalled("rm") {
-		t.Errorf("no rm must be attempted; calls: %v", f.Calls)
+	if f.HasCalled("rm") || f.HasCalled("env", "rm") {
+		t.Errorf("no destruction must be attempted; calls: %v", f.Calls)
 	}
 }
 
@@ -374,8 +433,8 @@ func TestRmRejectsANonCanonicalSandboxName(t *testing.T) {
 	if err == nil {
 		t.Fatal("a non-canonical sandbox name must be refused")
 	}
-	if f.HasCalled("rm", "--force", foreignName) {
-		t.Errorf("no rm must be attempted on a non-canonical name; calls: %v", f.Calls)
+	if f.HasCalled("rm", "--force", foreignName) || f.HasCalled("env", "rm") {
+		t.Errorf("no destruction must be attempted on a non-canonical name; calls: %v", f.Calls)
 	}
 	// No assertion on the escape path itself (worktree.Path(..., "../../escape",
 	// repo)): in this minimal reproduction, no worktree really exists there
@@ -792,6 +851,18 @@ func TestRmSbxFailureSurfaces(t *testing.T) {
 	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api")
 	if err == nil {
 		t.Fatal("a failure of sbx env rm must surface")
+	}
+	// Fix round 1 (finding 3): `err == nil` alone would go green again on the
+	// env-record REFUSAL if `writeEnvRecord` above were ever lost — that
+	// refusal also returns a non-nil error, for an entirely different reason.
+	// Pinned to the actual failure text AND to the call having been reached at
+	// all, so the two causes cannot be confused with each other.
+	if !strings.Contains(err.Error(), "simulated failure") {
+		t.Errorf("the scripted sbx failure must surface verbatim, not some other error: %v", err)
+	}
+	if !f.HasCalled("env", "rm", "-f", envPath) {
+		t.Errorf("the failure must come from the primary route actually being attempted; calls: %v",
+			f.Calls)
 	}
 }
 
@@ -1821,6 +1892,13 @@ func TestRmStillReclaimsDespiteABrokenRecordNamingAnotherMount(t *testing.T) {
 // a config, a stack, a nest declaring the repo, and a real worktree where the
 // layout says it goes. The sandbox it describes deliberately gets NO creation
 // record — that absence is what sends `den rm` down cleanWorktreesLegacy.
+//
+// "record" here, and in every `…WithoutARecord…` test name below, means the
+// MANIFEST (internal/manifest.Manifest) alone: since this task, the same
+// sandbox directory can ALSO hold a `.sbxenv.yaml` (written separately, by
+// `writeEnvRecord` where a test needs `den rm` to reach past the env-record
+// precheck) without affecting which cleanup branch runs — that choice is
+// still driven purely by the manifest's absence.
 func legacyNest(t *testing.T, denHome string) (repo, root, wt string) {
 	t.Helper()
 	root = filepath.Join(denHome, "worktrees")
@@ -2208,7 +2286,7 @@ func TestMountGuardHoldsBackWhenTheRecordsDirectoryCannotBeEnumerated(t *testing
 // is what a sandbox with no vouchable record has always needed (§5.8), and it
 // is what lets this test reach the legacy enumeration failure it means to
 // exercise rather than stopping earlier on the env-record refusal.
-func TestRmKeepsEveryWorktreeWhenTheRecordsDirectoryCannotBeEnumerated(t *testing.T) {
+func TestRmForceKeepsEveryWorktreeWhenTheRecordsDirectoryCannotBeEnumerated(t *testing.T) {
 	denHome := t.TempDir()
 	_, _, wt := legacyNest(t, denHome)
 	dir := blockRecordsDir(t, denHome)
