@@ -2133,6 +2133,82 @@ Sans `name:`, le défaut est `<agent>-<basename(répertoire)>` — répertoire `
 - Ce que `sbx env` fait d'un kit dont la validation échoue *après* la création de la VM.
 - La stabilité de `schemaVersion 1` dans le temps — c'est une prédiction, pas un fait.
 
+### Sonde du 2026-08-25 — `:ro` dans un `path` de workspace
+
+Même binaire : `/opt/homebrew/bin/sbx`, `sbx version` répond `v0.39.0
+def8cb0523a77e757bdd6ef52b459fe374f3783e`. Le §14.4 mesure `WorkspaceMount` (le type qui porte
+`additionalWorkspaces`) comme ne portant que `path` — ni `ro`, ni `target`, ni `clone`. `den`
+construit aujourd'hui `host + ":ro"` pour un mount en lecture seule (`spawn.mountWorkspace`,
+`internal/spawn/spawn.go:1989`), en s'appuyant sur le fait que `sbx create` accepte ce suffixe dans
+un positionnel. Cette sonde vérifie si `sbx env create` interprète le même suffixe dans
+`additionalWorkspaces[].path`, ou s'il le traite comme un chemin littéral — ce qui compilerait un
+`ro: true` déclaré côté nest en montage écriture, en silence.
+
+Fichier de sonde, hors repo (`/private/tmp/claude-501/den-sbxenv-probe/.sbxenv.yaml`), workspace
+`ws-a` sans suffixe comme témoin, `ws-b` avec `:ro` :
+
+```
+schemaVersion: "1"
+agent: shell
+name: den-probe-ro
+workspace:
+  path: /private/tmp/claude-501/den-sbxenv-probe/ws-a
+additionalWorkspaces:
+  - path: /private/tmp/claude-501/den-sbxenv-probe/ws-b:ro
+```
+
+`sbx env create … < /dev/null` (stdin fermé, cf. §14.4 ci-dessus sur l'invite interactive) résout
+le suffixe **avant** tout effet de bord — le bloc `RESOLVE SETUP` l'affiche déjà tranché :
+
+```
+── RESOLVE SETUP
+   resolving configuration…
+     sandbox    den-probe-ro
+     agent      shell
+     workspace  /private/tmp/claude-501/den-sbxenv-probe/ws-a (rw)
+                /private/tmp/claude-501/den-sbxenv-probe/ws-b (ro)
+     …
+   ✓ configuration resolved
+── CREATE SANDBOX
+   ✓ Created sandbox den-probe-ro
+```
+
+La preuve primaire est dans la VM, pas dans l'affichage : `mount` y montre les deux workspaces
+montés sous leur chemin hôte identique (pas de re-mapping vers `/ws-a`, `/ws-b`), avec des drapeaux
+différents :
+
+```
+$ sbx exec den-probe-ro sh -lc 'mount | grep -i ws'
+host on /private/tmp/claude-501/den-sbxenv-probe/ws-a type virtiofs (rw,nosuid,nodev,relatime)
+host on /private/tmp/claude-501/den-sbxenv-probe/ws-b type virtiofs (ro,nosuid,nodev,relatime)
+```
+
+Témoin (`ws-a`, sans `:ro`) : l'écriture réussit —
+
+```
+$ sbx exec den-probe-ro sh -lc 'touch …/ws-a/probe-write; echo rc=$?'
+rc=0
+```
+
+Sonde (`ws-b:ro`) : l'écriture est refusée par le noyau invité, pas par une couche applicative —
+
+```
+$ sbx exec den-probe-ro sh -lc 'touch …/ws-b/probe-write; echo rc=$?'
+touch: cannot touch '…/ws-b/probe-write': Read-only file system
+rc=1
+```
+
+Nettoyage : `sbx env rm -f …/.sbxenv.yaml` (`Sandbox 'den-probe-ro' removed`,
+`Removed secrets scoped to "den-probe-ro"`), puis `sbx ls --json` sans `den-probe-ro`, puis
+suppression du répertoire de sonde.
+
+**Verdict : OUI** — `sbx env create` interprète `:ro` en fin de `path` dans `additionalWorkspaces`
+exactement comme `sbx create` l'interprète dans un positionnel, et le monte effectivement en lecture
+seule ; l'émetteur peut donc produire `host + ":ro"` dans `path` sans perte de la garantie
+lecture-seule. Retenu par conduite de fail-closed (§5.7) malgré le résultat positif : un OUI est
+issu de trois lectures concordantes — l'affichage de résolution, le drapeau `mount` dans la VM, et
+le refus d'écriture effectif — et non d'une seule d'entre elles.
+
 ---
 
 ## 14.5 Sondes du 2026-08-24 — la grammaire de `--memory` (issue #90)
