@@ -639,3 +639,59 @@ func TestRunCatalogueIgnoresOrphanCycleOutsideAncestry(t *testing.T) {
 		t.Fatalf("an orphan cycle nobody exports reaches must not be a finding, got: %v", errs)
 	}
 }
+
+// A nest whose derived sandbox name is illegal compiles to a .sbxenv.yaml that
+// `sbx env create` refuses. Catching it at the source is the single-judge
+// property: `den source add` refuses AND deletes the clone, `den source update`
+// refuses before the fast-forward — one refusal there instead of N refusals on
+// every consumer's machine.
+func TestRunNestThatCannotNameASandbox(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"den-source.yaml":        "name: corp\n",
+		"stacks/devx/stack.yaml": "image: devx:v1\n",
+		// "a" is one character, and sbx's name rule is a WHOLE-name one:
+		// `^[a-zA-Z0-9][a-zA-Z0-9.-]+$` needs two (MinNameLength, measured).
+		"nests/a.yaml": "stack: devx\n",
+	})
+	errs := Run(root)
+	// "a" alone would match almost any error string and reduce this to
+	// len(errs) != 0; assert on the message SandboxName actually produces
+	// (its "sandbox name" phrase and the measured MinNameLength) so the test
+	// still catches a regression once this fixture gathers unrelated
+	// findings.
+	if !strings.Contains(errsString(errs), "sandbox name") || !strings.Contains(errsString(errs), "2") {
+		t.Errorf("lint accepted a nest that cannot name a sandbox: %v", errs)
+	}
+}
+
+// The third check of §6.4, and it does not depend on the emitter: sbx refuses a
+// too-small `memory:` SERVER-side, AFTER pulling the image (§14.5). nest.Resolve
+// already refuses it before the first side effect — but once per spawn, on every
+// machine. lint owns the same validators and a far better occasion.
+func TestRunIllegalStackMemory(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"den-source.yaml":        "name: corp\n",
+		"stacks/devx/stack.yaml": "image: devx:v1\nresources:\n  memory: 512m\n",
+	})
+	errs := Run(root)
+	if !strings.Contains(errsString(errs), "memory") {
+		t.Errorf("lint accepted a memory sbx refuses after the image pull: %v", errs)
+	}
+}
+
+// `resources:` is not a stack-only key: nest.Resolve's cascade reads it off
+// `nests/<n>.yaml` too (spec §12, config.Resources merges stack ← nest ←
+// flag), so a team NEST can ship the same illegal `memory:` a team stack
+// can. The brief's own example named only the stack level; this pins the
+// nest level, which checkStack's validators do not reach.
+func TestRunIllegalNestMemory(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"den-source.yaml":        "name: corp\n",
+		"stacks/devx/stack.yaml": "image: devx:v1\n",
+		"nests/api.yaml":         "stack: devx\nresources:\n  memory: 512m\n",
+	})
+	errs := Run(root)
+	if !strings.Contains(errsString(errs), "memory") {
+		t.Errorf("lint accepted a nest memory sbx refuses after the image pull: %v", errs)
+	}
+}

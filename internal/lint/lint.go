@@ -1,8 +1,12 @@
 // Package lint validates a stacks/nests checkout — a team source repo or a
-// clone of one — without touching git, sbx or the network. ONE implementation,
-// three consumers (spec 2026-08-04 §5): the team repo's CI (`den lint`),
-// `den source add` (post-clone) and `den source update` (pre-fast-forward,
-// the fail-closed gate).
+// clone of one — without touching the sbx BINARY, git or the network: it
+// imports internal/sbx for its pure validators (SandboxName, ValidateMemory,
+// ValidateCPUs — none of them shell out), the same way it already imports
+// internal/config and internal/nest, to judge under the compiler role
+// (spec 2026-08-24 §6.4) what `sbx env create` would later refuse. ONE
+// implementation, three consumers (spec 2026-08-04 §5): the team repo's CI
+// (`den lint`), `den source add` (post-clone) and `den source update`
+// (pre-fast-forward, the fail-closed gate).
 package lint
 
 import (
@@ -15,6 +19,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
+	"github.com/PillowPillow/den/internal/sbx"
 )
 
 // Run validates the checkout rooted at root and returns EVERY finding, in a
@@ -272,6 +277,20 @@ func checkStack(root string, parents config.Stacks, s *config.Stack) []error {
 		}
 	}
 
+	// The SAME validators nest.Resolve uses, at a better occasion: `den source
+	// add` refuses and deletes the clone, `den source update` refuses before
+	// the fast-forward. An illegal size must die at the source, once, not N
+	// times on its consumers — and sbx only refuses it server-side, after the
+	// image pull (§14.5).
+	if s.Resources.CPUs != nil {
+		if err := sbx.ValidateCPUs(*s.Resources.CPUs); err != nil {
+			errs = append(errs, fmt.Errorf("stack %q: %w", s.Name, err))
+		}
+	}
+	if err := sbx.ValidateMemory(s.Resources.Memory); err != nil {
+		errs = append(errs, fmt.Errorf("stack %q: %w", s.Name, err))
+	}
+
 	// Each group is checked under its OWN YAML key, not flattened: a
 	// refusal must name the exact key to fix (`kit:` vs `kits:` vs
 	// `provision.includes:` vs `provision.steps:`), and only the loader
@@ -394,7 +413,9 @@ func checkCycles(stacks config.Stacks, startNames []string) []error {
 }
 
 // checkNest judges one loadable nest: its stack reference must be bare and
-// resolvable in THIS checkout.
+// resolvable in THIS checkout, its derived sandbox name must be one sbx would
+// accept, and its own `resources:` (a cascade level in its own right, not
+// only a stack's) must be a size sbx would accept.
 func checkNest(root string, stacks config.Stacks, n *nest.Nest) []error {
 	var errs []error
 	// A switch, not three early returns: the three `stack:` faults exclude one
@@ -418,6 +439,41 @@ func checkNest(root string, stacks config.Stacks, n *nest.Nest) []error {
 			errs = append(errs, fmt.Errorf("nest %q: %w", n.Name, err))
 		}
 	}
+
+	// Under the compiler role, a nest must compile to a LEGAL .sbxenv.yaml —
+	// and the name is the half a source can get wrong on its own: `name:` is
+	// what sbx uses to name the sandbox, and its charset is `sbx create
+	// --name`'s. Checked here rather than only at spawn because lint is the
+	// single judge (spec 2026-08-04 §5): it must never accept what a spawn
+	// would later refuse.
+	//
+	// The INSTANCE is empty here on purpose: a source ships a nest, never a
+	// worktree label, so the shortest name a spawn of it can produce is the
+	// bare nest name — and sbx's own rule is a WHOLE-name one (MinNameLength,
+	// `^[a-zA-Z0-9][a-zA-Z0-9.-]+$`), which per-component validation does not
+	// cover.
+	if _, err := sbx.SandboxName(n.Name, ""); err != nil {
+		errs = append(errs, fmt.Errorf("nest %q: %w", n.Name, err))
+	}
+
+	// The SAME resources check as checkStack's, for the SAME reason, one
+	// cascade level up: `resources:` on a nest is not a personal-config-only
+	// field (spec §12 lists `nests/<n>.yaml` as one of the four cascade
+	// levels, alongside `stack.yaml`), so a team nest can ship an illegal
+	// `memory:` just as easily as a team stack can. nest.Resolve refuses it
+	// at every spawn regardless of which level supplied it — but that is
+	// still N refusals on N consumer machines. Skipping this level would
+	// leave exactly the gap task 7 exists to close, one field over from
+	// where the spec's own §6.4 example (a stack's `memory:`) points.
+	if n.Resources.CPUs != nil {
+		if err := sbx.ValidateCPUs(*n.Resources.CPUs); err != nil {
+			errs = append(errs, fmt.Errorf("nest %q: %w", n.Name, err))
+		}
+	}
+	if err := sbx.ValidateMemory(n.Resources.Memory); err != nil {
+		errs = append(errs, fmt.Errorf("nest %q: %w", n.Name, err))
+	}
+
 	return append(errs, checkNestRepos(n)...)
 }
 
