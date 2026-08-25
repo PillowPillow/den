@@ -205,6 +205,29 @@ func TestRmRemovesThroughSbxEnvRm(t *testing.T) {
 	if f.HasCalled("rm", "--force", "api") {
 		t.Errorf("den destroyed by name on the normal path; calls: %v", f.Calls)
 	}
+	// Post-probe leak fix (2026-08-25): a real `sbx env rm -f` was measured to
+	// NOT delete the .sbxenv.yaml it is handed — `sbx env rm --help` never
+	// claims to. This is the PRIMARY route: CheckEnvFile passed, so den could
+	// read this file, and it has just successfully consumed it — the opposite
+	// of the spec §11 case ("never delete a record den could NOT read"), so
+	// den removes it itself. Without this, state/sandboxes/api/ — a directory
+	// §11 promises is never purged — would keep a stale file after every
+	// successful `den rm` forever, invisible to `den ls`/`den doctor` (task 2's
+	// manifest.List already treats a directory with no manifest.yaml as the
+	// ordinary shape a forced removal leaves).
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Errorf("den left the .sbxenv.yaml behind after successfully consuming it: stat = %v", err)
+	}
+	// The directory itself must go too: manifest.Remove already tried to clear
+	// it (called from cleanWorktrees, upstream of the destroy call) and found
+	// it non-empty because THIS file was still in it — removing the file and
+	// retrying is what finishes that job, and a leftover empty directory is
+	// still a leak in a never-purged tree.
+	if dir, err := manifest.SandboxDir(denHome, "api"); err != nil {
+		t.Fatal(err)
+	} else if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Errorf("den left an empty sandbox directory behind: %s (stat = %v)", dir, statErr)
+	}
 }
 
 // The refusal, and the whole point of it: `sbx env rm` resolves the sandbox FROM
@@ -1141,6 +1164,13 @@ func TestRmSbxFailureSurfaces(t *testing.T) {
 	if !f.HasCalled("env", "rm", "-f", envPath) {
 		t.Errorf("the failure must come from the primary route actually being attempted; calls: %v",
 			f.Calls)
+	}
+	// Post-probe leak fix (2026-08-25), third case: a destruction that did NOT
+	// happen must not lose its record. den only deletes the .sbxenv.yaml after
+	// `sbx env rm` returns success — here it returned an error instead, so the
+	// file (den's only trace of what it would need to retry) must survive.
+	if _, err := os.Stat(envPath); err != nil {
+		t.Errorf("den deleted the record despite the destruction failing: %v", err)
 	}
 }
 

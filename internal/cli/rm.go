@@ -189,6 +189,37 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 				if _, err := runner.Run(cmd.Context(), "env", "rm", "-f", envPath); err != nil {
 					return err
 				}
+				// Measured 2026-08-25 against a real sbx v0.39.0: `sbx env rm -f`
+				// does NOT delete the .sbxenv.yaml it is handed — `sbx env rm
+				// --help` never claims to. Left alone, state/sandboxes/<name>/ —
+				// a directory spec §11 promises den never purges — keeps a stale
+				// file after every successful `den rm`, forever: manifest.List
+				// (task 2) already treats a directory with no manifest.yaml as
+				// the ordinary shape a FORCED removal legitimately leaves, so
+				// neither `den ls` nor `den doctor` would ever surface this as
+				// an orphan. A silent, unbounded leak in the one place den
+				// promises never to purge.
+				//
+				// Deleting HERE is consistent with §11, not a violation of it:
+				// the doctrine is "never delete a record den could NOT read",
+				// and reaching this branch (envErr == nil) is proof den COULD
+				// read this one — CheckEnvFile is what gated it. The fallback
+				// branch below is the opposite case by construction (envErr !=
+				// nil) and must keep leaving its file untouched; the two
+				// branches must never be merged into one removal.
+				//
+				// Both errors dropped like manifest.Remove's own directory
+				// cleanup does: sbx just confirmed the sandbox is gone, so
+				// failing `den rm` now over local housekeeping would refuse a
+				// completed removal (doctrine T13/T16). manifest.Remove (called
+				// from cleanWorktrees, ABOVE this point) already tried to clear
+				// this same directory and found it non-empty because THIS file
+				// was still in it — removing the file and retrying the
+				// directory is what finishes that job.
+				_ = os.Remove(envPath)
+				if dir, err := manifest.SandboxDir(home, name); err == nil {
+					_ = os.Remove(dir)
+				}
 			} else {
 				// The conceded fallback of §5.8 — conceded, not designed. See the
 				// warning next task prints before we get here.
