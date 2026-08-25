@@ -82,6 +82,24 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 
 			out := cmd.OutOrStdout()
 
+			// BEFORE any reclaim, and that order is the decision: the reverse
+			// would move worktrees to the trash and only then refuse — a refusal
+			// that has already acted is not a refusal.
+			envPath, err := manifest.SbxEnvPath(home, name)
+			if err != nil {
+				return err
+			}
+			envErr := sbx.CheckEnvFile(envPath)
+			if envErr != nil && !force {
+				// The remedy is named IN the message, and that is what keeps this
+				// refusal on the right side of doctrine T13/T16: what the doctrine
+				// forbids is a refusal with no way out, not a refusal. The exit is
+				// immediate, documented, and in the command the user is already in.
+				return fmt.Errorf("%w\nden cannot hand this record to `sbx env rm`, which resolves "+
+					"the sandbox from the file it is given.\nto destroy %s by name instead, run: "+
+					"den rm --force %s", envErr, name, args[0])
+			}
+
 			// Worktrees first: if one is dirty we stop BEFORE destroying the
 			// sandbox. The reverse would leave the user with no VM and an error
 			// about a directory.
@@ -99,8 +117,25 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 				return err
 			}
 
-			if _, err := runner.Run(cmd.Context(), "rm", "--force", name); err != nil {
-				return err
+			if envErr == nil {
+				// `-f` is not optional: `sbx env rm` prompts for confirmation
+				// without it (measured 2026-08-25), and a prompt in a
+				// non-interactive `den rm` blocks forever.
+				//
+				// --prune-bindings is deliberately NOT passed: it removes the
+				// bindings THIS environment declares, and den declares none
+				// (decision 10 — bindings are not emitted while their lifecycle
+				// is unmeasured). Passing it would ask sbx to prune a set den
+				// never wrote.
+				if _, err := runner.Run(cmd.Context(), "env", "rm", "-f", envPath); err != nil {
+					return err
+				}
+			} else {
+				// The conceded fallback of §5.8 — conceded, not designed. See the
+				// warning next task prints before we get here.
+				if _, err := runner.Run(cmd.Context(), "rm", "--force", name); err != nil {
+					return err
+				}
 			}
 			fmt.Fprintf(out, "sandbox %s destroyed (the agent profile is kept)\n", name)
 			return nil
