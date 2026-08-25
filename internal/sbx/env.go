@@ -9,6 +9,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// PositionalAgent is the agent passed to `sbx create`.
+//
+// "shell" and not "claude": `sbx create [flags] AGENT PATH [PATH...]` requires
+// a positional agent (omitting it gives "unknown agent"), but the command
+// actually attached is decided by the image's FLAVOR, not by this argument —
+// an image snapshotted from the claude base launches `claude` regardless of
+// what's written here. den attaches via `sbx exec ... bash -l` anyway, so
+// "shell" is the honest choice: it promises nothing it doesn't keep.
+const PositionalAgent = "shell"
+
 // EnvSchemaVersion is the ONLY schemaVersion den emits, and it is a STRING:
 // sbx answers `unsupported schemaVersion "2" (supported: 1)`, and the int 1
 // round-trips as an unquoted scalar sbx refuses.
@@ -93,12 +103,12 @@ type envOptions struct {
 
 // EnvFile renders the .sbxenv.yaml den hands to `sbx env create`.
 //
-// It replaces CreateArgv one for one (spec 2026-08-24 §5.4) and inherits its
-// doctrine: it is exported, it takes a struct anyone can fill, so it guards its
-// own input even where nest.Resolve already refused the same values one layer
-// up — the ones it does not guard are the ones sbx rejects SERVER-side, after
-// pulling the image (§14.5), and §6 of the mother spec wants the refusal before
-// the first side effect.
+// It replaces the now-deleted CreateArgv (formerly argv.go) one for one (spec
+// 2026-08-24 §5.4) and inherits its doctrine: it is exported, it takes a
+// struct anyone can fill, so it guards its own input even where nest.Resolve
+// already refused the same values one layer up — the ones it does not guard
+// are the ones sbx rejects SERVER-side, after pulling the image (§14.5), and
+// §6 of the mother spec wants the refusal before the first side effect.
 func EnvFile(e Env) ([]byte, error) {
 	// Single source of truth, shared with internal/agent: validating
 	// component-by-component let "api." through, which sbx would really

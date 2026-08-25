@@ -5,7 +5,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -21,49 +20,41 @@ func nestWithResources(t *testing.T, denHome, repo, block string) {
 		"stack: devx\nrepos:\n  - { path: "+repo+" }\n"+block)
 }
 
-// flagValue returns the argument following flag in argv, or "" if the flag is
-// absent — the shape every resource assertion below needs.
-func flagValue(argv []string, flag string) string {
-	i := slices.Index(argv, flag)
-	if i < 0 || i+1 >= len(argv) {
-		return ""
-	}
-	return argv[i+1]
-}
-
 func TestSpawnSendsTheResolvedResources(t *testing.T) {
 	denHome, repo := denTest(t)
 	nestWithResources(t, denHome, repo, "resources:\n  cpus: 4\n  memory: 8g\n")
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	create := callStartingWith(f, "create")
-	if got := flagValue(create, "--cpus"); got != "4" {
-		t.Errorf("--cpus = %q, expected 4; argv = %v", got, create)
+	opts := envDocOf(t, denHome, "api").SandboxOptions
+	if opts.CPUs == nil || *opts.CPUs != 4 {
+		t.Errorf("cpus = %v, expected 4", opts.CPUs)
 	}
-	if got := flagValue(create, "--memory"); got != "8g" {
-		t.Errorf("--memory = %q, expected 8g; argv = %v", got, create)
+	if opts.Memory != "8g" {
+		t.Errorf("memory = %q, expected 8g", opts.Memory)
 	}
 }
 
-// A den declaring no `resources:` must send the argv it sent before the field
-// existed: absent is ABSENT, and in particular `--cpus 0` is never invented.
+// A den declaring no `resources:` must emit the file it emitted before the
+// field existed: absent is ABSENT, and in particular `cpus: 0` is never
+// invented.
 func TestSpawnSendsNoResourceFlagsWhenNoneDeclared(t *testing.T) {
 	denHome, _ := denTest(t)
-	f, d := fakeDeps()
+	_, d := fakeDeps()
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	create := callStartingWith(f, "create")
-	for _, flag := range []string{"--cpus", "--memory"} {
-		if slices.Contains(create, flag) {
-			t.Errorf("%s emitted with nothing declared; argv = %v", flag, create)
-		}
+	opts := envDocOf(t, denHome, "api").SandboxOptions
+	if opts.CPUs != nil {
+		t.Errorf("cpus emitted with nothing declared: %d", *opts.CPUs)
+	}
+	if opts.Memory != "" {
+		t.Errorf("memory emitted with nothing declared: %q", opts.Memory)
 	}
 }
 
@@ -185,7 +176,7 @@ func TestSpawnWarnsWhenResourcesChangedSinceCreation(t *testing.T) {
 			t.Errorf("output must carry %q; output:\n%s", want, got)
 		}
 	}
-	if callStartingWith(f, "create") != nil {
+	if f.HasCalled("env", "create") {
 		t.Errorf("den recreated a live sandbox; calls: %v", f.Calls)
 	}
 }

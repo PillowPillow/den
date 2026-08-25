@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/PillowPillow/den/internal/doctor"
+	"github.com/PillowPillow/den/internal/manifest"
 	"github.com/PillowPillow/den/internal/policy"
 	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/sbx"
@@ -277,21 +278,19 @@ func TestANestHomonymOfASubcommandSpawnsNormally(t *testing.T) {
 	// Without this assertion, a spawn that did nothing at all would pass: it
 	// must be sandbox "ls" that actually spawns.
 	//
-	// A positional check on call[2], not strings.Contains(joined, "ls"): the
-	// old check matched "ls" anywhere in the whole argv, TMPDIR paths
-	// included, so it happened to discriminate today but would go silently
-	// tautological the moment a mount path or test name contained "ls".
-	// CreateArgv (internal/sbx/argv.go) fixes the shape — call[0] "create",
-	// call[1] "--name", call[2] the sandbox name — so that is the position
-	// this test actually needs to pin.
-	var created bool
-	for _, call := range f.Calls {
-		if len(call) > 2 && call[0] == "create" && call[2] == "ls" {
-			created = true
-		}
+	// A check on the emitted path, not strings.Contains(joined, "ls"): the old
+	// check matched "ls" anywhere in the whole argv, TMPDIR paths included, so
+	// it happened to discriminate today but would go silently tautological the
+	// moment a mount path or test name contained "ls". SbxEnvPath encodes the
+	// sandbox name in the directory component
+	// (state/sandboxes/<sandbox>/.sbxenv.yaml), so that is the position this
+	// test actually needs to pin.
+	wantPath, err := manifest.SbxEnvPath(home, "ls")
+	if err != nil {
+		t.Fatalf("SbxEnvPath: %v", err)
 	}
-	if !created {
-		t.Errorf("no `create` for sandbox \"ls\"; calls: %v", f.Calls)
+	if !f.HasCalled("env", "create", wantPath) {
+		t.Errorf("no `env create` for sandbox \"ls\"; calls: %v", f.Calls)
 	}
 	if len(f.Attaches) != 1 {
 		t.Errorf("the spawn must attach; attaches: %v", f.Attaches)
@@ -542,9 +541,11 @@ func TestSeveralRepoFlagsAllReachSpawnOptions(t *testing.T) {
 // ad-hoc repo EXISTS (TestRepoFlagReachesSpawnOptions is the test of that), so
 // invented paths would refuse the spawn before any create argv is built.
 //
-// Asserted on the positions inside the create argv, the idiom
-// TestANestWithNoRepoStillMountsTheAgentProfile (hostile_test.go) already uses:
-// a Contains on the joined argv would hold for either order.
+// Asserted on the positions inside the emitted `.sbxenv.yaml`, the idiom
+// TestANestWithNoRepoStillMountsTheAgentProfile (hostile_test.go) already
+// uses: a Contains on the file's text would hold for either order, since
+// `workspace:` renders before `additionalWorkspaces:` regardless of which
+// repo came first in Repos.
 func TestUpKeepsTheOrderOfRepeatedRepoFlags(t *testing.T) {
 	home := denHomeSpawnable(t)
 	f, d := fakeSpawnDeps()
@@ -559,22 +560,24 @@ func TestUpKeepsTheOrderOfRepeatedRepoFlags(t *testing.T) {
 	if _, err := runUp(t, home, d, "--repo", first, "--repo", second, "api"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var create []string
-	for _, call := range f.Calls {
-		if len(call) > 0 && call[0] == "create" {
-			create = call
-		}
+	if !f.HasCalled("env", "create") {
+		t.Fatalf("no `sbx env create`; calls: %v", f.Calls)
 	}
-	if create == nil {
-		t.Fatalf("no `sbx create`; calls: %v", f.Calls)
+	envPath, err := manifest.SbxEnvPath(home, "api")
+	if err != nil {
+		t.Fatalf("SbxEnvPath: %v", err)
 	}
-	i, j := slices.Index(create, first), slices.Index(create, second)
+	content, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("the emitted file is missing: %v", err)
+	}
+	i, j := strings.Index(string(content), first), strings.Index(string(content), second)
 	if i < 0 || j < 0 {
-		t.Fatalf("both repos must be mounted; create argv = %v", create)
+		t.Fatalf("both repos must be mounted; .sbxenv.yaml =\n%s", content)
 	}
 	if i > j {
-		t.Errorf("--repo %s was typed first and must be mounted first; create argv = %v",
-			first, create)
+		t.Errorf("--repo %s was typed first and must be mounted first; .sbxenv.yaml =\n%s",
+			first, content)
 	}
 }
 
@@ -599,25 +602,26 @@ func TestRepoFlagDoesNotSplitOnComma(t *testing.T) {
 	if _, err := executeCmd(t, root, "up", "--repo", comma, "api"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var create []string
-	for _, call := range f.Calls {
-		if len(call) > 0 && call[0] == "create" {
-			create = call
-		}
+	if !f.HasCalled("env", "create") {
+		t.Fatalf("no `sbx env create`; calls: %v", f.Calls)
 	}
-	if create == nil {
-		t.Fatalf("no `sbx create`; calls: %v", f.Calls)
+	envPath, err := manifest.SbxEnvPath(home, "api")
+	if err != nil {
+		t.Fatalf("SbxEnvPath: %v", err)
 	}
-	if !slices.Contains(create, comma) {
-		t.Errorf("the whole path %q must be mounted, not its halves; create argv = %v",
-			comma, create)
+	content, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("the emitted file is missing: %v", err)
+	}
+	if !strings.Contains(string(content), comma) {
+		t.Errorf("the whole path %q must be mounted, not its halves; .sbxenv.yaml =\n%s",
+			comma, content)
 	}
 	// The split form, named explicitly: a StringSliceVar would produce a mount
-	// named "<parent>/a" and another named "b".
-	for _, arg := range create {
-		if arg == filepath.Join(parent, "a") || arg == "b" {
-			t.Errorf("the path was split on the comma; create argv = %v", create)
-		}
+	// path of "<parent>/a" and another of "b", each on its own `path:` line.
+	if strings.Contains(string(content), "path: "+filepath.Join(parent, "a")+"\n") ||
+		strings.Contains(string(content), "path: b\n") {
+		t.Errorf("the path was split on the comma; .sbxenv.yaml =\n%s", content)
 	}
 }
 
@@ -807,7 +811,7 @@ func TestUpStillReadsDenHomeBeforeTheSubcommand(t *testing.T) {
 	if _, err := executeCmd(t, NewRootCmdWith(deps), "--den-home", home, "up", "api", "--detach"); err != nil {
 		t.Fatalf("den --den-home <home> up api: unexpected error: %v", err)
 	}
-	if !f.HasCalled("create", "--name", "api") {
+	if !f.HasCalled("env", "create") {
 		t.Errorf("the spawn read no den home to create from; calls: %v", f.Calls)
 	}
 

@@ -12,10 +12,13 @@ import (
 	"github.com/PillowPillow/den/internal/sbx"
 )
 
-// sandboxNameFrom spawns with the given options and returns the name `sbx
-// create` received. Asserting on the ARGV rather than on an internal variable
-// is what makes the test survive a refactor of the naming block: the name that
-// matters is the one sbx is told, not the one den computed.
+// sandboxNameFrom spawns with the given options and returns the name `sbx env
+// create` received. Asserting on the emitted PATH rather than on an internal
+// variable is what makes the test survive a refactor of the naming block: the
+// name that matters is the one sbx is told, not the one den computed.
+// SbxEnvPath encodes it as the directory component of the path
+// (state/sandboxes/<name>/.sbxenv.yaml), so reading it back off the call is
+// the same idiom the argv version used, one layer down.
 func sandboxNameFrom(t *testing.T, denHome string, o Options) string {
 	t.Helper()
 	f, d := fakeDeps()
@@ -23,16 +26,12 @@ func sandboxNameFrom(t *testing.T, denHome string, o Options) string {
 		t.Fatalf("spawn %+v: %v", o, err)
 	}
 	for _, call := range f.Calls {
-		if len(call) == 0 || call[0] != "create" {
+		if len(call) != 3 || call[0] != "env" || call[1] != "create" {
 			continue
 		}
-		for i, arg := range call {
-			if arg == "--name" && i+1 < len(call) {
-				return call[i+1]
-			}
-		}
+		return filepath.Base(filepath.Dir(call[2]))
 	}
-	t.Fatalf("no `create --name` in calls: %v", f.Calls)
+	t.Fatalf("no `env create <path>` in calls: %v", f.Calls)
 	return ""
 }
 
@@ -80,7 +79,7 @@ func TestSpawnRefusesAnUnnameableInstance(t *testing.T) {
 	if !strings.Contains(err.Error(), "instance") {
 		t.Errorf("the refusal must name what is wrong (instance), got: %v", err)
 	}
-	if f.HasCalled("create") {
+	if f.HasCalled("env", "create") {
 		t.Errorf("refused, yet something was created: %v", f.Calls)
 	}
 }

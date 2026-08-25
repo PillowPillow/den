@@ -36,11 +36,11 @@ func TestEnvFileEmitsExplicitZeroCPUs(t *testing.T) {
 	}
 }
 
-// BOUNDARY guard, the doctrine CreateArgv stated for its own inputs and this
-// emitter inherits: nest.Resolve refuses these values one layer up, where the
+// BOUNDARY guard: nest.Resolve refuses these values one layer up, where the
 // message names the yaml file to fix — but EnvFile is exported and takes a
-// struct anyone can fill, and the values it does not guard are the ones sbx
-// rejects SERVER-side, after pulling the image (§14.5).
+// struct anyone can fill, so it guards its own input too, and the values it
+// does not guard are the ones sbx rejects SERVER-side, after pulling the
+// image (§14.5).
 func TestEnvFileGuardsItsOwnResources(t *testing.T) {
 	for name, mutate := range map[string]func(*Env){
 		"negative cpus": func(e *Env) { n := -1; e.CPUs = &n },

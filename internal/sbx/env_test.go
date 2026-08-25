@@ -112,11 +112,11 @@ func TestEnvFileMixinIsTheLastKit(t *testing.T) {
 	}
 }
 
-// Mirrors argv.go's TestCreateArgvIgnoresEmptyKits: the empty-kit filter in
-// EnvFile ("if k == \"\" { continue }") has an env-side analog and needs one
-// here — an empty StackKits entry must be dropped, not emitted as a hole in
-// `kits:`, and the surviving order (mixin still last) must be preserved after
-// the drop.
+// EnvFile's empty-kit filter ("if k == \"\" { continue }") is a BOUNDARY
+// guard, not a duplicate of config.Stack.DeclaredKits's own filtering: an
+// empty StackKits entry must be dropped, not emitted as a hole in `kits:`,
+// and the surviving order (mixin still last) must be preserved after the
+// drop.
 func TestEnvFileIgnoresEmptyKits(t *testing.T) {
 	e := completeEnv()
 	e.StackKits = []string{"/den/kits/ssh-known-hosts", "", "/den/stacks/dgdevx/kit"}
@@ -178,15 +178,15 @@ func TestEnvFileAlwaysWritesTheWorkspace(t *testing.T) {
 
 // The ":ro" suffix must survive EnvFile unmodified, in both positions the
 // suffix can occupy: the first workspace (which becomes `workspace:`) and a
-// later one (which becomes an `additionalWorkspaces` entry). Mirrors argv.go's
-// TestCreateArgvAcceptsROSuffix, which pins the same behaviour for the argv
-// path — the two must agree, because checkEnvWorkspace strips the suffix only
-// to JUDGE it (see its comment and the 2026-08-25 probe in spec §14.4); a
-// later refactor that had checkEnvWorkspace return the stripped path and wired
-// THAT into envWorkspace{Path: …} would silently turn a read-only mount into a
-// read-write one, and every OTHER test in this file would still pass. Asserted
-// on the PARSED document, not a substring of the raw bytes: a substring match
-// would also pass if the suffix landed on the wrong workspace entirely.
+// later one (which becomes an `additionalWorkspaces` entry) —
+// checkEnvWorkspace strips the suffix only to JUDGE it (see its comment and
+// the 2026-08-25 probe in spec §14.4); a later refactor that had
+// checkEnvWorkspace return the stripped path and wired THAT into
+// envWorkspace{Path: …} would silently turn a read-only mount into a
+// read-write one, and every OTHER test in this file would still pass.
+// Asserted on the PARSED document, not a substring of the raw bytes: a
+// substring match would also pass if the suffix landed on the wrong
+// workspace entirely.
 func TestEnvFileAcceptsROSuffix(t *testing.T) {
 	e := completeEnv()
 	e.Workspaces = []string{"/dev/api:ro", "/den/worktrees/feat12/front", "/home/me/.ssh_sbx:ro"}

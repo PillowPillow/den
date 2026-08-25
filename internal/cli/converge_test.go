@@ -788,7 +788,7 @@ func TestSourceAddRefusesAnUnobservableMachineBeforeConfirming(t *testing.T) {
 	if !strings.Contains(msg, "global network policy has not been initialized") {
 		t.Errorf("the refusal hides the cause it was refused for:\n%s", msg)
 	}
-	if f.HasCalled("secret", "set") || f.HasCalled("policy", "allow") || f.HasCalled("create") {
+	if f.HasCalled("secret", "set") || f.HasCalled("policy", "allow") || f.HasCalled("env", "create") {
 		t.Errorf("den mutated a machine it could not observe: %v", f.Calls)
 	}
 	if exists(t, source.ReceiptPath(home, "dg")) {

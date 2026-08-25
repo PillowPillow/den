@@ -1382,26 +1382,47 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 		if err != nil {
 			return err
 		}
-		argv, err := sbx.CreateArgv(sbx.Create{
+		// The emitted file, written BEFORE the call that consumes it and kept
+		// afterwards: it is not a temporary, it is sbx's half of the creation
+		// record (spec 2026-08-24 §5.6). `sbx env rm` resolves the sandbox FROM
+		// the file set it is passed, so `den rm` reads this exact path back —
+		// which is why it lives under state/ (never purged) and not cache/.
+		envFile, err := sbx.EnvFile(sbx.Env{
 			Name:       sandboxName,
 			Image:      r.Stack.Image,
 			StackKits:  r.Stack.DeclaredKits(),
 			MixinKit:   mixinDir,
 			Workspaces: workspaces,
 			// Already validated by nest.Resolve, before the worktrees above
-			// existed. CreateArgv checks them again as a boundary guard, and
-			// that duplication is the doctrine, not an oversight.
+			// existed. EnvFile checks them again as a boundary guard, and that
+			// duplication is the doctrine, not an oversight.
 			CPUs:   r.Resources.CPUs,
 			Memory: r.Resources.Memory,
 		})
 		if err != nil {
 			return err
 		}
+		envPath, err := manifest.SbxEnvPath(r.DenHome, sandboxName)
+		if err != nil {
+			return err
+		}
+		// 0600, like the manifest beside it: the file lists every path den
+		// mounts, and nothing justifies making that world-readable. The
+		// directory already exists — manifest.Write created it a few lines up —
+		// but MkdirAll stays, so this block does not silently depend on the
+		// order of two writes.
+		if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(envPath, envFile, 0o600); err != nil {
+			return err
+		}
 		fmt.Fprintf(d.Out, "creating sandbox %s (image %s)...\n", sandboxName, r.Stack.Image)
-		// Recontextualized: Exec.Run already prefixes its error with the
-		// FULL argv — every --kit and workspace on one line — where the
-		// failed step gets lost.
-		if _, err := d.Sbx.Run(ctx, argv...); err != nil {
+		// `env create`, never `env run`: run attaches, and an attach from a
+		// terminal is the branch that opens the `sbx setup` wizard on a machine
+		// that has never been prompted (§14.2). den attaches by `sbx exec -it`
+		// further down, as it always has (decision 4).
+		if _, err := d.Sbx.Run(ctx, "env", "create", envPath); err != nil {
 			return fmt.Errorf("creating sandbox %s: %w", sandboxName, err)
 		}
 	}

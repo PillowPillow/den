@@ -96,7 +96,7 @@ func Execute(ctx context.Context, steps []Step, d Deps, out, errOut io.Writer) e
 		// makes it the RELATIVE `cache/build/<stack>` under whatever directory
 		// den happens to run from. Neither is reachable through the CLI, but
 		// Deps and Step are exported bare structs anyone can fill, which is
-		// exactly the doctrine sbx.CreateArgv states for its own inputs — and
+		// exactly the doctrine sbx.EnvFile states for its own inputs — and
 		// "unreachable" is what CreateArgv's own comment said while a hole was
 		// open. Rejectable from config alone ⇒ rejected before the first side
 		// effect, which is this loop's whole reason to exist; leaving it in

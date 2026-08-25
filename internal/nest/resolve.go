@@ -200,9 +200,10 @@ type Resolved struct {
 	UnmappedOptional []*UnmappedRepoKeyError
 
 	// Resources is the microVM's size, fully merged: internal/spawn hands it to
-	// sbx.CreateArgv, which omits `--cpus` when CPUs is nil and `--memory` when
-	// Memory is empty. Already validated — Resolve refuses an unusable value
-	// rather than passing it on, so nothing downstream needs to ask again.
+	// sbx.EnvFile, which writes no `cpus:` key when CPUs is nil and no
+	// `memory:` key when Memory is empty. Already validated — Resolve refuses
+	// an unusable value rather than passing it on, so nothing downstream needs
+	// to ask again.
 	Resources config.Resources
 
 	SSHMode string

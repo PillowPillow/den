@@ -65,9 +65,9 @@ var memoryUnits = map[byte]float64{
 // ParseMemory turns a `--memory` value into bytes, using sbx's own grammar.
 //
 // Exported because two places need the SAME verdict and must never disagree:
-// nest.Resolve refuses before the first side effect, and CreateArgv guards its
-// own input (the doctrine ValidateSandboxName and checkWorkspace state in
-// argv.go — this function is exported and takes a struct anyone can fill).
+// nest.Resolve refuses before the first side effect, and EnvFile guards its
+// own input (the doctrine ValidateSandboxName and checkEnvWorkspace state in
+// env.go — this function is exported and takes a struct anyone can fill).
 func ParseMemory(v string) (int64, error) {
 	m := memoryGrammar.FindStringSubmatch(strings.TrimSpace(v))
 	if m == nil {
