@@ -54,6 +54,31 @@ from config alone (flag contradictions, sandbox name, missing repos / `ssh.dir` 
 *before the first side effect*, so a refusal never leaves an orphaned worktree; the fail-closed
 settle-loop runs *before* attach, including under `--detach`. On the attach branch nothing is
 reapplied to a live VM — den warns about mixin drift and missing git dirs instead of recreating.
+Size is a third drift den warns about and never fixes: nothing resizes a running VM, and
+`sbx ls --json` carries no size field, so `spawn.reportResourceDrift` compares the **creation
+record** — by BYTES, not by spelling, or `8g` vs `8192m` would warn forever about a VM that is
+right.
+
+**`resources:` is a cascade level, not a flag passthrough** (shipped with #90). `resources: {cpus,
+memory}` merges **field by field** across `config.yaml` ← `stack.yaml` ← `nests/<n>.yaml` ←
+flags — a stack pinning a memory floor and a nest asking for more CPUs are two independent
+statements. `cpus:` is a **pointer** on purpose: `--cpus 0` is sbx's documented *auto*, so "written
+zero" must stay distinguishable from "absent". `internal/sbx/resources.go` re-implements docker's
+`go-units` grammar rather than taking the dependency, because sbx refuses a too-small `--memory`
+**server-side, after the image pull** — den refuses it in `nest.Resolve` instead, before the first
+side effect. Keep that parser **no narrower and no wider than sbx's**: narrower refuses `2gb` /
+`4G` / `2048MiB`, which work; wider lets `1bb` through for the server to refuse after the pull.
+`den nest show` prints the resolved block, which is the only way to see which cascade level won.
+
+**A positioning decision is pending on how den drives sbx.** Spec
+`docs/superpowers/specs/2026-08-24-sbx-env-positioning-design.md` (#89) settles that den stops
+assembling an argv and becomes a `.sbxenv.yaml` **emitter**, with `sbx env create` as the engine —
+the reason being maintenance surface, not risk: an argv is not a contract, a `schemaVersion` behind
+a strict decoder is. It is **specified, not implemented**. So `internal/sbx/argv.go` is still the
+live path and still correct — but its `--cpus` / `--memory` emission and
+`testdata/create-resources.golden` are the half scheduled for replacement by `sandboxOptions`, and
+the `resources:` cascade above is the half that survives verbatim. Do not treat `argv.go` as the
+intended long-term design, and do not delete it before the emitter exists.
 
 **Ports publish on demand only.** `internal/spawn` must never import `internal/ports`, and
 `internal/cli` must import none of `net`, `hash/fnv`, `os/exec` — both invariants are locked by
@@ -65,6 +90,18 @@ reapplied to a live VM — den warns about mixin drift and missing git dirs inst
 absent or unreadable — `den rm` must never refuse and strand a live VM (doctrine T13/T16), and den
 never deletes a record it could not read (it may belong to a newer den). `state/` is not `cache/`:
 it is never purged.
+
+**`~/.den` is the single source of truth, and `den doctor` now says where it is NOT** (#88). sbx
+writes machine state den does not own — the global secret store, the MCP registry, the agent-skills
+store — and `internal/doctor/undeclared.go` reports each as "present, undeclared" at **LevelOK**,
+never a warning: a user who ran `sbx setup` has a correct machine, and a permanent warning stops
+being read. den removes nothing it did not create; there is no `--fix` behind this check. A fourth
+sbx surface must be a **row in `sbx.Stores`**, not a fourth parser. Two grades of observation, kept
+apart on purpose: a surface den can enumerate is reported by identity, one it can only probe
+carries a boolean. `sbx.ReadStore` matches the **negative sentinel** (`No MCP servers registered`,
+`No skills found`) and treats everything else as occupied — neither command accepts `--json`, no
+populated output has ever been observed, so a column parser would be a supposition. An emptiness
+test would be wrong too: `sbx mcp ls` prints its gateway header with nothing registered.
 
 **Team sources** live under `sources/<n>/` (`internal/source`) — plain git clones carrying the
 den-home partial layout (`stacks/`, `lib/`, `kits/`, `nests/`, no `config.yaml`: personal config
@@ -127,8 +164,16 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   reports still say `sbx` is not installed on this machine. It is (`/opt/homebrew/bin/sbx`,
   **v0.39.0 `def8cb0`** as of 2026-08-24 — the v0.35.0 this note used to record is three releases
   behind). The spec `docs/superpowers/specs/2026-07-27-den-cli-design.md` remains the source of
-  truth, and its §14.0 / §14.1 / **§14.2** the only place that says what a real `sbx` has actually
-  answered. §14.2 is the current one: it records the v0.39.0 surface, and it settles probes 1 and 2
+  truth, and its **§14.0 → §14.5** the only place that says what a real `sbx` has actually
+  answered. Three of those subsections were written the same day (2026-08-24) by three parallel
+  axes that each claimed the number `14.3`; the collision is arbitrated **by issue number**, and
+  the numbers below are the ones to cite: **§14.3** = `sbx mcp ls` / `sbx skills ls` (#88, neither
+  accepts `--json`), **§14.4** = the real `.sbxenv.yaml` schema (#89), **§14.5** = the `--memory`
+  grammar and the `--profile` probe (#90). Doc comments in `internal/sbx/store.go`,
+  `store_test.go`, `machine.go` and `internal/doctor/undeclared_test.go` cite §14.3 and are
+  correct. `docs/superpowers/handoffs/2026-08-24-axe3-PR-body.md` says §14.3 for the `--memory`
+  grammar and means §14.5 — it carries a header note saying so, and its body is not rewritten.
+  §14.2 remains the v0.39.0 surface, and it settles probes 1 and 2
   of issue #87. The `sbx setup` wizard is one-shot per machine (marker
   `~/Library/Application Support/com.docker.sandboxes/sandboxes/first-run-import.json`, keyed on
   `offeredAt` — *offered*, not accepted, so `[q]` closes it). Its gate is
