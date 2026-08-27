@@ -134,9 +134,12 @@ func (s Service) Plan(ctx context.Context, req Request) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if plan.RepoMatches, err = DiscoverRepos(ctx, s.Git, reqs, req.Answers); err != nil {
+	matches, discoveryWarnings, err := DiscoverRepos(ctx, s.Git, reqs, req.Answers)
+	if err != nil {
 		return nil, err
 	}
+	plan.RepoMatches = matches
+	plan.Warnings = append(plan.Warnings, discoveryWarnings...)
 	plan.Nests = EvaluateReadiness(m.ExportedNestNames(), plan.RepoMatches)
 	plan.Status = AggregateStatus(plan.Resources, plan.Nests)
 	return plan, nil

@@ -769,7 +769,9 @@ den init --source git@gitlab.corp:dev/stacks.git --answers answers.yaml --yes
 
 A credential value never travels in an argv, and never lands in a plan, a log, an error, a config
 or a receipt. den maps a repository only when it is a **fact** — you named the directory, or
-exactly one directory under the roots carries the declared remote. A directory merely *named* like
+exactly one directory under the roots carries the declared remote. den walks each root five levels
+deep and stops at the first checkout it meets, so `~/Development` covers a `<org>/<repo>` layout and
+never descends into `node_modules`, `vendor` or an agent worktree. A directory merely *named* like
 the repository is reported for you to confirm; nothing is mounted on a guess.
 
 #### The four files

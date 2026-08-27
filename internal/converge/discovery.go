@@ -134,13 +134,27 @@ func CollectRepoRequirements(root string, m *source.Manifest) ([]RepoRequirement
 // settle, because a wrong mapping is not a missing repository: it silently
 // mounts unrelated code into a sandbox and the mistake surfaces as a build
 // failure nobody attributes to onboarding.
-func DiscoverRepos(ctx context.Context, git worktree.Git, reqs []RepoRequirement, a Answers) ([]RepoMatch, error) {
+//
+// The second return value is the plan WARNINGS the scan produced. A directory
+// den could not open is not an error — a home tree holds several, and none may
+// fail an installation — but it must not pass in silence either: an unreadable
+// directory and a missing repository print the same `absent`, and only one of
+// the two is answered by cloning something.
+func DiscoverRepos(ctx context.Context, git worktree.Git, reqs []RepoRequirement, a Answers) ([]RepoMatch, []string, error) {
 	// Scanned ONCE for all requirements: a developer's ~/Development holds
 	// dozens of repositories, and re-reading every remote per key would fork
 	// git n×m times for one answer.
-	candidates, err := scanRoots(ctx, git, a.RepositoryRoots)
+	candidates, unreadable, err := scanRoots(ctx, git, a.RepositoryRoots)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	var warnings []string
+	if len(unreadable) > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"%d director%s under the repository roots could not be read (first: %s) — a repository "+
+				"under one of them is reported absent; fix the permissions, or name the directory "+
+				"under `repos:` in the answer file",
+			len(unreadable), plural(len(unreadable)), unreadable[0]))
 	}
 
 	out := make([]RepoMatch, 0, len(reqs))
@@ -152,7 +166,7 @@ func DiscoverRepos(ctx context.Context, git worktree.Git, reqs []RepoRequirement
 			// a git worktree would otherwise reach `sbx create` as a workspace
 			// and fail inside the VM, far from the file that named it.
 			if err := requireWorktree(ctx, git, chosen); err != nil {
-				return nil, fmt.Errorf("repo %q: %w", req.Key, err)
+				return nil, nil, fmt.Errorf("repo %q: %w", req.Key, err)
 			}
 			match.Kind, match.Path, match.Confirmed = MatchExplicit, chosen, true
 			out = append(out, match)
@@ -185,7 +199,16 @@ func DiscoverRepos(ctx context.Context, git worktree.Git, reqs []RepoRequirement
 		}
 		out = append(out, match)
 	}
-	return out, nil
+	return out, warnings, nil
+}
+
+// plural is the "y/ies" of the one warning above. Inline in the format string
+// it would be a nested Sprintf nobody reads.
+func plural(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
 }
 
 // MatchesFromMapping is the STATUS view of what DiscoverRepos answers for an
@@ -239,56 +262,116 @@ type candidate struct {
 	remotes []string
 }
 
-// scanRoots lists the DIRECT children of each root and reads the remotes of
-// those that are git repositories.
+// maxScanDepth bounds how far below a root the scan walks. Five levels covers
+// the layouts developers actually use — `<root>/<repo>`, `<root>/<org>/<repo>`,
+// and a couple of grouping directories above that — while keeping a root
+// pointed at a home directory from walking until the disk stops answering.
+const maxScanDepth = 5
+
+// scan is one execution's walk. The accumulators are fields rather than
+// pointer arguments because the recursion carries four of them, and a
+// signature that long is where a caller passes the wrong `seen` map.
+type scan struct {
+	git  worktree.Git
+	seen map[string]bool
+	// found is every checkout the walk kept, unsorted until scanRoots ends.
+	found []candidate
+	// unreadable is every directory BELOW a root the walk could not open.
+	// Collected rather than ignored: a permission error that silently yields
+	// nothing is indistinguishable from "you do not have that repository",
+	// and the second answer is the one den would print.
+	unreadable []string
+}
+
+// scanRoots walks up to maxScanDepth levels below each root and reads the
+// remotes of the directories that are git repositories. It returns the
+// candidates and the directories it could not open.
 //
-// Direct children only, and that is a deliberate limit rather than a
-// simplification: a recursive walk would descend into node_modules, vendor
-// trees and unrelated checkouts, take minutes on a home directory, and find
-// candidates the user never thinks of as their repositories.
-func scanRoots(ctx context.Context, git worktree.Git, roots []string) ([]candidate, error) {
-	var out []candidate
-	seen := map[string]bool{}
+// It STOPS descending at the first `.git`, and that prune is a correctness
+// rule before it is a speed one. A `node_modules` or a `vendor` tree lives
+// inside a checkout, so the walk never enters one; and a repository whose
+// sibling worktrees or submodules sit under it would otherwise contribute
+// several directories carrying ONE remote, turning a clean match into an
+// ambiguity a human has to settle. The cost of the prune is that a submodule
+// of a matched repository is never a candidate of its own — den mounts working
+// repositories, and a submodule is part of one.
+//
+// Dot-directories are skipped for the same two reasons: `~/.cache`, `~/.local`
+// and an agent's own worktrees under `.claude/` hold checkouts nobody works
+// in, and they are what makes a home directory expensive to scan.
+func scanRoots(ctx context.Context, git worktree.Git, roots []string) ([]candidate, []string, error) {
+	s := &scan{git: git, seen: map[string]bool{}}
 	// Sorted roots and sorted entries: the candidate lists a plan prints must
 	// be identical between two runs on one machine.
 	sorted := slices.Clone(roots)
 	slices.Sort(sorted)
 	for _, root := range sorted {
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// A root that does not exist is a typo or a machine that is
-				// laid out differently — it makes repositories undiscovered,
-				// which the plan already reports as absent. Refusing here would
-				// fail an installation over a directory nobody needs.
-				continue
-			}
-			return nil, fmt.Errorf("scanning %s for repositories: %w", root, err)
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			path := filepath.Join(root, e.Name())
-			if seen[path] {
-				continue
-			}
-			seen[path] = true
-			if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
-				continue // not a checkout: nothing to read, nothing to fork git for
-			}
-			remotes, err := remoteIdentities(ctx, git, path)
-			if err != nil {
-				// A directory with a .git that git will not answer for is
-				// broken, not a discovery failure: it must not fail the whole
-				// installation.
-				continue
-			}
-			out = append(out, candidate{path: path, remotes: remotes})
+		if err := s.walk(ctx, root, 1); err != nil {
+			return nil, nil, err
 		}
 	}
-	slices.SortFunc(out, func(a, b candidate) int { return strings.Compare(a.path, b.path) })
-	return out, nil
+	slices.SortFunc(s.found, func(a, b candidate) int { return strings.Compare(a.path, b.path) })
+	slices.Sort(s.unreadable)
+	return s.found, s.unreadable, nil
+}
+
+// walk reads one directory, keeps the checkouts and recurses into the rest.
+// depth is the level of the ENTRIES it is about to read, so the cap is
+// compared before any work.
+//
+// ctx is checked here and not only in remoteIdentities: this walk is the one
+// part of den that can spend seconds on a directory tree with no subprocess to
+// interrupt, and root.go's signal.NotifyContext is what must end it on ^C.
+func (s *scan) walk(ctx context.Context, dir string, depth int) error {
+	if depth > maxScanDepth {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// A root that does not exist is a typo or a machine that is laid
+			// out differently — it makes repositories undiscovered, which the
+			// plan already reports as absent. Refusing here would fail an
+			// installation over a directory nobody needs.
+			return nil
+		}
+		if depth > 1 {
+			// Below a root the walk is fail-open — a home tree holds
+			// directories the user cannot read, and none of them may fail an
+			// installation — but never silent: the plan warns with the count.
+			s.unreadable = append(s.unreadable, dir)
+			return nil
+		}
+		return fmt.Errorf("scanning %s for repositories: %w", dir, err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if s.seen[path] {
+			continue
+		}
+		s.seen[path] = true
+		if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+			if err := s.walk(ctx, path, depth+1); err != nil {
+				return err
+			}
+			continue // not a checkout: nothing to read, nothing to fork git for
+		}
+		remotes, err := remoteIdentities(ctx, s.git, path)
+		if err != nil {
+			// A directory with a .git that git will not answer for is
+			// broken, not a discovery failure: it must not fail the whole
+			// installation.
+			continue
+		}
+		s.found = append(s.found, candidate{path: path, remotes: remotes})
+	}
+	return nil
 }
 
 // remoteIdentities returns the normalized identity of every remote of a

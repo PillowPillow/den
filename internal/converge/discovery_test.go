@@ -74,7 +74,7 @@ func requirement(key, url string, optional bool) RepoRequirement {
 
 func discover(t *testing.T, reqs []RepoRequirement, a Answers) []RepoMatch {
 	t.Helper()
-	matches, err := DiscoverRepos(context.Background(), worktree.NewGit(), reqs, a)
+	matches, _, err := DiscoverRepos(context.Background(), worktree.NewGit(), reqs, a)
 	if err != nil {
 		t.Fatalf("DiscoverRepos: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestDiscoverReposHonoursAnExplicitOverride(t *testing.T) {
 // surface inside the VM.
 func TestDiscoverReposRefusesAnOverrideThatIsNotARepository(t *testing.T) {
 	notARepo := t.TempDir()
-	_, err := DiscoverRepos(context.Background(), worktree.NewGit(),
+	_, _, err := DiscoverRepos(context.Background(), worktree.NewGit(),
 		[]RepoRequirement{requirement("api", "https://gitlab.example.com/team/api.git", false)},
 		Answers{Repos: map[string]string{"api": notARepo}})
 	if err == nil || !strings.Contains(err.Error(), notARepo) {
@@ -189,18 +189,127 @@ func TestDiscoverReposReportsAbsence(t *testing.T) {
 	}
 }
 
-// Only DIRECT children are scanned. A deep walk would cross node_modules,
-// vendor trees and other people's checkouts, and take minutes on a developer's
-// home directory.
-func TestDiscoverReposScansDirectChildrenOnly(t *testing.T) {
+// A repository nested under a root is found. The `<root>/<org>/<repo>` layout
+// is the common one, and a scan limited to direct children reported every
+// declared repository absent on a machine that uses it.
+func TestDiscoverReposFindsRepositoriesNestedUnderARoot(t *testing.T) {
 	root := t.TempDir()
-	initRepoWithRemote(t, filepath.Join(root, "deep", "api"), "git@gitlab.example.com:team/api.git")
+	nested := initRepoWithRemote(t, filepath.Join(root, "org", "api"),
+		"git@gitlab.example.com:team/api.git")
+
+	matches := discover(t,
+		[]RepoRequirement{requirement("api", "https://gitlab.example.com/team/api.git", false)},
+		Answers{RepositoryRoots: []string{root}})
+	if matches[0].Kind != MatchRemote || matches[0].Path != nested || !matches[0].Confirmed {
+		t.Fatalf("match = %+v, want a confirmed remote match on %s", matches[0], nested)
+	}
+}
+
+// The walk STOPS at the first `.git`, and that is a correctness rule before it
+// is a speed one: den's own tree carries agent worktrees under `.claude/`, and
+// a scan that kept descending would find several directories with one remote
+// and turn a clean match into an ambiguity a human has to settle.
+func TestDiscoverReposNeverDescendsIntoARepository(t *testing.T) {
+	root := t.TempDir()
+	outer := initRepoWithRemote(t, filepath.Join(root, "org", "api"),
+		"git@gitlab.example.com:team/api.git")
+	initRepoWithRemote(t, filepath.Join(outer, "worktrees", "feature"),
+		"git@gitlab.example.com:team/api.git")
+
+	matches := discover(t,
+		[]RepoRequirement{requirement("api", "https://gitlab.example.com/team/api.git", false)},
+		Answers{RepositoryRoots: []string{root}})
+	if matches[0].Kind != MatchRemote || matches[0].Path != outer {
+		t.Fatalf("match = %+v, want the outer checkout alone on %s", matches[0], outer)
+	}
+}
+
+// The depth is capped. Without a cap a root pointing at a home directory walks
+// caches, build outputs and other people's trees for as long as the disk
+// answers.
+func TestDiscoverReposStopsBelowTheDepthCap(t *testing.T) {
+	root := t.TempDir()
+	deep := filepath.Join(root, "a", "b", "c", "d", "e", "api")
+	initRepoWithRemote(t, deep, "git@gitlab.example.com:team/api.git")
 
 	matches := discover(t,
 		[]RepoRequirement{requirement("api", "https://gitlab.example.com/team/api.git", false)},
 		Answers{RepositoryRoots: []string{root}})
 	if matches[0].Kind != MatchAbsent {
-		t.Fatalf("match = %+v, want absent: a nested repository is not a direct child", matches[0])
+		t.Fatalf("match = %+v, want absent: %s is deeper than %d levels", matches[0], deep, maxScanDepth)
+	}
+}
+
+// A repository at the cap itself is still found: the cap is a limit, not an
+// off-by-one that makes the last usable level unreachable.
+func TestDiscoverReposFindsRepositoriesAtTheDepthCap(t *testing.T) {
+	root := t.TempDir()
+	deep := initRepoWithRemote(t, filepath.Join(root, "a", "b", "c", "d", "api"),
+		"git@gitlab.example.com:team/api.git")
+
+	matches := discover(t,
+		[]RepoRequirement{requirement("api", "https://gitlab.example.com/team/api.git", false)},
+		Answers{RepositoryRoots: []string{root}})
+	if matches[0].Kind != MatchRemote || matches[0].Path != deep {
+		t.Fatalf("match = %+v, want a remote match on %s", matches[0], deep)
+	}
+}
+
+// Dot-directories are not walked. `~/.cache`, `~/.local` and an editor's own
+// state hold checkouts nobody works in, and they are what makes a home
+// directory expensive to scan.
+func TestDiscoverReposSkipsDotDirectories(t *testing.T) {
+	root := t.TempDir()
+	initRepoWithRemote(t, filepath.Join(root, ".cache", "api"),
+		"git@gitlab.example.com:team/api.git")
+
+	matches := discover(t,
+		[]RepoRequirement{requirement("api", "https://gitlab.example.com/team/api.git", false)},
+		Answers{RepositoryRoots: []string{root}})
+	if matches[0].Kind != MatchAbsent {
+		t.Fatalf("match = %+v, want absent: a dot-directory is not walked", matches[0])
+	}
+}
+
+// A directory den cannot open is fail-open but never silent. An unreadable
+// directory and a missing repository both print `absent`, and only one of the
+// two is answered by cloning something.
+func TestDiscoverReposWarnsAboutUnreadableDirectories(t *testing.T) {
+	root := t.TempDir()
+	closed := filepath.Join(root, "org")
+	initRepoWithRemote(t, filepath.Join(closed, "api"), "git@gitlab.example.com:team/api.git")
+	if err := os.Chmod(closed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o755) })
+
+	matches, warnings, err := DiscoverRepos(context.Background(), worktree.NewGit(),
+		[]RepoRequirement{requirement("api", "https://gitlab.example.com/team/api.git", false)},
+		Answers{RepositoryRoots: []string{root}})
+	if err != nil {
+		t.Fatalf("DiscoverRepos = %v, want a warning rather than a refusal", err)
+	}
+	if matches[0].Kind != MatchAbsent {
+		t.Fatalf("match = %+v, want absent", matches[0])
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], closed) {
+		t.Fatalf("warnings = %v, want one naming %s", warnings, closed)
+	}
+}
+
+// The walk is the one part of discovery that can spend seconds on a directory
+// tree with no subprocess to interrupt. It must end on ^C like everything
+// else den blocks on.
+func TestDiscoverReposStopsOnACancelledContext(t *testing.T) {
+	root := t.TempDir()
+	initRepoWithRemote(t, filepath.Join(root, "org", "api"), "git@gitlab.example.com:team/api.git")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, _, err := DiscoverRepos(ctx, worktree.NewGit(),
+		[]RepoRequirement{requirement("api", "https://gitlab.example.com/team/api.git", false)},
+		Answers{RepositoryRoots: []string{root}}); err == nil {
+		t.Fatal("DiscoverRepos = nil, want the cancellation reported")
 	}
 }
 
