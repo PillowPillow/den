@@ -253,13 +253,23 @@ planner and applier as the interactive command.
 Den collects repository keys and URLs from every exported nest. `repository_roots` tells Den where
 to search for this execution. It is deliberately absent from `source-config/dg.yaml` and the receipt.
 
-For each direct child of each root, Den:
+Den walks each root up to five levels deep and stops descending at the first directory that is a
+Git repository. The prune is what keeps a deep walk affordable and correct: `node_modules` and
+`vendor` trees live inside a checkout and are never entered, and the agent worktrees a repository
+carries under `.claude/` never turn a single remote match into an ambiguity. Dot-directories are
+not walked. A submodule of a matched repository is therefore never a candidate of its own.
 
-1. detects whether the directory is a Git repository;
-2. normalizes its configured remotes and the declared repository URL;
-3. treats an exact normalized remote match as a strong candidate;
-4. otherwise compares the directory name with the repository URL basename and repository key;
-5. reports ambiguous or name-only matches for confirmation.
+The walk itself costs milliseconds; the cost of the scan is one `git config` read per repository
+found, run serially. A directory Den cannot open below a root does not fail the run — a home tree
+holds several — but it is counted and reported as a plan warning, because an unreadable directory
+and a missing repository otherwise print the same `absent`.
+
+For each repository found this way, Den:
+
+1. normalizes its configured remotes and the declared repository URL;
+2. treats an exact normalized remote match as a strong candidate;
+3. otherwise compares the directory name with the repository URL basename and repository key;
+4. reports ambiguous or name-only matches for confirmation.
 
 The plan confirmation accepts unambiguous remote matches. A name-only or ambiguous match requires an
 explicit interactive choice or an entry under `repos` in the answer file. Den writes only confirmed
