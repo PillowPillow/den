@@ -103,8 +103,8 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
 
 ## Conventions
 
-- Code, comments and user-facing messages are **English**; the spec and handoffs under
-  `docs/superpowers/` are **French**.
+- Code, comments and user-facing messages are **English**; the spec under `docs/superpowers/` is
+  **French**.
 - The dominant style is a long "why" comment at the decision site — what was rejected and what
   regression the choice prevents. Terse code visibly does not match; match the density around you.
 - Errors name the file to fix and the remedy (`fix `repos:` in <path>`, "run `den doctor`"). den
@@ -120,10 +120,8 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   now agree; the earlier note here said they deliberately did not, and telling you to prefer the
   spec over the README is no longer right. The spec remains the source of truth on **intent**, but
   a divergence is now a bug in one of them, not a phase.
-- `docs/superpowers/handoffs/HANDOFF.md` was itself the liar this section warned about; it was
-  rewritten on 2026-08-03 and is current as of the `v1.0.0` tag. The **dated** handoffs beside it
-  (`2026-07-*`, `2026-08-*`) are historical and never rewritten — each describes the state on its
-  own date. So is everything under `docs/superpowers/plans/` and `.superpowers/sdd/`, where several
+- Everything under `docs/superpowers/plans/` and `.superpowers/sdd/` is historical and never
+  rewritten — each document describes the state on its own date. Several of those
   reports still say `sbx` is not installed on this machine. It is (`/opt/homebrew/bin/sbx`,
   **v0.39.0 `def8cb0`** as of 2026-08-24 — the v0.35.0 this note used to record is three releases
   behind). The spec `docs/superpowers/specs/2026-07-27-den-cli-design.md` remains the source of
@@ -142,9 +140,9 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
 - `.claude/worktrees/feat+spawn-interactive/` is a full shadow copy of the tree. Exclude it from
   greps or every search returns doubled hits.
 - Il n'y a plus de `Makefile` : le runner est `Taskfile.yml` depuis le 2026-08-04. Les plans
-  datés et les handoffs sous `docs/superpowers/` disent encore `make lint && make test` — c'est
-  correct **à leur date** et ils ne sont pas réécrits. Traduire en `task check` en les lisant.
-- Les plans et handoffs datés sous `docs/superpowers/` disent `den <nest>` pour spawner. C'était
+  datés sous `docs/superpowers/` disent encore `make lint && make test` — c'est correct **à leur
+  date** et ils ne sont pas réécrits. Traduire en `task check` en les lisant.
+- Les plans datés sous `docs/superpowers/` disent `den <nest>` pour spawner. C'était
   vrai à leur date : la forme nue a été remplacée par `den spawn <nest>` le 2026-08-05 (spec
   `2026-08-05-spawn-command-design.md`), puis `den spawn <nest>` a lui-même été remplacé par
   `den up <nest>` / `den run <nest> <cmd>` le 2026-08-16, sans alias (spec

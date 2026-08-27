@@ -17,3 +17,7 @@
 # purpose. They are dated primary sources for the machine they were measured on, not project
 # documentation — what a note proves and the project keeps belongs in `docs/superpowers/`.
 /claudedocs/
+# Session handoffs: the superpowers workflow regenerates them each run, and each one is a dated
+# snapshot of a machine at a moment, not project documentation. What a handoff proves and the
+# project keeps belongs in `docs/superpowers/specs/` or `CLAUDE.md`.
+/docs/superpowers/handoffs/

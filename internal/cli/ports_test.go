@@ -1241,33 +1241,6 @@ func TestSpecCommandTableNamesThePortsArgumentAsImplemented(t *testing.T) {
 	}
 }
 
-// C17's sibling for the HANDOFF: the spec's command table is not the only
-// document announcing the signature — HANDOFF.md carries it twice (§8's
-// decision and its own command list), and a reader following EITHER would type
-// a nest name and be told the sandbox was not found. Same contract, so the
-// expected wording is derived from cmd.Use the same way.
-func TestHandoffNamesThePortsArgumentAsImplemented(t *testing.T) {
-	cmd := newPortsCmd(new(string), nil, nil, nil)
-	// No closing backtick: HANDOFF writes the signature both bare and with
-	// its `[--add H:C]` tail, and the contract here is the ARGUMENT's name.
-	want := "`den " + cmd.Use
-
-	path := filepath.Join("..", "..", "docs", "superpowers", "handoffs", "HANDOFF.md")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading the handoff at %s: %v", path, err)
-	}
-	for i, line := range strings.Split(string(b), "\n") {
-		if !strings.Contains(line, "`den ports <") {
-			continue
-		}
-		if !strings.Contains(line, want) {
-			t.Errorf("%s:%d names `den ports` with an argument that is not %s: %q",
-				path, i+1, want, line)
-		}
-	}
-}
-
 // The `--add` host port is NEVER scanned (Options.Extra's contract: re-running
 // the command must re-read a table whose added pair this sandbox already
 // publishes), so sbx can refuse it host-side AFTER the declared window is
