@@ -7,6 +7,17 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.11.0 — 2026-08-27
+
+### Fixed
+- `den converge` finds a repository nested under a `repository_roots` entry. den read only the
+  direct children of each root, so the common `<root>/<org>/<repo>` layout reported every declared
+  repository as `absent`. The walk now goes five levels deep and stops at the first checkout it
+  meets, which keeps it out of `node_modules`, `vendor` and agent worktrees — those live inside a
+  repository.
+- A directory under a root that den cannot open is reported as a plan warning. It used to print the
+  same `absent` as a missing repository, and only one of the two is answered by cloning something.
+
 ## v1.10.0 — 2026-08-21
 
 ### Fixed
