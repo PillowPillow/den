@@ -169,3 +169,55 @@ func TestSandboxNameRefusesThePlusSign(t *testing.T) {
 		t.Fatal("expected a refusal on a plus sign in a sandbox name")
 	}
 }
+
+// The cap is on the WHOLE name and counts BYTES: measured 2026-09-16 on sbx
+// v0.43.0, `sandbox name cannot exceed 63 characters`. 63 is accepted, 64 is
+// not. The typical way to reach it is `-w` on a long Jira-style branch.
+func TestSandboxNameAcceptsExactlyMaxNameLength(t *testing.T) {
+	worktree := strings.Repeat("b", MaxNameLength-len("api."))
+	name, err := SandboxName("api", worktree)
+	if err != nil {
+		t.Fatalf("a %d-byte name is legal, got: %v", MaxNameLength, err)
+	}
+	if len(name) != MaxNameLength {
+		t.Fatalf("len(name) = %d, want %d", len(name), MaxNameLength)
+	}
+}
+
+func TestSandboxNameRefusesANameLongerThanSbxAccepts(t *testing.T) {
+	worktree := strings.Repeat("b", MaxNameLength-len("api.")+1)
+	_, err := SandboxName("api", worktree)
+	if err == nil {
+		t.Fatal("expected a refusal on a 64-byte sandbox name")
+	}
+	for _, want := range []string{"64", "63", "--as"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+// git accepts a branch ending in "-" (it refuses "/" and "." there), so
+// `-w fix-` flattens to a component sbx refuses: `sandbox name must end with
+// an alphanumeric character` (measured 2026-09-16, v0.43.0). Refused, not
+// trimmed: "fix-" and "fix" must stay two names.
+func TestSandboxNameRefusesATrailingHyphen(t *testing.T) {
+	_, err := SandboxName("api", "fix-")
+	if err == nil {
+		t.Fatal("expected a refusal on a sandbox name ending in \"-\"")
+	}
+	if !strings.Contains(err.Error(), "alphanumeric") {
+		t.Errorf("error = %v, want it to name the trailing-character rule", err)
+	}
+}
+
+// `sandbox name cannot be 'default'` (measured 2026-09-16, v0.43.0). A
+// WHOLE-NAME rule: "api.default" is a legal name.
+func TestSandboxNameRefusesTheReservedName(t *testing.T) {
+	if _, err := SandboxName(ReservedName, ""); err == nil {
+		t.Fatal("expected a refusal on the reserved sandbox name")
+	}
+	if _, err := SandboxName("api", ReservedName); err != nil {
+		t.Errorf("api.default is legal, got: %v", err)
+	}
+}

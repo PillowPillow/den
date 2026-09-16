@@ -1888,6 +1888,31 @@ func TestSpawnRefusesAWorktreeFlatteningCannotFix(t *testing.T) {
 	}
 }
 
+// #96: a branch long enough to push the sandbox name past sbx's 63-byte cap
+// must be refused BEFORE the worktree exists and before any sbx call — the
+// name is computed at step 1, upstream of `sbx ls` and of worktree.Ensure.
+// Without this check den created the worktree, and only then did `sbx
+// create` refuse: the exact orphan spec §6 exists to prevent.
+func TestSpawnRefusesAWorktreeThatMakesTheSandboxNameTooLong(t *testing.T) {
+	denHome, _ := denTest(t)
+	f, d := fakeDeps()
+
+	branch := "feature/" + strings.Repeat("x", 70)
+	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: branch}, d)
+	if err == nil {
+		t.Fatal("a sandbox name over 63 bytes must be refused")
+	}
+	if !strings.Contains(err.Error(), "--as") {
+		t.Errorf("the refusal must name the --as remedy; got: %v", err)
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
+	}
+	if _, err := os.Stat(filepath.Join(denHome, "worktrees")); err == nil {
+		t.Error("no worktree must have been created")
+	}
+}
+
 // Spec §11: "repo path not found → stop BEFORE any create".
 func TestSpawnStopsBeforeCreateWhenARepoIsMissing(t *testing.T) {
 	denHome, repo := denTest(t)

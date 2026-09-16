@@ -40,6 +40,32 @@ const NameSeparator = "."
 // to be refused, which is why the check is on the assembled name.
 const MinNameLength = 2
 
+// MaxNameLength is the longest sandbox name sbx accepts, in BYTES.
+//
+// MEASURED, 2026-09-16 on sbx v0.43.0 (spec 2026-09-16-sbx-0.43-compat §1.1),
+// and a WHOLE-NAME rule like MinNameLength, which is why it lives here:
+//
+//	$ sbx create --name a<62×b> …   # 63 bytes: accepted
+//	$ sbx create --name a<63×b> …   # 64 bytes
+//	ERROR: sandbox name cannot exceed 63 characters: abbb…
+//
+// Bytes, not runes: a 63-rune name carrying one `é` (64 bytes) is refused the
+// same way. Inert for den — the charset is ASCII, so len() is exact — but it
+// is the rule as sbx applies it. The release note of v0.43.0 announces the
+// cap; the binary's own --help still does not mention it.
+//
+// The refusal happens before the image stage on sbx's side, but AFTER den has
+// created the worktree of a `-w` spawn: hence the check here, upstream of the
+// first side effect (spec §6, issue #96).
+const MaxNameLength = 63
+
+// ReservedName is the one sandbox name sbx keeps for itself.
+//
+// MEASURED, 2026-09-16 on sbx v0.43.0: `ERROR: sandbox name cannot be
+// 'default'`. Whole-name rule: "api.default" is accepted, so it is checked on
+// the assembled name and not on a component.
+const ReservedName = "default"
+
 // SandboxName builds the sandbox name of a nest, optionally worktreed.
 // This name is den's only state carrier: `--label` does not exist in sbx.
 func SandboxName(nest, worktree string) (string, error) {
@@ -60,6 +86,29 @@ func SandboxName(nest, worktree string) (string, error) {
 			"sandbox name %q: %d characters, and sbx refuses anything under %d "+
 				"(`name must match regexp ^[a-zA-Z0-9][a-zA-Z0-9.-]+$`) — rename the nest, "+
 				"or name the instance with `--as` or `-w`", name, len(name), MinNameLength)
+	}
+	if len(name) > MaxNameLength {
+		// The remedy names --as, not "shorten the branch": the branch is the
+		// user's and stays as typed in git — only the sandbox's instance
+		// label needs to be short.
+		return "", fmt.Errorf(
+			"sandbox name %q: %d characters, and sbx refuses anything over %d "+
+				"(`sandbox name cannot exceed 63 characters`) — shorten the nest, or name the "+
+				"instance with `--as <short-label>` instead of the branch",
+			name, len(name), MaxNameLength)
+	}
+	if last := rune(name[len(name)-1]); !config.IsAlphanumeric(last) {
+		// Only "-" can reach here: "." is excluded from the component
+		// charset, and an empty worktree never appends the separator.
+		return "", fmt.Errorf(
+			"sandbox name %q: ends with %q, and sbx refuses that (`sandbox name must end "+
+				"with an alphanumeric character`) — a branch ending in \"-\" flattens to this; "+
+				"name the instance with `--as`", name, string(last))
+	}
+	if name == ReservedName {
+		return "", fmt.Errorf(
+			"sandbox name %q: reserved by sbx (`sandbox name cannot be 'default'`) — rename the nest",
+			name)
 	}
 	return name, nil
 }
