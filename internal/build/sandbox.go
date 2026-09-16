@@ -60,6 +60,10 @@ func CreateArgv(s *config.Stack, parentImage, scratch string) ([]string, error) 
 		argv = append(argv, "--template", parentImage)
 		positional = sbx.PositionalAgent
 	}
+	// Same `--skills off` as sbx.CreateArgv, for the same reason: a build
+	// sandbox is disposable, and a captured image carries no mount, but the
+	// argv den emits must say the same thing on every create.
+	argv = append(argv, "--skills", "off")
 	if positional == "" {
 		// Unreachable through LoadStack — but only since it started refusing an
 		// empty `image:` UNCONDITIONALLY, and that is worth recording, because

@@ -21,7 +21,7 @@ func TestCreateArgvForADerivedStack(t *testing.T) {
 		t.Fatalf("CreateArgv: %v", err)
 	}
 	want := []string{"create", "--name", "dgdevx-build",
-		"--template", "docker.io/library/devx:v1", "shell", "/scratch/dgdevx"}
+		"--template", "docker.io/library/devx:v1", "--skills", "off", "shell", "/scratch/dgdevx"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv =\n  %v\nwant\n  %v", got, want)
 	}
@@ -36,7 +36,7 @@ func TestCreateArgvForARootStack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateArgv: %v", err)
 	}
-	want := []string{"create", "--name", "devx-build", "claude", "/scratch/devx"}
+	want := []string{"create", "--name", "devx-build", "--skills", "off", "claude", "/scratch/devx"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv =\n  %v\nwant\n  %v", got, want)
 	}
@@ -53,7 +53,7 @@ func TestCreateArgvCarriesNoSpawnMachinery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateArgv: %v", err)
 	}
-	want := []string{"create", "--name", "devx-build", "claude", "/scratch/devx"}
+	want := []string{"create", "--name", "devx-build", "--skills", "off", "claude", "/scratch/devx"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv =\n  %v\nwant\n  %v", got, want)
 	}

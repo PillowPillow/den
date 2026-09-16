@@ -136,6 +136,24 @@ func TestCreateArgvNeverEmitsLabel(t *testing.T) {
 	}
 }
 
+// sbx v0.43.0 shares the host's skills store into every sandbox by default
+// (`--skills readonly`, mounted at ~/.claude/skills). den's agent profile is
+// the single source of skills in a VM, so den opts out on every create.
+// Measured 2026-09-16: `--skills=off` mounts nothing.
+func TestCreateArgvTurnsSharedSkillsOff(t *testing.T) {
+	argv, err := CreateArgv(completeCreate())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	i := slices.Index(argv, "--skills")
+	if i < 0 || argv[i+1] != "off" {
+		t.Fatalf("--skills off missing: %v", argv)
+	}
+	if iAgent := slices.Index(argv, PositionalAgent); i > iAgent {
+		t.Errorf("--skills must precede the positional agent: %v", argv)
+	}
+}
+
 func TestCreateArgvRejectsIncompleteEntries(t *testing.T) {
 	cases := map[string]func(c *Create){
 		"empty name":           func(c *Create) { c.Name = "" },
