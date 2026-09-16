@@ -10,9 +10,14 @@ import (
 
 // Publication is one host↔sandbox port mapping the VM currently publishes, as
 // the `ports` array of `sbx ls --json` carries it (schema recorded 2026-07-31,
-// sbx v0.35.0):
+// sbx v0.35.0; re-measured 2026-09-16 on v0.43.0):
 //
-//	{"host_ip":"127.0.0.1","host_port":9500,"sandbox_port":8080,"protocol":"tcp"}
+//	{"host_ip":"127.0.0.1","host_port":9500,"sandbox_port":8080,"protocol":"tcp4"}
+//
+// `protocol` is the string sbx STORED, never normalized: a publish without a
+// protocol stores "tcp4" since v0.42.0 (and "tcp" before), an explicit `/tcp`
+// stores "tcp", and the two coexist in one listing. internal/cli/ports.go
+// accepts both as den's own.
 //
 // It is the ONLY surface that tells den what a sandbox already publishes
 // without a second call to sbx — `den ports` reads `sbx ls --json` anyway, to

@@ -55,6 +55,25 @@ func pub(host, container int) string {
 		host, container)
 }
 
+// pub4 is pub as sbx v0.42.0 and later report a publication made WITHOUT a
+// protocol: the default moved from dual-stack `tcp` to `tcp4`, and the
+// listing carries that string back verbatim (measured 2026-09-16, v0.43.0).
+func pub4(host, container int) string {
+	return fmt.Sprintf(`{"host_ip":"127.0.0.1","host_port":%d,"sandbox_port":%d,"protocol":"tcp4"}`,
+		host, container)
+}
+
+// pubOn is pub with an explicit host_ip, for the OTHER shape an explicit
+// `/tcp` publish leaves in the listing: sbx binds both address families and
+// stores TWO rows for it, identical but for host_ip — one "::1", one
+// "127.0.0.1" — with no ordering guarantee (measured 2026-09-16, v0.43.0: the
+// IPv6 row came back first). Used to build the ::1 half of that pair; the
+// loopback half is pub.
+func pubOn(hostIP string, host, container int) string {
+	return fmt.Sprintf(`{"host_ip":%q,"host_port":%d,"sandbox_port":%d,"protocol":"tcp"}`,
+		hostIP, host, container)
+}
+
 // lsWithPorts is lsWith for ONE running sandbox that already publishes
 // something — the fixture of every re-run case. The array is written as raw
 // JSON rather than marshalled from sbx.Publication on purpose: what these tests
@@ -631,6 +650,89 @@ func TestPortsRereadsAPublishedWindowWithoutRepublishing(t *testing.T) {
 	}
 	if stderr != "" {
 		t.Errorf("a window den recognises as its own is not a collision: stderr = %q", stderr)
+	}
+}
+
+// The same re-read against what sbx ≥ v0.42.0 actually reports. den's own
+// publish spec names no protocol, so every window den has bound since that
+// release reads back as tcp4 — and a filter that only knew "tcp" saw none of
+// them, then republished ports already bound.
+func TestPortsRecognisesATcp4PublicationAsItsOwn(t *testing.T) {
+	denHome := portsDenHome(t, "web", portsNestYAML)
+	f := &sbx.Fake{Responses: lsWithPorts("web.feat123",
+		pub4(9100, 5173), pub4(9101, 3000), pub4(9102, 9223))}
+
+	stdout, stderr, err := runPorts(t, f, forbiddenScanner{t: t},
+		"--den-home", denHome, "ports", "web.feat123")
+	if err != nil {
+		t.Fatalf("re-reading a tcp4 window must succeed: %v", err)
+	}
+	if calls := portsCalls(f); len(calls) != 0 {
+		t.Errorf("nothing was missing: den must publish nothing; calls: %v", calls)
+	}
+	if !strings.Contains(stdout, "window: 9100-9109 (canonical)") {
+		t.Errorf("the window must be the canonical one, unmoved; got: %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("a tcp4 window is den's own, not a collision: stderr = %q", stderr)
+	}
+}
+
+// A dual-stack publication — the shape sbx leaves behind for an explicit
+// `/tcp` publish, which binds BOTH address families and stores TWO rows per
+// port, identical but for host_ip (measured 2026-09-16, v0.43.0). Each window
+// entry must still count ONCE: the ::1 row is not den's (den never binds
+// anything but the loopback, spec §8), so it must be neither counted as a
+// second publication nor mistaken for a foreign collision.
+func TestPortsCountsADualStackPublicationOnce(t *testing.T) {
+	denHome := portsDenHome(t, "web", portsNestYAML)
+	f := &sbx.Fake{Responses: lsWithPorts("web.feat123",
+		pubOn("::1", 9100, 5173), pub(9100, 5173),
+		pubOn("::1", 9101, 3000), pub(9101, 3000),
+		pubOn("::1", 9102, 9223), pub(9102, 9223))}
+
+	stdout, stderr, err := runPorts(t, f, forbiddenScanner{t: t},
+		"--den-home", denHome, "ports", "web.feat123")
+	if err != nil {
+		t.Fatalf("re-reading a dual-stack window must succeed: %v", err)
+	}
+	if calls := portsCalls(f); len(calls) != 0 {
+		t.Errorf("nothing was missing: den must publish nothing; calls: %v", calls)
+	}
+	if !strings.Contains(stdout, "window: 9100-9109 (canonical)") {
+		t.Errorf("the window must be the canonical one, unmoved; got: %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("the ::1 row is not a foreign collision: stderr = %q", stderr)
+	}
+}
+
+// The discriminating case the paired dual-stack fixture above cannot be: a
+// foreign-address row with NO loopback twin. indexPublished keys the sandbox's
+// own publications by host port (internal/ports/ports.go), so a paired ::1 row
+// collapses onto its 127.0.0.1 counterpart and proves nothing about the
+// host_ip half of the filter on its own — deleting the `HostIP` check leaves
+// that test green. This one goes red: a publication on a foreign address must
+// be neither counted as den's own (den would skip a port it never published)
+// nor read as a collision (it is not on den's window at all).
+func TestPortsDoesNotCountAForeignAddressPublicationAsItsOwn(t *testing.T) {
+	denHome := portsDenHome(t, "web", portsTwoPortNestYAML)
+	f := &sbx.Fake{Responses: lsWithPorts("web.feat123",
+		pub(9100, 5173), pubOn("192.168.1.5", 9101, 3000))}
+
+	stdout, _, err := runPorts(t, f, forbiddenScanner{t: t},
+		"--den-home", denHome, "ports", "web.feat123")
+	if err != nil {
+		t.Fatalf("finishing a window behind a foreign-address row must succeed: %v", err)
+	}
+	calls := portsCalls(f)
+	if len(calls) != 1 || !slices.Equal(calls[0],
+		[]string{"ports", "web.feat123", "--publish", "127.0.0.1:9101:3000"}) {
+		t.Errorf("the foreign row is not den's: the missing port must still be published; calls: %v",
+			calls)
+	}
+	if !strings.Contains(stdout, "window: 9100-9109 (canonical)") {
+		t.Errorf("the window must be the one already half-bound; got: %q", stdout)
 	}
 }
 
