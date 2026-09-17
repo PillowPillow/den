@@ -332,9 +332,9 @@ nest: web   sandbox: web.feat123   window: 9100-9109 (canonical)
 - `--add H:C` (repeatable) publishes a pair the nest does not declare. Re-running an identical
   `--add` succeeds and changes nothing. A nest that declares no port prints no window and scans
   nothing — only the added pairs are published.
-- A **stopped** sandbox is started first, and said so on stderr: den must read what it already
-  publishes on a running VM before the first publish, or the stopped listing hides that state and
-  den republishes a window that is already bound.
+- A **stopped** sandbox is started first, and said so on stderr: den must read what the sandbox
+  already publishes on a running VM before the first publish, or the stopped listing hides that
+  state and den republishes a window that is already bound.
 
 The table goes to stdout, every warning to stderr: what a pipe reads is the table alone.
 
