@@ -123,20 +123,19 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
 - Everything under `docs/superpowers/plans/` and `.superpowers/sdd/` is historical and never
   rewritten — each document describes the state on its own date. Several of those
   reports still say `sbx` is not installed on this machine. It is (`/opt/homebrew/bin/sbx`,
-  **v0.39.0 `def8cb0`** as of 2026-08-24 — the v0.35.0 this note used to record is three releases
-  behind). The spec `docs/superpowers/specs/2026-07-27-den-cli-design.md` remains the source of
-  truth, and its §14.0 / §14.1 / **§14.2** the only place that says what a real `sbx` has actually
-  answered. §14.2 is the current one: it records the v0.39.0 surface, and it settles probes 1 and 2
-  of issue #87. The `sbx setup` wizard is one-shot per machine (marker
-  `~/Library/Application Support/com.docker.sandboxes/sandboxes/first-run-import.json`, keyed on
-  `offeredAt` — *offered*, not accepted, so `[q]` closes it). Its gate is
-  `isTerminal(stdin) && isTerminal(stdout)` — **the descriptors, not `-it`**. So `den build`, the
-  §9.1 gate and the ports probe are safe (they capture stdout into a buffer), and so is CI, but
-  **`den exec -T` / `den run -T` typed at a terminal HANG** on a machine that has never been
-  prompted: den sends no `-it`, yet `spawn.Enter`'s Pipe branch passes the terminal's own
-  descriptors through. Measured 2026-08-24, §14.2 carries the table. Do not repeat the first
-  reading of that probe, which used `stdin=/dev/null` throughout and wrongly concluded the wizard
-  could never reach den.
+  **v0.43.0 `79805a6`** as of 2026-09-16). den now REQUIRES sbx ≥ v0.43.0 (`sbx.MinVersion`),
+  judged by `den doctor` alone. The spec `docs/superpowers/specs/2026-07-27-den-cli-design.md`
+  remains the source of truth, and its §14.0 / §14.1 / §14.2 / **§14.3** the only place that says
+  what a real `sbx` has actually answered. §14.3 is the current one: it records the v0.43.0
+  surface (names capped at 63 bytes and ending alphanumeric, `tcp4` publications, `secret ls
+  --json`, `last_used_at`, `--skills`). Two things §14.2 recorded are gone: the `sbx setup`
+  wizard no longer opens by itself (v0.42.0), and its marker moved from `first-run-import.json`
+  to `first-login.json` (`firstLoginAt`); **`den exec -T` / `den run -T` no longer hang** — measured
+  2026-09-16 under a real pty with the marker present and absent, for `sbx exec` only, which is
+  the one verb den calls. Two things v0.43.0 added: `sbx exec` prints `Sandbox <name> started
+  successfully` on stdout when it restarts a stopped sandbox (den's kit-log reader ignores it),
+  and a `create`d sandbox auto-stops within about two minutes of idling (measured; threshold
+  unknown). There is no v0.40.x nor v0.41.x: sbx went v0.39.0 → v0.42.0.
 - `.claude/worktrees/feat+spawn-interactive/` is a full shadow copy of the tree. Exclude it from
   greps or every search returns doubled hits.
 - Il n'y a plus de `Makefile` : le runner est `Taskfile.yml` depuis le 2026-08-04. Les plans
