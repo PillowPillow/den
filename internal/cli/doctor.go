@@ -81,6 +81,7 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 					"its sandbox is gone\n", b.Path, b.Err)
 			}
 			checks = append(checks, doctor.OrphanCheck(live, manifests))
+			checks = append(checks, sbxVersionCheck(cmd.Context(), deps, runner)...)
 			// Appended as they come, both of them: no check here decides how
 			// another one words itself. den used to hold the policy checks and
 			// hand the source lines a flag saying "some check already states
@@ -88,7 +89,6 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 			// identity, which printed no cause at all when the two sbx reads
 			// failed for different reasons (review PR82, I1). The source lines
 			// now deduplicate among themselves; see sourceChecks.
-			checks = append(checks, sbxVersionCheck(cmd.Context(), deps, runner)...)
 			checks = append(checks, networkPolicyChecks(cmd.Context(), deps, runner)...)
 			checks = append(checks, sourceChecks(cmd.Context(), home, runner, g)...)
 

@@ -483,6 +483,31 @@ func TestDoctorWarnsWhenTheSbxVersionIsUnreadable(t *testing.T) {
 	}
 }
 
+// A failing `sbx version` (sbx installed but unusable) FAILS `den doctor`,
+// carrying sbx's own message on one line — same shape as
+// TestDoctorFailsWhenTheNetworkPolicyCannotBeRead above.
+func TestDoctorFailsWhenSbxVersionCannotBeRun(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+	f.Responses["version"] = sbx.Response{
+		Err: errors.New("ERROR: sbx is not usable\n\nRun:\n  sbx setup")}
+	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+		Output: []byte(`{"rules":[]}`)}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err == nil {
+		t.Fatalf("den doctor reported an sbx it cannot run as healthy:\n%s", out)
+	}
+	if !strings.Contains(out, "[FAIL] sbx version") {
+		t.Errorf("the failing read has no line of its own:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "[FAIL] sbx version") && !strings.Contains(line, "sbx setup") {
+			t.Errorf("the check does not carry sbx's own message on its line:\n%s", out)
+		}
+	}
+}
+
 func TestDoctorPassesOnTheSbxFloor(t *testing.T) {
 	home := testDenHome(t)
 	f := &sbx.Fake{Responses: lsWith()}
