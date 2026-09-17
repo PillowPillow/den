@@ -371,6 +371,10 @@ func TestDoctorSkipsTheOrphanCheckWhenSbxCannotAnswer(t *testing.T) {
 	orphanFixture(t, home, "api.feat12")
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Err: errors.New("sbx: command not found")},
+		// version answers the floor: this test is about the orphan check
+		// alone, and an unscripted `version` would otherwise earn a stray
+		// [warn] sbx version line that has nothing to do with what it tests.
+		"version": {Output: []byte("sbx version: " + sbx.MinVersion + " abc\n")},
 	}}
 
 	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
@@ -434,5 +438,140 @@ func TestDoctorPassesWhenTheNetworkPolicyAnswers(t *testing.T) {
 	}
 	if !strings.Contains(out, "[ok  ] sbx policy") {
 		t.Errorf("the check is missing from a healthy report:\n%s", out)
+	}
+}
+
+// The floor is judged HERE and nowhere else (sbx.MinVersion): a machine on
+// an older sbx gets one FAIL line naming both versions and the upgrade.
+func TestDoctorFailsWhenSbxIsTooOld(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+	f.Responses["version"] = sbx.Response{Output: []byte("sbx version: v0.42.1 abc\n")}
+	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+		Output: []byte(`{"rules":[]}`)}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err == nil {
+		t.Fatalf("den doctor reported an sbx below the floor as healthy:\n%s", out)
+	}
+	if !strings.Contains(out, "[FAIL] sbx version") {
+		t.Errorf("no failing line for the version:\n%s", out)
+	}
+	for _, want := range []string{"v0.42.1", sbx.MinVersion, "upgrade"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the line must carry %q:\n%s", want, out)
+		}
+	}
+}
+
+// A version den cannot read (a dev build answers "dev") is a WARNING, not a
+// failure: refusing there would make den doctor red for everyone developing
+// sbx, on a machine whose sbx may be perfectly recent.
+func TestDoctorWarnsWhenTheSbxVersionIsUnreadable(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+	f.Responses["version"] = sbx.Response{Output: []byte("sbx version: dev\n")}
+	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+		Output: []byte(`{"rules":[]}`)}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("an unreadable version must not fail den doctor: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[warn] sbx version") {
+		t.Errorf("no warning line for the unreadable version:\n%s", out)
+	}
+}
+
+// A failing `sbx version` (sbx installed but unusable) FAILS `den doctor`,
+// carrying sbx's own message on one line — same shape as
+// TestDoctorFailsWhenTheNetworkPolicyCannotBeRead above.
+func TestDoctorFailsWhenSbxVersionCannotBeRun(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+	f.Responses["version"] = sbx.Response{
+		Err: errors.New("ERROR: sbx is not usable\n\nRun:\n  sbx setup")}
+	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+		Output: []byte(`{"rules":[]}`)}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err == nil {
+		t.Fatalf("den doctor reported an sbx it cannot run as healthy:\n%s", out)
+	}
+	if !strings.Contains(out, "[FAIL] sbx version") {
+		t.Errorf("the failing read has no line of its own:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "[FAIL] sbx version") && !strings.Contains(line, "sbx setup") {
+			t.Errorf("the check does not carry sbx's own message on its line:\n%s", out)
+		}
+	}
+}
+
+func TestDoctorPassesOnTheSbxFloor(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+		Output: []byte(`{"rules":[]}`)}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("sbx at the floor must pass: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[ok  ] sbx version") {
+		t.Errorf("the check is missing from a healthy report:\n%s", out)
+	}
+}
+
+// A source build of sbx stamps a semver-valid prerelease onto its version
+// ("v0.43.0-dev", "v0.43.0-3-gabc1234"), and semver.Compare ranks a
+// prerelease below its release. Comparing the raw string against the floor
+// would FAIL a source build that is at or past it; sbx.ReleaseVersion
+// normalizes it to the release first, so only a release genuinely below the
+// floor fails. Each input has exactly one pinned verdict, and the line must
+// still name what `sbx version` printed, not the normalized release den
+// compared it against — checked on the matched line alone, not the whole
+// report, because testDenHome's temp dir is named after the subtest and
+// would otherwise contain c.version too.
+func TestDoctorSbxVersionPrereleaseVerdicts(t *testing.T) {
+	cases := []struct {
+		version string
+		verdict string
+	}{
+		{"v0.43.0-dev", "[ok  ]"},
+		{"v0.43.0-3-gabc1234", "[ok  ]"},
+		{"v0.44.0", "[ok  ]"},
+		{"v0.42.0", "[FAIL]"},
+		{"v0.42.0-3-gabc1234", "[FAIL]"},
+		{"dev", "[warn]"},
+	}
+	for _, c := range cases {
+		t.Run(c.version, func(t *testing.T) {
+			home := testDenHome(t)
+			f := &sbx.Fake{Responses: lsWith()}
+			f.Responses["version"] = sbx.Response{Output: []byte("sbx version: " + c.version + "\n")}
+			f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+				Output: []byte(`{"rules":[]}`)}
+
+			out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+			wantErr := c.verdict == "[FAIL]"
+			if (err != nil) != wantErr {
+				t.Fatalf("err = %v, want non-nil: %v\n%s", err, wantErr, out)
+			}
+			marker := c.verdict + " sbx version"
+			var line string
+			for _, l := range strings.Split(out, "\n") {
+				if strings.HasPrefix(l, marker) {
+					line = l
+					break
+				}
+			}
+			if line == "" {
+				t.Fatalf("output has no %q line for %q:\n%s", marker, c.version, out)
+			}
+			if !strings.Contains(line, c.version) {
+				t.Errorf("the sbx version line does not name the raw version %q: %q", c.version, line)
+			}
+		})
 	}
 }

@@ -89,10 +89,14 @@ func TestSplitNameForeign(t *testing.T) {
 // assembly cannot diverge: they did diverge, and the "api." case passed on
 // one side and not the other.
 func TestValidateSandboxName(t *testing.T) {
-	// "a" left this list on 2026-08-21: sbx refuses any name under two
-	// characters. "a.b" replaces it — a one-character COMPONENT is still
-	// legal, the floor being on the assembled name. See MinNameLength.
-	for _, name := range []string{"api", "api.feat12", "my-api.feat-2", "api2", "a.b"} {
+	// The last four are names sbx would refuse to CREATE today — too short,
+	// too long, a trailing "-", the reserved one. The predicate takes them
+	// anyway: den built them all, and `den rm` must reach the VMs behind them.
+	tooLong := "api." + strings.Repeat("b", MaxNameLength-len("api.")+1)
+	for _, name := range []string{
+		"api", "api.feat12", "my-api.feat-2", "api2", "a.b",
+		"a", tooLong, "api.foo-", ReservedName,
+	} {
 		if err := ValidateSandboxName(name); err != nil {
 			t.Errorf("%q must be accepted: %v", name, err)
 		}
@@ -136,8 +140,8 @@ func TestValidateSandboxNameAcceptsTheImageOfSandboxName(t *testing.T) {
 // MEASURED on sbx v0.38.0, 2026-08-21: `sbx create --name a` answers
 // `name must match regexp ^[a-zA-Z0-9][a-zA-Z0-9.-]+$`, and `--name ab` is
 // accepted. den used to build the refused name for `den up a`.
-func TestSandboxNameRefusesANameShorterThanSbxAccepts(t *testing.T) {
-	_, err := SandboxName("a", "")
+func TestValidateCreatableSandboxNameRefusesANameShorterThanSbxAccepts(t *testing.T) {
+	err := ValidateCreatableSandboxName("a")
 	if err == nil {
 		t.Fatal("expected a refusal on a one-character sandbox name")
 	}
@@ -167,5 +171,66 @@ func TestSandboxNameAcceptsAShortComponentInALongEnoughName(t *testing.T) {
 func TestSandboxNameRefusesThePlusSign(t *testing.T) {
 	if _, err := SandboxName("api", "feat-c++"); err == nil {
 		t.Fatal("expected a refusal on a plus sign in a sandbox name")
+	}
+}
+
+// The cap is on the WHOLE name and counts BYTES: measured 2026-09-16 on sbx
+// v0.43.0, `sandbox name cannot exceed 63 characters`. 63 is accepted, 64 is
+// not. The typical way to reach it is `-w` on a long Jira-style branch.
+func TestValidateCreatableSandboxNameAcceptsExactlyMaxNameLength(t *testing.T) {
+	name := "api." + strings.Repeat("b", MaxNameLength-len("api."))
+	if len(name) != MaxNameLength {
+		t.Fatalf("len(name) = %d, want %d", len(name), MaxNameLength)
+	}
+	if err := ValidateCreatableSandboxName(name); err != nil {
+		t.Fatalf("a %d-byte name is legal, got: %v", MaxNameLength, err)
+	}
+}
+
+func TestValidateCreatableSandboxNameRefusesANameLongerThanSbxAccepts(t *testing.T) {
+	err := ValidateCreatableSandboxName("api." + strings.Repeat("b", MaxNameLength-len("api.")+1))
+	if err == nil {
+		t.Fatal("expected a refusal on a 64-byte sandbox name")
+	}
+	for _, want := range []string{"64", "63", "--as"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+// git accepts a branch ending in "-" (it refuses "/" and "." there), so
+// `-w fix-` flattens to a component sbx refuses: `sandbox name must end with
+// an alphanumeric character` (measured 2026-09-16, v0.43.0). Refused, not
+// trimmed: "fix-" and "fix" must stay two names.
+func TestValidateCreatableSandboxNameRefusesATrailingHyphen(t *testing.T) {
+	err := ValidateCreatableSandboxName("api.fix-")
+	if err == nil {
+		t.Fatal("expected a refusal on a sandbox name ending in \"-\"")
+	}
+	if !strings.Contains(err.Error(), "alphanumeric") {
+		t.Errorf("error = %v, want it to name the trailing-character rule", err)
+	}
+}
+
+// `sandbox name cannot be 'default'` (measured 2026-09-16, v0.43.0). A
+// WHOLE-NAME rule: "api.default" is a legal name.
+func TestValidateCreatableSandboxNameRefusesTheReservedName(t *testing.T) {
+	if err := ValidateCreatableSandboxName(ReservedName); err == nil {
+		t.Fatal("expected a refusal on the reserved sandbox name")
+	}
+	if err := ValidateCreatableSandboxName("api." + ReservedName); err != nil {
+		t.Errorf("api.default is legal, got: %v", err)
+	}
+}
+
+// The structural question is asked FIRST, so nothing creatable escapes what
+// ValidateSandboxName already refuses — and the trailing-character rule can
+// index the last byte of a name it knows to be ASCII.
+func TestValidateCreatableSandboxNameRefusesTheStructuralFailuresToo(t *testing.T) {
+	for _, name := range []string{"api.", ".feat12", "api..feat", "my_api", "-api", ""} {
+		if err := ValidateCreatableSandboxName(name); err == nil {
+			t.Errorf("%q must be rejected", name)
+		}
 	}
 }

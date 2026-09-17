@@ -303,7 +303,7 @@ func TestCollectInitialAnswersRefusesAnAbsentGithubCredentialNamingTheTerminal(t
 func TestCollectInitialAnswersNamesTheReadFailureWhenSbxIsUnreadable(t *testing.T) {
 	readErr := errors.New("sbx: connection refused")
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"secret ls -g": {Err: readErr},
+		"secret ls -g --json": {Err: readErr},
 	}}
 
 	cmd, _ := answersCmd()

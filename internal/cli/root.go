@@ -94,6 +94,11 @@ type Deps struct {
 	// one (os.Executable + EvalSymlinks) answers the TEST BINARY's path under
 	// `go test`, which classifies as neither of the cases worth testing.
 	Executable func() (string, error)
+	// Now is the clock `den ls` renders LAST USED against. Injected like
+	// every other system access — nil means time.Now — so the column is
+	// assertable: a test that inherited the real clock would print a value
+	// that changes between two runs of the same suite.
+	Now func() time.Time
 }
 
 // SystemDeps wires the real system accesses: sbx from PATH, real git, the
@@ -124,6 +129,7 @@ func SystemDeps() Deps {
 			}
 			return filepath.EvalSymlinks(exe)
 		},
+		Now: time.Now,
 	}
 }
 
@@ -178,7 +184,7 @@ func NewRootCmdWith(deps Deps) *cobra.Command {
 	root.AddCommand(newInitCmd(&denHome, deps))
 	root.AddCommand(newNestCmd(&denHome))
 	root.AddCommand(newDoctorCmd(&denHome, deps.Doctor, deps.Sbx, deps.Git))
-	root.AddCommand(newLsCmd(&denHome, deps.Sbx))
+	root.AddCommand(newLsCmd(&denHome, deps.Sbx, deps.Now))
 	// `den exec` gets the SSH probe and the OS too: re-entering a sandbox whose
 	// forwarded agent has been emptied fails `git push` exactly as a fresh
 	// `den up`/`den run` would, and this is the surface that re-enters most often.

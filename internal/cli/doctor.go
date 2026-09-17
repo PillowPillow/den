@@ -14,6 +14,7 @@ import (
 	"github.com/PillowPillow/den/internal/source"
 	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/semver"
 )
 
 // newDoctorCmd takes its system accesses as a parameter rather than hard-wiring
@@ -80,6 +81,7 @@ func newDoctorCmd(denHome *string, deps doctor.Deps, runner sbx.Runner, g worktr
 					"its sandbox is gone\n", b.Path, b.Err)
 			}
 			checks = append(checks, doctor.OrphanCheck(live, manifests))
+			checks = append(checks, sbxVersionCheck(cmd.Context(), deps, runner)...)
 			// Appended as they come, both of them: no check here decides how
 			// another one words itself. den used to hold the policy checks and
 			// hand the source lines a flag saying "some check already states
@@ -202,6 +204,51 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 	}
 	return []doctor.Check{{Name: "sbx policy", Level: doctor.LevelOK,
 		Detail: "local network policy readable"}}
+}
+
+// sbxVersionCheck is the ONE place den judges the sbx floor (sbx.MinVersion,
+// which says why there is a floor and why doctor alone enforces it).
+//
+// Read HERE, not in internal/doctor, like the policy check right above: that
+// package runs no sbx. Skipped when sbx is absent — the "sbx" line already
+// fails, and a second failure for the same absence would say nothing new.
+//
+// Three verdicts. A version below the floor FAILS, naming both versions and
+// the remedy. A version den cannot read WARNS: `go build` of sbx answers
+// "dev", and refusing there would make `den doctor` red on every machine
+// developing sbx, whose binary may be perfectly recent — the same reason
+// converge.checkCompatibility warns on an UnknownVersionError. A failing
+// `sbx version` FAILS with sbx's own message on one line.
+//
+// A build stamped FROM `git describe` lands in the compare instead of the
+// WARN, because it IS semver, just not a release: sbx.ReleaseVersion resolves
+// its prerelease such as "v0.43.0-dev" or "v0.43.0-3-gabc1234" to the release
+// "v0.43.0" before the compare runs, so a source build at or past the floor
+// does not FAIL on carrying local commits. Both details below still name v,
+// the version the user's own `sbx version` printed, not ReleaseVersion's
+// normalized form, so the message matches what they can check by hand.
+func sbxVersionCheck(ctx context.Context, deps doctor.Deps, runner sbx.Runner) []doctor.Check {
+	if _, err := deps.LookPath("sbx"); err != nil {
+		return nil
+	}
+	v, err := sbx.Version(ctx, runner)
+	if err != nil {
+		return []doctor.Check{{Name: "sbx version", Level: doctor.LevelFail,
+			Detail: strings.Join(strings.Fields(err.Error()), " ")}}
+	}
+	release, ok := sbx.ReleaseVersion(v)
+	if !ok {
+		return []doctor.Check{{Name: "sbx version", Level: doctor.LevelWarning,
+			Detail: fmt.Sprintf("%q is not a version den can read — den requires sbx %s or "+
+				"later and cannot check it here; verify with `sbx version`", v, sbx.MinVersion)}}
+	}
+	if semver.Compare(release, sbx.MinVersion) < 0 {
+		return []doctor.Check{{Name: "sbx version", Level: doctor.LevelFail,
+			Detail: fmt.Sprintf("sbx %s is too old: den requires %s or later — sandbox names, "+
+				"port protocols and `secret ls --json` changed in between; upgrade sbx",
+				v, sbx.MinVersion)}}
+	}
+	return []doctor.Check{{Name: "sbx version", Level: doctor.LevelOK, Detail: v}}
 }
 
 // sourceChecks diagnoses every manifested source installed in this home.

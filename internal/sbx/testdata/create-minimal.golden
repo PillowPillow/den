@@ -3,6 +3,8 @@ create
 api
 --template
 devx:v1
+--skills
+off
 --kit
 /den/cache/mixins/api
 shell

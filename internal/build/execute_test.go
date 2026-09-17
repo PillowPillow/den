@@ -48,7 +48,7 @@ func TestExecuteRunsTheWholeSequenceInOrder(t *testing.T) {
 	scratch := ScratchDir(home, "devx")
 	want := [][]string{
 		{"ls", "--json"},
-		{"create", "--name", "devx-build", "claude", scratch},
+		{"create", "--name", "devx-build", "--skills", "off", "claude", scratch},
 		{"exec", "devx-build", "--", "bash", "-lc", "echo one.sh\n"},
 		{"exec", "devx-build", "--", "bash", "-lc", "echo two.sh\n"},
 		{"stop", "devx-build"},
@@ -106,12 +106,12 @@ func TestExecuteBuildsADerivedStackFromItsParentImageAfterItsAncestor(t *testing
 	derivedScratch := ScratchDir(home, "dgdevx")
 	want := [][]string{
 		{"ls", "--json"}, // ONE call for the whole chain, not one per stack
-		{"create", "--name", "devx-build", "claude", rootScratch},
+		{"create", "--name", "devx-build", "--skills", "off", "claude", rootScratch},
 		{"exec", "devx-build", "--", "bash", "-lc", "echo one.sh\n"},
 		{"stop", "devx-build"},
 		{"template", "save", "devx-build", "devx:v1"},
 		{"rm", "--force", "devx-build"},
-		{"create", "--name", "dgdevx-build", "--template", "devx:v1", sbx.PositionalAgent, derivedScratch},
+		{"create", "--name", "dgdevx-build", "--template", "devx:v1", "--skills", "off", sbx.PositionalAgent, derivedScratch},
 		{"exec", "dgdevx-build", "--", "bash", "-lc", "echo one.sh\n"},
 		{"stop", "dgdevx-build"},
 		{"template", "save", "dgdevx-build", "dgdevx:v1"},
@@ -289,9 +289,9 @@ func TestExecuteDoesNotInlineTheCreateArgvOnAFailedCreate(t *testing.T) {
 	scratch := ScratchDir(home, "devx")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
-		"create --name devx-build claude " + scratch: {Err: &sbx.ExecError{
+		"create --name devx-build --skills off claude " + scratch: {Err: &sbx.ExecError{
 			Bin:    "sbx",
-			Args:   []string{"create", "--name", "devx-build", "claude", scratch},
+			Args:   []string{"create", "--name", "devx-build", "--skills", "off", "claude", scratch},
 			Stderr: "ERROR: no space left on device",
 			Err:    errors.New("exit status 1"),
 		}},

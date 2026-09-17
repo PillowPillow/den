@@ -16,10 +16,10 @@ import (
 // replaced.
 //
 // What's preserved has evidentiary value — the SCHEMA, and only that: root
-// key `sandboxes`, the five fields of an entry, `workspaces` as an array of
+// key `sandboxes`, the six fields of an entry, `workspaces` as an array of
 // ABSOLUTE paths, one of which carries the `:ro` suffix, an `id` shaped like a
-// UUID (8-4-4-4-12), and the ABSENCE of any date field — it's what got the
-// "age" column dropped from spec §5.
+// UUID (8-4-4-4-12), and `last_used_at` as sbx v0.43.0 writes it, five
+// fractional digits and all.
 //
 // What's replaced had none: the original paths were those of the development
 // machine and named a third party. The record's evidentiary value is real;
@@ -31,6 +31,7 @@ const realLsOutput = `{
       "id": "11111111-2222-4333-8444-555555555555",
       "agent": "shell",
       "status": "running",
+      "last_used_at": "2026-09-16T11:54:16.62029Z",
       "workspaces": [
         "/Users/dev/Development/Example/project",
         "/Users/dev/.agent_sbx",
@@ -55,6 +56,9 @@ func TestLsDecodesRealOutput(t *testing.T) {
 	b := boxes[0]
 	if b.Name != "den" || b.Agent != "shell" || b.Status != "running" {
 		t.Errorf("sandbox = %+v", b)
+	}
+	if b.LastUsedAt != "2026-09-16T11:54:16.62029Z" {
+		t.Errorf("LastUsedAt = %q, want the raw timestamp", b.LastUsedAt)
 	}
 	if len(b.Workspaces) != 3 {
 		t.Errorf("Workspaces = %v, want 3", b.Workspaces)

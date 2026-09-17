@@ -162,7 +162,7 @@ func TestPlanMutatesNothing(t *testing.T) {
 func TestPlanReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {
 	denHome, remote, root := serviceFixture(t)
 	f := sbx.NewMachine()
-	f.Fail["secret ls -g"] = errors.New("keychain error -50")
+	f.Fail["secret ls -g --json"] = errors.New("keychain error -50")
 	s, req, cleanup := requestFor(t, denHome, remote, root, f)
 	defer cleanup()
 
@@ -428,7 +428,7 @@ func TestApplyNamesTheResumeCommandWhenSbxStateIsUnreadable(t *testing.T) {
 
 	// The read fails only INSIDE Apply, after the fast-forward: Plan above
 	// already read the state successfully with the same double.
-	f.Fail["secret ls -g"] = errors.New("keychain error -50")
+	f.Fail["secret ls -g --json"] = errors.New("keychain error -50")
 
 	var out strings.Builder
 	_, err = s.Apply(context.Background(), update, plan, &out, &out)
@@ -525,7 +525,7 @@ func TestApplyNamesTheResumeCommandWhenSbxStateIsUnreadableOnFirstInstall(t *tes
 	plan := planFor(t, s, req)
 	// The read fails only INSIDE Apply: Plan above already read the state
 	// successfully with the same double.
-	f.Fail["secret ls -g"] = errors.New("keychain error -50")
+	f.Fail["secret ls -g --json"] = errors.New("keychain error -50")
 
 	var out strings.Builder
 	_, err := s.Apply(context.Background(), req, plan, &out, &out)
@@ -1044,7 +1044,7 @@ func TestStatusReportsUnknownWhenTheMachineCannotBeObserved(t *testing.T) {
 		t.Fatalf("installing: %v", err)
 	}
 	cleanup()
-	f.Fail["secret ls -g"] = errors.New("keychain access denied")
+	f.Fail["secret ls -g --json"] = errors.New("keychain access denied")
 
 	status, err := s.Status(context.Background(), denHome, "dg")
 	if err != nil {
@@ -1084,7 +1084,7 @@ func TestStatusExplainsTheBlockBeforeTheObservationGap(t *testing.T) {
 	cleanup()
 	// Both faults at once, and only AFTER the install: the machine stops
 	// answering, and the three files stop agreeing.
-	f.Fail["secret ls -g"] = errors.New("keychain access denied")
+	f.Fail["secret ls -g --json"] = errors.New("keychain access denied")
 	if err := source.WritePersonal(denHome, "dg", source.Personal{Version: "0.9.0"}); err != nil {
 		t.Fatal(err)
 	}

@@ -46,7 +46,10 @@ SCOPE      TARGETS                ENV            PLACEHOLDER               SECRE
 
 Den identifies a custom secret from its scope, targets, and environment variable. Den does not need the placeholder or masked value.
 
-The sanitized representative fixture is `internal/converge/testdata/secret-ls.txt`.
+The sanitized representative fixture was `internal/converge/testdata/secret-ls.txt` — deleted
+2026-09-16 when `secret ls -g --json` replaced the text parser this spike fed (spec
+2026-09-16-sbx-0.43-compat §1.4). The JSON-era fixture, `secret-ls.json`, is a different shape and
+does not represent the text tables described below.
 
 ### Policy inspection
 

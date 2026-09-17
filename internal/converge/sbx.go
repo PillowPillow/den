@@ -43,7 +43,7 @@ type Observation struct {
 // SbxState is one read of the machine's sbx configuration, shared by every
 // driver of a plan.
 //
-// Read once, not per resource: `sbx secret ls -g` forks a process and talks to
+// Read once, not per resource: `sbx secret ls -g --json` forks a process and talks to
 // the OS keychain, and a source declaring three credentials would otherwise
 // pay for it three times per plan — and could observe an inconsistent machine
 // if something changed between two reads.
@@ -72,15 +72,11 @@ func customKey(targets, environment string) string { return targets + "\x00" + e
 // configured", which makes den offer to create credentials that already exist
 // and, worse, report a working machine as broken.
 func ReadSbxState(ctx context.Context, runner sbx.Runner) (*SbxState, error) {
-	secrets, err := runner.Run(ctx, "secret", "ls", "-g")
+	secrets, err := runner.Run(ctx, "secret", "ls", "-g", "--json")
 	if err != nil {
 		return nil, fmt.Errorf("reading the global sbx secrets: %w", err)
 	}
-	// StripUpdateBanner first: this is the one sbx read with no `--json`, so
-	// the update box lands INSIDE the table den parses by column, where a
-	// corner line carries one field and the row guard refuses the whole
-	// inventory. See sbx.StripUpdateBanner.
-	state, err := parseSecretList(sbx.StripUpdateBanner(string(secrets)))
+	state, err := decodeSecretList(secrets)
 	if err != nil {
 		return nil, err
 	}
@@ -96,99 +92,109 @@ func ReadSbxState(ctx context.Context, runner sbx.Runner) (*SbxState, error) {
 	return state, nil
 }
 
-// parseSecretList reads the two tables `sbx secret ls -g` prints. sbx has no
-// JSON output for this command (probed on v0.38.0, 2026-08-14), so den parses
-// text — anchored on the HEADER's own column positions, and tolerant about
-// widths: column widths and the number of rows may change without breaking
-// den, but a header den does not recognize is an error rather than an empty
-// result.
+// secretList is the shape of `sbx secret ls -g --json` (measured 2026-09-16 on
+// v0.43.0, spec 2026-09-16-sbx-0.43-compat §1.4; `--json` on this command
+// exists since v0.42.0, which is why den's floor is where it is).
 //
-// den reads TYPE and NAME from the first table, and TARGETS and ENV from the
-// optional `CUSTOM SECRETS` one — each of them from the offset the header's
-// SECOND column starts at, never from a field index. SCOPE is the column den
-// never reads and the only one that can hold whitespace: sbx renders a
-// host-only secret's scope as `(host only)`, two tokens, and a field-index
-// parser then reads that row's TYPE as `only)`, matches neither kind, and
-// drops the row through the unknown-TYPE branch below — reporting a
-// configured credential as missing for good, which is exactly the permanent
-// block Apply's `--all-sandboxes` exists to prevent. Reading from the offset
-// removes the dependency on how many tokens SCOPE spans: sbx aligns a table
-// and its header in one pass (observed on v0.38.0, 2026-08-18), so a wider
-// SCOPE moves both together.
+// ONLY the identity fields. The document also carries `secret` and
+// `placeholder`, both masked forms of real token material (a prefix and the
+// last four characters), and a struct WITHOUT those fields is how den keeps
+// them out of what it DECODES and holds in memory — the doctrine the text
+// parser this replaced applied by never reading past the columns it needed.
 //
-// den never reads the masked value or the placeholder: neither is needed to
-// decide whether a credential is present, and reading them would put
-// fragments of secrets into den's memory and its errors.
-func parseSecretList(text string) (*SbxState, error) {
+// That protection does not reach a decode FAILURE: sbx.DecodeJSON embeds the
+// whole raw payload in its error, so a malformed or shape-changed listing
+// still surfaces every row's masked `secret`/`placeholder` in den's own error
+// output — widened from the one row the old text parser's error quoted to
+// every row here (verified 2026-09-16). Masked forms only, and only off a
+// healthy machine's path; still wider than before, and out of scope for this
+// struct to fix — sbx.DecodeJSON is shared by every `--json` read in den.
+//
+// Secrets and CustomSecrets are both POINTERS so that a document simply
+// lacking the key can be told from an empty list: the first is a shape den
+// does not know, the second a machine with nothing configured, and only the
+// second may answer "absent". CustomSecrets needs the same guard as Secrets:
+// a renamed or dropped `custom_secrets` key would otherwise decode to an
+// empty Customs map with no error, and CredentialPresent would then answer
+// false for every custom credential the machine actually holds — converge
+// re-prompts for and overwrites tokens already set. The text parser this
+// replaced was fail-closed in the same spot: a `SCOPE TARGETS ENV` header
+// outside the `CUSTOM SECRETS` section hit its `default:` branch and errored.
+//
+// The pointer must not fire on a healthy machine with zero custom secrets.
+// Evidence is INDIRECT: measured 2026-09-17 on sbx v0.43.0 `79805a6`, this
+// machine holds one custom secret, so it cannot exhibit the zero case
+// itself. What was observed is `shadowed_services` — a sibling field in the
+// same document, empty on this machine — still serializing as `[]`, never
+// omitted and never `null`; sbx initializes its slices and emits them
+// unconditionally, and `custom_secrets` is the same kind of field in the
+// same document. That is the basis for trusting the guard here, not a direct
+// measurement of the zero-custom-secrets case.
+//
+// This is a fail-closed trade with a real blast radius: if sbx ever DOES omit
+// `custom_secrets` on a machine with none configured, den refuses every
+// converge run until the guard is reverted. Accepted on purpose — the text
+// parser it replaces made the identical trade in the same place — but a
+// future reader should see the trade, not rediscover it.
+type secretList struct {
+	Secrets *[]struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	} `json:"secrets"`
+	CustomSecrets *[]struct {
+		Targets []string `json:"targets"`
+		Env     string   `json:"env"`
+	} `json:"custom_secrets"`
+}
+
+// decodeSecretList reads the secret inventory. A document without `secrets`
+// is an error and never an empty state: an empty state reads as "nothing is
+// configured", which makes den offer to create credentials that already exist.
+//
+// sbx.DecodeJSON, not json.Unmarshal: sbx writes its update banner on stdout
+// behind the payload, and Unmarshal refuses anything after the value.
+func decodeSecretList(raw []byte) (*SbxState, error) {
+	var list secretList
+	if err := sbx.DecodeJSON("secret ls -g --json", raw, &list); err != nil {
+		return nil, fmt.Errorf(
+			"%w — den reads secrets[].type/name and custom_secrets[].targets/env, and cannot "+
+				"guess on a shape it does not know", err)
+	}
+	absent := ""
+	switch {
+	case list.Secrets == nil:
+		absent = "secrets"
+	case list.CustomSecrets == nil:
+		absent = "custom_secrets"
+	}
+	if absent != "" {
+		return nil, fmt.Errorf(
+			"sbx secret ls -g --json: key %q absent from the JSON output — den cannot tell an "+
+				"unconfigured machine from a listing it does not understand", absent)
+	}
 	state := &SbxState{
 		Services:   map[string]bool{},
 		Registries: map[string]bool{},
 		Customs:    map[string]bool{},
 	}
-	lines := strings.Split(text, "\n")
-	section := ""
-	// Where the second column starts, in bytes. Reset at every header — the
-	// two tables are aligned independently — and -1 means "no header seen for
-	// this section yet".
-	second := -1
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if trimmed == "CUSTOM SECRETS" {
-			section = "custom"
-			second = -1
-			continue
-		}
-		fields := strings.Fields(trimmed)
-		if fields[0] == "SCOPE" {
-			switch {
-			case section == "custom" && len(fields) >= 3 && fields[1] == "TARGETS" && fields[2] == "ENV":
-			case section == "" && len(fields) >= 3 && fields[1] == "TYPE" && fields[2] == "NAME":
-			default:
-				return nil, fmt.Errorf(
-					"sbx secret ls: unrecognized table header %q — den parses this output by column, "+
-						"and guessing on a layout it does not know could report a configured "+
-						"credential as missing", trimmed)
-			}
-			// Neither "TYPE" nor "TARGETS" occurs inside "SCOPE", so the
-			// first match is the second column's own start.
-			second = strings.Index(line, fields[1])
-			continue
-		}
-		if second < 0 {
-			return nil, fmt.Errorf(
-				"sbx secret ls: the row %q arrives before any table header — den reads this "+
-					"output from the header's column positions, and cannot place a row whose "+
-					"table it never saw", trimmed)
-		}
-		var cells []string
-		if second < len(line) {
-			cells = strings.Fields(line[second:])
-		}
-		if section == "custom" {
-			// TARGETS ENV PLACEHOLDER SECRET — the two trailing columns are
-			// deliberately not read.
-			if len(cells) < 2 {
-				return nil, fmt.Errorf("sbx secret ls: unreadable custom secret row %q", trimmed)
-			}
-			state.Customs[customKey(cells[0], cells[1])] = true
-			continue
-		}
-		// TYPE NAME SECRET
-		if len(cells) < 2 {
-			return nil, fmt.Errorf("sbx secret ls: unreadable row %q", trimmed)
-		}
-		switch cells[0] {
+	for _, s := range *list.Secrets {
+		switch s.Type {
 		case "service":
-			state.Services[cells[1]] = true
+			state.Services[s.Name] = true
 		case "registry":
-			state.Registries[cells[1]] = true
+			state.Registries[s.Name] = true
 		}
 		// An unknown TYPE is ignored rather than refused: sbx may grow a kind
 		// den does not manage, and a source that does not declare it is
 		// unaffected.
+	}
+	for _, c := range *list.CustomSecrets {
+		// One key PER TARGET: the source manifest declares one host per
+		// resource (CredentialPresent looks up res.Host), and an entry sbx
+		// stores for several targets must answer for each of them.
+		for _, target := range c.Targets {
+			state.Customs[customKey(target, c.Env)] = true
+		}
 	}
 	return state, nil
 }
@@ -219,28 +225,6 @@ func parseAllowedHosts(raw []byte) (map[string]bool, error) {
 		}
 	}
 	return out, nil
-}
-
-// ParseSbxVersion reads the version out of `sbx version`, whose output is
-// "sbx version: v0.38.0 <commit>" (observed on v0.38.0, 2026-08-14).
-//
-// It returns "" rather than an error when it cannot find one: an unreadable
-// version becomes source.UnknownVersionError at the compatibility check, which
-// is the layer that knows what a floor is — and a version den cannot read must
-// never be turned into a number it then compares.
-func ParseSbxVersion(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		_, rest, ok := strings.Cut(line, "sbx version:")
-		if !ok {
-			continue
-		}
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
-			return ""
-		}
-		return fields[0]
-	}
-	return ""
 }
 
 // githubService is the sbx service name behind source.CredentialGitHub.
@@ -354,25 +338,37 @@ func (d *credentialDriver) expected() string {
 // global is now the default for service secrets; omit --global, use --sandbox
 // to target one sandbox, or use --all-sandboxes with --registry"), and it
 // prints the warning on stderr in the middle of the github prompt, where a
-// human reads it as den failing. `secret ls -g` in ReadSbxState is a
+// human reads it as den failing. `secret ls -g --json` in ReadSbxState is a
 // DIFFERENT flag on a different command — still live, still documented — and
 // it stays.
 //
 // The registry call takes `--all-sandboxes`, not nothing. Dropping the flag
 // there is the one change that looks equivalent and is not: a registry
 // credential now defaults to HOST ONLY — used for the host's own template and
-// kit pulls, never injected into a sandbox — and `secret ls -g` does not list
-// it (both measured 2026-08-18). den would apply a credential its own Verify
-// could never observe, and block the resource for good.
+// kit pulls, never injected into a sandbox. That is the INJECTION axis, and
+// it is orthogonal to SCOPE, which is what `secret ls -g --json` filters on
+// ("Only list global secrets") — a registry credential set without
+// `--all-sandboxes` is still global on scope, so `secret ls -g --json` DOES
+// list it (corrected 2026-09-16 against real sbx v0.43.0 output; the earlier
+// claim here that it did not was wrong). Not a regression: the deleted text
+// parser this replaced never read the SCOPE column either — its own deleted
+// test asserted a `(host only)` row "must be read, not dropped". And not
+// fixable by decoding more fields: the payload carries no injection field at
+// all (secretList above decodes only `type`/`name`). den therefore cannot
+// tell a host-only registry credential from an injected one, and may see one
+// as present while the other is missing — a pre-existing doctrine question
+// this branch did not introduce, left open on purpose.
 //
 // That argv needs sbx >= 0.38.0: an older binary knows `-g` and not
 // `--all-sandboxes`, and answers cobra's bare `unknown flag:
-// --all-sandboxes`. den declares no sbx floor of its own, so the ONLY guard
-// is the source manifest's `requires.sbx` — which is optional, and
+// --all-sandboxes`. den now declares a floor of its own (sbx.MinVersion,
+// currently v0.43.0, well above this argv's 0.38.0 need) — but `den doctor`
+// is its ONLY judge, and doctor is advisory: no other command, Apply
+// included, consults it. The guard THIS path actually runs under is still
+// the source manifest's `requires.sbx` — which is optional, and
 // source.CheckCompatibility skips an undeclared one. A source that omits it
-// therefore fails HERE rather than at the compatibility check. Left that way
-// on purpose: a den-level floor would refuse machines that work today for
-// every source declaring no registry credential.
+// therefore still fails HERE rather than at the compatibility check, exactly
+// as before sbx.MinVersion existed (2026-09-16).
 func (d *credentialDriver) Apply(ctx context.Context, answers Answers, out io.Writer) error {
 	switch d.res.Type {
 	case source.CredentialGitHub:

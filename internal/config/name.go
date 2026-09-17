@@ -32,6 +32,15 @@ func ValidateName(kind, name string) error {
 // `sbx create --name` and for den itself.
 const alphanumericChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
+// IsAlphanumeric reports whether r is one of alphanumericChars. Exported for
+// sbx.ValidateCreatableSandboxName, which checks the LAST character of an
+// assembled name against the same set the first one is checked against here:
+// sbx v0.43.0 refuses a name that does not end alphanumeric, and den must
+// not spell that charset a second time.
+func IsAlphanumeric(r rune) bool {
+	return strings.ContainsRune(alphanumericChars, r)
+}
+
 // sandboxComponentChars is everything a sandbox name component may contain
 // past the first character (see alphanumericChars).
 //

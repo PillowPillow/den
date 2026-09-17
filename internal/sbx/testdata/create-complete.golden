@@ -3,6 +3,8 @@ create
 api.feat12
 --template
 docker.io/library/dgdevx:v1
+--skills
+off
 --kit
 /den/kits/ssh-known-hosts
 --kit

@@ -235,7 +235,7 @@ sandbox**.
 | `den init` | crée un den home à partir de l'exemple embarqué (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`) ; refuse si `config.yaml` existe déjà |
 | `den up <nest> [-w <wt>] [--repo p...] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell ; `--repo`, répétable, mounte des repos à la volée, additifs aux `repos:` du nest et placés devant eux |
 | `den run <nest> <cmd> [args...] [mêmes drapeaux]` | le même spawn-or-attach, en lançant `<cmd>` au lieu d'ouvrir un shell ; sort avec le statut de la commande |
-| `den ls` | sandboxes vivantes (`sbx ls --json` filtré sur le motif de nommage, colonnes nom/nest/worktree/statut/workspaces) |
+| `den ls` | sandboxes vivantes (`sbx ls --json` filtré sur le motif de nommage, colonnes nom/nest/instance/worktree/statut/dernière utilisation/workspaces) |
 | `den sh <name>` | shell dans une sandbox existante |
 | `den ports <name> [--add H:C]` | **publie à la demande** la fenêtre déclarée + affiche le tableau |
 | `den rm <name> [--keep-worktrees]` | teardown (profil agent persiste ; worktrees nettoyés sauf `--keep`) |
@@ -367,7 +367,7 @@ Deux gains suivent, et ils comptent presque autant :
 
 | # | Commande | Note |
 |---|---|---|
-| 1 | `sbx create --name S-build [--template <image du parent>] <shell\|base> <scratch>` | `--template` + positionnel `shell` si `parent:` ; positionnel `base` sinon |
+| 1 | `sbx create --name S-build [--template <image du parent>] --skills off <shell\|base> <scratch>` | `--template` + positionnel `shell` si `parent:` ; positionnel `base` sinon ; `--skills off` toujours (sandbox jetable, cf. `sbx.CreateArgv`) |
 | 2 | `sbx exec S-build -- bash -lc "<includes><step i>"` | une fois par entrée de `steps`, dans l'ordre |
 | 3 | `sbx stop S-build` | |
 | 4 | `sbx template save S-build I` | **den passe `I`** — c'est tout le point |
@@ -1835,3 +1835,133 @@ Ce qui reste **NON VÉRIFIÉ**, et ce que la sonde ne pouvait pas atteindre : ce
 on répond `[enter]`, et si `~/.ssh/config` est alors modifié par sbx lui-même. C'est la même
 frontière que les sondes 3 et 4 de #87 — elle se paie en pollution réelle, et den ne la franchit
 pas pour l'instant.
+
+## 14.3 Relevé du 2026-09-16 — sbx **v0.43.0** (`79805a6`), issue #96
+
+Copie conforme du §1 de `2026-09-16-sbx-0.43-compat-design.md`, qui porte aussi les décisions
+prises sur ce relevé. Ce paragraphe est le relevé courant ; le §14.2 (v0.39.0) n'est pas réécrit.
+
+Mesuré par la session `den-probe` sur cette machine (darwin 25.6.0, arm64), client et serveur
+v0.43.0, `api_version 0.31.0`. Sandbox jetable `den-probe-ok` créée avec `--skills=off` sur
+`docker.io/library/godev:v1`, détruite ensuite.
+
+### 14.3.1 Règles de nommage — toutes refusées AVANT l'étape image
+
+Chaque refus imprime la ligne d'erreur et rien d'autre : ni `── RESOLVE SETUP`, ni
+`✓ image ready`. Aucun worktree, aucune VM.
+
+| Nom | Résultat |
+|---|---|
+| 63 caractères (`a` + 62×`b`) | **accepté** |
+| 64 caractères | `ERROR: sandbox name cannot exceed 63 characters: abbb…` |
+| `den-probe-` | `ERROR: sandbox name must end with an alphanumeric character: den-probe-` |
+| `den-probe.` | `ERROR: sandbox name must end with an alphanumeric character: den-probe.` |
+| `default` | `ERROR: sandbox name cannot be 'default'` |
+| `a` + 61×`b` + `é` (63 runes, 64 octets) | `ERROR: sandbox name cannot exceed 63 characters: …` |
+| `denéprobe` | `ERROR: name must match regexp ^[a-zA-Z0-9][a-zA-Z0-9.-]+$: denéprobe` |
+
+La limite compte des **octets**. Conséquence inerte pour den : la charset est ASCII, donc
+octets et runes coïncident pour tout nom que den peut construire — `len()` suffit. Ordre observé
+des règles : longueur → charset → dernier caractère → `default`. Le `--help` de v0.43.0 ne
+documente ni la limite ni la règle du dernier caractère ; il documente `'default' is reserved`.
+Le texte d'aide a déjà été faux une fois (v0.39.0 a corrigé les signes `+`) : la mesure prime.
+
+### 14.3.2 Ports — le protocole n'est PAS normalisé
+
+Sur `swimspot` (arrêtée) :
+
+```
+$ sbx ports swimspot --publish 127.0.0.1:19876:8080
+Sandbox swimspot started successfully
+Published 127.0.0.1:19876 -> 8080/tcp4
+$ sbx ports swimspot --publish 127.0.0.1:19877:8081/tcp
+Published 127.0.0.1:19877 -> 8081/tcp
+```
+
+`sbx ls --json`, tableau `ports` :
+
+```json
+[
+  { "host_ip": "127.0.0.1", "host_port": 19876, "sandbox_port": 8080, "protocol": "tcp4" },
+  { "host_ip": "127.0.0.1", "host_port": 19877, "sandbox_port": 8081, "protocol": "tcp" }
+]
+```
+
+Sans protocole → `"tcp4"` ; `/tcp` explicite → `"tcp"`. Deux chaînes distinctes pour deux
+publications que `sbx unpublish` sans protocole retire toutes les deux. `host_port` et
+`sandbox_port` sont des nombres. **`sbx ports --publish` démarre lui-même une sandbox
+arrêtée** (`Sandbox swimspot started successfully` sur la sortie) — la phrase contraire dans le
+commentaire de `wakeForPorts` est fausse depuis v0.42.0. `sbx ports SANDBOX --json` rend un
+**tableau nu** (`[]` sans publication), là où `sbx ls --json` **omet la clé `ports`** sur une
+sandbox en marche sans publication (ni `null`, ni `[]`). L'unpublish répond `Unpublish requested
+for …` : aucune borne de latence mesurée. den ne dépublie jamais.
+
+### 14.3.3 Assistant `setup` — le blocage §14.2 n'existe plus pour `sbx exec`
+
+Le binaire v0.43.0 ne contient plus ni `first-run-import` ni `offeredAt` (0 occurrence, contrôle
+positif `sandbox name cannot be 'default'` = 1). Le marqueur est désormais
+`~/Library/Application Support/com.docker.sandboxes/sandboxes/first-login.json`, clé
+`firstLoginAt`. Le fichier `first-run-import.json` encore présent sur cette machine est un
+résidu.
+
+Mesure sous pty réel (Python `pty.fork()`, stdin ET stdout tty — la condition exacte de
+`spawn.LooksInteractive`), marqueur `first-login.json` retiré puis restauré à l'octet près :
+
+| Condition | `sbx exec den-probe-ok true` | sortie | marqueur réécrit |
+|---|---|---|---|
+| marqueur présent (base) | 0,57 s, exit 0 | 0 octet | — |
+| marqueur absent | 0,57 s, exit 0 | 0 octet, zéro ESC | **non** |
+
+Delta de `sandboxd/daemon.log` : 25 074 octets, aucune ligne `first.?login|wizard|prompt|approv|
+import|tui`. **`sbx exec` n'est pas gardé par le marqueur.** Portée : `sbx exec` seulement ; le
+binaire porte `[y/N]` et `asking about host commands` à côté des chaînes `first-login`, donc
+`sbx run` consulte probablement encore ce marqueur — non mesuré, et den n'appelle jamais
+`sbx run`. Le blocage `den exec -T` / `den run -T` du CLAUDE.md est donc clos pour tous les
+chemins de den.
+
+BSD `script` ne sait pas allouer un pty depuis un stdin socket (`tcgetattr/ioctl: Operation not
+supported on socket`) : le premier essai n'a rien mesuré. Retenir `pty.fork()` pour toute sonde
+d'`isTerminal`.
+
+### 14.3.4 Formes JSON et divers
+
+- `sbx ls --json`, sandbox en marche sans publication : clés `name id agent status last_used_at
+  workspaces`. `last_used_at` est RFC 3339 UTC à **partie fractionnaire variable, parfois
+  absente** : `2026-09-16T11:54:16.62029Z`, `2026-09-16T12:02:36.154909Z`,
+  `2026-08-24T07:34:45Z`. Un analyseur à gabarit fixe casse ; `time.Parse(time.RFC3339, …)`
+  accepte les trois.
+- `sbx secret ls --json` : objet à quatre clés. `secrets[]` = `scope type name secret` ;
+  `custom_secrets[]` = `scope targets[] env placeholder secret` ; `shadowed_services[]` ;
+  `env_only_count`. `type` vu : `service`, `registry`. `scope` vu : `global`. `secret` et
+  `placeholder` portent des formes masquées (préfixe + 4 derniers caractères) : den ne les
+  décode pas. Le drapeau `-g` existe toujours.
+- `sbx version --json` : `{client:{version,revision,build_tags}, server:{state,version,revision,
+  api_version}}`, versions préfixées `v`. `sbx version` nu : `sbx version: v0.43.0 <sha>`,
+  inchangé, sans démarrage du démon (v0.43.0).
+- `sbx inspect --json` : `state` (et non `status`), `workspace` chaîne (et non `workspaces`),
+  `uptime` humanisé. den ne le lit pas.
+- `/var/log/sbx-kit-startup.log` existe toujours. Il est **append-only à travers les runs**, et
+  le premier bloc `=== dispatcher run …` date du build du template (2026-08-04). Un agent `shell`
+  exécute aussi les scripts `001-startup-claude`. `ParseKitLog` ne lit que le dernier run : OK.
+- **`sbx exec` imprime `Sandbox <name> started successfully` sur stdout** quand il redémarre une
+  sandbox arrêtée, avant la sortie de la commande. Absent si la sandbox tournait. `ParseKitLog`
+  ignore toute ligne qui n'est ni annonce `> ` ni verdict : OK. Aucun autre lecteur d'`exec`
+  n'analyse la sortie.
+- **Auto-arrêt en moins de 2 minutes** après `create` (run dispatcher à 11:52:12Z, redémarrage
+  par `exec` à 11:54:14Z, sans action entre les deux), reproduit deux fois. Seuil non mesuré.
+  La branche attach de den lit le statut dans `sbx ls --json` et `exec` redémarre : rien à
+  changer, la fenêtre entre la lecture et l'attache est juste plus courte.
+- `--skills=off` : `~/.claude/skills` existe dans l'image (root, `drwxr-xr-t`, vide) et
+  `mount | grep -i skill` ne rend rien. Sa présence ne prouve donc pas un montage.
+- `SANDBOX_NAME` et `SANDBOX_VM_ID` = nom, `SANDBOX_ID` = UUID.
+- `sbx rm --force` sur une sandbox en marche réussit sans `stop` préalable.
+- `sbx start` n'existe pas ; `sbx exec -T` n'existe pas. den n'appelle ni l'un ni l'autre.
+
+### 14.3.5 Sans effet sur den, vérifié
+
+`shareSkills` → `skills` dans `sbxenv.yaml` ; renommage des secrets MCP ; signature et cache des
+kits git ; héritage `extends:` (aucun kit den ne l'utilise) ; standardisation des messages
+d'erreur (den ne fait aucune correspondance sur le texte de sbx) ; `--kit` réservé aux mixins
+(tous les kits de `~/.den` et de la source `dg` sont `kind: mixin`) ; volume Docker 10 Go ;
+mémoire minimale 512 MiB (den n'a pas de bouton ressources) ; `sbx create` sans PATH (den passe
+toujours au moins un workspace, garde conservée).

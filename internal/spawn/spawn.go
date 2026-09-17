@@ -599,6 +599,23 @@ func Spawn(ctx context.Context, denHome string, o Options, d Deps) error {
 	}
 	live := sbx.Find(boxes, sandboxName)
 
+	// The name must survive `sbx create`, and only the create branch asks.
+	// sbx tightens its whole-name rules between versions (a 63-byte cap, a
+	// trailing alphanumeric, "default"), so an `api.foo-` an older den really
+	// created is still a sandbox this one must attach to, list and remove.
+	// Asking upstream of the verdict would refuse it instead, stranding a live
+	// VM behind a name its owner cannot retype.
+	//
+	// Still upstream of worktree.Ensure, which is what issue #96 needs: `sbx
+	// ls` above creates nothing, so the refusal leaves no orphaned worktree.
+	// What the position costs is narrow and deliberate — on a machine whose
+	// sbx is broken, the listing's error surfaces before the name's.
+	if live == nil {
+		if err := sbx.ValidateCreatableSandboxName(sandboxName); err != nil {
+			return err
+		}
+	}
+
 	// The creation record, read ONCE for the whole function. Two consumers, and
 	// the first of them is the selection rebuild below, which runs before
 	// nest.Resolve — so the read cannot wait for the attach branch, where it
