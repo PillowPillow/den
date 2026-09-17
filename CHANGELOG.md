@@ -7,6 +7,33 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.12.0 — 2026-09-17
+
+### Added
+- `den ls` shows a `LAST USED` column, from the `last_used_at` that `sbx ls --json` reports since
+  sbx v0.43.0. A listing that carries no such field shows `-`.
+
+### Changed
+- den requires sbx v0.43.0 or later. `den doctor` is the single judge of that floor; the other
+  commands assume the v0.43.0 surface and let sbx speak for itself when it is older.
+- Every sandbox den creates is started with `--skills off`. sbx v0.43.0 mounts the host's shared
+  skills store read-only into `~/.claude/skills` by default, which put a second source of skills in
+  the VM next to den's agent profile.
+
+### Fixed
+- `den up`, `den run` and `den build` refuse a sandbox name sbx v0.43.0 rejects — over 63 bytes, not
+  ending in an alphanumeric, or exactly `default` — before the worktree exists. A `-w` on a long
+  branch or on one ending in `-` used to die at `sbx create`, with the worktree already created.
+  A sandbox that already bears such a name stays addressable: `den ls`, `den rm` and an attach take
+  it as before.
+- `den ports` recognizes its own publications again. sbx v0.42.0 publishes a protocol-less spec as
+  `tcp4` and reports that string back unchanged; den's filter only knew `tcp`, so it saw none of its
+  windows on a running sandbox and republished ports that were already bound.
+- `den rm` destroys a sandbox whose name it cannot validate instead of refusing it. A sandbox created
+  outside den, under a name den cannot turn into a host path, exited 1 on that check before `sbx rm
+  --force` ran — a live VM with no way to remove it. The check is now a warning and the destruction
+  always proceeds.
+
 ## v1.11.0 — 2026-08-27
 
 ### Fixed
