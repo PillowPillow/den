@@ -219,6 +219,15 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 // developing sbx, whose binary may be perfectly recent — the same reason
 // converge.checkCompatibility warns on an UnknownVersionError. A failing
 // `sbx version` FAILS with sbx's own message on one line.
+//
+// That WARN branch only catches non-semver output like bare "dev":
+// semver.IsValid accepts a semver-shaped prerelease such as "v0.43.0-dev",
+// and semver.Compare then ranks it below sbx.MinVersion, so that shape falls
+// into the FAIL branch instead, contradicting this comment's own rationale.
+// Parked, not fixed here — the fix is a shared version-normalizing helper in
+// internal/sbx (internal/source/manifest.go's releaseVersion already strips
+// a prerelease and prepends a missing "v" before comparing; the two funcs
+// now disagree on both axes).
 func sbxVersionCheck(ctx context.Context, deps doctor.Deps, runner sbx.Runner) []doctor.Check {
 	if _, err := deps.LookPath("sbx"); err != nil {
 		return nil

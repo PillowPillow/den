@@ -99,8 +99,16 @@ func ReadSbxState(ctx context.Context, runner sbx.Runner) (*SbxState, error) {
 // ONLY the identity fields. The document also carries `secret` and
 // `placeholder`, both masked forms of real token material (a prefix and the
 // last four characters), and a struct WITHOUT those fields is how den keeps
-// them out of its memory and out of its errors — the doctrine the text parser
-// this replaced applied by never reading past the columns it needed.
+// them out of what it DECODES and holds in memory — the doctrine the text
+// parser this replaced applied by never reading past the columns it needed.
+//
+// That protection does not reach a decode FAILURE: sbx.DecodeJSON embeds the
+// whole raw payload in its error, so a malformed or shape-changed listing
+// still surfaces every row's masked `secret`/`placeholder` in den's own error
+// output — widened from the one row the old text parser's error quoted to
+// every row here (verified 2026-09-16). Masked forms only, and only off a
+// healthy machine's path; still wider than before, and out of scope for this
+// struct to fix — sbx.DecodeJSON is shared by every `--json` read in den.
 //
 // Secrets is a POINTER so that a document simply lacking the key can be told
 // from an empty list: the first is a shape den does not know, the second a
@@ -300,25 +308,37 @@ func (d *credentialDriver) expected() string {
 // global is now the default for service secrets; omit --global, use --sandbox
 // to target one sandbox, or use --all-sandboxes with --registry"), and it
 // prints the warning on stderr in the middle of the github prompt, where a
-// human reads it as den failing. `secret ls -g` in ReadSbxState is a
+// human reads it as den failing. `secret ls -g --json` in ReadSbxState is a
 // DIFFERENT flag on a different command — still live, still documented — and
 // it stays.
 //
 // The registry call takes `--all-sandboxes`, not nothing. Dropping the flag
 // there is the one change that looks equivalent and is not: a registry
 // credential now defaults to HOST ONLY — used for the host's own template and
-// kit pulls, never injected into a sandbox — and `secret ls -g` does not list
-// it (both measured 2026-08-18). den would apply a credential its own Verify
-// could never observe, and block the resource for good.
+// kit pulls, never injected into a sandbox. That is the INJECTION axis, and
+// it is orthogonal to SCOPE, which is what `secret ls -g --json` filters on
+// ("Only list global secrets") — a registry credential set without
+// `--all-sandboxes` is still global on scope, so `secret ls -g --json` DOES
+// list it (corrected 2026-09-16 against real sbx v0.43.0 output; the earlier
+// claim here that it did not was wrong). Not a regression: the deleted text
+// parser this replaced never read the SCOPE column either — its own deleted
+// test asserted a `(host only)` row "must be read, not dropped". And not
+// fixable by decoding more fields: the payload carries no injection field at
+// all (secretList above decodes only `type`/`name`). den therefore cannot
+// tell a host-only registry credential from an injected one, and may see one
+// as present while the other is missing — a pre-existing doctrine question
+// this branch did not introduce, left open on purpose.
 //
 // That argv needs sbx >= 0.38.0: an older binary knows `-g` and not
 // `--all-sandboxes`, and answers cobra's bare `unknown flag:
-// --all-sandboxes`. den declares no sbx floor of its own, so the ONLY guard
-// is the source manifest's `requires.sbx` — which is optional, and
+// --all-sandboxes`. den now declares a floor of its own (sbx.MinVersion,
+// currently v0.43.0, well above this argv's 0.38.0 need) — but `den doctor`
+// is its ONLY judge, and doctor is advisory: no other command, Apply
+// included, consults it. The guard THIS path actually runs under is still
+// the source manifest's `requires.sbx` — which is optional, and
 // source.CheckCompatibility skips an undeclared one. A source that omits it
-// therefore fails HERE rather than at the compatibility check. Left that way
-// on purpose: a den-level floor would refuse machines that work today for
-// every source declaring no registry credential.
+// therefore still fails HERE rather than at the compatibility check, exactly
+// as before sbx.MinVersion existed (2026-09-16).
 func (d *credentialDriver) Apply(ctx context.Context, answers Answers, out io.Writer) error {
 	switch d.res.Type {
 	case source.CredentialGitHub:

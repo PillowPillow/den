@@ -235,7 +235,7 @@ sandbox**.
 | `den init` | crée un den home à partir de l'exemple embarqué (`config.yaml`, `nests/example.yaml`, `stacks/devx/stack.yaml`) ; refuse si `config.yaml` existe déjà |
 | `den up <nest> [-w <wt>] [--repo p...] [--without r] [--only r] [-i] [--agent a] [--detach]` | **spawn-or-attach** + shell ; `--repo`, répétable, mounte des repos à la volée, additifs aux `repos:` du nest et placés devant eux |
 | `den run <nest> <cmd> [args...] [mêmes drapeaux]` | le même spawn-or-attach, en lançant `<cmd>` au lieu d'ouvrir un shell ; sort avec le statut de la commande |
-| `den ls` | sandboxes vivantes (`sbx ls --json` filtré sur le motif de nommage, colonnes nom/nest/worktree/statut/workspaces) |
+| `den ls` | sandboxes vivantes (`sbx ls --json` filtré sur le motif de nommage, colonnes nom/nest/instance/worktree/statut/dernière utilisation/workspaces) |
 | `den sh <name>` | shell dans une sandbox existante |
 | `den ports <name> [--add H:C]` | **publie à la demande** la fenêtre déclarée + affiche le tableau |
 | `den rm <name> [--keep-worktrees]` | teardown (profil agent persiste ; worktrees nettoyés sauf `--keep`) |
@@ -367,7 +367,7 @@ Deux gains suivent, et ils comptent presque autant :
 
 | # | Commande | Note |
 |---|---|---|
-| 1 | `sbx create --name S-build [--template <image du parent>] <shell\|base> <scratch>` | `--template` + positionnel `shell` si `parent:` ; positionnel `base` sinon |
+| 1 | `sbx create --name S-build [--template <image du parent>] --skills off <shell\|base> <scratch>` | `--template` + positionnel `shell` si `parent:` ; positionnel `base` sinon ; `--skills off` toujours (sandbox jetable, cf. `sbx.CreateArgv`) |
 | 2 | `sbx exec S-build -- bash -lc "<includes><step i>"` | une fois par entrée de `steps`, dans l'ordre |
 | 3 | `sbx stop S-build` | |
 | 4 | `sbx template save S-build I` | **den passe `I`** — c'est tout le point |
