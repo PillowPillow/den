@@ -112,7 +112,7 @@ you use a different one — that is what makes `den` testable and scriptable.
 | `den init --source <url>` | creates a **source-aware** home instead — no example nest, no local stack — and converges everything the source declares (see [Declarative sources](#declarative-sources)) |
 | `den up <nest> [--repo p...]` | spawn-or-attach: creates the nest's microVM if it does not exist, attaches to it otherwise, then opens a shell; ad-hoc repos are mounted on the fly via a repeatable `--repo` |
 | `den run <nest> <cmd> [args...] [--repo p...]` | the same spawn-or-attach, running `<cmd>` instead of opening a shell; exits with the command's own status |
-| `den ls` | lists live sandboxes, with their nest, instance, worktree, status and workspace count |
+| `den ls` | lists live sandboxes, with their nest, instance, worktree, status, last use and workspace count |
 | `den exec <name> <cmd> [args...]` | runs one command in an existing sandbox and exits with that command's own status |
 | `den shell <name>` | opens a login shell in an existing sandbox |
 | `den ports <name>` | publishes the nest's declared ports into that sandbox and prints where they land on the host |
@@ -332,8 +332,9 @@ nest: web   sandbox: web.feat123   window: 9100-9109 (canonical)
 - `--add H:C` (repeatable) publishes a pair the nest does not declare. Re-running an identical
   `--add` succeeds and changes nothing. A nest that declares no port prints no window and scans
   nothing — only the added pairs are published.
-- A **stopped** sandbox is started first, and said so on stderr: publishing a port needs a live
-  endpoint in the VM, and `sbx ports` — unlike `sbx exec` — does not restart one.
+- A **stopped** sandbox is started first, and said so on stderr: den must read what it already
+  publishes on a running VM before the first publish, or the stopped listing hides that state and
+  den republishes a window that is already bound.
 
 The table goes to stdout, every warning to stderr: what a pipe reads is the table alone.
 

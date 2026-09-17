@@ -20,7 +20,7 @@ func TestLsPrintsTheColumns(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api.feat12","agent":"shell","status":"running","workspaces":["/w/api","/p"]}]}`)},
+			`{"sandboxes":[{"name":"api.feat12","agent":"shell","status":"running","last_used_at":"2026-09-16T09:00:00Z","workspaces":["/w/api","/p"]}]}`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -34,7 +34,7 @@ func TestLsPrintsTheColumns(t *testing.T) {
 	}
 
 	header := strings.Fields(lines[0])
-	expectedHeader := []string{"NAME", "NEST", "INSTANCE", "WORKTREE", "STATUS", "WORKSPACES"}
+	expectedHeader := []string{"NAME", "NEST", "INSTANCE", "WORKTREE", "STATUS", "LAST", "USED", "WORKSPACES"}
 	if len(header) != len(expectedHeader) {
 		t.Fatalf("header = %v, expected %v", header, expectedHeader)
 	}
@@ -49,7 +49,7 @@ func TestLsPrintsTheColumns(t *testing.T) {
 	// sbx.Sandbox.Nest()/Instance(), not found by accident inside NAME. This
 	// sandbox carries no creation record, so WORKTREE falls back to the same
 	// flattened component as INSTANCE — the only string den has left.
-	expectedLine := []string{"api.feat12", "api", "feat12", "feat12", "running"}
+	expectedLine := []string{"api.feat12", "api", "feat12", "feat12", "running", "3h"}
 	if len(fields) < len(expectedLine) {
 		t.Fatalf("data line = %v, expected at least %v", fields, expectedLine)
 	}
@@ -59,9 +59,30 @@ func TestLsPrintsTheColumns(t *testing.T) {
 		}
 	}
 
-	// Age does not exist in sbx ls --json: never claim to know it.
+	// LAST USED, not AGE: sbx reports the last use, never the creation, and
+	// the header must not claim otherwise.
 	if strings.Contains(strings.ToUpper(out), "AGE") {
 		t.Errorf("no age column must exist; got:\n%s", out)
+	}
+}
+
+// A sandbox listed by an sbx that writes no `last_used_at` (or a record den
+// cannot parse) renders "-": den never claims to know a time it did not read.
+func TestLsRendersADashWithoutLastUsedAt(t *testing.T) {
+	testDenHome(t)
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(
+			`{"sandboxes":[{"name":"api","agent":"shell","status":"stopped","workspaces":["/w"]}]}`)},
+	}}
+
+	out, err := executeCmdWithSbx(t, f, "ls")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	fields := strings.Fields(strings.Split(out, "\n")[1])
+	if len(fields) < 6 || fields[5] != "-" {
+		t.Errorf("LAST USED column = %v, want \"-\" in position 5", fields)
 	}
 }
 
@@ -542,7 +563,7 @@ func TestLsDoesNotPrintTheInstanceAsAWorktree(t *testing.T) {
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	header := strings.Fields(lines[0])
-	expectedHeader := []string{"NAME", "NEST", "INSTANCE", "WORKTREE", "STATUS", "WORKSPACES"}
+	expectedHeader := []string{"NAME", "NEST", "INSTANCE", "WORKTREE", "STATUS", "LAST", "USED", "WORKSPACES"}
 	if len(header) != len(expectedHeader) {
 		t.Fatalf("header = %v, expected %v", header, expectedHeader)
 	}

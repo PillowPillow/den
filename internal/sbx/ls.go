@@ -43,10 +43,11 @@ type Publication struct {
 // The schema is that of sbx v0.35.0, recorded 2026-07-28 and extended
 // 2026-07-31 with `ports`:
 //
-//	{"sandboxes":[{"name","id","agent","status","ports":[…],"workspaces":["/p","/p:ro"]}]}
+//	{"sandboxes":[{"name","id","agent","status","last_used_at","ports":[…],"workspaces":["/p","/p:ro"]}]}
 //
-// There is NO date field: a sandbox's age isn't computable, and the "age"
-// column of spec §5 was dropped as a result.
+// `last_used_at` arrived with v0.43.0 (measured 2026-09-16); before it there
+// was NO date field, which is what got the "age" column of spec §5 dropped.
+// The column is back as LAST USED — it is the last use, not the creation.
 //
 // Decoding is deliberately tolerant of unknown fields (unlike the strict
 // configuration YAML): this output comes from a third-party tool, not from
@@ -55,6 +56,11 @@ type Sandbox struct {
 	Name   string `json:"name"`
 	Agent  string `json:"agent"`
 	Status string `json:"status"`
+	// LastUsedAt is the RFC 3339 instant of the last use, as sbx v0.43.0
+	// reports it (`last_used_at`, absent before that release). Kept RAW: the
+	// rendering (Relative) needs a clock, and this struct is a reading of
+	// sbx's output, not a view of it.
+	LastUsedAt string `json:"last_used_at"`
 	// Ports is empty when the sandbox publishes nothing — AND when it is
 	// stopped, which is a different thing entirely. See Publication.
 	Ports      []Publication `json:"ports"`
