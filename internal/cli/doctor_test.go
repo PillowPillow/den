@@ -528,7 +528,11 @@ func TestDoctorPassesOnTheSbxFloor(t *testing.T) {
 // prerelease below its release. Comparing the raw string against the floor
 // would FAIL a source build that is at or past it; sbx.ReleaseVersion
 // normalizes it to the release first, so only a release genuinely below the
-// floor fails. Each input has exactly one pinned verdict.
+// floor fails. Each input has exactly one pinned verdict, and the line must
+// still name what `sbx version` printed, not the normalized release den
+// compared it against — checked on the matched line alone, not the whole
+// report, because testDenHome's temp dir is named after the subtest and
+// would otherwise contain c.version too.
 func TestDoctorSbxVersionPrereleaseVerdicts(t *testing.T) {
 	cases := []struct {
 		version string
@@ -565,12 +569,6 @@ func TestDoctorSbxVersionPrereleaseVerdicts(t *testing.T) {
 			if line == "" {
 				t.Fatalf("output has no %q line for %q:\n%s", marker, c.version, out)
 			}
-			// The line must name what `sbx version` printed, not the
-			// normalized release den compared it against: a user matches
-			// the line against their own terminal, which never saw the
-			// release cut. Checked on the LINE, not the whole report — the
-			// den-home path above it is a temp dir named after this
-			// subtest, and it embeds c.version too.
 			if !strings.Contains(line, c.version) {
 				t.Errorf("the sbx version line does not name the raw version %q: %q", c.version, line)
 			}

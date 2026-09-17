@@ -214,12 +214,11 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 // fails, and a second failure for the same absence would say nothing new.
 //
 // Three verdicts. A version below the floor FAILS, naming both versions and
-// the remedy. A version den cannot read at all WARNS: a build stamped with
-// no version answers a bare "dev", and refusing there would make `den
-// doctor` red on every machine developing sbx, whose binary may be perfectly
-// recent — the same reason converge.checkCompatibility warns on an
-// UnknownVersionError. A failing `sbx version` FAILS with sbx's own message
-// on one line.
+// the remedy. A version den cannot read WARNS: `go build` of sbx answers
+// "dev", and refusing there would make `den doctor` red on every machine
+// developing sbx, whose binary may be perfectly recent — the same reason
+// converge.checkCompatibility warns on an UnknownVersionError. A failing
+// `sbx version` FAILS with sbx's own message on one line.
 //
 // A build stamped FROM `git describe` lands in the compare instead of the
 // WARN, because it IS semver, just not a release: sbx.ReleaseVersion resolves
