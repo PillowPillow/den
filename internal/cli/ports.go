@@ -192,15 +192,16 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 //
 // WHY WAKING, AND NOT REFUSING. §2 is about not guessing the user's INTENT: a
 // typo'd config key, a flag contradiction, an ambiguous selection. There is
-// nothing ambiguous here. `sbx ports --publish` needs a container endpoint, and
-// on a stopped sandbox it answers `500 Internal Server Error: … no container
-// endpoint with IP address found` — a string naming neither the state nor a
-// remedy (#16). A refusal would name both, but the only thing the user could do
-// with it is run a command that starts the VM, which is the one thing den was
-// refusing to do for them. That is a chore, not a safeguard. And F2 already
-// settled the precedent in the other direction: `den exec`, `den shell`, `den up`
-// and `den run` take a stopped sandbox back without asking, because `sbx exec` restarts it
-// transparently — a surface `sbx ports` did not share when #16 was arbitrated.
+// nothing ambiguous here. At #16's arbitration, `sbx ports --publish` needed a
+// container endpoint, and on a stopped sandbox it answered `500 Internal
+// Server Error: … no container endpoint with IP address found` — a string
+// naming neither the state nor a remedy. A refusal would name both, but the
+// only thing the user could do with it is run a command that starts the VM,
+// which is the one thing den was refusing to do for them. That is a chore,
+// not a safeguard. And F2 already settled the precedent in the other
+// direction: `den exec`, `den shell`, `den up` and `den run` take a stopped
+// sandbox back without asking, because `sbx exec` restarts it transparently —
+// a surface `sbx ports` did not share when #16 was arbitrated.
 // Measured: a bare `sbx exec <name> true` restarts a stopped sandbox in ~1.4 s.
 //
 // `sbx ports --publish` has started a stopped sandbox by itself since v0.42.0

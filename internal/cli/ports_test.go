@@ -780,12 +780,13 @@ func TestPortsAddIsRerunnableWhenTheSandboxAlreadyPublishesIt(t *testing.T) {
 
 // #16: a STOPPED sandbox is started, and its publications are read AFTER.
 //
-// `sbx ports --publish` needs a container endpoint and does not restart a
-// sandbox to get one — it answers `500 Internal Server Error: … no container
-// endpoint with IP address found`, naming neither the state nor a remedy. And
-// the reading #15's fix depends on is unavailable until then: `sbx ls --json`
-// omits the `ports` array entirely while a sandbox is stopped, while every
-// publication comes back on resume (measured 2026-07-31).
+// At #16's arbitration, `sbx ports --publish` needed a container endpoint and
+// did not restart a sandbox to get one — it answered `500 Internal Server
+// Error: … no container endpoint with IP address found`, naming neither the
+// state nor a remedy. And the reading #15's fix depends on is unavailable
+// until then: `sbx ls --json` omits the `ports` array entirely while a
+// sandbox is stopped, while every publication comes back on resume (measured
+// 2026-07-31).
 //
 // Both halves are asserted, and the SECOND listing is the load-bearing one: a
 // wake that reused the first reading would resolve a fresh window over ports
