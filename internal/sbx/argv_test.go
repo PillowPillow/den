@@ -267,6 +267,24 @@ func TestCreateArgvGolden(t *testing.T) {
 	}
 }
 
+// A create asks the CREATABLE question, so the whole-name rules sbx applies
+// at creation refuse here too — while the readers that share this package's
+// validator stay tolerant of names an older sbx accepted.
+func TestCreateArgvRejectsANameSbxWouldNotCreate(t *testing.T) {
+	for _, name := range []string{
+		"a",
+		"api." + strings.Repeat("b", MaxNameLength-len("api.")+1),
+		"api.fix-",
+		ReservedName,
+	} {
+		c := completeCreate()
+		c.Name = name
+		if _, err := CreateArgv(c); err == nil {
+			t.Errorf("%q must be rejected: `sbx create` refuses it", name)
+		}
+	}
+}
+
 // A name ending in the separator used to pass component-by-component
 // validation: "api." splits into "api" + an empty worktree, two valid
 // components. sbx accepts the dot, so the sandbox "api." would be REALLY

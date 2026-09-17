@@ -39,7 +39,12 @@ func CreateArgv(c Create) ([]string, error) {
 	// Single source of truth, shared with internal/agent: validating
 	// component-by-component here let "api." through, which sbx would really
 	// create and `sbx ls` would split back into "api".
-	if err := ValidateSandboxName(c.Name); err != nil {
+	//
+	// The CREATABLE form, the stricter of the two: this argv is a create, so
+	// the whole-name rules sbx applies at creation are den's to check as well
+	// — the readers keep the structural one, which stays tolerant of names an
+	// older sbx accepted.
+	if err := ValidateCreatableSandboxName(c.Name); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(c.Image) == "" {

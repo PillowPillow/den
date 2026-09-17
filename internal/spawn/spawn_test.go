@@ -1889,10 +1889,13 @@ func TestSpawnRefusesAWorktreeFlatteningCannotFix(t *testing.T) {
 }
 
 // #96: a branch long enough to push the sandbox name past sbx's 63-byte cap
-// must be refused BEFORE the worktree exists and before any sbx call — the
-// name is computed at step 1, upstream of `sbx ls` and of worktree.Ensure.
-// Without this check den created the worktree, and only then did `sbx
-// create` refuse: the exact orphan spec §6 exists to prevent.
+// must be refused BEFORE the worktree exists — the check sits on the create
+// branch of the spawn-or-attach verdict, downstream of the listing and
+// upstream of worktree.Ensure. Without it den created the worktree, and only
+// then did `sbx create` refuse: the exact orphan spec §6 exists to prevent.
+//
+// What the assertion below protects is that orphan, and nothing narrower: the
+// listing that decided create-or-attach has run, and it creates nothing.
 func TestSpawnRefusesAWorktreeThatMakesTheSandboxNameTooLong(t *testing.T) {
 	denHome, _ := denTest(t)
 	f, d := fakeDeps()
@@ -1905,11 +1908,33 @@ func TestSpawnRefusesAWorktreeThatMakesTheSandboxNameTooLong(t *testing.T) {
 	if !strings.Contains(err.Error(), "--as") {
 		t.Errorf("the refusal must name the --as remedy; got: %v", err)
 	}
-	if len(f.Calls) != 0 {
-		t.Errorf("no sbx call should have happened; calls: %v", f.Calls)
+	if !createdNothing(f) {
+		t.Errorf("the refusal must create nothing; calls: %v", f.Calls)
 	}
 	if _, err := os.Stat(filepath.Join(denHome, "worktrees")); err == nil {
 		t.Error("no worktree must have been created")
+	}
+}
+
+// The other side of the same split: sbx tightens its whole-name rules between
+// versions, so a sandbox an older den really created can carry a name this sbx
+// would no longer create. It stays a live VM, and a spawn on its name attaches
+// to it — refusing would strand it behind a name its owner cannot retype.
+func TestSpawnAttachesToALiveSandboxSbxWouldNoLongerCreate(t *testing.T) {
+	denHome, repo := denTest(t)
+	f, d := fakeDeps()
+	f.Responses["ls --json"] = sbx.Response{
+		Output: []byte(`{"sandboxes":[{"name":"api.foo-","status":"running","workspaces":["` + repo + `"]}]}`),
+	}
+
+	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Instance: "foo-"}, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.HasCalled("create") {
+		t.Errorf("no create must happen on a live sandbox; calls: %v", f.Calls)
+	}
+	if !f.HasAttached("exec", "-it", "-w", repo, "api.foo-", "bash", "-l") {
+		t.Errorf("the attach must target api.foo-; attaches: %v", f.Attaches)
 	}
 }
 
