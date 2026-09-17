@@ -221,28 +221,6 @@ func parseAllowedHosts(raw []byte) (map[string]bool, error) {
 	return out, nil
 }
 
-// ParseSbxVersion reads the version out of `sbx version`, whose output is
-// "sbx version: v0.38.0 <commit>" (observed on v0.38.0, 2026-08-14).
-//
-// It returns "" rather than an error when it cannot find one: an unreadable
-// version becomes source.UnknownVersionError at the compatibility check, which
-// is the layer that knows what a floor is — and a version den cannot read must
-// never be turned into a number it then compares.
-func ParseSbxVersion(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		_, rest, ok := strings.Cut(line, "sbx version:")
-		if !ok {
-			continue
-		}
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
-			return ""
-		}
-		return fields[0]
-	}
-	return ""
-}
-
 // githubService is the sbx service name behind source.CredentialGitHub.
 //
 // Derived from the TYPE, never from the manifest's `id:`. The two happen to

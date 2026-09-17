@@ -371,6 +371,10 @@ func TestDoctorSkipsTheOrphanCheckWhenSbxCannotAnswer(t *testing.T) {
 	orphanFixture(t, home, "api.feat12")
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Err: errors.New("sbx: command not found")},
+		// version answers the floor: this test is about the orphan check
+		// alone, and an unscripted `version` would otherwise earn a stray
+		// [warn] sbx version line that has nothing to do with what it tests.
+		"version": {Output: []byte("sbx version: " + sbx.MinVersion + " abc\n")},
 	}}
 
 	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
@@ -433,6 +437,63 @@ func TestDoctorPassesWhenTheNetworkPolicyAnswers(t *testing.T) {
 		t.Fatalf("a readable policy must not fail den doctor: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, "[ok  ] sbx policy") {
+		t.Errorf("the check is missing from a healthy report:\n%s", out)
+	}
+}
+
+// The floor is judged HERE and nowhere else (sbx.MinVersion): a machine on
+// an older sbx gets one FAIL line naming both versions and the upgrade.
+func TestDoctorFailsWhenSbxIsTooOld(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+	f.Responses["version"] = sbx.Response{Output: []byte("sbx version: v0.42.1 abc\n")}
+	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+		Output: []byte(`{"rules":[]}`)}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err == nil {
+		t.Fatalf("den doctor reported an sbx below the floor as healthy:\n%s", out)
+	}
+	if !strings.Contains(out, "[FAIL] sbx version") {
+		t.Errorf("no failing line for the version:\n%s", out)
+	}
+	for _, want := range []string{"v0.42.1", sbx.MinVersion, "upgrade"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the line must carry %q:\n%s", want, out)
+		}
+	}
+}
+
+// A version den cannot read (a dev build answers "dev") is a WARNING, not a
+// failure: refusing there would make den doctor red for everyone developing
+// sbx, on a machine whose sbx may be perfectly recent.
+func TestDoctorWarnsWhenTheSbxVersionIsUnreadable(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+	f.Responses["version"] = sbx.Response{Output: []byte("sbx version: dev\n")}
+	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+		Output: []byte(`{"rules":[]}`)}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("an unreadable version must not fail den doctor: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[warn] sbx version") {
+		t.Errorf("no warning line for the unreadable version:\n%s", out)
+	}
+}
+
+func TestDoctorPassesOnTheSbxFloor(t *testing.T) {
+	home := testDenHome(t)
+	f := &sbx.Fake{Responses: lsWith()}
+	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+		Output: []byte(`{"rules":[]}`)}
+
+	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+	if err != nil {
+		t.Fatalf("sbx at the floor must pass: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[ok  ] sbx version") {
 		t.Errorf("the check is missing from a healthy report:\n%s", out)
 	}
 }

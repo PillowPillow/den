@@ -33,20 +33,6 @@ func stateFake(t *testing.T) *sbx.Fake {
 	}}
 }
 
-func TestParseSbxVersion(t *testing.T) {
-	cases := map[string]string{
-		"sbx version: v0.38.0 c022b14634c4bea846ca12870d1d5e97d5868b54\n": "v0.38.0",
-		"sbx version: v0.38.0\n":           "v0.38.0",
-		"noise\nsbx version: v1.2.3 abc\n": "v1.2.3",
-		"something else entirely\n":        "",
-	}
-	for output, want := range cases {
-		if got := ParseSbxVersion(output); got != want {
-			t.Errorf("ParseSbxVersion(%q) = %q, want %q", output, got, want)
-		}
-	}
-}
-
 // The two tables of `sbx secret ls -g`, read by column. den identifies a
 // service by name, a registry by host, and a custom secret by targets and
 // environment variable — and reads neither masked value nor placeholder.

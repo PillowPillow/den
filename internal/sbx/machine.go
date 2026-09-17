@@ -125,7 +125,7 @@ func (m *Machine) Run(_ context.Context, args ...string) ([]byte, error) {
 	joined := strings.Join(args, " ")
 	switch {
 	case joined == "version":
-		return []byte("sbx version: v0.38.0 abc\n"), nil
+		return []byte("sbx version: v0.43.0 abc\n"), nil
 	case joined == "secret ls -g":
 		return []byte(m.renderSecrets()), nil
 	case strings.HasPrefix(joined, "policy ls"):

@@ -69,7 +69,13 @@ func lsWith(names ...string) map[string]sbx.Response {
 		b.WriteString(`{"name":"` + n + `","status":"running","workspaces":["/w"]}`)
 	}
 	b.WriteString(`]}`)
-	return map[string]sbx.Response{"ls --json": {Output: []byte(b.String())}}
+	// `version` answers the floor, so every doctor test built on this helper
+	// stays "all good" rather than earning a [warn] for an unreadable
+	// version. Harmless to the rm tests: a Response key changes no call.
+	return map[string]sbx.Response{
+		"ls --json": {Output: []byte(b.String())},
+		"version":   {Output: []byte("sbx version: " + sbx.MinVersion + " abc\n")},
+	}
 }
 
 // createTestRepo creates a real git repo, with an initial commit, at the
