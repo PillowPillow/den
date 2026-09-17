@@ -43,7 +43,7 @@ type Observation struct {
 // SbxState is one read of the machine's sbx configuration, shared by every
 // driver of a plan.
 //
-// Read once, not per resource: `sbx secret ls -g` forks a process and talks to
+// Read once, not per resource: `sbx secret ls -g --json` forks a process and talks to
 // the OS keychain, and a source declaring three credentials would otherwise
 // pay for it three times per plan — and could observe an inconsistent machine
 // if something changed between two reads.
@@ -72,15 +72,11 @@ func customKey(targets, environment string) string { return targets + "\x00" + e
 // configured", which makes den offer to create credentials that already exist
 // and, worse, report a working machine as broken.
 func ReadSbxState(ctx context.Context, runner sbx.Runner) (*SbxState, error) {
-	secrets, err := runner.Run(ctx, "secret", "ls", "-g")
+	secrets, err := runner.Run(ctx, "secret", "ls", "-g", "--json")
 	if err != nil {
 		return nil, fmt.Errorf("reading the global sbx secrets: %w", err)
 	}
-	// StripUpdateBanner first: this is the one sbx read with no `--json`, so
-	// the update box lands INSIDE the table den parses by column, where a
-	// corner line carries one field and the row guard refuses the whole
-	// inventory. See sbx.StripUpdateBanner.
-	state, err := parseSecretList(sbx.StripUpdateBanner(string(secrets)))
+	state, err := decodeSecretList(secrets)
 	if err != nil {
 		return nil, err
 	}
@@ -96,99 +92,71 @@ func ReadSbxState(ctx context.Context, runner sbx.Runner) (*SbxState, error) {
 	return state, nil
 }
 
-// parseSecretList reads the two tables `sbx secret ls -g` prints. sbx has no
-// JSON output for this command (probed on v0.38.0, 2026-08-14), so den parses
-// text — anchored on the HEADER's own column positions, and tolerant about
-// widths: column widths and the number of rows may change without breaking
-// den, but a header den does not recognize is an error rather than an empty
-// result.
+// secretList is the shape of `sbx secret ls -g --json` (measured 2026-09-16 on
+// v0.43.0, spec 2026-09-16-sbx-0.43-compat §1.4; `--json` on this command
+// exists since v0.42.0, which is why den's floor is where it is).
 //
-// den reads TYPE and NAME from the first table, and TARGETS and ENV from the
-// optional `CUSTOM SECRETS` one — each of them from the offset the header's
-// SECOND column starts at, never from a field index. SCOPE is the column den
-// never reads and the only one that can hold whitespace: sbx renders a
-// host-only secret's scope as `(host only)`, two tokens, and a field-index
-// parser then reads that row's TYPE as `only)`, matches neither kind, and
-// drops the row through the unknown-TYPE branch below — reporting a
-// configured credential as missing for good, which is exactly the permanent
-// block Apply's `--all-sandboxes` exists to prevent. Reading from the offset
-// removes the dependency on how many tokens SCOPE spans: sbx aligns a table
-// and its header in one pass (observed on v0.38.0, 2026-08-18), so a wider
-// SCOPE moves both together.
+// ONLY the identity fields. The document also carries `secret` and
+// `placeholder`, both masked forms of real token material (a prefix and the
+// last four characters), and a struct WITHOUT those fields is how den keeps
+// them out of its memory and out of its errors — the doctrine the text parser
+// this replaced applied by never reading past the columns it needed.
 //
-// den never reads the masked value or the placeholder: neither is needed to
-// decide whether a credential is present, and reading them would put
-// fragments of secrets into den's memory and its errors.
-func parseSecretList(text string) (*SbxState, error) {
+// Secrets is a POINTER so that a document simply lacking the key can be told
+// from an empty list: the first is a shape den does not know, the second a
+// machine with nothing configured, and only the second may answer "absent".
+type secretList struct {
+	Secrets *[]struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	} `json:"secrets"`
+	CustomSecrets []struct {
+		Targets []string `json:"targets"`
+		Env     string   `json:"env"`
+	} `json:"custom_secrets"`
+}
+
+// decodeSecretList reads the secret inventory. A document without `secrets`
+// is an error and never an empty state: an empty state reads as "nothing is
+// configured", which makes den offer to create credentials that already exist.
+//
+// sbx.DecodeJSON, not json.Unmarshal: sbx writes its update banner on stdout
+// behind the payload, and Unmarshal refuses anything after the value.
+func decodeSecretList(raw []byte) (*SbxState, error) {
+	var list secretList
+	if err := sbx.DecodeJSON("secret ls -g --json", raw, &list); err != nil {
+		return nil, fmt.Errorf(
+			"%w — den reads secrets[].type/name and custom_secrets[].targets/env, and cannot "+
+				"guess on a shape it does not know", err)
+	}
+	if list.Secrets == nil {
+		return nil, fmt.Errorf(
+			"sbx secret ls -g --json: key %q absent from the JSON output — den cannot tell an "+
+				"unconfigured machine from a listing it does not understand", "secrets")
+	}
 	state := &SbxState{
 		Services:   map[string]bool{},
 		Registries: map[string]bool{},
 		Customs:    map[string]bool{},
 	}
-	lines := strings.Split(text, "\n")
-	section := ""
-	// Where the second column starts, in bytes. Reset at every header — the
-	// two tables are aligned independently — and -1 means "no header seen for
-	// this section yet".
-	second := -1
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if trimmed == "CUSTOM SECRETS" {
-			section = "custom"
-			second = -1
-			continue
-		}
-		fields := strings.Fields(trimmed)
-		if fields[0] == "SCOPE" {
-			switch {
-			case section == "custom" && len(fields) >= 3 && fields[1] == "TARGETS" && fields[2] == "ENV":
-			case section == "" && len(fields) >= 3 && fields[1] == "TYPE" && fields[2] == "NAME":
-			default:
-				return nil, fmt.Errorf(
-					"sbx secret ls: unrecognized table header %q — den parses this output by column, "+
-						"and guessing on a layout it does not know could report a configured "+
-						"credential as missing", trimmed)
-			}
-			// Neither "TYPE" nor "TARGETS" occurs inside "SCOPE", so the
-			// first match is the second column's own start.
-			second = strings.Index(line, fields[1])
-			continue
-		}
-		if second < 0 {
-			return nil, fmt.Errorf(
-				"sbx secret ls: the row %q arrives before any table header — den reads this "+
-					"output from the header's column positions, and cannot place a row whose "+
-					"table it never saw", trimmed)
-		}
-		var cells []string
-		if second < len(line) {
-			cells = strings.Fields(line[second:])
-		}
-		if section == "custom" {
-			// TARGETS ENV PLACEHOLDER SECRET — the two trailing columns are
-			// deliberately not read.
-			if len(cells) < 2 {
-				return nil, fmt.Errorf("sbx secret ls: unreadable custom secret row %q", trimmed)
-			}
-			state.Customs[customKey(cells[0], cells[1])] = true
-			continue
-		}
-		// TYPE NAME SECRET
-		if len(cells) < 2 {
-			return nil, fmt.Errorf("sbx secret ls: unreadable row %q", trimmed)
-		}
-		switch cells[0] {
+	for _, s := range *list.Secrets {
+		switch s.Type {
 		case "service":
-			state.Services[cells[1]] = true
+			state.Services[s.Name] = true
 		case "registry":
-			state.Registries[cells[1]] = true
+			state.Registries[s.Name] = true
 		}
 		// An unknown TYPE is ignored rather than refused: sbx may grow a kind
 		// den does not manage, and a source that does not declare it is
 		// unaffected.
+	}
+	for _, c := range list.CustomSecrets {
+		// One key PER TARGET: the source manifest declares one host per
+		// resource (CredentialPresent looks up res.Host), and an entry sbx
+		// stores for several targets must answer for each of them.
+		for _, target := range c.Targets {
+			state.Customs[customKey(target, c.Env)] = true
+		}
 	}
 	return state, nil
 }

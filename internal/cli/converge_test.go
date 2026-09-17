@@ -658,7 +658,7 @@ func TestSourceStatusExitsNonZeroOnlyWhenDenCannotUseTheSource(t *testing.T) {
 		installFixture(t, d, home, work)
 		// The machine stops answering — the shape the prototype observed when
 		// Keychain access was denied.
-		f.Fail["secret ls -g"] = errors.New("keychain access denied")
+		f.Fail["secret ls -g --json"] = errors.New("keychain access denied")
 
 		out, err := runCLI(t, d, "source", "status", "dg", "--den-home", home)
 		if err == nil {
@@ -816,7 +816,7 @@ func TestSourceAddAsksNothingOnAnUnobservableMachine(t *testing.T) {
 	work := t.TempDir()
 	makeWorkRepo(t, work, "api")
 	f := convergedSbx()
-	f.Fail["secret ls -g"] = errors.New("keychain access denied")
+	f.Fail["secret ls -g --json"] = errors.New("keychain access denied")
 	d := convergeDeps(f)
 	d.IsTTY = func() bool { return true }
 	pf := &prompt.Fake{
@@ -913,7 +913,7 @@ func TestConvergenceRefusesWhenTheMachineBecomesUnobservableMidRun(t *testing.T)
 	d.Prompt = &blindingPrompter{
 		Fake: pf,
 		blind: func() {
-			f.Fail["secret ls -g"] = errors.New("the sbx daemon stopped answering")
+			f.Fail["secret ls -g --json"] = errors.New("the sbx daemon stopped answering")
 		},
 	}
 
@@ -972,7 +972,7 @@ func TestABadAnswerFileIsRefusedBeforeTheMachineIsAsked(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := convergedSbx()
-	f.Fail["secret ls -g"] = errors.New("keychain access denied")
+	f.Fail["secret ls -g --json"] = errors.New("keychain access denied")
 	d := convergeDeps(f)
 	d.IsTTY = func() bool { return true }
 	d.Prompt = &prompt.Fake{}
@@ -1161,7 +1161,7 @@ func TestDoctorNamesTheCauseWhenTheTwoSbxReadsFailDifferently(t *testing.T) {
 	}
 
 	blind := &sbx.Fake{Responses: map[string]sbx.Response{
-		"secret ls -g": {Err: errors.New("keychain access denied")},
+		"secret ls -g --json": {Err: errors.New("keychain access denied")},
 		"policy ls --type network --source local --decision allow --json": {
 			Err: errors.New("global network policy has not been initialized")},
 	}}
@@ -1187,13 +1187,14 @@ func TestDoctorNamesTheCauseWhenTheTwoSbxReadsFailDifferently(t *testing.T) {
 // cause, on the first source line.
 //
 // ReadSbxState gives up in four places, and only one of them — `policy ls`
-// failing — also fails doctor's own `sbx policy` check. Here `secret ls -g`
-// ANSWERS, with a header den does not parse (what a newer sbx changing that
-// table looks like, per parseSecretList), so the policy check is a plain [ok]
-// and nothing outside the source lines could say why den is blind. The dedup
-// runs among the source lines only, so this exit needs no special case — which
-// is the whole point of the shape: the count is one here for the same reason
-// it is one everywhere.
+// failing — also fails doctor's own `sbx policy` check. Here `secret ls -g
+// --json` ANSWERS, with a shape den does not parse (a document missing the
+// `secrets` key — what a newer sbx changing this shape looks like, per
+// decodeSecretList), so the policy check is a plain [ok] and nothing outside
+// the source lines could say why den is blind. The dedup runs among the
+// source lines only, so this exit needs no special case — which is the whole
+// point of the shape: the count is one here for the same reason it is one
+// everywhere.
 func TestDoctorStatesTheCauseNoOtherCheckStates(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "den")
 	work := t.TempDir()
@@ -1206,9 +1207,9 @@ func TestDoctorStatesTheCauseNoOtherCheckStates(t *testing.T) {
 		t.Fatalf("source add corp: %v\n%s", err, out)
 	}
 
-	// The machine ANSWERS both calls; den cannot read the first one's table.
+	// The machine ANSWERS both calls; den cannot read the first one's shape.
 	unparsable := &sbx.Fake{Responses: map[string]sbx.Response{
-		"secret ls -g": {Output: []byte("SCOPE KIND LABEL\n")},
+		"secret ls -g --json": {Output: []byte(`{"custom_secrets":[]}`)},
 		"policy ls --type network --source local --decision allow --json": {
 			Output: []byte(`{"rules":[]}`)},
 	}}
@@ -1216,10 +1217,10 @@ func TestDoctorStatesTheCauseNoOtherCheckStates(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an unobservable machine must exit non-zero:\n%s", out)
 	}
-	if n := strings.Count(out, "unrecognized table header"); n != 1 {
+	if n := strings.Count(out, `key "secrets" absent`); n != 1 {
 		t.Fatalf("a report that exits 1 names the cause %d times, want exactly 1:\n%s", n, out)
 	}
-	if line := reportLine(t, out, "source corp"); !strings.Contains(line, "unrecognized table header") {
+	if line := reportLine(t, out, "source corp"); !strings.Contains(line, `key "secrets" absent`) {
 		t.Errorf("the first source line does not state the cause: %q", line)
 	}
 	if line := reportLine(t, out, "source dg"); !strings.Contains(line,
@@ -1228,7 +1229,7 @@ func TestDoctorStatesTheCauseNoOtherCheckStates(t *testing.T) {
 	}
 	// The [ok] policy check must not be read as a carrier: nothing above the
 	// source lines says a word about why den is blind here.
-	if line := reportLine(t, out, "sbx policy"); strings.Contains(line, "unrecognized table header") {
+	if line := reportLine(t, out, "sbx policy"); strings.Contains(line, `key "secrets" absent`) {
 		t.Errorf("the policy check states a cause it did not hit: %q", line)
 	}
 }

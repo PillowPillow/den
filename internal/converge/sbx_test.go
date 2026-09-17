@@ -27,16 +27,17 @@ func fixture(t *testing.T, name string) []byte {
 func stateFake(t *testing.T) *sbx.Fake {
 	t.Helper()
 	return &sbx.Fake{Responses: map[string]sbx.Response{
-		"secret ls -g": {Output: fixture(t, "secret-ls.txt")},
+		"secret ls -g --json": {Output: fixture(t, "secret-ls.json")},
 		"policy ls --type network --source local --decision allow --json": {
 			Output: fixture(t, "policy-ls.json")},
 	}}
 }
 
-// The two tables of `sbx secret ls -g`, read by column. den identifies a
-// service by name, a registry by host, and a custom secret by targets and
-// environment variable — and reads neither masked value nor placeholder.
-func TestReadSbxStateParsesBothTables(t *testing.T) {
+// `sbx secret ls -g --json`, decoded on its identity fields only. den
+// identifies a service by name, a registry by host, and a custom secret by
+// each of its targets and its environment variable — and never reads the
+// masked value nor the placeholder.
+func TestReadSbxStateReadsTheSecretList(t *testing.T) {
 	state, err := ReadSbxState(context.Background(), stateFake(t))
 	if err != nil {
 		t.Fatalf("ReadSbxState: %v", err)
@@ -61,52 +62,53 @@ func TestReadSbxStateParsesBothTables(t *testing.T) {
 	}
 }
 
-// A layout den does not recognize is an observation ERROR, never an empty
-// result: an empty state reads as "nothing is configured" and would make den
-// reconfigure credentials that already exist.
-func TestParseSecretListRefusesAnUnknownTable(t *testing.T) {
-	_, err := parseSecretList("SCOPE      KIND       NAME\n(global)   service    github\n")
-	if err == nil || !strings.Contains(err.Error(), "header") {
-		t.Fatalf("parseSecretList = %v, expected a refusal naming the header", err)
+// A document WITHOUT the `secrets` key is an observation ERROR, never an
+// empty state — the doctrine sbx.Ls and sbx.Templates state in full: an
+// empty state reads as "nothing is configured" and would make den
+// reconfigure credentials that already exist. An empty ARRAY is a legitimate
+// empty machine.
+func TestDecodeSecretListRefusesAMissingSecretsKey(t *testing.T) {
+	_, err := decodeSecretList([]byte(`{"custom_secrets":[]}`))
+	if err == nil || !strings.Contains(err.Error(), "secrets") {
+		t.Fatalf("decodeSecretList = %v, expected a refusal naming the key", err)
 	}
-}
-
-// A SCOPE spanning two tokens is read like any other row. sbx renders a
-// host-only secret's scope as `(host only)`, and den takes TYPE, NAME,
-// TARGETS and ENV from the offsets the header gives them precisely so such a
-// row cannot fall through: read by field index, its TYPE would be `only)`,
-// the row would be dropped as an unknown kind, and den would report a
-// configured credential as missing on every run — re-applying forever and
-// never verifying.
-func TestParseSecretListReadsAMultiTokenScope(t *testing.T) {
-	state, err := parseSecretList(
-		"SCOPE        TYPE       NAME     SECRET\n" +
-			"(host only)  registry   ghcr.io  token-***\n" +
-			"(global)     service    github   (stored)\n" +
-			"\nCUSTOM SECRETS\n" +
-			"SCOPE        TARGETS       ENV        PLACEHOLDER  SECRET\n" +
-			"(host only)  api.example   API_TOKEN  sbx-cs-x     token-***\n")
+	state, err := decodeSecretList([]byte(`{"secrets":[],"custom_secrets":[]}`))
 	if err != nil {
-		t.Fatalf("parseSecretList: %v", err)
+		t.Fatalf("an empty list is a readable machine: %v", err)
 	}
-	if !state.Registries["ghcr.io"] {
-		t.Errorf("a (host only) row must be read, not dropped; registries = %v", state.Registries)
-	}
-	if !state.Services["github"] {
-		t.Errorf("services = %v", state.Services)
-	}
-	if !state.Customs[customKey("api.example", "API_TOKEN")] {
-		t.Errorf("customs = %v", state.Customs)
+	if len(state.Services) != 0 || len(state.Registries) != 0 || len(state.Customs) != 0 {
+		t.Errorf("state = %+v, want empty", state)
 	}
 }
 
-// A row with no header above it is refused for the same reason an unknown
-// header is: den places a row by the column offsets the header declares, and
-// a table it never saw the header of is a layout it cannot read.
-func TestParseSecretListRefusesARowWithoutAHeader(t *testing.T) {
-	_, err := parseSecretList("(global)   service    github   (stored)\n")
-	if err == nil || !strings.Contains(err.Error(), "header") {
-		t.Fatalf("parseSecretList = %v, expected a refusal naming the header", err)
+// sbx stores one custom secret for several targets; the source manifest
+// declares one host per resource (CredentialPresent looks up res.Host). Every
+// target therefore gets its own key, or a two-target secret would answer for
+// neither of its hosts.
+func TestDecodeSecretListIndexesEveryTarget(t *testing.T) {
+	state, err := decodeSecretList([]byte(`{"secrets":[],"custom_secrets":[
+		{"scope":"global","targets":["a.example","b.example"],"env":"TOKEN","placeholder":"x","secret":"y"}]}`))
+	if err != nil {
+		t.Fatalf("decodeSecretList: %v", err)
+	}
+	for _, host := range []string{"a.example", "b.example"} {
+		if !state.Customs[customKey(host, "TOKEN")] {
+			t.Errorf("target %q must be indexed; customs = %v", host, state.Customs)
+		}
+	}
+}
+
+// An unknown TYPE is ignored rather than refused: sbx may grow a kind den does
+// not manage, and a source that does not declare it is unaffected.
+func TestDecodeSecretListIgnoresAnUnknownType(t *testing.T) {
+	state, err := decodeSecretList([]byte(`{"secrets":[
+		{"scope":"global","type":"oauth-app","name":"thing","secret":"(stored)"},
+		{"scope":"global","type":"service","name":"github","secret":"(stored)"}],"custom_secrets":[]}`))
+	if err != nil {
+		t.Fatalf("decodeSecretList: %v", err)
+	}
+	if !state.Services["github"] || len(state.Services) != 1 || len(state.Registries) != 0 {
+		t.Errorf("state = %+v", state)
 	}
 }
 
@@ -354,8 +356,8 @@ func TestVerifyReReadsTheMachine(t *testing.T) {
 // a resource permanently blocked by a name its author was free to pick.
 func TestGithubCredentialIsKeyedByTypeNotByItsDeclaredID(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"secret ls -g": {Output: []byte(
-			"SCOPE   TYPE     NAME    SECRET\nglobal  service  github  (stored)\n")},
+		"secret ls -g --json": {Output: []byte(
+			`{"secrets":[{"scope":"global","type":"service","name":"github","secret":"(stored)"}],"custom_secrets":[]}`)},
 		"policy ls --type network --source local --decision allow --json": {
 			Output: []byte(`{"rules":[]}`)},
 	}}
@@ -463,14 +465,12 @@ func TestParseAllowedHostsKeepsItsHintOnAnUnreadableShape(t *testing.T) {
 	}
 }
 
-// The SAME outage on the one sbx read that has no --json: `sbx secret ls -g`
-// is a text table, and the banner's corner lines (`╭───╮`) carry a single
-// field where den's column parser demands two. The row guard then turned the
-// whole credential inventory into a hard refusal — den announcing an
-// unreadable machine because sbx advertised a release.
-func TestReadSbxStateIgnoresTheUpdateBannerOnTheSecretTable(t *testing.T) {
+// The SAME outage on the secret read: sbx writes its update box on stdout
+// BEHIND the JSON payload, and json.Unmarshal refuses anything after the
+// value. sbx.DecodeJSON tolerates it, on this read as on every other.
+func TestReadSbxStateIgnoresTheUpdateBannerBehindTheSecretList(t *testing.T) {
 	runner := &sbx.Fake{Responses: map[string]sbx.Response{
-		"secret ls -g": {Output: append(fixture(t, "secret-ls.txt"), []byte(sbxUpdateBanner)...)},
+		"secret ls -g --json": {Output: append(fixture(t, "secret-ls.json"), []byte(sbxUpdateBanner)...)},
 		"policy ls --type network --source local --decision allow --json": {
 			Output: []byte(`{"rules":[]}` + sbxUpdateBanner)},
 	}}

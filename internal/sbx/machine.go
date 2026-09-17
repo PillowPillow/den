@@ -126,7 +126,7 @@ func (m *Machine) Run(_ context.Context, args ...string) ([]byte, error) {
 	switch {
 	case joined == "version":
 		return []byte("sbx version: v0.43.0 abc\n"), nil
-	case joined == "secret ls -g":
+	case joined == "secret ls -g --json":
 		return []byte(m.renderSecrets()), nil
 	case strings.HasPrefix(joined, "policy ls"):
 		return []byte(m.renderPolicies()), nil
@@ -256,32 +256,36 @@ func (m *Machine) Pipe(_ context.Context, args ...string) error {
 	return m.failure(args)
 }
 
-// renderSecrets prints the two tables `sbx secret ls -g` prints (probed on
-// v0.38.0). Sorted, so a golden or an order assertion holds between runs.
+// renderSecrets prints `sbx secret ls -g --json` in the shape measured on
+// v0.43.0 (2026-09-16). Sorted, so a golden or an order assertion holds
+// between runs. The masked fields carry fixed placeholders: a double must not
+// hold a live value any more than the real command prints one.
 //
 // Callers hold m.mu.
 func (m *Machine) renderSecrets() string {
-	var b strings.Builder
-	b.WriteString("SCOPE      TYPE       NAME       SECRET\n")
+	var secrets []string
 	for _, name := range slices.Sorted(maps.Keys(m.Services)) {
-		fmt.Fprintf(&b, "(global)   service    %s   (stored)\n", name)
+		secrets = append(secrets, fmt.Sprintf(
+			`{"scope":"global","type":"service","name":%q,"secret":"(stored)"}`, name))
 	}
 	for _, host := range slices.Sorted(maps.Keys(m.Registries)) {
-		fmt.Fprintf(&b, "(global)   registry   %s   token-***\n", host)
+		secrets = append(secrets, fmt.Sprintf(
+			`{"scope":"global","type":"registry","name":%q,"secret":"token-***"}`, host))
 	}
-	if len(m.Customs) > 0 {
-		b.WriteString("\nCUSTOM SECRETS\nSCOPE      TARGETS   ENV   PLACEHOLDER   SECRET\n")
-		entries := slices.SortedFunc(maps.Keys(m.Customs), func(a, b CustomSecret) int {
-			if c := strings.Compare(a.Host, b.Host); c != 0 {
-				return c
-			}
-			return strings.Compare(a.Env, b.Env)
-		})
-		for _, e := range entries {
-			fmt.Fprintf(&b, "(global)   %s   %s   sbx-cs-x   token-***\n", e.Host, e.Env)
+	var customs []string
+	entries := slices.SortedFunc(maps.Keys(m.Customs), func(a, b CustomSecret) int {
+		if c := strings.Compare(a.Host, b.Host); c != 0 {
+			return c
 		}
+		return strings.Compare(a.Env, b.Env)
+	})
+	for _, e := range entries {
+		customs = append(customs, fmt.Sprintf(
+			`{"scope":"global","targets":[%q],"env":%q,"placeholder":"sbx-cs-x","secret":"token-***"}`,
+			e.Host, e.Env))
 	}
-	return b.String()
+	return `{"secrets":[` + strings.Join(secrets, ",") + `],"custom_secrets":[` +
+		strings.Join(customs, ",") + `],"shadowed_services":[],"env_only_count":0}`
 }
 
 // Callers hold m.mu.
