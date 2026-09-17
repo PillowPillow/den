@@ -253,7 +253,7 @@ func (s Service) StatusWith(ctx context.Context, denHome, name string,
 func (s Service) checkCompatibility(ctx context.Context, m *source.Manifest, req Request, plan *Plan) error {
 	sbxVersion := ""
 	if out, err := s.Sbx.Run(ctx, "version"); err == nil {
-		sbxVersion = ParseSbxVersion(string(out))
+		sbxVersion = sbx.ParseVersion(string(out))
 	}
 	err := source.CheckCompatibility(m, req.DenVersion, sbxVersion)
 	var unknown *source.UnknownVersionError

@@ -136,6 +136,24 @@ func TestCreateArgvNeverEmitsLabel(t *testing.T) {
 	}
 }
 
+// sbx v0.43.0 shares the host's skills store into every sandbox by default
+// (`--skills readonly`, mounted at ~/.claude/skills). den's agent profile is
+// the single source of skills in a VM, so den opts out on every create.
+// Measured 2026-09-16: `--skills=off` mounts nothing.
+func TestCreateArgvTurnsSharedSkillsOff(t *testing.T) {
+	argv, err := CreateArgv(completeCreate())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	i := slices.Index(argv, "--skills")
+	if i < 0 || argv[i+1] != "off" {
+		t.Fatalf("--skills off missing: %v", argv)
+	}
+	if iAgent := slices.Index(argv, PositionalAgent); i > iAgent {
+		t.Errorf("--skills must precede the positional agent: %v", argv)
+	}
+}
+
 func TestCreateArgvRejectsIncompleteEntries(t *testing.T) {
 	cases := map[string]func(c *Create){
 		"empty name":           func(c *Create) { c.Name = "" },
@@ -245,6 +263,24 @@ func TestCreateArgvGolden(t *testing.T) {
 		got := strings.Join(argv, "\n") + "\n"
 		if got != string(want) {
 			t.Errorf("%s\n--- got ---\n%s\n--- want ---\n%s", path, got, want)
+		}
+	}
+}
+
+// A create asks the CREATABLE question, so the whole-name rules sbx applies
+// at creation refuse here too — while the readers that share this package's
+// validator stay tolerant of names an older sbx accepted.
+func TestCreateArgvRejectsANameSbxWouldNotCreate(t *testing.T) {
+	for _, name := range []string{
+		"a",
+		"api." + strings.Repeat("b", MaxNameLength-len("api.")+1),
+		"api.fix-",
+		ReservedName,
+	} {
+		c := completeCreate()
+		c.Name = name
+		if _, err := CreateArgv(c); err == nil {
+			t.Errorf("%q must be rejected: `sbx create` refuses it", name)
 		}
 	}
 }

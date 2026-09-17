@@ -46,11 +46,11 @@ type buildPlan struct {
 // EVERYTHING rejectable from config alone runs BEFORE the first create — the
 // ordering internal/spawn states at length: anything rejectable up front is
 // rejected before the first side effect. That is not just ReadProvisioning:
-// CreateArgv's own two guards (ValidateSandboxName; "no origin" for a stack
-// with neither `base:` nor a resolved parent image) are just as cheap to run
-// here and just as expensive to discover after several stacks have already
-// built — so this loop runs CreateArgv too and keeps the resulting argv
-// rather than throwing it away and reassembling it later. And whether a
+// CreateArgv's own two guards (ValidateCreatableSandboxName; "no origin" for
+// a stack with neither `base:` nor a resolved parent image) are just as cheap
+// to run here and just as expensive to discover after several stacks have
+// already built — so this loop runs CreateArgv too and keeps the resulting
+// argv rather than throwing it away and reassembling it later. And whether a
 // `<stack>-build` already exists is checked ONCE for the WHOLE chain, with a
 // SINGLE `sbx ls --json`, rather than once per stack: a leftover for stack 3
 // of 5 must be caught before stack 1 is even created, not discovered after

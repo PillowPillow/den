@@ -192,16 +192,22 @@ func newPortsCmd(denHome *string, runner sbx.Runner, scanner ports.Scanner,
 //
 // WHY WAKING, AND NOT REFUSING. §2 is about not guessing the user's INTENT: a
 // typo'd config key, a flag contradiction, an ambiguous selection. There is
-// nothing ambiguous here. `sbx ports --publish` needs a container endpoint, and
-// on a stopped sandbox it answers `500 Internal Server Error: … no container
-// endpoint with IP address found` — a string naming neither the state nor a
-// remedy (#16). A refusal would name both, but the only thing the user could do
-// with it is run a command that starts the VM, which is the one thing den was
-// refusing to do for them. That is a chore, not a safeguard. And F2 already
-// settled the precedent in the other direction: `den exec`, `den shell`, `den up`
-// and `den run` take a stopped sandbox back without asking, because `sbx exec` restarts it
-// transparently — the surface `sbx ports` conspicuously does not share.
+// nothing ambiguous here. At #16's arbitration, `sbx ports --publish` needed a
+// container endpoint, and on a stopped sandbox it answered `500 Internal
+// Server Error: … no container endpoint with IP address found` — a string
+// naming neither the state nor a remedy. A refusal would name both, but the
+// only thing the user could do with it is run a command that starts the VM,
+// which is the one thing den was refusing to do for them. That is a chore,
+// not a safeguard. And F2 already settled the precedent in the other
+// direction: `den exec`, `den shell`, `den up` and `den run` take a stopped
+// sandbox back without asking, because `sbx exec` restarts it transparently —
+// a surface `sbx ports` did not share when #16 was arbitrated.
 // Measured: a bare `sbx exec <name> true` restarts a stopped sandbox in ~1.4 s.
+//
+// `sbx ports --publish` has started a stopped sandbox by itself since v0.42.0
+// (measured 2026-09-16), but den still wakes it FIRST: the reading below must
+// happen on a running VM, before the first publish, or den republishes what
+// the stopped listing hid.
 //
 // It is also what makes the reading of #15's fix legitimate at all. `sbx ls
 // --json` omits the `ports` array entirely while a sandbox is stopped, and
@@ -226,8 +232,8 @@ func wakeForPorts(cmd *cobra.Command, runner sbx.Runner, b *sbx.Sandbox) (*sbx.S
 	// starting a microVM takes a second or two, and a silent pause is what a
 	// hang looks like.
 	fmt.Fprintf(cmd.ErrOrStderr(),
-		"sandbox %s is stopped: den is starting it — publishing a port needs a live endpoint in the "+
-			"VM, and `sbx ports` (unlike `sbx exec`) does not restart one; its state is preserved\n",
+		"sandbox %s is stopped: den is starting it — a stopped sandbox hides what it already "+
+			"publishes, and den reads that before publishing anything; its state is preserved\n",
 		b.Name)
 	if _, err := runner.Run(cmd.Context(), "exec", b.Name, "true"); err != nil {
 		return nil, err
@@ -263,11 +269,20 @@ func wakeForPorts(cmd *cobra.Command, runner sbx.Runner, b *sbx.Sandbox) (*sbx.S
 // publicationsOf translates what `sbx ls --json` says a sandbox publishes into
 // the pairs internal/ports reasons about.
 //
-// THE FILTER IS THE POINT. Only publications on ports.Loopback over tcp are
+// THE FILTER IS THE POINT. Only publications on ports.Loopback over TCP are
 // den's: den binds nothing else anywhere (spec §8), and sbx keys its "already
 // published" refusal on the triple address/port/protocol — so a publication on
 // another address is neither reusable as den's own window nor in the way of
 // one, and counting it would make den skip a publication it never made.
+//
+// TWO protocol strings, and both are den's. den's publish spec names no
+// protocol (ports.Port.PublishSpec), and what sbx stores for that changed:
+// dual-stack "tcp" before v0.42.0, "tcp4" since — and the listing carries the
+// stored string back verbatim, never normalized (measured 2026-09-16 on
+// v0.43.0: a `/tcp` publish reads "tcp", a bare one reads "tcp4", side by
+// side). Windows bound before the upgrade come back on resume with the old
+// string, so dropping "tcp" would orphan them the same way not knowing "tcp4"
+// did: den saw none of its publications and republished ports already bound.
 //
 // An empty result on a STOPPED sandbox means nothing at all: sbx omits the
 // `ports` array entirely until the VM is running, while the publications come
@@ -280,12 +295,18 @@ func publicationsOf(b *sbx.Sandbox) []ports.Published {
 	}
 	out := make([]ports.Published, 0, len(b.Ports))
 	for _, p := range b.Ports {
-		if p.HostIP != ports.Loopback || p.Protocol != "tcp" {
+		if p.HostIP != ports.Loopback || !isDenProtocol(p.Protocol) {
 			continue
 		}
 		out = append(out, ports.Published{Host: p.HostPort, Container: p.SandboxPort})
 	}
 	return out
+}
+
+// isDenProtocol names the protocol strings a den-made publication can carry.
+// See publicationsOf for why there are two.
+func isDenProtocol(protocol string) bool {
+	return protocol == "tcp" || protocol == "tcp4"
 }
 
 // parseAdds turns the `--add` values into the pairs ports.Resolve appends to the

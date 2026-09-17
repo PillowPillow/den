@@ -97,6 +97,9 @@ func sbxDeps(t *testing.T, r sbx.Runner) Deps {
 	deps.Sbx = r
 	deps.SSHAgent = nil
 	deps.Freshness = fakeGateOptions()
+	// A pinned clock: `den ls` renders LAST USED relative to it, and a test
+	// tree that read time.Now would print a column no assertion can pin.
+	deps.Now = func() time.Time { return time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC) }
 	return deps
 }
 

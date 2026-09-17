@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/doctor"
@@ -18,12 +19,17 @@ import (
 // newLsCmd lists live sandboxes. Without labels on the sbx side, `den ls` is
 // `sbx ls --json` with each name split into (nest, instance) — see
 // sbx.Sandbox.Nest and sbx.Sandbox.Instance.
-func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
+func newLsCmd(denHome *string, runner sbx.Runner, now func() time.Time) *cobra.Command {
 	return &cobra.Command{
 		Use:   "ls",
 		Short: "List live sandboxes",
 		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if now == nil {
+				now = time.Now
+			}
+			at := now()
+
 			home, err := config.Home(*denHome)
 			if err != nil {
 				return err
@@ -117,7 +123,7 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tNEST\tINSTANCE\tWORKTREE\tSTATUS\tWORKSPACES")
+			fmt.Fprintln(w, "NAME\tNEST\tINSTANCE\tWORKTREE\tSTATUS\tLAST USED\tWORKSPACES")
 			for _, b := range boxes {
 				nestName := b.Nest()
 				// The MARK is decided on the sandbox-derived name, before the
@@ -167,8 +173,8 @@ func newLsCmd(denHome *string, runner sbx.Runner) *cobra.Command {
 				if wt == "" {
 					wt = "-"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
-					b.Name, nestName, instance, wt, b.Status, len(b.Workspaces))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
+					b.Name, nestName, instance, wt, b.Status, sbx.Relative(at, b.LastUsedAt), len(b.Workspaces))
 			}
 			if err := w.Flush(); err != nil {
 				return err

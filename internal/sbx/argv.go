@@ -39,7 +39,12 @@ func CreateArgv(c Create) ([]string, error) {
 	// Single source of truth, shared with internal/agent: validating
 	// component-by-component here let "api." through, which sbx would really
 	// create and `sbx ls` would split back into "api".
-	if err := ValidateSandboxName(c.Name); err != nil {
+	//
+	// The CREATABLE form, the stricter of the two: this argv is a create, so
+	// the whole-name rules sbx applies at creation are den's to check as well
+	// — the readers keep the structural one, which stays tolerant of names an
+	// older sbx accepted.
+	if err := ValidateCreatableSandboxName(c.Name); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(c.Image) == "" {
@@ -62,6 +67,17 @@ func CreateArgv(c Create) ([]string, error) {
 	}
 
 	argv := []string{"create", "--name", c.Name, "--template", c.Image}
+	// `--skills off`, ALWAYS. sbx v0.43.0 defaults to `readonly`: it mounts
+	// the host's shared skills store at the agent's skills directory
+	// (~/.claude/skills) of every sandbox it creates. den points the agent at
+	// its own profile through CLAUDE_CONFIG_DIR, so the paths do not collide
+	// — but two sources of skills in one VM contradict what the profile is
+	// for, and the store's content depends on whatever `sbx skills import`
+	// ran on that machine. Measured 2026-09-16 (spec 2026-09-16-sbx-0.43-compat
+	// §1.4): with `off`, nothing is mounted; the empty root-owned directory
+	// in the image stays. The deprecated `--no-share-skills` was the v0.39
+	// spelling and is not emitted.
+	argv = append(argv, "--skills", "off")
 	// BOUNDARY guard, not a duplicate of config.Stack.DeclaredKits — which
 	// already filters empty entries at production's one caller.
 	//

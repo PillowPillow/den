@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/sbx"
 )
 
 // A DERIVED stack starts from its parent's image, and the positional is
@@ -21,7 +22,7 @@ func TestCreateArgvForADerivedStack(t *testing.T) {
 		t.Fatalf("CreateArgv: %v", err)
 	}
 	want := []string{"create", "--name", "dgdevx-build",
-		"--template", "docker.io/library/devx:v1", "shell", "/scratch/dgdevx"}
+		"--template", "docker.io/library/devx:v1", "--skills", "off", "shell", "/scratch/dgdevx"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv =\n  %v\nwant\n  %v", got, want)
 	}
@@ -36,7 +37,7 @@ func TestCreateArgvForARootStack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateArgv: %v", err)
 	}
-	want := []string{"create", "--name", "devx-build", "claude", "/scratch/devx"}
+	want := []string{"create", "--name", "devx-build", "--skills", "off", "claude", "/scratch/devx"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv =\n  %v\nwant\n  %v", got, want)
 	}
@@ -53,7 +54,7 @@ func TestCreateArgvCarriesNoSpawnMachinery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateArgv: %v", err)
 	}
-	want := []string{"create", "--name", "devx-build", "claude", "/scratch/devx"}
+	want := []string{"create", "--name", "devx-build", "--skills", "off", "claude", "/scratch/devx"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv =\n  %v\nwant\n  %v", got, want)
 	}
@@ -70,6 +71,24 @@ func TestCreateArgvRefusesAStackNameThatIsNotANameableSandbox(t *testing.T) {
 	_, err := CreateArgv(s, "", "/scratch/x")
 	if err == nil {
 		t.Fatal("CreateArgv accepted a stack name that cannot be a sandbox name")
+	}
+	if !strings.Contains(err.Error(), stackDir) {
+		t.Errorf("error does not name the stack directory: got %v, expected to contain %q", err, stackDir)
+	}
+}
+
+// The stack name is legal for den and legal as a sandbox component, yet the
+// "-build" suffix pushes the build sandbox past sbx's 63-byte cap. The guard
+// asks whether the name is CREATABLE, so it catches this too.
+func TestCreateArgvRefusesAStackNameTooLongOnceSuffixed(t *testing.T) {
+	name := strings.Repeat("x", sbx.MaxNameLength)
+	stackDir := "/home/u/.den/stacks/" + name
+	s := &config.Stack{Name: name, Image: "x:v1", Base: "claude",
+		Dir:       stackDir,
+		Provision: config.Provision{Steps: []string{"/x/go.sh"}}}
+	_, err := CreateArgv(s, "", "/scratch/x")
+	if err == nil {
+		t.Fatal("CreateArgv accepted a build sandbox name sbx would refuse")
 	}
 	if !strings.Contains(err.Error(), stackDir) {
 		t.Errorf("error does not name the stack directory: got %v, expected to contain %q", err, stackDir)

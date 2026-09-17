@@ -124,15 +124,22 @@ func newRmCmd(denHome *string, runner sbx.Runner, g worktree.Git) *cobra.Command
 // all and was simply never reclaimed.
 //
 // Without a usable record it falls back on that derivation, saying so
-// (cleanWorktreesLegacy). Never a refusal: a `den rm` that refuses leaves the
+// (cleanWorktreesLegacy). Never a refusal, and that holds for the name check
+// below too, not only for the fallback: a `den rm` that refuses leaves the
 // user with a live VM they can no longer destroy (doctrine T13/T16).
 func cleanWorktrees(ctx context.Context, home, ref, sandboxName string, g worktree.Git, force bool, out, warnW io.Writer) error {
 	// Before the name is turned into a manifest path. sbx.Ls validates NOTHING
 	// of what it reads, and manifest.Path refuses a hostile name for the same
 	// reason the legacy body does — this check simply happens once, upstream of
-	// both.
+	// both. It degrades to a warning rather than a refusal: the VM behind this
+	// name may be entirely legitimate (created outside den, or by a den whose
+	// naming rules diverge from this one's), and a name den cannot turn into a
+	// host path is no reason to leave that VM stranded.
 	if err := sbx.ValidateSandboxName(sandboxName); err != nil {
-		return fmt.Errorf("cleaning up worktrees: %w", err)
+		fmt.Fprintf(warnW, "%v — den cannot turn %s into a host path, so its worktrees (if any) "+
+			"are left on disk; remove them by hand once you know no live sandbox mounts them\n",
+			err, sandboxName)
+		return nil
 	}
 	_, wt := sbx.SplitName(sandboxName)
 	m, err := manifest.Read(home, sandboxName)
