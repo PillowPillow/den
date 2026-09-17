@@ -198,40 +198,53 @@ func TestRmWithNoWorktreeCleansUpNothing(t *testing.T) {
 }
 
 // A sandbox listed by `sbx ls` may have been created outside den, with a name
-// sbx accepts but den would refuse as a path component: without validation,
-// this name travels as-is to worktree.Path and sends Remove outside
-// worktree_root — reproduced here exactly as measured in review: a real,
-// declared nest "api" (LoadNest succeeds), so the guard is exercised at the
-// end of the REAL resolution, not short-circuited by a missing nest that would
-// fail for an unrelated reason anyway (best-effort — see
-// TestRmUnreadableNestDoesNotPreventDestruction).
-func TestRmRejectsANonCanonicalSandboxName(t *testing.T) {
+// sbx accepts but den's own naming rules refuse (ValidateSandboxName): den
+// cannot turn such a name into a host path, so cleanup has nothing to
+// reclaim. But the VM itself may be entirely legitimate, and `den rm` must
+// still destroy it (doctrine T13/T16) rather than stranding it over a
+// worktree lookup it cannot even attempt.
+func TestRmWarnsOnANonCanonicalSandboxNameAndStillDestroysIt(t *testing.T) {
 	denHome := t.TempDir()
 	writeConfig(t, denHome, minimalConfig)
-	writeStack(t, denHome, "devx", "image: devx:v1\n")
-	repo := filepath.Join(t.TempDir(), "api")
-	createTestRepo(t, repo)
-	writeNest(t, denHome, "api", "stack: devx\nrepos:\n  - { path: "+repo+" }\n")
 
-	// SplitName cuts at the FIRST dot: nest "api" (valid, LoadNest succeeds),
-	// worktree "../../escape" (invalid — a sandbox name component cannot start
-	// with ".").
+	// SplitName cuts at the FIRST dot: nest "api" (valid), worktree
+	// "../../escape" (invalid — a sandbox name component cannot start with
+	// ".").
 	foreignName := "api.../../escape"
 	f := &sbx.Fake{Responses: lsWith(foreignName)}
 
-	_, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", foreignName)
-	if err == nil {
-		t.Fatal("a non-canonical sandbox name must be refused")
+	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "--den-home", denHome, "rm", foreignName)
+	if err != nil {
+		t.Fatalf("a name den cannot validate must still be destroyable: %v", err)
 	}
-	if f.HasCalled("rm", "--force", foreignName) {
-		t.Errorf("no rm must be attempted on a non-canonical name; calls: %v", f.Calls)
+	if !strings.Contains(stderr, foreignName) || !strings.Contains(stderr, "host path") {
+		t.Errorf("the warning must name the sandbox and why its worktrees are skipped; got stderr:\n%s", stderr)
 	}
-	// No assertion on the escape path itself (worktree.Path(..., "../../escape",
-	// repo)): in this minimal reproduction, no worktree really exists there
-	// (nothing was ever created there through worktree.Ensure), so "the
-	// directory does not exist" would stay true even WITHOUT the guard —
-	// verified: without it, Remove just concludes "already gone" and returns
-	// nil without moving anything, err and rm --force already show that above.
+	if !f.HasCalled("rm", "--force", foreignName) {
+		t.Errorf("the sandbox must still be destroyed; calls: %v", f.Calls)
+	}
+	if !strings.Contains(stdout, "destroyed") {
+		t.Errorf("the success message must appear on stdout; got stdout:\n%s", stdout)
+	}
+}
+
+// api.foo- is a name an OLDER den built — a legal git branch "foo-" flattened
+// by `-w` into the component "foo-". sbx v0.43.0 refuses to CREATE such a
+// name (trailing "-"), but ValidateSandboxName accepts it, since it checks
+// structure alone. This is the end-to-end proof that the fix holds: `den rm`
+// reaches `sbx rm --force` and destroys it, not merely that the name-level
+// check accepts it in isolation.
+func TestRmDestroysASandboxAnOlderDenBuiltThatSbxWouldNoLongerCreate(t *testing.T) {
+	denHome := t.TempDir()
+	writeConfig(t, denHome, minimalConfig)
+	f := &sbx.Fake{Responses: lsWith("api.foo-")}
+
+	if _, err := executeCmdWithSbx(t, f, "--den-home", denHome, "rm", "api.foo-"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.HasCalled("rm", "--force", "api.foo-") {
+		t.Errorf("calls: %v", f.Calls)
+	}
 }
 
 // Best-effort on RESOLUTION: a nest removed from ~/.den/nests since the spawn
