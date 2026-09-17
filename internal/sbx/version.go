@@ -3,6 +3,8 @@ package sbx
 import (
 	"context"
 	"strings"
+
+	"golang.org/x/mod/semver"
 )
 
 // MinVersion is the oldest sbx den supports.
@@ -51,4 +53,40 @@ func Version(ctx context.Context, r Runner) (string, error) {
 		return "", err
 	}
 	return ParseVersion(string(out)), nil
+}
+
+// ReleaseVersion normalizes an observed `sbx version` string to the release
+// it was built from, so it compares against MinVersion on the same shape.
+//
+// `go build` of sbx from source stamps a semver-VALID prerelease such as
+// "v0.43.0-dev" or "v0.43.0-3-gabc1234", and semver.Compare ranks a
+// prerelease below its release — comparing that string as-is would FAIL a
+// machine whose sbx is at or past the floor, on nothing but the fact that it
+// carries local commits. ReleaseVersion cuts the prerelease so the compare
+// judges the release instead. Build metadata is cut FIRST, not the
+// prerelease: the SemVer grammar allows a "-" inside build metadata but
+// never before it, so cutting the prerelease first would truncate metadata
+// that happens to contain one (e.g. "v1.7.0-3-gabc+meta-x").
+//
+// ok is false when the input is not semver at all, prefixed or not (a bare
+// "dev" from an even older build) — that case is the caller's WARN to raise,
+// not ReleaseVersion's to normalize.
+func ReleaseVersion(observed string) (string, bool) {
+	v := strings.TrimSpace(observed)
+	if v == "" {
+		return "", false
+	}
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
+	if !semver.IsValid(v) {
+		return "", false
+	}
+	if i := strings.IndexByte(v, '+'); i >= 0 {
+		v = v[:i]
+	}
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		v = v[:i]
+	}
+	return semver.Canonical(v), true
 }

@@ -45,3 +45,25 @@ func TestVersionReturnsTheRunnerError(t *testing.T) {
 		t.Fatal("a failing `sbx version` must be an error, not an empty version")
 	}
 }
+
+func TestReleaseVersion(t *testing.T) {
+	cases := []struct {
+		observed string
+		want     string
+		wantOK   bool
+	}{
+		{"v0.43.0-dev", "v0.43.0", true},
+		{"0.43.0", "v0.43.0", true},
+		{"v1.7.0-3-gabc+meta-x", "v1.7.0", true},
+		{"v1.7.0+meta", "v1.7.0", true},
+		{"dev", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		got, ok := ReleaseVersion(c.observed)
+		if got != c.want || ok != c.wantOK {
+			t.Errorf("ReleaseVersion(%q) = (%q, %v), want (%q, %v)",
+				c.observed, got, ok, c.want, c.wantOK)
+		}
+	}
+}

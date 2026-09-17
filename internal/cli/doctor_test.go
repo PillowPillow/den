@@ -522,3 +522,58 @@ func TestDoctorPassesOnTheSbxFloor(t *testing.T) {
 		t.Errorf("the check is missing from a healthy report:\n%s", out)
 	}
 }
+
+// A source build of sbx stamps a semver-valid prerelease onto its version
+// ("v0.43.0-dev", "v0.43.0-3-gabc1234"), and semver.Compare ranks a
+// prerelease below its release. Comparing the raw string against the floor
+// would FAIL a source build that is at or past it; sbx.ReleaseVersion
+// normalizes it to the release first, so only a release genuinely below the
+// floor fails. Each input has exactly one pinned verdict.
+func TestDoctorSbxVersionPrereleaseVerdicts(t *testing.T) {
+	cases := []struct {
+		version string
+		verdict string
+	}{
+		{"v0.43.0-dev", "[ok  ]"},
+		{"v0.43.0-3-gabc1234", "[ok  ]"},
+		{"v0.44.0", "[ok  ]"},
+		{"v0.42.0", "[FAIL]"},
+		{"v0.42.0-3-gabc1234", "[FAIL]"},
+		{"dev", "[warn]"},
+	}
+	for _, c := range cases {
+		t.Run(c.version, func(t *testing.T) {
+			home := testDenHome(t)
+			f := &sbx.Fake{Responses: lsWith()}
+			f.Responses["version"] = sbx.Response{Output: []byte("sbx version: " + c.version + "\n")}
+			f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
+				Output: []byte(`{"rules":[]}`)}
+
+			out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
+			wantErr := c.verdict == "[FAIL]"
+			if (err != nil) != wantErr {
+				t.Fatalf("err = %v, want non-nil: %v\n%s", err, wantErr, out)
+			}
+			marker := c.verdict + " sbx version"
+			var line string
+			for _, l := range strings.Split(out, "\n") {
+				if strings.HasPrefix(l, marker) {
+					line = l
+					break
+				}
+			}
+			if line == "" {
+				t.Fatalf("output has no %q line for %q:\n%s", marker, c.version, out)
+			}
+			// The line must name what `sbx version` printed, not the
+			// normalized release den compared it against: a user matches
+			// the line against their own terminal, which never saw the
+			// release cut. Checked on the LINE, not the whole report — the
+			// den-home path above it is a temp dir named after this
+			// subtest, and it embeds c.version too.
+			if !strings.Contains(line, c.version) {
+				t.Errorf("the sbx version line does not name the raw version %q: %q", c.version, line)
+			}
+		})
+	}
+}

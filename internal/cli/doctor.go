@@ -214,20 +214,20 @@ func networkPolicyChecks(ctx context.Context, deps doctor.Deps, runner sbx.Runne
 // fails, and a second failure for the same absence would say nothing new.
 //
 // Three verdicts. A version below the floor FAILS, naming both versions and
-// the remedy. A version den cannot read WARNS: `go build` of sbx answers
-// "dev", and refusing there would make `den doctor` red on every machine
-// developing sbx, whose binary may be perfectly recent — the same reason
-// converge.checkCompatibility warns on an UnknownVersionError. A failing
-// `sbx version` FAILS with sbx's own message on one line.
+// the remedy. A version den cannot read at all WARNS: a build stamped with
+// no version answers a bare "dev", and refusing there would make `den
+// doctor` red on every machine developing sbx, whose binary may be perfectly
+// recent — the same reason converge.checkCompatibility warns on an
+// UnknownVersionError. A failing `sbx version` FAILS with sbx's own message
+// on one line.
 //
-// That WARN branch only catches non-semver output like bare "dev":
-// semver.IsValid accepts a semver-shaped prerelease such as "v0.43.0-dev",
-// and semver.Compare then ranks it below sbx.MinVersion, so that shape falls
-// into the FAIL branch instead, contradicting this comment's own rationale.
-// Parked, not fixed here — the fix is a shared version-normalizing helper in
-// internal/sbx (internal/source/manifest.go's releaseVersion already strips
-// a prerelease and prepends a missing "v" before comparing; the two funcs
-// now disagree on both axes).
+// A build stamped FROM `git describe` lands in the compare instead of the
+// WARN, because it IS semver, just not a release: sbx.ReleaseVersion resolves
+// its prerelease such as "v0.43.0-dev" or "v0.43.0-3-gabc1234" to the release
+// "v0.43.0" before the compare runs, so a source build at or past the floor
+// does not FAIL on carrying local commits. Both details below still name v,
+// the version the user's own `sbx version` printed, not ReleaseVersion's
+// normalized form, so the message matches what they can check by hand.
 func sbxVersionCheck(ctx context.Context, deps doctor.Deps, runner sbx.Runner) []doctor.Check {
 	if _, err := deps.LookPath("sbx"); err != nil {
 		return nil
@@ -237,12 +237,13 @@ func sbxVersionCheck(ctx context.Context, deps doctor.Deps, runner sbx.Runner) [
 		return []doctor.Check{{Name: "sbx version", Level: doctor.LevelFail,
 			Detail: strings.Join(strings.Fields(err.Error()), " ")}}
 	}
-	if !semver.IsValid(v) {
+	release, ok := sbx.ReleaseVersion(v)
+	if !ok {
 		return []doctor.Check{{Name: "sbx version", Level: doctor.LevelWarning,
 			Detail: fmt.Sprintf("%q is not a version den can read — den requires sbx %s or "+
 				"later and cannot check it here; verify with `sbx version`", v, sbx.MinVersion)}}
 	}
-	if semver.Compare(v, sbx.MinVersion) < 0 {
+	if semver.Compare(release, sbx.MinVersion) < 0 {
 		return []doctor.Check{{Name: "sbx version", Level: doctor.LevelFail,
 			Detail: fmt.Sprintf("sbx %s is too old: den requires %s or later — sandbox names, "+
 				"port protocols and `secret ls --json` changed in between; upgrade sbx",
