@@ -81,6 +81,21 @@ func TestDecodeSecretListRefusesAMissingSecretsKey(t *testing.T) {
 	}
 }
 
+// custom_secrets gets the identical guard as secrets, absent or null: a
+// renamed or dropped key must never decode to an empty Customs map, or
+// CredentialPresent would answer false for a credential the machine still
+// holds.
+func TestDecodeSecretListRefusesAMissingOrNullCustomSecretsKey(t *testing.T) {
+	_, err := decodeSecretList([]byte(`{"secrets":[]}`))
+	if err == nil || !strings.Contains(err.Error(), "custom_secrets") {
+		t.Fatalf("decodeSecretList = %v, expected a refusal naming the key", err)
+	}
+	_, err = decodeSecretList([]byte(`{"secrets":[],"custom_secrets":null}`))
+	if err == nil || !strings.Contains(err.Error(), "custom_secrets") {
+		t.Fatalf("decodeSecretList = %v, expected a refusal naming the key", err)
+	}
+}
+
 // sbx stores one custom secret for several targets; the source manifest
 // declares one host per resource (CredentialPresent looks up res.Host). Every
 // target therefore gets its own key, or a two-target secret would answer for

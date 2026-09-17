@@ -110,15 +110,38 @@ func ReadSbxState(ctx context.Context, runner sbx.Runner) (*SbxState, error) {
 // healthy machine's path; still wider than before, and out of scope for this
 // struct to fix — sbx.DecodeJSON is shared by every `--json` read in den.
 //
-// Secrets is a POINTER so that a document simply lacking the key can be told
-// from an empty list: the first is a shape den does not know, the second a
-// machine with nothing configured, and only the second may answer "absent".
+// Secrets and CustomSecrets are both POINTERS so that a document simply
+// lacking the key can be told from an empty list: the first is a shape den
+// does not know, the second a machine with nothing configured, and only the
+// second may answer "absent". CustomSecrets needs the same guard as Secrets:
+// a renamed or dropped `custom_secrets` key would otherwise decode to an
+// empty Customs map with no error, and CredentialPresent would then answer
+// false for every custom credential the machine actually holds — converge
+// re-prompts for and overwrites tokens already set. The text parser this
+// replaced was fail-closed in the same spot: a `SCOPE TARGETS ENV` header
+// outside the `CUSTOM SECRETS` section hit its `default:` branch and errored.
+//
+// The pointer must not fire on a healthy machine with zero custom secrets.
+// Evidence is INDIRECT: measured 2026-09-17 on sbx v0.43.0 `79805a6`, this
+// machine holds one custom secret, so it cannot exhibit the zero case
+// itself. What was observed is `shadowed_services` — a sibling field in the
+// same document, empty on this machine — still serializing as `[]`, never
+// omitted and never `null`; sbx initializes its slices and emits them
+// unconditionally, and `custom_secrets` is the same kind of field in the
+// same document. That is the basis for trusting the guard here, not a direct
+// measurement of the zero-custom-secrets case.
+//
+// This is a fail-closed trade with a real blast radius: if sbx ever DOES omit
+// `custom_secrets` on a machine with none configured, den refuses every
+// converge run until the guard is reverted. Accepted on purpose — the text
+// parser it replaces made the identical trade in the same place — but a
+// future reader should see the trade, not rediscover it.
 type secretList struct {
 	Secrets *[]struct {
 		Type string `json:"type"`
 		Name string `json:"name"`
 	} `json:"secrets"`
-	CustomSecrets []struct {
+	CustomSecrets *[]struct {
 		Targets []string `json:"targets"`
 		Env     string   `json:"env"`
 	} `json:"custom_secrets"`
@@ -137,10 +160,17 @@ func decodeSecretList(raw []byte) (*SbxState, error) {
 			"%w — den reads secrets[].type/name and custom_secrets[].targets/env, and cannot "+
 				"guess on a shape it does not know", err)
 	}
-	if list.Secrets == nil {
+	absent := ""
+	switch {
+	case list.Secrets == nil:
+		absent = "secrets"
+	case list.CustomSecrets == nil:
+		absent = "custom_secrets"
+	}
+	if absent != "" {
 		return nil, fmt.Errorf(
 			"sbx secret ls -g --json: key %q absent from the JSON output — den cannot tell an "+
-				"unconfigured machine from a listing it does not understand", "secrets")
+				"unconfigured machine from a listing it does not understand", absent)
 	}
 	state := &SbxState{
 		Services:   map[string]bool{},
@@ -158,7 +188,7 @@ func decodeSecretList(raw []byte) (*SbxState, error) {
 		// den does not manage, and a source that does not declare it is
 		// unaffected.
 	}
-	for _, c := range list.CustomSecrets {
+	for _, c := range *list.CustomSecrets {
 		// One key PER TARGET: the source manifest declares one host per
 		// resource (CredentialPresent looks up res.Host), and an entry sbx
 		// stores for several targets must answer for each of them.
