@@ -226,7 +226,7 @@ func createdNothing(f *sbx.Fake) bool {
 func fakeDepsWithVerdict(verdict string) (*sbx.Fake, Deps) {
 	f := &sbx.Fake{
 		Responses: map[string]sbx.Response{
-			"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+			"ls --json": {Output: []byte(`[]`)},
 		},
 		Default: sbx.Response{Output: []byte(verdict)},
 	}
@@ -355,7 +355,7 @@ func TestSpawnAttachesWithoutRecreatingWhenSandboxExists(t *testing.T) {
 	denHome, repo := denTest(t)
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
@@ -389,7 +389,7 @@ func TestSpawnLooksUpTheWorktreeNameAmongLiveSandboxes(t *testing.T) {
 	denHome, _ := denTest(t)
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["/w"]}]}`),
+		Output: []byte(`[{"name":"api.feat12","status":"running","workspaces":["/w"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
@@ -418,8 +418,8 @@ func TestSpawnAttachesInTheWorkdirReportedByTheVM(t *testing.T) {
 	denHome, repo := denTest(t)
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running",` +
-			`"workspaces":["/mounted/by/the/vm:ro","/profile"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running",` +
+			`"workspaces":["/mounted/by/the/vm:ro","/profile"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
@@ -444,7 +444,7 @@ func TestSpawnDoesNotInventAWorkdirWhenTheVMMountsNothing(t *testing.T) {
 	denHome, repo := denTest(t)
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running"}]}`),
+		Output: []byte(`[{"name":"api","status":"running"}]`),
 	}
 	var out bytes.Buffer
 	d.Out = &out
@@ -502,7 +502,7 @@ func TestSpawnResumesAStoppedSandbox(t *testing.T) {
 	// property, independently covered by TestSpawnAttachesInTheWorkdirReportedByTheVM
 	// with a fixture built to isolate exactly that.
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"stopped","workspaces":["` + repo + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
@@ -546,7 +546,7 @@ func TestSpawnDetachedDoesNotCallAStoppedSandboxReady(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w"]}]}`),
+		Output: []byte(`[{"name":"api","status":"stopped","workspaces":["/w"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
@@ -860,7 +860,7 @@ func TestSpawnDoesNotWakeAStoppedSandboxToReadTheFreshnessGate(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w"]}]}`),
+		Output: []byte(`[{"name":"api","status":"stopped","workspaces":["/w"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
@@ -899,8 +899,8 @@ func TestSpawnRefusesASandboxThatIsNotRunning(t *testing.T) {
 			denHome, _ := denTest(t)
 			f, d := fakeDeps()
 			f.Responses["ls --json"] = sbx.Response{
-				Output: []byte(`{"sandboxes":[{"name":"api","status":"` + status +
-					`","workspaces":["/w"]}]}`),
+				Output: []byte(`[{"name":"api","status":"` + status +
+					`","workspaces":["/w"]}]`),
 			}
 
 			err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
@@ -964,7 +964,7 @@ func TestSpawnWarnsWhenConfigHasDriftedUnderTheSandbox(t *testing.T) {
 	// The configuration narrows. The VM doesn't move.
 	writeConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 	log.Reset()
 
@@ -999,7 +999,7 @@ func TestSpawnDoesNotWarnWithoutDrift(t *testing.T) {
 	}
 
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 	log.Reset()
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
@@ -1068,7 +1068,7 @@ func TestSpawnDoesNotRewriteTheMixinOfALiveSandbox(t *testing.T) {
 
 	writeConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 
 	// Two attaches in a row: the second is the one that would expose a
@@ -1124,7 +1124,7 @@ func TestSpawnReportsAMissingReferenceAfterCachePurge(t *testing.T) {
 	}
 	writeConfig(t, denHome, "  mode: agent-forward\n", "  - github.com\n")
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 
 	for round := 1; round <= 2; round++ {
@@ -1167,7 +1167,7 @@ func TestSpawnReportsUnverifiableDrift(t *testing.T) {
 	log := &bytes.Buffer{}
 	d.Out = log
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
@@ -1346,8 +1346,8 @@ func TestSpawnReportsAVMMissingGitDirs(t *testing.T) {
 	d.Out = &out
 	wt := filepath.Join(denHome, "worktrees", "feat12", "api")
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["` +
-			wt + `"]}]}`),
+		Output: []byte(`[{"name":"api.feat12","status":"running","workspaces":["` +
+			wt + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
@@ -1389,8 +1389,8 @@ func TestSpawnReportsNothingWhenGitDirsAreMounted(t *testing.T) {
 	// The `:ro` is a mount option, not part of the path: it must not break
 	// the comparison.
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["` +
-			wt + `","` + resolvedGitDir(t, repo) + `:ro"]}]}`),
+		Output: []byte(`[{"name":"api.feat12","status":"running","workspaces":["` +
+			wt + `","` + resolvedGitDir(t, repo) + `:ro"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat12"}, d); err != nil {
@@ -1924,7 +1924,7 @@ func TestSpawnAttachesToALiveSandboxSbxWouldNoLongerCreate(t *testing.T) {
 	denHome, repo := denTest(t)
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.foo-","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api.foo-","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Instance: "foo-"}, d); err != nil {
@@ -2361,7 +2361,7 @@ func TestSpawnWarnsOnTheAttachBranchWhenTheForwardedAgentIsEmpty(t *testing.T) {
 	denHome, repo := denTest(t) // denTest is agent-forward
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 	var outBuf, errBuf bytes.Buffer
 	d.Out = &outBuf
@@ -2794,7 +2794,7 @@ func TestSpawnRefusesAStackImageThatWasNeverBuilt(t *testing.T) {
 	denHome, _ := denTest(t)
 	withBuildableStack(t, denHome)
 	f, d := fakeDeps()
-	answerTemplates(f, `{"images":[]}`)
+	answerTemplates(f, `[]`)
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d)
 	if err == nil {
@@ -2819,7 +2819,7 @@ func TestSpawnRefusesAnUnbuiltImageBeforeCreatingAnyWorktree(t *testing.T) {
 	denHome, _ := denTest(t)
 	withBuildableStack(t, denHome)
 	f, d := fakeDeps()
-	answerTemplates(f, `{"images":[]}`)
+	answerTemplates(f, `[]`)
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "api", Worktree: "feat"}, d)
 	if err == nil {
@@ -2842,7 +2842,7 @@ func TestSpawnCreatesWhenTheImageIsBuilt(t *testing.T) {
 	denHome, _ := denTest(t)
 	withBuildableStack(t, denHome)
 	f, d := fakeDeps()
-	answerTemplates(f, `{"images":[{"repository":"docker.io/library/devx","tag":"v1"}]}`)
+	answerTemplates(f, `[{"repository":"docker.io/library/devx","tag":"v1"}]`)
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("`image: devx:v1` must match the `docker.io/library/devx` + `v1` sbx reports: %v", err)
@@ -2862,7 +2862,7 @@ func TestSpawnCreatesWhenTheImageIsBuilt(t *testing.T) {
 func TestSpawnDoesNotCheckTheImageOfANotBuildableStack(t *testing.T) {
 	denHome, _ := denTest(t)
 	f, d := fakeDeps()
-	answerTemplates(f, `{"images":[]}`)
+	answerTemplates(f, `[]`)
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("a stack den cannot build must not be refused over its image: %v", err)
@@ -2888,7 +2888,7 @@ func TestSpawnDoesNotCheckADigestPinnedImage(t *testing.T) {
 			"base: claude\nkits: [transverse]\nkit: devx-kit\n"+
 			"provision:\n  steps: [./provision/setup.sh]\n")
 	f, d := fakeDeps()
-	answerTemplates(f, `{"images":[]}`)
+	answerTemplates(f, `[]`)
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("a digest pin den cannot arbitrate must not be refused: %v", err)
@@ -2925,8 +2925,8 @@ func TestSpawnDoesNotCheckTheImageWhenAttaching(t *testing.T) {
 	withBuildableStack(t, denHome)
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
-	answerTemplates(f, `{"images":[]}`)
+		`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`)}
+	answerTemplates(f, `[]`)
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
 		t.Fatalf("attaching to a live sandbox must not consult the image inventory: %v", err)
@@ -3318,7 +3318,7 @@ func TestSpawnRefusalNamesTheSourcePrefixedStack(t *testing.T) {
 	write(t, filepath.Join(denHome, "sources", "corp", "nests", "api.yaml"),
 		"stack: teamstack\nrepos:\n  - { path: "+repo+" }\n")
 	f, d := fakeDeps()
-	answerTemplates(f, `{"images":[]}`)
+	answerTemplates(f, `[]`)
 
 	err := Spawn(context.Background(), denHome, Options{Nest: "corp:api"}, d)
 	if err == nil {
@@ -3547,7 +3547,7 @@ func TestSpawnWarnsThatALiveSandboxMountsNeitherTheNewRepoNorMovesTheShell(t *te
 	// The sandbox is live, created WITHOUT hotfix: exactly the day-2 case.
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -3579,7 +3579,7 @@ func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEverything(t *testing.T) {
 	denHome, repo := denTest(t)
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -3606,7 +3606,7 @@ func TestSpawnTreatsTwoDifferentPositionalSetsAsTheSameSandbox(t *testing.T) {
 
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"scratch","status":"running","workspaces":["` + a + `"]}]}`)}
+		`[{"name":"scratch","status":"running","workspaces":["` + a + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -3645,7 +3645,7 @@ func TestSpawnWarnsThatTheShellStartsElsewhereEvenWhenEveryRepoIsMounted(t *test
 	// The VM was created with BOTH a and b: Workdir() is a, Workspaces[0].
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"scratch","status":"running","workspaces":["` + a + `","` + b + `"]}]}`)}
+		`[{"name":"scratch","status":"running","workspaces":["` + a + `","` + b + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -3686,7 +3686,7 @@ func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEverythingInOrder(t *testing.T)
 
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"scratch","status":"running","workspaces":["` + a + `","` + b + `"]}]}`)}
+		`[{"name":"scratch","status":"running","workspaces":["` + a + `","` + b + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -3782,7 +3782,7 @@ func TestSpawnDoesNotRewriteTheManifestOfALiveSandbox(t *testing.T) {
 	write(t, filepath.Join(denHome, "nests", "api.yaml"),
 		"stack: devx\nrepos:\n  - { path: "+repo+" }\n  - { path: "+other+" }\n")
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Detach: true}, d); err != nil {
@@ -3820,7 +3820,7 @@ func TestAttachReportsANestChangedSinceCreation(t *testing.T) {
 	write(t, filepath.Join(denHome, "nests", "api.yaml"),
 		"stack: devx\nrepos:\n  - { path: "+repo+" }\n  - { path: "+other+" }\n")
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 
 	log.Reset()
@@ -3851,7 +3851,7 @@ func TestAttachSaysNothingWhenTheNestIsUnchanged(t *testing.T) {
 		t.Fatalf("first spawn: unexpected error: %v", err)
 	}
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 
 	log.Reset()
@@ -3887,7 +3887,7 @@ func TestAttachSaysTheWorktreeFlagIsNotApplied(t *testing.T) {
 		t.Fatalf("first spawn: %v", err)
 	}
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api.reco","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 
 	log.Reset()
@@ -3929,8 +3929,8 @@ func TestAttachSaysTheWorktreeFlagIsNotApplied(t *testing.T) {
 		t.Fatalf("the fixture must record the worktree; got %+v", recorded.Worktree)
 	}
 	af.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":` +
-			jsonStrings(append([]string{recorded.Repos[0].Mount}, recorded.GitDirs...)) + `}]}`),
+		Output: []byte(`[{"name":"api.reco","status":"running","workspaces":` +
+			jsonStrings(append([]string{recorded.Repos[0].Mount}, recorded.GitDirs...)) + `}]`),
 	}
 	agreeLog.Reset()
 	if err := Spawn(context.Background(), agreeHome,
@@ -3981,7 +3981,7 @@ func TestAttachUnderWorktreeDoesNotProbeARepoItWillNotTouch(t *testing.T) {
 		t.Fatalf("first spawn: %v", err)
 	}
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["` + data + `"]}]}`),
+		Output: []byte(`[{"name":"api.reco","status":"running","workspaces":["` + data + `"]}]`),
 	}
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "api", Instance: "reco", Worktree: "feat", Detach: true}, d); err != nil {
@@ -3993,7 +3993,7 @@ func TestAttachUnderWorktreeDoesNotProbeARepoItWillNotTouch(t *testing.T) {
 	// name den has no record for.
 	nf, nd := fakeDeps()
 	nf.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.legacy","status":"running","workspaces":["` + data + `"]}]}`),
+		Output: []byte(`[{"name":"api.legacy","status":"running","workspaces":["` + data + `"]}]`),
 	}
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "api", Instance: "legacy", Worktree: "feat", Detach: true}, nd); err == nil {
@@ -4040,7 +4040,7 @@ func TestSpawnWarnsWhenALiveSandboxDoesNotMountANewLinklessMount(t *testing.T) {
 	// The sandbox is live and was created WITHOUT the mount: the day-2 case.
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -4076,7 +4076,7 @@ func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsEveryConfiguredMount(t *testing
 
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -4101,7 +4101,7 @@ func TestSpawnWarnsWhenAMountIsMountedWithTheOtherROBit(t *testing.T) {
 		// The VM mounts the bare host: it was created read-write.
 		f, d := fakeDeps()
 		f.Responses["ls --json"] = sbx.Response{Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]}`)}
+			`[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]`)}
 		var out bytes.Buffer
 		d.Out = &out
 
@@ -4125,7 +4125,7 @@ func TestSpawnWarnsWhenAMountIsMountedWithTheOtherROBit(t *testing.T) {
 		// The VM mounts it `:ro`: it was created read-only.
 		f, d := fakeDeps()
 		f.Responses["ls --json"] = sbx.Response{Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `:ro"]}]}`)}
+			`[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `:ro"]}]`)}
 		var out bytes.Buffer
 		d.Out = &out
 
@@ -4157,7 +4157,7 @@ func TestSpawnDoesNotWarnWhenTheLiveSandboxMountsAReadOnlyMountReadOnly(t *testi
 
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `:ro"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `:ro"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -4177,7 +4177,7 @@ func TestSpawnDoesNotWarnAboutMountsWhenThereAreNone(t *testing.T) {
 
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -4212,7 +4212,7 @@ func TestSpawnWarnsAboutAnEditedSSHDirLikeAnyOtherMount(t *testing.T) {
 	// The VM was created with a DIFFERENT ssh.dir — it does not mount this one.
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -4270,7 +4270,7 @@ func TestSpawnNamesBothKeysWhenAMountAndSSHDirAreBothUnmounted(t *testing.T) {
 	// The VM carries the repo and neither of the two.
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -4338,7 +4338,7 @@ func TestAttachReportsNoDriftWhenTheMountHostIsNotCanonical(t *testing.T) {
 	}
 
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + unclean + `"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `","` + unclean + `"]}]`)}
 
 	log.Reset()
 	if err := Spawn(context.Background(), denHome,
@@ -4383,7 +4383,7 @@ func TestSpawnDoesNotWarnWhenOnlyTheSpellingOfTheMountPathDiffers(t *testing.T) 
 
 		f, d := fakeDeps()
 		f.Responses["ls --json"] = sbx.Response{Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]}`)}
+			`[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]`)}
 		var out bytes.Buffer
 		d.Out = &out
 
@@ -4402,7 +4402,7 @@ func TestSpawnDoesNotWarnWhenOnlyTheSpellingOfTheMountPathDiffers(t *testing.T) 
 
 		f, d := fakeDeps()
 		f.Responses["ls --json"] = sbx.Response{Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `/"]}]}`)}
+			`[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `/"]}]`)}
 		var out bytes.Buffer
 		d.Out = &out
 
@@ -4429,7 +4429,7 @@ func TestSpawnDetectsAROFlipEvenWhenTheSpellingsDiffer(t *testing.T) {
 	// config now says read-only.
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `","` + docs + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -4457,7 +4457,7 @@ func TestSpawnNamesTheMountHostExactlyAsTyped(t *testing.T) {
 	// The VM mounts the repo and nothing else: the warning DOES fire here.
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+		`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -4496,7 +4496,7 @@ func TestSpawnDoesNotWarnWhenOnlyTheSpellingOfTheRepoPathDiffers(t *testing.T) {
 
 		f, d := fakeDeps()
 		f.Responses["ls --json"] = sbx.Response{Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`)}
+			`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`)}
 		var out bytes.Buffer
 		d.Out = &out
 
@@ -4521,7 +4521,7 @@ func TestSpawnDoesNotWarnWhenOnlyTheSpellingOfTheRepoPathDiffers(t *testing.T) {
 
 		f, d := fakeDeps()
 		f.Responses["ls --json"] = sbx.Response{Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `/"]}]}`)}
+			`[{"name":"api","status":"running","workspaces":["` + repo + `/"]}]`)}
 		var out bytes.Buffer
 		d.Out = &out
 
@@ -4565,7 +4565,7 @@ func TestSpawnDoesNotClaimAMovedStartOverARepoSpellingDifference(t *testing.T) {
 	// The VM was created with both, clean: Workdir() is a.
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{Output: []byte(
-		`{"sandboxes":[{"name":"scratch","status":"running","workspaces":["` + a + `","` + b + `"]}]}`)}
+		`[{"name":"scratch","status":"running","workspaces":["` + a + `","` + b + `"]}]`)}
 	var out bytes.Buffer
 	d.Out = &out
 
@@ -4593,7 +4593,7 @@ func TestSpawnRunsTheGivenCommandInsteadOfAShell(t *testing.T) {
 	// without creating anything — the same fixture
 	// TestSpawnDetachedDoesNotCallAStoppedSandboxReady uses, with "running".
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["/w"]}]`),
 	}
 
 	o := Options{Nest: "api", Command: []string{"go", "test", "./..."}}
@@ -4686,7 +4686,7 @@ func TestSpawnNoTTYSuppressesTheTerminalEvenWithAProbe(t *testing.T) {
 	f, d := fakeDeps()
 	d.IsTTY = func() bool { return true }
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["/w"]}]`),
 	}
 
 	o := Options{Nest: "api", Command: []string{"go", "test"}, NoTTY: true}
@@ -4711,7 +4711,7 @@ func TestSpawnWorkdirOverridesTheReportedOne(t *testing.T) {
 	denHome, _ := denTest(t)
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["/w"]}]`),
 	}
 
 	o := Options{Nest: "api", Command: []string{"go", "test"}, Workdir: "/custom"}
@@ -4762,8 +4762,8 @@ func TestSpawnAttachStartsInTheDirectoryTheUserTypedFrom(t *testing.T) {
 	denHome := denTestRepoAt(t, filepath.Dir(cwd))
 	f, d := fakeDeps()
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
-			filepath.Dir(cwd) + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` +
+			filepath.Dir(cwd) + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
@@ -4790,8 +4790,8 @@ func TestSpawnPrintsNoMovedStartWhenTheShellStartsWhereTheUserStood(t *testing.T
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
-			filepath.Dir(cwd) + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` +
+			filepath.Dir(cwd) + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
@@ -4812,8 +4812,8 @@ func TestSpawnStillReportsAMovedStartOutsideEveryMount(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running",` +
-			`"workspaces":["/mounted/first","` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running",` +
+			`"workspaces":["/mounted/first","` + repo + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
@@ -4857,8 +4857,8 @@ func TestSpawnFallsBackSilentlyFromOutsideEveryMount(t *testing.T) {
 	// The VM mounts exactly the repo the nest declares, and the test process
 	// stands in the source tree — under neither.
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
-			repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` +
+			repo + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {
@@ -4885,8 +4885,8 @@ func TestSpawnPrintsNoMovedStartOnATrailingSlashInTheConfig(t *testing.T) {
 	d.Out = &out
 	declared := readNestRepo(t, denHome)
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
-			filepath.Clean(declared) + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` +
+			filepath.Clean(declared) + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api"}, d); err != nil {

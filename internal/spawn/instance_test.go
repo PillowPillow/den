@@ -140,8 +140,8 @@ func TestWorktreeFlagOnALiveInstanceCreatesNothing(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["` +
-			repo + `"]}]}`),
+		Output: []byte(`[{"name":"api.reco","status":"running","workspaces":["` +
+			repo + `"]}]`),
 	}
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "api", Instance: "reco", Worktree: "brand/new"}, d); err != nil {
@@ -205,8 +205,8 @@ func TestAttachingAnInstanceWithoutRepeatingTheWorktreeReportsNothing(t *testing
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":` +
-			jsonStrings(mounts) + `}]}`),
+		Output: []byte(`[{"name":"api.reco","status":"running","workspaces":` +
+			jsonStrings(mounts) + `}]`),
 	}
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Instance: "reco"}, d); err != nil {
 		t.Fatalf("attaching spawn: %v", err)
@@ -225,7 +225,7 @@ func TestAttachingAnInstanceWithoutRepeatingTheWorktreeReportsNothing(t *testing
 	var mismatchedOut bytes.Buffer
 	md.Out = &mismatchedOut
 	mismatched.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["/w/elsewhere"]}]}`),
+		Output: []byte(`[{"name":"api.reco","status":"running","workspaces":["/w/elsewhere"]}]`),
 	}
 	if err := Spawn(context.Background(), denHome, Options{Nest: "api", Instance: "reco"}, md); err != nil {
 		t.Fatalf("attaching spawn (mismatched): %v", err)

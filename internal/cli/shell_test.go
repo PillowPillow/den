@@ -17,7 +17,7 @@ import (
 func TestShellAttachesALoginShellInTheWorkdir(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]`)},
 	}}
 
 	if _, err := executeCmdWithSbx(t, f, "shell", "api"); err != nil {
@@ -41,7 +41,7 @@ func TestShellAttachesALoginShellInTheWorkdir(t *testing.T) {
 func TestShellAttachesWithATtyNotARun(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]`)},
 	}}
 
 	if _, err := executeCmdWithSbx(t, f, "shell", "api"); err != nil {
@@ -112,7 +112,7 @@ func TestShellRefusesNoTTY(t *testing.T) {
 func TestShellWorkdirOverridesTheReportedWorkspace(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 	if _, err := executeCmdWithSbx(t, f, "shell", "--workdir", "/srv", "api"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -153,7 +153,7 @@ func TestShellOpensWhenTheDenHomeCannotBeRead(t *testing.T) {
 	execSocket(t)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 	probed := false
 
@@ -181,7 +181,7 @@ func TestShellOpensWhenTheDenHomeCannotBeRead(t *testing.T) {
 func TestShellRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 		execGateRead("api"): {Output: execGateLog("api", "fail")},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions()}

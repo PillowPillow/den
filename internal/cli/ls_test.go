@@ -20,7 +20,7 @@ func TestLsPrintsTheColumns(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api.feat12","agent":"shell","status":"running","last_used_at":"2026-09-16T09:00:00Z","workspaces":["/w/api","/p"]}]}`)},
+			`[{"name":"api.feat12","agent":"shell","status":"running","last_used_at":"2026-09-16T09:00:00Z","workspaces":["/w/api","/p"]}]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -73,7 +73,7 @@ func TestLsRendersADashWithoutLastUsedAt(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","agent":"shell","status":"stopped","workspaces":["/w"]}]}`)},
+			`[{"name":"api","agent":"shell","status":"stopped","workspaces":["/w"]}]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -95,7 +95,7 @@ func TestLsMarksUndeclaredSandboxes(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running"},{"name":"unknown","status":"running"}]}`)},
+			`[{"name":"api","status":"running"},{"name":"unknown","status":"running"}]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -144,7 +144,7 @@ func TestLsReportsABrokenNestOnStderrWithoutHidingHealthyOnes(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running"}]}`)},
+			`[{"name":"api","status":"running"}]`)},
 	}}
 
 	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "ls")
@@ -208,7 +208,7 @@ func TestLsReportsAnUnreadableNestsRoot(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running"}]}`)},
+			`[{"name":"api","status":"running"}]`)},
 	}}
 
 	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "ls")
@@ -227,7 +227,7 @@ func TestLsNoSandbox(t *testing.T) {
 	testDenHome(t)
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -241,6 +241,24 @@ func TestLsNoSandbox(t *testing.T) {
 	// above a zero-row table.
 	if strings.Contains(out, "NAME") {
 		t.Errorf("no table header must appear when the list is empty; got:\n%s", out)
+	}
+}
+
+func TestLsOnAPreV048SbxNamesTheUpgrade(t *testing.T) {
+	testDenHome(t)
+
+	f := &sbx.Fake{Responses: map[string]sbx.Response{
+		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+	}}
+
+	_, err := executeCmdWithSbx(t, f, "ls")
+	if err == nil {
+		t.Fatal("den ls must refuse the pre-v0.48.0 shape")
+	}
+	for _, want := range []string{"upgrade sbx", "den doctor"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to carry %q", err, want)
+		}
 	}
 }
 
@@ -266,7 +284,7 @@ func TestLsSignalsAnOrphanedRecord(t *testing.T) {
 	lsManifest(t, dir, "api.feat12", mount)
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"web","status":"running"}]}`)},
+		"ls --json": {Output: []byte(`[{"name":"web","status":"running"}]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -293,7 +311,7 @@ func TestLsSignalsOrphansEvenWithNoLiveSandbox(t *testing.T) {
 	lsManifest(t, dir, "api.feat12", mount)
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -323,7 +341,7 @@ func TestLsSurvivesACorruptRecord(t *testing.T) {
 	}
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api","status":"running"}]}`)},
+		"ls --json": {Output: []byte(`[{"name":"api","status":"running"}]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -366,8 +384,8 @@ func TestLsMarksAnUnreadableRecordAsUnknownWorktree(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api.reco","status":"running"},` +
-				`{"name":"api.feat12","status":"running"}]}`)},
+			`[{"name":"api.reco","status":"running"},` +
+				`{"name":"api.feat12","status":"running"}]`)},
 	}}
 
 	stdout, stderr, err := executeCmdWithSbxSeparateStreams(t, f, "ls")
@@ -456,7 +474,7 @@ func TestLsShowsTheBranchAsTypedAndThePrefixedNest(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"corp-api.feat-12","status":"running"}]}`)},
+			`[{"name":"corp-api.feat-12","status":"running"}]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -510,7 +528,7 @@ func TestLsMarksASourceSandboxWhoseSourceNestIsGone(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"corp-api.feat-12","status":"running"}]}`)},
+			`[{"name":"corp-api.feat-12","status":"running"}]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -553,7 +571,7 @@ func TestLsDoesNotPrintTheInstanceAsAWorktree(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api.reco","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -607,7 +625,7 @@ func TestLsShowsBothTheInstanceAndItsWorktree(t *testing.T) {
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api.reco","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api.reco","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")
@@ -633,7 +651,7 @@ func TestLsFallsBackToTheSandboxNameWithoutARecord(t *testing.T) {
 	testDenHome(t) // nest "api" is declared there
 
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api.feat12","status":"running"}]}`)},
+		"ls --json": {Output: []byte(`[{"name":"api.feat12","status":"running"}]`)},
 	}}
 
 	out, err := executeCmdWithSbx(t, f, "ls")

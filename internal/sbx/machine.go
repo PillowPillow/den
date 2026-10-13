@@ -133,7 +133,7 @@ func (m *Machine) Run(_ context.Context, args ...string) ([]byte, error) {
 	case joined == "template ls --json":
 		return []byte(m.renderImages()), nil
 	case joined == "ls --json":
-		return []byte(`{"sandboxes":[]}`), nil
+		return []byte(`[]`), nil
 	case joined == "secret set github":
 		// github is interactive on sbx's side (measured 2026-08-16, `sbx secret
 		// set --help` on v0.38.0): sbx reads the value from a prompt. Exec.Run
@@ -305,7 +305,7 @@ func (m *Machine) renderImages() string {
 		repo, tag, _ := strings.Cut(image, ":")
 		entries = append(entries, `{"repository":"docker.io/library/`+repo+`","tag":"`+tag+`"}`)
 	}
-	return `{"images":[` + strings.Join(entries, ",") + `]}`
+	return `[` + strings.Join(entries, ",") + `]`
 }
 
 // Compile-time guards, here rather than in a `_test.go` for Fake's reason: a

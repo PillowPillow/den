@@ -7,14 +7,15 @@ import (
 	"testing"
 )
 
-// The real payload, copied from the 2026-07-31 survey (spec §14.0). Two
-// images, one of them qualified the way sbx actually reports them.
-const templateLsJSON = `{"images":[
+// The real payload of the 2026-07-31 survey (spec §14.0), in the bare-array
+// shape sbx v0.48.0 returns (measured 2026-10-13). Two images, one of them
+// qualified the way sbx actually reports them.
+const templateLsJSON = `[
   {"id":"11a2e5ef4234","repository":"docker.io/library/devx","tag":"v1",
    "flavor":"claude-code-docker","created_at":"2026-07-27T06:44:57Z","size":6477492753},
   {"id":"22b3f6a05555","repository":"ghcr.io/acme/dgdevx","tag":"v2",
    "flavor":"claude-code-docker","created_at":"2026-07-28T09:10:00Z","size":700}
-]}`
+]`
 
 func TestTemplatesDecodesTheSurveyedSchema(t *testing.T) {
 	f := &Fake{Responses: map[string]Response{
@@ -55,20 +56,21 @@ func TestTemplatesKeepsSbxOrder(t *testing.T) {
 	}
 }
 
-// A valid JSON object WITHOUT the key must be an error, never a silent empty
-// list — the doctrine Ls states. Silence costs a specific thing here: an empty
-// inventory reads as "no image is built", so `den spawn` would refuse every
-// spawn on a machine where every image is present.
-func TestTemplatesRefusesAJSONWithoutTheImagesKey(t *testing.T) {
+// The pre-v0.48.0 shape is refused with the remedy, never read — and never
+// read as an empty inventory either, which would make `den spawn` refuse
+// every spawn with "run `den build`" on a machine where every image exists.
+func TestTemplatesRefusesThePreV048Shape(t *testing.T) {
 	f := &Fake{Responses: map[string]Response{
-		"template ls --json": {Output: []byte(`{"templates":[]}`)},
+		"template ls --json": {Output: []byte(`{"images":[]}`)},
 	}}
 	_, err := Templates(context.Background(), f)
 	if err == nil {
-		t.Fatal("expected a refusal on a JSON without the `images` key")
+		t.Fatal("expected a refusal on the pre-v0.48.0 object shape")
 	}
-	if !strings.Contains(err.Error(), "images") || !strings.Contains(err.Error(), "templates") {
-		t.Errorf("message = %q, want it to name the missing key AND quote the raw output", err)
+	for _, want := range []string{"sbx template ls", "pre-v0.48.0 shape", MinVersion, "upgrade sbx"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message = %q, want it to carry %q", err, want)
+		}
 	}
 }
 

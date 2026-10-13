@@ -698,7 +698,7 @@ func TestPromptModeDoesNotPromptWhenAttaching(t *testing.T) {
 	// The Fake reports `generic` as running — the same scripting every attach
 	// test in this package uses (spawn_test.go:309).
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"generic","status":"running","workspaces":["/w/api"]}]}`),
+		Output: []byte(`[{"name":"generic","status":"running","workspaces":["/w/api"]}]`),
 	}
 	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, d); err != nil {
 		t.Fatalf("attaching spawn: %v", err)
@@ -733,7 +733,7 @@ func TestInteractiveDoesNotPromptWhenAttaching(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repos["api"] + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repos["api"] + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome,
@@ -785,7 +785,7 @@ func TestAttachSaysNothingAboutASelectionThatCannotExist(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["` + repo + `"]}]}`),
+		Output: []byte(`[{"name":"api","status":"running","workspaces":["` + repo + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome,
@@ -862,7 +862,7 @@ func TestPromptModeAttachRebuildsTheSelectionFromTheRecord(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
+		Output: []byte(`[{"name":"crm","status":"running","workspaces":["/w/api"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, d); err != nil {
@@ -944,8 +944,8 @@ func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 	// test — leaving them out here would print an unrelated warning into the
 	// output this test reads.
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"generic.feat","status":"running","workspaces":` +
-			jsonStrings(append([]string{recorded.Repos[0].Mount}, recorded.GitDirs...)) + `}]}`),
+		Output: []byte(`[{"name":"generic.feat","status":"running","workspaces":` +
+			jsonStrings(append([]string{recorded.Repos[0].Mount}, recorded.GitDirs...)) + `}]`),
 	}
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "generic", Worktree: "feat"}, d); err != nil {
@@ -972,7 +972,7 @@ func TestPromptModeAttachResolvesOnlyTheRecordedRepos(t *testing.T) {
 	var mismatchedOut bytes.Buffer
 	md.Out = &mismatchedOut
 	mismatched.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"generic.feat","status":"running","workspaces":["/w/elsewhere"]}]}`),
+		Output: []byte(`[{"name":"generic.feat","status":"running","workspaces":["/w/elsewhere"]}]`),
 	}
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "generic", Worktree: "feat"}, md); err != nil {
@@ -1011,7 +1011,7 @@ func TestPromptModeAttachWithoutARecordStillAttaches(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"generic","status":"running","workspaces":["/w/api"]}]}`),
+		Output: []byte(`[{"name":"generic","status":"running","workspaces":["/w/api"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, d); err != nil {
@@ -1072,7 +1072,7 @@ func TestInteractiveAttachRebuildsTheSelectionFromTheRecord(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
+		Output: []byte(`[{"name":"crm","status":"running","workspaces":["/w/api"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome,
@@ -1108,7 +1108,7 @@ func TestPromptModeAttachNamesARecordItCouldNotRead(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"generic","status":"running","workspaces":["/w/api"]}]}`),
+		Output: []byte(`[{"name":"generic","status":"running","workspaces":["/w/api"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "generic"}, d); err != nil {
@@ -1272,7 +1272,7 @@ func TestAttachRefusalOnAnUnmappedKeyNamesTheRemedyThatWorks(t *testing.T) {
 			d.Prompt = failingPrompter{t}
 			d.IsTTY = func() bool { return true }
 			f.Responses["ls --json"] = sbx.Response{
-				Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
+				Output: []byte(`[{"name":"crm","status":"running","workspaces":["/w/api"]}]`),
 			}
 
 			err := Spawn(context.Background(), denHome, c.o, d)
@@ -1321,7 +1321,7 @@ func TestOnlyAttachesAPromptingNestWithNoRecord(t *testing.T) {
 	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
+		Output: []byte(`[{"name":"crm","status":"running","workspaces":["/w/api"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome,
@@ -1366,8 +1366,8 @@ func TestOnlyStandsOverTheRecordOnAPromptingAttach(t *testing.T) {
 	var out bytes.Buffer
 	d.Out = &out
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"generic","status":"running","workspaces":["` +
-			recorded.Repos[0].Mount + `"]}]}`),
+		Output: []byte(`[{"name":"generic","status":"running","workspaces":["` +
+			recorded.Repos[0].Mount + `"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome,
@@ -1429,7 +1429,7 @@ func TestPromptModeAttachIgnoresAdHocMountsWhenRebuilding(t *testing.T) {
 	d.Prompt = failingPrompter{t}
 	d.IsTTY = func() bool { return true }
 	f.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"crm","status":"running","workspaces":["/w/api"]}]}`),
+		Output: []byte(`[{"name":"crm","status":"running","workspaces":["/w/api"]}]`),
 	}
 
 	if err := Spawn(context.Background(), denHome, Options{Nest: "crm"}, d); err != nil {
@@ -1481,8 +1481,8 @@ func TestPromptModeComposesWithAnInstanceLabel(t *testing.T) {
 	var out bytes.Buffer
 	attachDeps.Out = &out
 	attachFake.Responses["ls --json"] = sbx.Response{
-		Output: []byte(`{"sandboxes":[{"name":"generic.leo-fix","status":"running","workspaces":["` +
-			recorded.Repos[0].Mount + `"]}]}`),
+		Output: []byte(`[{"name":"generic.leo-fix","status":"running","workspaces":["` +
+			recorded.Repos[0].Mount + `"]}]`),
 	}
 	if err := Spawn(context.Background(), denHome,
 		Options{Nest: "generic", Instance: "leo-fix"}, attachDeps); err != nil {

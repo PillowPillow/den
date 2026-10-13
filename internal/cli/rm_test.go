@@ -61,14 +61,14 @@ defaults:
 // "running".
 func lsWith(names ...string) map[string]sbx.Response {
 	var b strings.Builder
-	b.WriteString(`{"sandboxes":[`)
+	b.WriteString(`[`)
 	for i, n := range names {
 		if i > 0 {
 			b.WriteString(",")
 		}
 		b.WriteString(`{"name":"` + n + `","status":"running","workspaces":["/w"]}`)
 	}
-	b.WriteString(`]}`)
+	b.WriteString(`]`)
 	// `version` answers the floor, so every doctor test built on this helper
 	// stays "all good" rather than earning a [warn] for an unreadable
 	// version. Harmless to the rm tests: a Response key changes no call.

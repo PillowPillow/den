@@ -113,7 +113,7 @@ defaults:
 func emptySbxFake() *sbx.Fake {
 	return &sbx.Fake{
 		Responses: map[string]sbx.Response{
-			"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+			"ls --json": {Output: []byte(`[]`)},
 		},
 		Default: sbx.Response{Output: []byte(`{"allowed": true}`)},
 	}
