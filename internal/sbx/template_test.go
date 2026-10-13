@@ -67,7 +67,7 @@ func TestTemplatesRefusesThePreV048Shape(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a refusal on the pre-v0.48.0 object shape")
 	}
-	for _, want := range []string{"sbx template ls", "pre-v0.48.0 shape", MinVersion, "upgrade sbx"} {
+	for _, want := range []string{"sbx template ls", "pre-v0.48.0 shape", MinVersion, "upgrade sbx", "den doctor"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message = %q, want it to carry %q", err, want)
 		}

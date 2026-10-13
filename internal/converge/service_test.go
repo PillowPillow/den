@@ -1250,3 +1250,43 @@ func TestStatusRefusesALegacySource(t *testing.T) {
 		t.Fatalf("error = %v, want a refusal naming the missing contract", err)
 	}
 }
+
+func TestPlanAcceptsTheNewSbxVersionSpelling(t *testing.T) {
+	denHome, remote, root := serviceFixture(t)
+	manifest := filepath.Join(remote, source.ManifestFile)
+	raw, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := strings.Replace(string(raw), "metadata: { name: dg, version: 1.0.0 }\n",
+		"metadata: { name: dg, version: 1.0.0 }\nrequires:\n  sbx: \">=0.48.0\"\n", 1)
+	if declared == string(raw) {
+		t.Fatal("the fixture manifest no longer carries the metadata line this test anchors on")
+	}
+	writeFile(t, manifest, declared)
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"-c", "user.email=t@example.test", "-c", "user.name=t", "commit", "-q", "-m", "require sbx"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = remote
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	s, req, cleanup := requestFor(t, denHome, remote, root, sbx.NewMachine())
+	defer cleanup()
+
+	plan, err := s.Plan(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Plan refused a machine whose sbx is v0.48.0: %v", err)
+	}
+	for _, w := range plan.Warnings {
+		if strings.Contains(w, "cannot check this requirement") {
+			t.Errorf("warning = %q, want the version read and the floor judged", w)
+		}
+	}
+	if plan.Status == source.StatusBlocked {
+		t.Errorf("status = %q, want the v0.48.0 machine to clear requires.sbx", plan.Status)
+	}
+}

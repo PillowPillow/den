@@ -1976,8 +1976,11 @@ sandbox `am`, avec l'accord de l'utilisateur. Recopié de la spec `2026-10-13-sb
 ### 14.4.1 Formes JSON
 
 - `sbx ls --json` : liste nue. Clés d'une ligne arrêtée : `name id agent status last_used_at
-  workspaces created_at`. Le champ `detached` annoncé par les notes de version **n'apparaît pas**
-  sur une sandbox arrêtée ; non relevé sur une sandbox en marche. den ignore les champs inconnus.
+  workspaces created_at`. Une ligne en marche (`am` démarrée par `sbx exec am true`) a en plus
+  `ports` ; `status` y vaut `running`, et chaque entrée de `ports` porte `host_ip host_port
+  sandbox_port protocol` (`tcp4`), les clés que den lit. Le champ `detached` annoncé par les
+  notes de version **n'apparaît** ni sur une ligne arrêtée ni sur une ligne en marche. den ignore
+  les champs inconnus.
 - `sbx template ls --json` : liste nue. Clés : `id repository tag flavor created_at size`.
 - `sbx policy ls SANDBOX --json` et `sbx policy ls --type network --source local --decision allow
   --json` : **inchangés**, toujours `{"rules":[…]}`, avec `scope`, `resource_type`, `decision`,

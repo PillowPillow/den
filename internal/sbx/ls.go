@@ -40,7 +40,8 @@ type Publication struct {
 // Sandbox is a sandbox as `sbx ls --json` describes it.
 //
 // The schema is that of sbx v0.35.0, recorded 2026-07-28 and extended
-// 2026-07-31 with `ports`:
+// 2026-07-31 with `ports`,
+// bare array since v0.48.0 (spec §14.4):
 //
 //	[{"name","id","agent","status","last_used_at","ports":[…],"workspaces":["/p","/p:ro"]}]
 //
