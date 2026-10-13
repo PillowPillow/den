@@ -74,7 +74,7 @@ func lsWith(names ...string) map[string]sbx.Response {
 	// version. Harmless to the rm tests: a Response key changes no call.
 	return map[string]sbx.Response{
 		"ls --json": {Output: []byte(b.String())},
-		"version":   {Output: []byte("sbx version: " + sbx.MinVersion + " abc\n")},
+		"version":   {Output: []byte("sbx version " + sbx.MinVersion + " abc\n")},
 	}
 }
 

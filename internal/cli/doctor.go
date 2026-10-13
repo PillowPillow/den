@@ -244,9 +244,9 @@ func sbxVersionCheck(ctx context.Context, deps doctor.Deps, runner sbx.Runner) [
 	}
 	if semver.Compare(release, sbx.MinVersion) < 0 {
 		return []doctor.Check{{Name: "sbx version", Level: doctor.LevelFail,
-			Detail: fmt.Sprintf("sbx %s is too old: den requires %s or later — sandbox names, "+
-				"port protocols and `secret ls --json` changed in between; upgrade sbx",
-				v, sbx.MinVersion)}}
+			Detail: fmt.Sprintf("sbx %s is too old: den requires %s or later — the `ls --json` "+
+				"and `template ls --json` shapes and the `sbx version` output changed in "+
+				"between; upgrade sbx", v, sbx.MinVersion)}}
 	}
 	return []doctor.Check{{Name: "sbx version", Level: doctor.LevelOK, Detail: v}}
 }

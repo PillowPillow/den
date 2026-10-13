@@ -374,7 +374,7 @@ func TestDoctorSkipsTheOrphanCheckWhenSbxCannotAnswer(t *testing.T) {
 		// version answers the floor: this test is about the orphan check
 		// alone, and an unscripted `version` would otherwise earn a stray
 		// [warn] sbx version line that has nothing to do with what it tests.
-		"version": {Output: []byte("sbx version: " + sbx.MinVersion + " abc\n")},
+		"version": {Output: []byte("sbx version " + sbx.MinVersion + " abc\n")},
 	}}
 
 	out, err := runDoctorWithSbx(t, home, doctor.FakeDeps(), f)
@@ -446,7 +446,7 @@ func TestDoctorPassesWhenTheNetworkPolicyAnswers(t *testing.T) {
 func TestDoctorFailsWhenSbxIsTooOld(t *testing.T) {
 	home := testDenHome(t)
 	f := &sbx.Fake{Responses: lsWith()}
-	f.Responses["version"] = sbx.Response{Output: []byte("sbx version: v0.42.1 abc\n")}
+	f.Responses["version"] = sbx.Response{Output: []byte("sbx version: v0.47.0 abc\n")}
 	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
 		Output: []byte(`{"rules":[]}`)}
 
@@ -457,7 +457,7 @@ func TestDoctorFailsWhenSbxIsTooOld(t *testing.T) {
 	if !strings.Contains(out, "[FAIL] sbx version") {
 		t.Errorf("no failing line for the version:\n%s", out)
 	}
-	for _, want := range []string{"v0.42.1", sbx.MinVersion, "upgrade"} {
+	for _, want := range []string{"v0.47.0", sbx.MinVersion, "`ls --json`", "upgrade sbx"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the line must carry %q:\n%s", want, out)
 		}
@@ -470,7 +470,7 @@ func TestDoctorFailsWhenSbxIsTooOld(t *testing.T) {
 func TestDoctorWarnsWhenTheSbxVersionIsUnreadable(t *testing.T) {
 	home := testDenHome(t)
 	f := &sbx.Fake{Responses: lsWith()}
-	f.Responses["version"] = sbx.Response{Output: []byte("sbx version: dev\n")}
+	f.Responses["version"] = sbx.Response{Output: []byte("sbx version dev\n")}
 	f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
 		Output: []byte(`{"rules":[]}`)}
 
@@ -538,18 +538,18 @@ func TestDoctorSbxVersionPrereleaseVerdicts(t *testing.T) {
 		version string
 		verdict string
 	}{
-		{"v0.43.0-dev", "[ok  ]"},
-		{"v0.43.0-3-gabc1234", "[ok  ]"},
-		{"v0.44.0", "[ok  ]"},
-		{"v0.42.0", "[FAIL]"},
-		{"v0.42.0-3-gabc1234", "[FAIL]"},
+		{"v0.48.0-dev", "[ok  ]"},
+		{"v0.48.0-3-gabc1234", "[ok  ]"},
+		{"v0.49.0", "[ok  ]"},
+		{"v0.47.0", "[FAIL]"},
+		{"v0.47.0-3-gabc1234", "[FAIL]"},
 		{"dev", "[warn]"},
 	}
 	for _, c := range cases {
 		t.Run(c.version, func(t *testing.T) {
 			home := testDenHome(t)
 			f := &sbx.Fake{Responses: lsWith()}
-			f.Responses["version"] = sbx.Response{Output: []byte("sbx version: " + c.version + "\n")}
+			f.Responses["version"] = sbx.Response{Output: []byte("sbx version " + c.version + "\n")}
 			f.Responses["policy ls --type network --source local --decision allow --json"] = sbx.Response{
 				Output: []byte(`{"rules":[]}`)}
 
