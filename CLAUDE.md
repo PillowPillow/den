@@ -123,19 +123,18 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
 - Everything under `docs/superpowers/plans/` and `.superpowers/sdd/` is historical and never
   rewritten — each document describes the state on its own date. Several of those
   reports still say `sbx` is not installed on this machine. It is (`/opt/homebrew/bin/sbx`,
-  **v0.43.0 `79805a6`** as of 2026-09-16). den now REQUIRES sbx ≥ v0.43.0 (`sbx.MinVersion`),
-  judged by `den doctor` alone. The spec `docs/superpowers/specs/2026-07-27-den-cli-design.md`
-  remains the source of truth, and its §14.0 / §14.1 / §14.2 / **§14.3** the only place that says
-  what a real `sbx` has actually answered. §14.3 is the current one: it records the v0.43.0
-  surface (names capped at 63 bytes and ending alphanumeric, `tcp4` publications, `secret ls
-  --json`, `last_used_at`, `--skills`). Two things §14.2 recorded are gone: the `sbx setup`
-  wizard no longer opens by itself (v0.42.0), and its marker moved from `first-run-import.json`
-  to `first-login.json` (`firstLoginAt`); **`den exec -T` / `den run -T` no longer hang** — measured
-  2026-09-16 under a real pty with the marker present and absent, for `sbx exec` only, which is
-  the one verb den calls. Two things v0.43.0 added: `sbx exec` prints `Sandbox <name> started
-  successfully` on stdout when it restarts a stopped sandbox (den's kit-log reader ignores it),
-  and a `create`d sandbox auto-stops within about two minutes of idling (measured; threshold
-  unknown). There is no v0.40.x nor v0.41.x: sbx went v0.39.0 → v0.42.0.
+  **v0.48.0 `5caf923`** as of 2026-10-13). den now REQUIRES sbx ≥ v0.48.0 (`sbx.MinVersion`),
+  judged by `den doctor` alone: from v0.48.0 on, `sbx ls --json` and `sbx template ls --json`
+  return bare arrays and `sbx version` drops its colon, and den reads only that surface. The spec
+  `docs/superpowers/specs/2026-07-27-den-cli-design.md` remains the source of truth, and its
+  §14.0 to **§14.4** the only place that says what a real `sbx` has actually answered. §14.4 is
+  the current one. What it adds to §14.3: `sbx exec` prints its restart line
+  (`✓ sandbox <name> — started`) on **stderr** now; the idle auto-stop still happens on v0.48.0;
+  `sbx mount` exists (v0.45.0) but refuses a stopped sandbox, shows its mounts only in
+  `sbx inspect --json` `runtime_mounts`, and mounts `HOST:HOST:ro` read-write on a wrong target —
+  so den does not mount live. There is no v0.44.x: sbx went v0.43.0 → v0.45.0. There is no
+  v0.40.x nor v0.41.x either: sbx went v0.39.0 → v0.42.0. `den exec -T` / `den run -T` do not
+  hang (measured 2026-09-16, §14.3).
 - `.claude/worktrees/feat+spawn-interactive/` is a full shadow copy of the tree. Exclude it from
   greps or every search returns doubled hits.
 - Il n'y a plus de `Makefile` : le runner est `Taskfile.yml` depuis le 2026-08-04. Les plans
