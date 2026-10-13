@@ -9,18 +9,22 @@ import (
 
 // MinVersion is the oldest sbx den supports.
 //
-// Judged by `den doctor` ONLY (spec 2026-09-16-sbx-0.43-compat §5, HITL
-// decision of 2026-09-16): sandbox-name rules, the tcp4 default of `sbx ports
-// --publish`, `secret ls --json` and `last_used_at` all arrived between
-// v0.42.0 and v0.43.0, and den assumes every one of them. No other command
-// checks — `den rm` in particular must never refuse and strand a live VM over
-// a version number (doctrine T13/T16), and a spawn on an older sbx fails with
-// sbx's own message, which names the real cause.
-const MinVersion = "v0.43.0"
+// Judged by `den doctor` ONLY (spec 2026-09-16-sbx-0.43-compat §5, kept by
+// spec 2026-10-13-sbx-0.48-compat §3): no other command checks — `den rm` in
+// particular must never refuse and strand a live VM over a version number
+// (doctrine T13/T16). v0.48.0 is the floor because den decodes only the bare
+// arrays `sbx ls --json` and `sbx template ls --json` return from that
+// release on; an older sbx gets a refusal from those decoders that names the
+// upgrade, and `den doctor` names both versions.
+const MinVersion = "v0.48.0"
 
 // ParseVersion reads the version out of `sbx version`, whose output is one
-// line — "sbx version: v0.43.0 <commit>" — unchanged from v0.38.0 (observed
-// 2026-08-14) to v0.43.0 (re-measured 2026-09-16).
+// line: "sbx version v0.48.0 <commit>" from v0.48.0 on, "sbx version: v0.43.0
+// <commit>" from v0.38.0 to v0.47.0.
+//
+// Both spellings are read although den supports only v0.48.0 and later: the
+// old one is what an sbx below the floor prints, and reading it is what lets
+// `den doctor` say "too old" instead of "unreadable".
 //
 // It returns "" rather than an error when it cannot find one: an unreadable
 // version is the CALLER's question — source.CheckCompatibility turns it into
@@ -28,11 +32,11 @@ const MinVersion = "v0.43.0"
 // cannot read must never be turned into a number it then compares.
 func ParseVersion(output string) string {
 	for _, line := range strings.Split(output, "\n") {
-		_, rest, ok := strings.Cut(line, "sbx version:")
+		_, rest, ok := strings.Cut(line, "sbx version")
 		if !ok {
 			continue
 		}
-		fields := strings.Fields(rest)
+		fields := strings.Fields(strings.TrimPrefix(rest, ":"))
 		if len(fields) == 0 {
 			return ""
 		}

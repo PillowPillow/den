@@ -81,7 +81,7 @@ func pubOn(hostIP string, host, container int) string {
 // struct would agree with it by construction.
 func lsWithPorts(name string, publications ...string) map[string]sbx.Response {
 	out := fmt.Sprintf(
-		`{"sandboxes":[{"name":%q,"status":"running","ports":[%s],"workspaces":["/w"]}]}`,
+		`[{"name":%q,"status":"running","ports":[%s],"workspaces":["/w"]}]`,
 		name, strings.Join(publications, ","))
 	return map[string]sbx.Response{"ls --json": {Output: []byte(out)}}
 }
@@ -793,7 +793,7 @@ func TestPortsAddIsRerunnableWhenTheSandboxAlreadyPublishesIt(t *testing.T) {
 // already bound — publishing them twice, which is the defect #15 just closed.
 func TestPortsStartsAStoppedSandboxAndRereadsIt(t *testing.T) {
 	denHome := portsDenHome(t, "web", portsTwoPortNestYAML)
-	stopped := `{"sandboxes":[{"name":"web.feat123","status":"stopped","workspaces":["/w"]}]}`
+	stopped := `[{"name":"web.feat123","status":"stopped","workspaces":["/w"]}]`
 	f := &wakingRunner{
 		Fake:  &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": {Output: []byte(stopped)}}},
 		woken: lsWithPorts("web.feat123", pub(9100, 5173), pub(9101, 3000))["ls --json"].Output,
@@ -829,7 +829,7 @@ func TestPortsStartsAStoppedSandboxAndRereadsIt(t *testing.T) {
 func TestPortsRefusesASandboxThatDoesNotStart(t *testing.T) {
 	denHome := portsDenHome(t, "web", portsTwoPortNestYAML)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": {Output: []byte(
-		`{"sandboxes":[{"name":"web.feat123","status":"stopped","workspaces":["/w"]}]}`)}}}
+		`[{"name":"web.feat123","status":"stopped","workspaces":["/w"]}]`)}}}
 
 	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "web.feat123")
 	if err == nil {
@@ -1090,7 +1090,7 @@ func TestPortsRefusesASandboxThatIsNotAttachable(t *testing.T) {
 	denHome := portsDenHome(t, "api", portsNestYAML)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"paused","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"paused","workspaces":["/w/api"]}]`)},
 	}}
 
 	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "api")
@@ -1563,7 +1563,7 @@ func TestPortsRefusesAnAmbiguousFlattenedName(t *testing.T) {
 func TestPortsRefusesAnUndecodableNameWithoutWakingTheSandbox(t *testing.T) {
 	denHome := srcPortsNest(t)
 	writeUnder(t, denHome, filepath.Join("nests", "corp-api.yaml"), "stack: devx\n")
-	stopped := `{"sandboxes":[{"name":"corp-api","status":"stopped","workspaces":["/w"]}]}`
+	stopped := `[{"name":"corp-api","status":"stopped","workspaces":["/w"]}]`
 	f := &sbx.Fake{Responses: map[string]sbx.Response{"ls --json": {Output: []byte(stopped)}}}
 
 	_, _, err := runPorts(t, f, freeScanner{}, "--den-home", denHome, "ports", "corp-api")

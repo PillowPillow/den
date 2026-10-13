@@ -2,7 +2,6 @@ package sbx
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -41,9 +40,10 @@ type Publication struct {
 // Sandbox is a sandbox as `sbx ls --json` describes it.
 //
 // The schema is that of sbx v0.35.0, recorded 2026-07-28 and extended
-// 2026-07-31 with `ports`:
+// 2026-07-31 with `ports`,
+// bare array since v0.48.0 (spec §14.4):
 //
-//	{"sandboxes":[{"name","id","agent","status","last_used_at","ports":[…],"workspaces":["/p","/p:ro"]}]}
+//	[{"name","id","agent","status","last_used_at","ports":[…],"workspaces":["/p","/p:ro"]}]
 //
 // `last_used_at` arrived with v0.43.0 (measured 2026-09-16); before it there
 // was NO date field, which is what got the "age" column of spec §5 dropped.
@@ -187,35 +187,15 @@ func Ls(ctx context.Context, r Runner) ([]Sandbox, error) {
 		return nil, err
 	}
 
-	// Two-step decoding, on purpose: a valid JSON object WITHOUT the
-	// "sandboxes" key (sbx renaming it) must be an ERROR, not a silent zero. Ls
-	// has no output channel other than the error to signal it, and silence
-	// costs more elsewhere than on den ls itself: den exec/den rm would read an
-	// empty list and tell the user a live sandbox doesn't exist, instead of
-	// saying the read failed. Same policy as the `allowed` field of `sbx
-	// policy check` (task 11), for the same reason.
-	//
-	// UNVERIFIED ASSUMPTION (sbx isn't installed on this machine): the "zero
-	// live sandboxes" case emits the "sandboxes" key with an empty or null
-	// array, never its outright absence (a bare `{}`). If a first smoke test
-	// on a real machine shows a bare `{}` when nothing is running, this guard
-	// must be relaxed.
-	// DecodeJSON, not json.Unmarshal: sbx prints its update banner on stdout
-	// BEHIND the payload, and Unmarshal refuses anything after the value. That
-	// is the 2026-08-21 outage — `den exec` dying on a running VM over a box
-	// of ASCII art. The whole story is in DecodeJSON.
-	var fields map[string]json.RawMessage
-	if err := DecodeJSON("ls", output, &fields); err != nil {
-		return nil, err
-	}
-	raw, present := fields["sandboxes"]
-	if !present {
-		return nil, fmt.Errorf("sbx ls: key %q absent from the JSON output: %s", "sandboxes", string(output))
-	}
-
+	// decodeList, not json.Unmarshal: it keeps DecodeJSON's tolerance of the
+	// update banner sbx prints on stdout behind the payload (the 2026-08-21
+	// outage, told in DecodeJSON), and it turns a shape den does not read into
+	// an error rather than an empty list — den exec/den rm would otherwise
+	// tell the user a live sandbox does not exist instead of saying the read
+	// failed.
 	var boxes []Sandbox
-	if err := json.Unmarshal(raw, &boxes); err != nil {
-		return nil, fmt.Errorf("sbx ls: unreadable JSON output (%w): %s", err, string(output))
+	if err := decodeList("ls", output, &boxes); err != nil {
+		return nil, err
 	}
 
 	slices.SortFunc(boxes, func(a, b Sandbox) int { return strings.Compare(a.Name, b.Name) })

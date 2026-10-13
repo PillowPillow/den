@@ -12,8 +12,8 @@ import (
 // pre-flight reads.
 func buildFake(builtImages string) *sbx.Fake {
 	return &sbx.Fake{Responses: map[string]sbx.Response{
-		"template ls --json": {Output: []byte(`{"images":[` + builtImages + `]}`)},
-		"ls --json":          {Output: []byte(`{"sandboxes":[]}`)},
+		"template ls --json": {Output: []byte(`[` + builtImages + `]`)},
+		"ls --json":          {Output: []byte(`[]`)},
 	}}
 }
 

@@ -31,7 +31,7 @@ func TestFakeRecordsCalls(t *testing.T) {
 }
 
 func TestFakeScriptedResponse(t *testing.T) {
-	want := []byte(`{"sandboxes":[]}`)
+	want := []byte(`[]`)
 	f := &Fake{Responses: map[string]Response{
 		"ls --json": {Output: want},
 	}}

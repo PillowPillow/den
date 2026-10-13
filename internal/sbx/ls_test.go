@@ -15,17 +15,17 @@ import (
 // ANONYMIZED: the record is genuine, but the paths and identifier are
 // replaced.
 //
-// What's preserved has evidentiary value — the SCHEMA, and only that: root
-// key `sandboxes`, the six fields of an entry, `workspaces` as an array of
-// ABSOLUTE paths, one of which carries the `:ro` suffix, an `id` shaped like a
-// UUID (8-4-4-4-12), and `last_used_at` as sbx v0.43.0 writes it, five
-// fractional digits and all.
+// What's preserved has evidentiary value — the SCHEMA, and only that: the six
+// fields of an entry, `workspaces` as an array of ABSOLUTE paths, one of which
+// carries the `:ro` suffix, an `id` shaped like a UUID (8-4-4-4-12), and
+// `last_used_at` as sbx v0.43.0 writes it, five fractional digits and all. The
+// wrapping object of that record is gone: sbx v0.48.0 returns the bare array
+// (measured 2026-10-13), so the record is kept in that shape.
 //
 // What's replaced had none: the original paths were those of the development
 // machine and named a third party. The record's evidentiary value is real;
 // so would the leak be if the repo went public.
-const realLsOutput = `{
-  "sandboxes": [
+const realLsOutput = `[
     {
       "name": "den",
       "id": "11111111-2222-4333-8444-555555555555",
@@ -38,8 +38,7 @@ const realLsOutput = `{
         "/Users/dev/Development/Other/dependency:ro"
       ]
     }
-  ]
-}`
+  ]`
 
 func TestLsDecodesRealOutput(t *testing.T) {
 	f := &Fake{Responses: map[string]Response{
@@ -73,7 +72,7 @@ func TestLsDecodesRealOutput(t *testing.T) {
 func TestLsAssignsNestAndWorktree(t *testing.T) {
 	f := &Fake{Responses: map[string]Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api.feat12","status":"running","workspaces":["/w"]}]}`)},
+			`[{"name":"api.feat12","status":"running","workspaces":["/w"]}]`)},
 	}}
 
 	boxes, err := Ls(context.Background(), f)
@@ -90,7 +89,7 @@ func TestLsAssignsNestAndWorktree(t *testing.T) {
 func TestLsSortsByName(t *testing.T) {
 	f := &Fake{Responses: map[string]Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"zeta"},{"name":"alpha"},{"name":"mu"}]}`)},
+			`[{"name":"zeta"},{"name":"alpha"},{"name":"mu"}]`)},
 	}}
 
 	boxes, err := Ls(context.Background(), f)
@@ -106,7 +105,7 @@ func TestLsSortsByName(t *testing.T) {
 
 func TestLsNoSandbox(t *testing.T) {
 	f := &Fake{Responses: map[string]Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 
 	boxes, err := Ls(context.Background(), f)
@@ -143,7 +142,7 @@ func TestLsUnreadableOutput(t *testing.T) {
 // amputated sandbox list would make `den spawn` recreate a sandbox that's
 // already running.
 func TestLsTruncatedOutput(t *testing.T) {
-	complete := `{"sandboxes":[{"name":"api","status":"running"},{"name":"web","status":"running"}]}`
+	complete := `[{"name":"api","status":"running"},{"name":"web","status":"running"}]`
 	for _, cut := range []int{len(complete) - 1, len(complete) / 2, 20} {
 		truncated := complete[:cut]
 		t.Run(truncated, func(t *testing.T) {
@@ -158,28 +157,26 @@ func TestLsTruncatedOutput(t *testing.T) {
 	}
 }
 
-// Valid JSON with the wrong schema (sbx renaming "sandboxes") must not read
-// as "no sandbox": that's indistinguishable from a genuine zero to the
-// caller, and den ls/sh/rm would then wrongly claim no sandbox is running.
-// The raw output must stay in the message, for the same reason as unreadable
-// JSON.
-func TestLsMissingSandboxesKey(t *testing.T) {
+// The pre-v0.48.0 shape is RECOGNIZED, never read: den supports sbx v0.48.0
+// and later only, and an older sbx must get a remedy, not "unreadable JSON".
+func TestLsRefusesThePreV048Shape(t *testing.T) {
 	f := &Fake{Responses: map[string]Response{
-		"ls --json": {Output: []byte(`{"somethingelse":[]}`)},
+		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api","status":"running"}]}`)},
 	}}
 
-	if _, err := Ls(context.Background(), f); err == nil {
-		t.Fatal("a missing sandboxes key must produce an error")
-	} else if !containsAll(err.Error(), "sbx ls", "sandboxes", "somethingelse") {
-		t.Errorf("unhelpful message: %v", err)
+	_, err := Ls(context.Background(), f)
+	if err == nil {
+		t.Fatal("the pre-v0.48.0 object shape must be refused")
+	}
+	if !containsAll(err.Error(), "sbx ls", "pre-v0.48.0 shape", MinVersion, "upgrade sbx", "den doctor") {
+		t.Errorf("message = %q, want the shape, the floor and the remedy", err)
 	}
 }
 
-// The "sandboxes" key present but empty or null stays a zero-sandbox
-// success: sbx ls --json has never been observed without a live sandbox, and
-// nothing guarantees which of the two JSON forms it produces. Both must work.
-func TestLsZeroSandboxesEmptyOrNil(t *testing.T) {
-	for _, output := range []string{`{"sandboxes":[]}`, `{"sandboxes":null}`} {
+// An empty array and the JSON literal null are both zero sandboxes: nothing
+// guarantees which one sbx prints when no sandbox exists.
+func TestLsZeroSandboxesEmptyOrNull(t *testing.T) {
+	for _, output := range []string{`[]`, `null`} {
 		f := &Fake{Responses: map[string]Response{
 			"ls --json": {Output: []byte(output)},
 		}}
@@ -190,6 +187,22 @@ func TestLsZeroSandboxesEmptyOrNil(t *testing.T) {
 		}
 		if len(boxes) != 0 {
 			t.Errorf("output %s: boxes = %v, want empty", output, boxes)
+		}
+	}
+}
+
+// A scalar is neither shape: it must fail with the raw output, never read as
+// an empty list.
+func TestLsRefusesAScalar(t *testing.T) {
+	for _, output := range []string{`"error"`, `42`} {
+		f := &Fake{Responses: map[string]Response{
+			"ls --json": {Output: []byte(output)},
+		}}
+
+		if _, err := Ls(context.Background(), f); err == nil {
+			t.Fatalf("output %s: a scalar must produce an error", output)
+		} else if !containsAll(err.Error(), "sbx ls", "unreadable JSON output", output) {
+			t.Errorf("output %s: unhelpful message: %v", output, err)
 		}
 	}
 }

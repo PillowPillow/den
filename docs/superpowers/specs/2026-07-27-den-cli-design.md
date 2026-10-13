@@ -1965,3 +1965,80 @@ d'erreur (den ne fait aucune correspondance sur le texte de sbx) ; `--kit` rése
 (tous les kits de `~/.den` et de la source `dg` sont `kind: mixin`) ; volume Docker 10 Go ;
 mémoire minimale 512 MiB (den n'a pas de bouton ressources) ; `sbx create` sans PATH (den passe
 toujours au moins un workspace, garde conservée).
+
+## 14.4 Relevé du 2026-10-13 — sbx **v0.48.0** (`5caf923`)
+
+Mesuré dans cette session sur cette machine (darwin 25.6.0, arm64), client et serveur v0.48.0,
+`api_version 0.40.0`. Sondes en lecture seule, plus deux sondes à effet de bord défaites
+ensuite : un identifiant de registre jetable (`den-probe.invalid`), et des montages à chaud sur la
+sandbox `am`, avec l'accord de l'utilisateur. Recopié de la spec `2026-10-13-sbx-0.48-compat-design.md` §1.
+
+### 14.4.1 Formes JSON
+
+- `sbx ls --json` : liste nue. Clés d'une ligne arrêtée : `name id agent status last_used_at
+  workspaces created_at`. Une ligne en marche (`am` démarrée par `sbx exec am true`) a en plus
+  `ports` ; `status` y vaut `running`, et chaque entrée de `ports` porte `host_ip host_port
+  sandbox_port protocol` (`tcp4`), les clés que den lit. Le champ `detached` annoncé par les
+  notes de version **n'apparaît** ni sur une ligne arrêtée ni sur une ligne en marche. den ignore
+  les champs inconnus.
+- `sbx template ls --json` : liste nue. Clés : `id repository tag flavor created_at size`.
+- `sbx policy ls SANDBOX --json` et `sbx policy ls --type network --source local --decision allow
+  --json` : **inchangés**, toujours `{"rules":[…]}`, avec `scope`, `resource_type`, `decision`,
+  `status` (`active`), `resources`.
+- `sbx policy check network --sandbox S --json HOST` : **inchangé**, `allowed` booléen au premier
+  niveau.
+- `sbx secret ls -g --json` : **inchangé**, `secrets[]`, `custom_secrets[]` (`env`, `targets`),
+  `shadowed_services[]`, `env_only_count`.
+- `sbx inspect SANDBOX --json` : `state`, `workspace` (chaîne), `additional_workspaces[].dir`,
+  `runtime_mounts[]` (`host_path`, `container_target`, `read_only` présent seulement quand vrai),
+  plus `agent image kits network network_policy ports proxy secrets sessions uptime`. den ne le
+  lit pas. `inspect` n'est pas listé par `sbx --help`.
+
+### 14.4.2 Version
+
+- `sbx version` : `sbx version v0.48.0 5caf923…`. Jusqu'à v0.47.0 : `sbx version: v0.47.0 …`.
+- `sbx version --json` : `{client:{version,revision,build_tags}, server:{state,version,revision,
+  api_version}}`. Il interroge le démon.
+
+### 14.4.3 Drapeaux
+
+- `sbx create` : `--name`, `--template`, `--skills`, `--kit` existent toujours ; `-q` devient
+  `--no-progress` (den ne l'émet pas). `--pull` vaut désormais `never` par défaut pour un
+  instantané local sauvé, donc un spawn depuis une image `den build` ne contacte plus de registre.
+- `sbx run` : `--detached` est refusé, `-d` / `--detach` le remplace (den n'appelle pas `run`).
+- `sbx secret set-custom --env` : **existe toujours**. Seuls `secret ls --env` et `secret rm --env`
+  deviennent `--env-name` (den n'emploie ni l'un ni l'autre).
+- `sbx template save SANDBOX TAG`, `sbx rm --force`, `sbx stop`, `sbx ports S --publish` :
+  positionnels et drapeaux inchangés ; den ignore leur sortie.
+
+### 14.4.4 Secrets
+
+Un second `printf … | sbx secret set --all-sandboxes --registry den-probe.invalid
+--password-stdin` échoue : code 1, stderr `error: registry secret already exists for
+"den-probe.invalid" in scope "(global)"; rerun with -f to overwrite`. Avec `-f`, stdin toujours
+redirigé, il réussit. L'identifiant jetable a été supprimé (`sbx secret rm --all-sandboxes
+--registry den-probe.invalid -f`).
+
+### 14.4.5 Montages à chaud (`sbx mount`) — sonde sur `am`
+
+- `sbx mount` sur une sandbox **arrêtée** : `409 Conflict: sandbox "am" is not running`.
+- Un montage à chaud **n'apparaît pas** dans `workspaces` de `sbx ls --json`. Il apparaît dans
+  `runtime_mounts` de `sbx inspect --json`, y compris sandbox arrêtée.
+- **Défaut sbx** : `HOST:HOST:ro` monte sur la cible `HOST` + `o`, en **lecture-écriture**
+  (`virtiofs (rw,…)`). Reproduit sur deux répertoires. `HOST:ro` échoue : sbx lit l'hôte
+  `HOST` + `o`. `HOST:/mnt/probe:ro` fonctionne, en lecture seule. `HOST` nu fonctionne, en
+  lecture-écriture, à la même place. Hypothèse non vérifiée : le défaut se déclenche quand la cible
+  existe sur l'hôte.
+- Un montage à chaud **survit** à `sbx stop` puis redémarrage.
+- `sbx umount SANDBOX HOST[:CTR]` le retire. `am` a été rendue dans son état initial : arrêtée,
+  `workspaces` inchangés, `runtime_mounts` vide.
+
+### 14.4.6 Divers
+
+- `sbx exec` sur une sandbox arrêtée imprime `✓ sandbox am — started` sur **stderr** (stdout
+  vide). En v0.43.0, la ligne `Sandbox <name> started successfully` allait sur stdout.
+- **L'auto-arrêt existe toujours** : `am`, démarrée par un `sbx exec … true`, s'est arrêtée seule
+  en quelques minutes entre deux sondes.
+- Non mesuré : le statut que `sbx ls` donne à une sandbox qui ne répond plus ; le flux de la
+  bannière de mise à jour ; l'effet de `sbx run -d --name` sur l'auto-arrêt (sonde refusée par la
+  couche de permissions de la session).

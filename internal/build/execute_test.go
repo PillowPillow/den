@@ -38,7 +38,7 @@ func buildableStack(t *testing.T, name, image, base string, stepNames ...string)
 func TestExecuteRunsTheWholeSequenceInOrder(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh", "two.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 	if err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
 		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{}); err != nil {
@@ -94,7 +94,7 @@ func derivedStackChain(t *testing.T) (root, derived *config.Stack, home string) 
 func TestExecuteBuildsADerivedStackFromItsParentImageAfterItsAncestor(t *testing.T) {
 	root, derived, home := derivedStackChain(t)
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 	if err := Execute(context.Background(),
 		[]Step{{Stack: root, Build: true}, {Stack: derived, Build: true}},
@@ -136,7 +136,7 @@ func TestExecuteBuildsADerivedStackFromItsParentImageAfterItsAncestor(t *testing
 func TestExecuteRefusesALeftoverBeforeBuildingAnyEarlierStack(t *testing.T) {
 	root, derived, home := derivedStackChain(t)
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"dgdevx-build","status":"running"}]}`)},
+		"ls --json": {Output: []byte(`[{"name":"dgdevx-build","status":"running"}]`)},
 	}}
 	err := Execute(context.Background(),
 		[]Step{{Stack: root, Build: true}, {Stack: derived, Build: true}},
@@ -158,7 +158,7 @@ func TestExecuteRefusesALeftoverBeforeBuildingAnyEarlierStack(t *testing.T) {
 func TestExecuteNamesTheFailingStep(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh", "two.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 		"exec devx-build -- bash -lc echo two.sh\n": {Err: errors.New("exit status 1")},
 	}}
 	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
@@ -192,7 +192,7 @@ func TestExecuteNamesTheFailingStepWithoutInliningThePayload(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	payload := "echo one.sh\n"
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 		"exec devx-build -- bash -lc " + payload: {Err: &sbx.ExecError{
 			Bin:    "sbx",
 			Args:   []string{"exec", "devx-build", "--", "bash", "-lc", payload},
@@ -251,7 +251,7 @@ func TestExecuteRendersAStepFailureAsSpecPromises(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	step := filepath.Join(home, "stacks", "devx", "one.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 		// Exactly what sbx.Exec.Stream builds on a failing step: no Stderr, the
 		// text having gone to the writer as it was produced.
 		"exec devx-build -- bash -lc echo one.sh\n": {
@@ -288,7 +288,7 @@ func TestExecuteDoesNotInlineTheCreateArgvOnAFailedCreate(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	scratch := ScratchDir(home, "devx")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 		"create --name devx-build --skills off claude " + scratch: {Err: &sbx.ExecError{
 			Bin:    "sbx",
 			Args:   []string{"create", "--name", "devx-build", "--skills", "off", "claude", scratch},
@@ -326,7 +326,7 @@ func TestExecuteDoesNotInlineTheCreateArgvOnAFailedCreate(t *testing.T) {
 func TestExecuteWritesEveryStepsOutput(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh", "two.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 		"exec devx-build -- bash -lc echo one.sh\n": {Output: []byte("installing go\n")},
 		"exec devx-build -- bash -lc echo two.sh\n": {Output: []byte("installing node\n")},
 	}}
@@ -356,7 +356,7 @@ func TestExecuteWritesEveryStepsOutput(t *testing.T) {
 func TestExecuteWritesTheFailingStepsOutputBeforeItsErrorAndWarnsOnAFailedTeardown(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 		"exec devx-build -- bash -lc echo one.sh\n": {
 			Output: []byte("Reading package lists...\n"),
 			Err:    &sbx.ExecError{Bin: "sbx", Stderr: "E: Unable to locate package ripgrep", Err: errors.New("exit status 1")},
@@ -395,7 +395,7 @@ func TestExecuteWritesTheFailingStepsOutputBeforeItsErrorAndWarnsOnAFailedTeardo
 func TestExecuteTearsDownAfterAFailedStep(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 		"exec devx-build -- bash -lc echo one.sh\n": {Err: errors.New("boom")},
 	}}
 	_ = Execute(context.Background(), []Step{{Stack: s, Build: true}},
@@ -457,7 +457,7 @@ func (r *ctxCapturingRunner) Stream(ctx context.Context, out io.Writer, args ...
 func TestExecuteTearsDownWithAnUncanceledContextEvenWhenTheStepWasCanceled(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 		"exec devx-build -- bash -lc echo one.sh\n": {Err: context.Canceled},
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -486,7 +486,7 @@ func TestExecuteTearsDownWithAnUncanceledContextEvenWhenTheStepWasCanceled(t *te
 func TestExecuteRefusesAPreexistingBuildSandbox(t *testing.T) {
 	s, home := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"devx-build","status":"running"}]}`)},
+		"ls --json": {Output: []byte(`[{"name":"devx-build","status":"running"}]`)},
 	}}
 	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
 		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{})
@@ -512,7 +512,7 @@ func TestExecuteReadsEveryProvisionFileBeforeTheFirstCreate(t *testing.T) {
 		Provision: config.Provision{Steps: []string{filepath.Join(home, "stacks", "dgdevx", "gone.sh")}},
 	}
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 	err := Execute(context.Background(),
 		[]Step{{Stack: good, Build: true}, {Stack: broken, Build: true}},
@@ -539,7 +539,7 @@ func TestExecuteEmptiesTheScratchBeforeEachBuild(t *testing.T) {
 	writeFile(t, residue, "from the last build\n")
 
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 	if err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
 		Deps{Sbx: fake, DenHome: home}, &strings.Builder{}, &strings.Builder{}); err != nil {
@@ -568,7 +568,7 @@ func TestExecuteEmptiesTheScratchBeforeEachBuild(t *testing.T) {
 func TestExecuteRefusesToDeriveAScratchFromAnEmptyDenHome(t *testing.T) {
 	s, _ := buildableStack(t, "devx", "devx:v1", "claude", "one.sh")
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 	err := Execute(context.Background(), []Step{{Stack: s, Build: true}},
 		Deps{Sbx: fake, DenHome: ""}, &strings.Builder{}, &strings.Builder{})
@@ -636,7 +636,7 @@ func TestExecuteSequenceGolden(t *testing.T) {
 	}
 
 	fake := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 	if err := Execute(context.Background(),
 		[]Step{{Stack: devx, Build: true}, {Stack: dgdevx, Build: true}},

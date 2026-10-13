@@ -523,7 +523,7 @@ func (e *UnknownVersionError) Error() string {
 // denVersion and sbxVersion are taken as observed — "1.7.0", "v1.7.0",
 // "v1.7.0-3-gabc1234", "v1.7.0-dirty" — because that is what the two sources
 // really produce: `git describe` for den (internal/cli/version.go) and
-// `sbx version:` output for sbx.
+// `sbx version` output for sbx.
 func CheckCompatibility(m *Manifest, denVersion, sbxVersion string) error {
 	for _, c := range []struct{ tool, requirement, observed string }{
 		{"den", m.Requires.Den, denVersion},

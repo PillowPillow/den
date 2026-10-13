@@ -362,7 +362,7 @@ func (d *credentialDriver) expected() string {
 // That argv needs sbx >= 0.38.0: an older binary knows `-g` and not
 // `--all-sandboxes`, and answers cobra's bare `unknown flag:
 // --all-sandboxes`. den now declares a floor of its own (sbx.MinVersion,
-// currently v0.43.0, well above this argv's 0.38.0 need) — but `den doctor`
+// well above this argv's 0.38.0 need) — but `den doctor`
 // is its ONLY judge, and doctor is advisory: no other command, Apply
 // included, consults it. The guard THIS path actually runs under is still
 // the source manifest's `requires.sbx` — which is optional, and

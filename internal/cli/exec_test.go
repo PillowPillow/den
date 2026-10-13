@@ -17,7 +17,7 @@ import (
 func TestExecAttachesInTheWorkdir(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api:ro","/profile"]}]`)},
 	}}
 
 	if _, err := executeCmdWithSbx(t, f, "exec", "api", "true"); err != nil {
@@ -49,7 +49,7 @@ func TestExecAttachesInTheWorkdir(t *testing.T) {
 // no longer even reach the attach.
 func TestExecNeverUsesSbxRun(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w"]}]}`)},
+		"ls --json": {Output: []byte(`[{"name":"api","status":"running","workspaces":["/w"]}]`)},
 	}}
 
 	if _, err := executeCmdWithSbx(t, f, "exec", "api", "true"); err != nil {
@@ -64,7 +64,7 @@ func TestExecNeverUsesSbxRun(t *testing.T) {
 // the user to run another command just to know what to type.
 func TestExecUnknownName(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[{"name":"api"},{"name":"web"}]}`)},
+		"ls --json": {Output: []byte(`[{"name":"api"},{"name":"web"}]`)},
 	}}
 
 	_, err := executeCmdWithSbx(t, f, "exec", "missing", "true")
@@ -93,7 +93,7 @@ func TestExecUnknownName(t *testing.T) {
 func TestExecResumesAStoppedSandbox(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"stopped","workspaces":["/w/api"]}]`)},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
@@ -114,7 +114,7 @@ func TestExecRefusesASandboxThatIsNotRunning(t *testing.T) {
 		t.Run("status="+status, func(t *testing.T) {
 			f := &sbx.Fake{Responses: map[string]sbx.Response{
 				"ls --json": {Output: []byte(
-					`{"sandboxes":[{"name":"api","status":"` + status + `","workspaces":["/w/api"]}]}`)},
+					`[{"name":"api","status":"` + status + `","workspaces":["/w/api"]}]`)},
 			}}
 
 			_, err := executeCmdWithSbx(t, f, "exec", "api", "true")
@@ -177,7 +177,7 @@ func execGateRead(sandbox string) string {
 func TestExecRefusesASandboxWhoseFreshnessGateFailed(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 		execGateRead("api"): {Output: execGateLog("api", "fail")},
 	}}
 
@@ -210,7 +210,7 @@ func TestExecWaitsForTheGateWhenItStartsAStoppedSandbox(t *testing.T) {
 	log := append(execGateLog("api", "fail"), execGateLog("api", "fail")...)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"stopped","workspaces":["/w/api"]}]`)},
 		execGateRead("api"): {Output: log},
 	}}
 
@@ -248,7 +248,7 @@ func TestExecWaitsForTheGateWhenItStartsAStoppedSandbox(t *testing.T) {
 func TestExecPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"stopped","workspaces":["/w/api"]}]`)},
 		// A run that has begun and reported nothing: GatePending, forever.
 		execGateRead("api"): {Output: []byte("=== dispatcher run 2026-08-03T10:00:00Z ===\n")},
 	}}
@@ -285,7 +285,7 @@ func TestExecPollsRatherThanReadsOnceWhenItStartsAStoppedSandbox(t *testing.T) {
 func TestExecRunsAndStaysSilentWhenTheFreshnessGatePassed(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 		execGateRead("api"): {Output: execGateLog("api", "ok")},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
@@ -312,7 +312,7 @@ func TestExecRunsAndStaysSilentWhenTheFreshnessGatePassed(t *testing.T) {
 func TestExecReadsTheFreshnessGateBeforeAttaching(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 		execGateRead("api"): {Output: execGateLog("api", "ok")},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
@@ -389,7 +389,7 @@ func TestExecWarnsWhenTheForwardedAgentIsEmpty(t *testing.T) {
 	execSocket(t)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 
 	stdout, stderr, err := runExecWithAgent(t, execDenHome(t, ""), f,
@@ -417,7 +417,7 @@ func TestExecDoesNotWarnWhenTheForwardedAgentHasKeys(t *testing.T) {
 	execSocket(t)
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 
 	_, stderr, err := runExecWithAgent(t, execDenHome(t, ""), f,
@@ -440,7 +440,7 @@ func TestExecDoesNotProbeTheAgentOutsideAgentForward(t *testing.T) {
 			execSocket(t)
 			f := &sbx.Fake{Responses: map[string]sbx.Response{
 				"ls --json": {Output: []byte(
-					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+					`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 			}}
 			probed := false
 
@@ -480,7 +480,7 @@ func TestExecDoesNotWarnWhenTheSSHSocketIsAbsent(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 	probed := false
 
@@ -503,7 +503,7 @@ func TestExecDoesNotWarnWhenTheSSHSocketIsAbsent(t *testing.T) {
 // "(live: [])" would send the user looking for a typo in an empty list.
 func TestExecWithNoSandboxAtAll(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"ls --json": {Output: []byte(`{"sandboxes":[]}`)},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 
 	_, err := executeCmdWithSbx(t, f, "exec", "missing", "true")
@@ -524,7 +524,7 @@ func TestExecWithNoSandboxAtAll(t *testing.T) {
 func TestExecAcceptsASourceReference(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"corp-api","status":"running","workspaces":["/w"]}]}`)},
+			`[{"name":"corp-api","status":"running","workspaces":["/w"]}]`)},
 	}}
 
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
@@ -544,7 +544,7 @@ func TestExecAcceptsASourceReference(t *testing.T) {
 func TestExecAcceptsAWorktreedSourceReference(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"corp-api.feat12","status":"running","workspaces":["/w"]}]}`)},
+			`[{"name":"corp-api.feat12","status":"running","workspaces":["/w"]}]`)},
 	}}
 
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
@@ -583,7 +583,7 @@ func TestExecAcceptsAWorktreedSourceReference(t *testing.T) {
 func TestExecRunsACommandWithoutTheDoubleDash(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
@@ -615,7 +615,7 @@ func TestExecAllocatesATtyOnlyWhenDenHasOne(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &sbx.Fake{Responses: map[string]sbx.Response{
 				"ls --json": {Output: []byte(
-					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+					`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 			}}
 			deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: tc.isTTY}
 			if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
@@ -643,7 +643,7 @@ func TestExecMinusTSuppressesTheTtyEvenOnATerminal(t *testing.T) {
 		t.Run(flag, func(t *testing.T) {
 			f := &sbx.Fake{Responses: map[string]sbx.Response{
 				"ls --json": {Output: []byte(
-					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+					`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 			}}
 			deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, IsTTY: func() bool { return true }}
 			if _, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
@@ -672,7 +672,7 @@ func TestExecMinusTSuppressesTheTtyEvenOnATerminal(t *testing.T) {
 func TestExecWorkdirOverridesTheReportedWorkspace(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
@@ -1009,7 +1009,7 @@ func TestExecRefusesWithNoSandboxNameByNamingTheUsage(t *testing.T) {
 func TestExecPassesTheCommandsOwnFlagsThrough(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
@@ -1031,7 +1031,7 @@ func TestExecPassesHelpToTheSandbox(t *testing.T) {
 		t.Run(flag, func(t *testing.T) {
 			f := &sbx.Fake{Responses: map[string]sbx.Response{
 				"ls --json": {Output: []byte(
-					`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+					`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 			}}
 			deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
@@ -1057,7 +1057,7 @@ func TestExecPassesHelpToTheSandbox(t *testing.T) {
 func TestExecStillReadsDenHomeBeforeTheSubcommand(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 
@@ -1083,7 +1083,7 @@ func TestExecStillReadsDenHomeBeforeTheSubcommand(t *testing.T) {
 func TestExecPutsItsOwnChatterOnStderrWithoutATty(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"stopped","workspaces":["/w/api"]}]`)},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
 	stdout, stderr, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps),
@@ -1110,7 +1110,7 @@ func TestExecPutsItsOwnChatterOnStderrWithoutATty(t *testing.T) {
 func TestExecKeepsItsChatterOnStdoutWithATty(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"stopped","workspaces":["/w/api"]}]}`)},
+			`[{"name":"api","status":"stopped","workspaces":["/w/api"]}]`)},
 	}}
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return true }}
 	stdout, _, err := executeCmdSeparateStreams(t, NewRootCmdWith(deps), "exec", "api", "true")
@@ -1134,7 +1134,7 @@ func TestExecPropagatesTheCommandStatus(t *testing.T) {
 	f := &sbx.Fake{
 		Responses: map[string]sbx.Response{
 			"ls --json": {Output: []byte(
-				`{"sandboxes":[{"name":"api","status":"running","workspaces":["/w/api"]}]}`)},
+				`[{"name":"api","status":"running","workspaces":["/w/api"]}]`)},
 		},
 		PipeErr: &sbx.ExecError{Bin: "sbx", Err: fakeExitError{code: 42}},
 	}
@@ -1165,8 +1165,8 @@ func TestExecStartsInTheDirectoryTheUserTypedFrom(t *testing.T) {
 	}
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
-				filepath.Dir(cwd) + `"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["` +
+				filepath.Dir(cwd) + `"]}]`)},
 	}}
 
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}
@@ -1188,8 +1188,8 @@ func TestExecWorkdirOverridesTheCwd(t *testing.T) {
 	}
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": {Output: []byte(
-			`{"sandboxes":[{"name":"api","status":"running","workspaces":["` +
-				filepath.Dir(cwd) + `"]}]}`)},
+			`[{"name":"api","status":"running","workspaces":["` +
+				filepath.Dir(cwd) + `"]}]`)},
 	}}
 
 	deps := Deps{Doctor: doctor.FakeDeps(), Sbx: f, Freshness: fakeGateOptions(), IsTTY: func() bool { return false }}

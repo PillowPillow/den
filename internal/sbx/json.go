@@ -63,3 +63,29 @@ func DecodeJSON(command string, output []byte, v any) error {
 	}
 	return nil
 }
+
+// decodeList reads an sbx `--json` listing into v, a pointer to a slice.
+//
+// sbx v0.48.0 returns listings as a bare array (measured 2026-10-13 on `ls`
+// and `template ls`); up to v0.47.0 it wrapped them in an object
+// (`{"sandboxes":[…]}`). den supports v0.48.0 and later only, so the object
+// is RECOGNIZED to be refused with the remedy, never read: decoding it would
+// be compatibility nobody tests, and reading it as an empty list would make
+// `den exec`/`den rm` claim a live sandbox does not exist.
+//
+// The JSON literal null decodes to an empty slice, like `[]`. Any other value
+// fails with the raw output, for the reason DecodeJSON gives.
+func decodeList(command string, output []byte, v any) error {
+	var raw json.RawMessage
+	if err := DecodeJSON(command, output, &raw); err != nil {
+		return err
+	}
+	if trimmed := bytes.TrimSpace(raw); len(trimmed) > 0 && trimmed[0] == '{' {
+		return fmt.Errorf("sbx %s: output has the pre-v0.48.0 shape — den requires sbx %s or "+
+			"later; upgrade sbx, then check with `den doctor`", command, MinVersion)
+	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		return fmt.Errorf("sbx %s: unreadable JSON output (%w): %s", command, err, string(output))
+	}
+	return nil
+}

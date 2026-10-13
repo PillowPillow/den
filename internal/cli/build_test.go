@@ -66,7 +66,7 @@ func runBuild(t *testing.T, f sbx.Runner, args ...string) (stdout, stderr string
 // noPriorSandboxes is what every build that reaches Execute needs: the ONE
 // `sbx ls --json` Execute issues for the whole chain, reporting no leftover
 // `<stack>-build` sandbox.
-var noPriorSandboxes = sbx.Response{Output: []byte(`{"sandboxes":[]}`)}
+var noPriorSandboxes = sbx.Response{Output: []byte(`[]`)}
 
 func TestBuildWithoutAnArgumentBuildsEverythingInOrder(t *testing.T) {
 	home := buildDenHome(t)
@@ -94,7 +94,7 @@ func TestBuildOnATargetSkipsTheAncestorsAlreadyBuilt(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
 		"ls --json": noPriorSandboxes,
 		"template ls --json": {Output: []byte(
-			`{"images":[{"repository":"docker.io/library/base","tag":"v1"}]}`)},
+			`[{"repository":"docker.io/library/base","tag":"v1"}]`)},
 	}}
 
 	stdout, _, err := runBuild(t, f, "--den-home", home, "build", "leaf")
@@ -119,8 +119,8 @@ func TestBuildForcePropagatesToTheAncestors(t *testing.T) {
 		// even when it says the ancestors are already built — not merely that
 		// den never asked in the first place.
 		"template ls --json": {Output: []byte(
-			`{"images":[{"repository":"docker.io/library/base","tag":"v1"},
-			            {"repository":"docker.io/library/mid","tag":"v1"}]}`)},
+			`[{"repository":"docker.io/library/base","tag":"v1"},
+			            {"repository":"docker.io/library/mid","tag":"v1"}]`)},
 	}}
 
 	if _, _, err := runBuild(t, f, "--den-home", home, "build", "leaf", "--force"); err != nil {

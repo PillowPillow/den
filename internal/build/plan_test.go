@@ -193,8 +193,8 @@ func TestPlanRefusesWhenTheInventoryFails(t *testing.T) {
 // during a plan.
 func TestSbxImagesReadsTheInventoryOnce(t *testing.T) {
 	f := &sbx.Fake{Responses: map[string]sbx.Response{
-		"template ls --json": {Output: []byte(`{"images":[
-			{"repository":"docker.io/library/alpha","tag":"v1"}]}`)},
+		"template ls --json": {Output: []byte(`[
+			{"repository":"docker.io/library/alpha","tag":"v1"}]`)},
 	}}
 	images := &SbxImages{Runner: f}
 

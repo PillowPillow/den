@@ -2,16 +2,15 @@ package sbx
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"strings"
 )
 
 // Template is one image `sbx template ls --json` reports.
 //
-// Schema recorded 2026-07-31 against sbx v0.35.0 (spec §14.0):
+// Schema recorded 2026-07-31 against sbx v0.35.0 (spec §14.0), bare array
+// since v0.48.0 (spec §14.4):
 //
-//	{"images":[{"id","repository","tag","flavor","created_at","size"}]}
+//	[{"id","repository","tag","flavor","created_at","size"}]
 //
 // This surface is what makes `den build` honest. Issue #8 was blocked on it:
 // "build the ancestors only if their image is missing" rested on no attested
@@ -54,26 +53,13 @@ func Templates(ctx context.Context, r Runner) ([]Template, error) {
 		return nil, err
 	}
 
-	// Two-step decoding, the doctrine Ls states in full: a valid JSON object
-	// WITHOUT the "images" key — sbx renaming it — must be an error and not a
-	// silent empty list. Silence here is expensive in a precise way: an empty
-	// list reads as "no image is built", so `den build` would rebuild
+	// decodeList, for the reasons Ls gives. An empty list must mean "no image
+	// is built" and nothing else: read wrongly, `den build` would rebuild
 	// everything and `den spawn` would refuse every spawn with "run `den
 	// build`" on a machine where every image is present.
-	// DecodeJSON, for the same reason as Ls: an update banner behind the
-	// payload must not turn every `den build` into a refusal.
-	var fields map[string]json.RawMessage
-	if err := DecodeJSON("template ls", output, &fields); err != nil {
-		return nil, err
-	}
-	raw, present := fields["images"]
-	if !present {
-		return nil, fmt.Errorf("sbx template ls: key %q absent from the JSON output: %s", "images", string(output))
-	}
-
 	var images []Template
-	if err := json.Unmarshal(raw, &images); err != nil {
-		return nil, fmt.Errorf("sbx template ls: unreadable JSON output (%w): %s", err, string(output))
+	if err := decodeList("template ls", output, &images); err != nil {
+		return nil, err
 	}
 	return images, nil
 }
