@@ -7,6 +7,22 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.13.0 — 2026-10-13
+
+### Changed
+- den requires sbx v0.48.0 or later. `den doctor` is still the single judge of that floor. On an
+  older sbx, a command that lists sandboxes or templates refuses with the upgrade remedy instead of
+  reading the old output: read as an empty list, it would make `den exec` or `den rm` claim that a
+  live sandbox does not exist.
+
+### Fixed
+- den works with sbx v0.48.0, which returns `sbx ls --json` and `sbx template ls --json` as bare
+  arrays. den v1.12.0 failed on that shape in every command that lists sandboxes or images — `den
+  ls`, `den up`, `den run`, `den exec`, `den rm`, `den ports`, `den build`.
+- `den doctor` reads the version of sbx v0.48.0, which prints `sbx version v0.48.0` without the
+  colon. `den converge` checks a source's `requires.sbx` floor again instead of skipping it with a
+  warning.
+
 ## v1.12.0 — 2026-09-17
 
 ### Added
