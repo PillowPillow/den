@@ -7,6 +7,14 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.13.1 — 2026-10-14
+
+### Fixed
+- The Homebrew cask removes the quarantine flag with a `postflight_steps` block instead of the
+  Ruby `postflight` block that Homebrew 7 deprecated, so `brew upgrade den` no longer warns
+  "Calling `postflight` is deprecated!" and asks you to report it to the tap. The cask needs
+  Homebrew 6.0.16 or later.
+
 ## v1.13.0 — 2026-10-13
 
 ### Changed
