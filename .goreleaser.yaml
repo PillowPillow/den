@@ -69,7 +69,7 @@ changelog:
 # den_<v>_linux_<arch>.tar.gz beside the darwin one, and Linuxbrew installs it
 # (observed 2026-08-17 on a colleague's box, cask v1.8.0). Everything below that
 # reaches for a macOS-only tool must therefore say so out loud — see the
-# postflight hook. Linux users without brew still have the release archives,
+# `postflight_steps` block. Linux users without brew still have the release archives,
 # `install.sh` or `go install`; all of them answer `den version` correctly since
 # the ldflags/buildinfo arbitration in internal/cli/version.go.
 homebrew_casks:
@@ -88,38 +88,33 @@ homebrew_casks:
     # cask URLs follow the forge goreleaser guessed from ambient tokens.
     url:
       template: "https://github.com/PillowPillow/den/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
-    hooks:
-      post:
-        # The binaries are not notarized: without stripping the quarantine
-        # attribute Gatekeeper blocks the first run with "cannot be opened".
-        #
-        # `OS.mac?` and NOT goreleaser's documented probe, which shipped in
-        # v1.8.0 and broke every Linuxbrew install:
-        #
-        #   if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-        #
-        # In cask context `system_command` raises ErrorDuringExecution on a
-        # non-zero exit instead of returning a result, so on Linux — where
-        # /usr/bin/xattr does not exist and env answers 127 — the exception
-        # fires while EVALUATING the guard. `.exit_status` is never reached, the
-        # `if` never runs, postflight aborts, and brew unlinks and purges a cask
-        # whose (correct, ELF) binary was already staged. The guard that was
-        # supposed to skip the call is the call that dies.
-        #
-        # Asking the OS is also the honest question: quarantine is a macOS
-        # concept, not "an xattr binary that happens to be on PATH". A
-        # File.executable? test would pass on a Linux box with attr(1) installed
-        # at that path and hand it flags it does not have.
-        #
-        # `OS` is a top-level Homebrew module and it IS in scope here — probed
-        # 2026-08-17 by loading a cask carrying this exact block and running
-        # Cask::Artifact::PostflightBlock#install_phase (Homebrew 4.x). Worth
-        # stating, because getting that wrong trades a Linux-only failure for a
-        # NameError on every platform, discovered only at release time.
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/den"]
-          end
+    # The binaries are not notarized: without stripping the quarantine
+    # attribute Gatekeeper blocks the first run with "cannot be opened".
+    #
+    # A hand-written `postflight_steps` stanza, NOT `hooks.post.install`:
+    # Homebrew 7.x deprecated the Ruby `postflight` block that hook emits, and
+    # every `brew upgrade` printed a warning sending users to the tap — where a
+    # fix is overwritten by the next release. goreleaser's own replacement,
+    # `hooks.post.install_steps`, is not in v2.18.3 (`goreleaser check`
+    # refuses it as an unknown field); once a stable release carries it, move
+    # this block there, where goreleaser's `.StagedPath` replaces the escape.
+    #
+    # The escape: Homebrew's step tokens (`{{staged_path}}`) use goreleaser's
+    # own template delimiters, so written bare they are rendered by goreleaser
+    # and never reach brew.
+    #
+    # `on_macos` is a step guard evaluated by brew's step runner, so the Linux
+    # failure v1.8.0 shipped — a guard that itself ran /usr/bin/xattr and
+    # raised on Linuxbrew, purging the cask — cannot recur: on Linux the `run`
+    # step is never executed. It needs no `writable_paths` either: the step
+    # sandbox already allows writes under the cask's caskroom_path, and the
+    # staged binary lives there.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/den"]
+        end
+      end
     commit_author:
       name: goreleaser-bot
       email: bot@goreleaser.com
