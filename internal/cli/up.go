@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -21,6 +22,9 @@ func newUpCmd(deps Deps, denHome *string) *cobra.Command {
 		// MaximumNArgs, not ExactArgs: a missing nest gets the list of nests, not cobra's usage line.
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if o.Selection.Interactive && !deps.IsTTY() {
+				return errors.New("-i needs a terminal; use --only/--without to pick the optional repos")
+			}
 			home, err := config.Home(*denHome)
 			if err != nil {
 				return err

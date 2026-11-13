@@ -186,6 +186,21 @@ func TestUpWorkdirAtCreationIsOneOff(t *testing.T) {
 	}
 }
 
+func TestUpRefusesInteractiveWithoutATerminal(t *testing.T) {
+	f := newUpFixture(t)
+	f.project(t, [2]string{"am", "repos: [{path: " + f.dir(t, "api") + ", optional: true}]"})
+	err := f.up("am", "-i")
+	if err == nil || !strings.Contains(err.Error(), "-i needs a terminal; use --only/--without") {
+		t.Fatalf("error %v, want the terminal refusal", err)
+	}
+	if len(f.fake.Calls) != 0 || len(f.prompt.MultiSelects) != 0 {
+		t.Errorf("sbx calls %v, prompts %d after a refusal", f.fake.Calls, len(f.prompt.MultiSelects))
+	}
+	if _, err := os.Stat(filepath.Join(f.home, "state")); err == nil {
+		t.Errorf("den wrote under %s before refusing", f.home)
+	}
+}
+
 func TestUpDetachDoesNotAttach(t *testing.T) {
 	f := newUpFixture(t)
 	f.project(t, [2]string{"am", "repos: [{path: " + f.dir(t, "api") + "}]"})

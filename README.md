@@ -182,9 +182,11 @@ before any side effect) or a reference sbx resolves itself, passed through verba
   one command.
 - **Workspace.** The VM's primary workspace is a per-instance *run dir*:
   `<project>/.den/run/<instance>/` for a project nest (den adds `.den/.gitignore`), or
-  `<denHome>/run/<instance>/` for a global nest. It holds only the generated `sbxenv.yaml`. With
-  `start: .`, the workspace is the project folder instead, which is the only way a VM reaches your
-  project's `den.yaml`, kits and scripts.
+  `<denHome>/run/<instance>/` for a global nest. It holds only the generated `sbxenv.yaml`. The run
+  dir is den's and disposable: `den rm` deletes it without checking it for changes, so keep
+  nothing there. With `start: .`, the workspace is the project folder instead, which is the only
+  way a VM reaches your project's `den.yaml` and scripts; den then refuses a local kit or a layer
+  under that folder, since the VM could rewrite it.
 - **Ports.** Published through the sandbox at create time. den prints sbx's port table after each
   create; run `sbx ports <instance>` to see it again.
 - **Worktrees.** See [Worktrees](#worktrees).
@@ -213,7 +215,9 @@ does not, so pass `--settings /den/profile/settings.json` yourself there.
 
 ## Commands
 
-All commands accept `--den-home <dir>`. Every sbx call that changes state gets `--no-input`.
+All commands accept `--den-home <dir>`. den passes sbx's global `--no-input` to `env create`,
+`env rm`, `rm`, `exec` and `ports`. `den build`'s `stop` and `template save` do not get it, nor do
+the interactive attaches (`sbx run` for `den up`, `sbx exec -it` for `den shell`).
 
 ### `den up <nest> [flags]`
 
@@ -224,7 +228,7 @@ Creates the instance if it does not exist, then attaches Claude to it (`sbx run`
 |---|---|
 | `-w, --worktree <branch>` | run on a git worktree of every repo, on that branch |
 | `--only a,b` / `--without a,b` | keep only / drop these optional repos |
-| `-i, --interactive` | pick the optional repos from a checklist |
+| `-i, --interactive` | pick the optional repos from a checklist (needs a terminal) |
 | `--workdir <vm path>` | start Claude in this folder instead of `start`, this time only (the instance keeps `start`) |
 | `--detach` | create the instance and stop before attaching |
 
@@ -234,8 +238,8 @@ name is the VM's name and the handle of every other command.
 
 Every refusal den can decide from the config, the flags, its records and `sbx ls` comes before the
 first file, worktree or sbx call that changes state: unknown nest, missing repo, missing profile,
-missing image (`den build`), a missing local kit, a layer under a mounted folder, an sbx older than
-v0.53.0.
+missing image (`den build`), a missing local kit, a local kit or a layer under a mounted folder,
+`-i` without a terminal, an sbx older than v0.53.0.
 
 On an instance that already exists den attaches and changes nothing. If the nest's config changed
 since the instance was created, it warns and tells you to `den rm` then `den up`; a selection flag
@@ -279,6 +283,12 @@ worktrees the record marks as den-created; a repo den found in place is never to
 There is no trash. `den rm` therefore refuses, before removing anything (the VM included), a
 worktree with modified, untracked or ignored files, and a detached HEAD that holds commits no
 branch, remote branch or tag contains. The refusal names them and `--force`, which discards them.
+It also refuses to remove a worktree another instance mounts (two nests sharing a repo and a `-w`
+branch share it; remove the other instance first), and, while a record under `state/v2/` is
+unreadable, any den-created worktree at all.
+
+`den rm` removes the VM through `sbx env rm` only when every file the create read still has the
+hash den recorded; otherwise, since a VM may have rewritten it, through `sbx rm --force`.
 
 ### `den build <base>`
 

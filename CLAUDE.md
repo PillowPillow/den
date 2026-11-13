@@ -57,8 +57,9 @@ refusal decidable from config, flags, registry and `sbx ls` *before the first si
 `Create` writes worktrees, generated files and the record, then calls
 `sbx --no-input env create --force --skip-host-commands`. **No `env create` or `env rm` may lack
 `--skip-host-commands`**: it keeps a `lifecycle:` command or a command-backed MCP server that a VM
-could have written from ever running on the host. Likewise a `layers:` file under any mounted
-folder (lexical or symlink-resolved) is refused, since sbx acts on layers at every create and rm.
+could have written from ever running on the host. Likewise a `layers:` file or a local kit under
+any mounted folder (lexical or symlink-resolved) is refused, since sbx acts on layers at every create
+and rm and a kit carries the egress allowlist and credentials.
 `den up` attaches Claude (`sbx run --name <i> --workdir <start>`); `den shell` is the way to `bash -l`.
 
 **What den created is recorded, not re-derived.** `internal/registry` writes
@@ -69,8 +70,9 @@ only on a readable record, removes only worktrees the record marks den-created, 
 and gen dirs at the paths den places, and goes VM first, record last, so no orphan VM is left.
 `state/` is never purged.
 
-**Worktrees** (`internal/worktree`): `-w` makes one per repo, locked with `git worktree lock`, mounted
-at the main clone path with the common git dir at `/den-git/<repo>` and a read-only generated `.git`.
+**Worktrees** (`internal/worktree`): `-w` makes one per repo, locked with `git worktree lock` when den
+created it (one found in place stays unlocked), mounted at the main clone path with the common git
+dir at `/den-git/<repo>` and a read-only generated `.git`.
 There is no trash: `den rm` refuses (VM included) a worktree with modified, untracked or ignored
 files, or a detached HEAD holding commits no ref contains, unless `--force`. A failed `Create` rolls
 back the worktrees that call made, without force.
@@ -78,7 +80,8 @@ back the worktrees that call made, without force.
 **Every system access is injected through `cli.Deps`** (`internal/cli/root.go`): one `sbx.Runner`
 shared by all commands, plus `Git`, `Prompt`, `IsTTY`, `Getwd`, `Out`, `Err`. Hard-wiring any of them
 breaks the suite's hermeticity. Read helpers (`sbx.Ls`, `Templates`, `Version`) keep sbx's plain
-argv; state-changing and command-running calls get `--no-input`; interactive attaches get none.
+argv; `env create`, `env rm`, `rm`, `exec` and `ports` get `--no-input`; `den build`'s `stop` and
+`template save` do not, nor do interactive attaches.
 `den exec` requires `--` and sends its own messages to stderr, so stdout is the command's alone.
 
 **Coexistence with v1** (until cutover): V2 touches only the paths above and `:v2` image tags; v1 owns
