@@ -1412,6 +1412,22 @@ func TestDeadEndGuardsHoldUnderASymlinkedRoot(t *testing.T) {
 		}
 	})
 
+	t.Run("Remove on a den-locked registration whose whole worktree dir is gone", func(t *testing.T) {
+		repo, worktreePath, target := prepare(t)
+		if err := Lock(context.Background(), NewGit(), repo, worktreePath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(filepath.Dir(worktreePath)); err != nil {
+			t.Fatal(err)
+		}
+		if err := Remove(context.Background(), NewGit(), target); err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+		if list := git(t, repo, "worktree", "list", "--porcelain"); strings.Contains(list, "feat12") {
+			t.Errorf("the registration must be pruned, got:\n%s", list)
+		}
+	})
+
 	t.Run("Ensure on an orphaned registration", func(t *testing.T) {
 		repo, worktreePath, _ := prepare(t)
 		git(t, repo, "worktree", "lock", worktreePath)

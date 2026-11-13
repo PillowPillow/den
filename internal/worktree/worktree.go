@@ -270,7 +270,7 @@ func Lock(ctx context.Context, g Git, repoPath, worktreePath string) error {
 				"run `git worktree unlock %s` in %s if the lock is stale, then retry",
 			worktreePath, repoPath, reason, LockReason, worktreePath, repoPath)
 	}
-	if _, err := g.Run(ctx, repoPath, "worktree", "lock", "--reason", LockReason, worktreePath); err != nil {
+	if _, err := g.Run(ctx, repoPath, "worktree", "lock", "--reason", LockReason, ResolvePath(worktreePath)); err != nil {
 		return fmt.Errorf("locking worktree %s: %w", worktreePath, err)
 	}
 	return nil
@@ -424,8 +424,12 @@ func Remove(ctx context.Context, g Git, c Target) error {
 		return err
 	}
 	denLocked := locked && reason == LockReason
+	// git matches paths literally against its registration, which is the
+	// resolved form: through a symlinked root, an unresolved path of a vanished
+	// directory is "not a working tree".
+	gitPath := ResolvePath(worktreePath)
 	if denLocked {
-		if _, err := g.Run(ctx, repoPath, "worktree", "unlock", worktreePath); err != nil {
+		if _, err := g.Run(ctx, repoPath, "worktree", "unlock", gitPath); err != nil {
 			return fmt.Errorf("unlocking worktree %s: %w", worktreePath, err)
 		}
 	}
@@ -452,10 +456,10 @@ func Remove(ctx context.Context, g Git, c Target) error {
 		return nil
 	}
 
-	if _, err := g.Run(ctx, repoPath, "worktree", "remove", "--force", worktreePath); err != nil {
+	if _, err := g.Run(ctx, repoPath, "worktree", "remove", "--force", gitPath); err != nil {
 		if denLocked {
 			// Best effort: the worktree is still there, so it stays protected.
-			_, _ = g.Run(ctx, repoPath, "worktree", "lock", "--reason", LockReason, worktreePath)
+			_, _ = g.Run(ctx, repoPath, "worktree", "lock", "--reason", LockReason, gitPath)
 		}
 		return fmt.Errorf("removing worktree %s: %w", worktreePath, err)
 	}
