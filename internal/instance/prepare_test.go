@@ -792,3 +792,42 @@ func TestConfigHashWithoutAgentImageIsTheHashBeforeTheField(t *testing.T) {
 		t.Errorf("hash %s, want the pre-agent_image hash %s: every live instance would report drift", got, want)
 	}
 }
+
+func TestPrepareRefusesAKitUnderTheInstancesOwnDirs(t *testing.T) {
+	for _, c := range []struct {
+		name, kind, rel string
+		project         bool
+	}{
+		{"global run dir", "run", "run", false},
+		{"gen dir", "gen", "gen", false},
+		{"project run dir", "run", filepath.Join(".den", "run"), true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.repo(t, "api")
+			base, den := f.home, filepath.Join(f.home, "den.yaml")
+			if c.project {
+				base, den = f.proj, filepath.Join(f.proj, "den.yaml")
+			}
+			dir := filepath.Join(base, c.rel, "am")
+			kit := filepath.Join(dir, "k")
+			writeFile(t, filepath.Join(kit, "spec.yaml"), "kind: mixin\n")
+			if c.project {
+				f.project(t, map[string]string{"am": kitBody(f, kit)})
+			} else {
+				f.global(t, map[string]string{"am": kitBody(f, kit)})
+			}
+			prepareErr(t, f, Options{Nest: "am"}, kit, "den's "+c.kind+" dir "+dir, "move it out of den's "+c.kind+" dir "+dir,
+				"fix `kits:` of nest \"am\" in "+den)
+		})
+	}
+}
+
+func TestPrepareRefusesAKitThatIsAMountedFolder(t *testing.T) {
+	f := newFixture(t)
+	api := f.repo(t, "api")
+	writeFile(t, filepath.Join(api, "spec.yaml"), "kind: mixin\n")
+	f.global(t, map[string]string{"am": kitBody(f, api)})
+	prepareErr(t, f, Options{Nest: "am"}, api+" is the mounted folder "+api+" itself", "put it in a sub folder, or outside every mounted folder",
+		"fix `kits:` of nest \"am\" in "+filepath.Join(f.home, "den.yaml"))
+}

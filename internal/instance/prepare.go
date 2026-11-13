@@ -119,7 +119,8 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.Overlays, err = overlays(res, mounts); err != nil {
+	own := []struct{ kind, dir string }{{"run", p.RunDir}, {"gen", p.GenDir}}
+	if p.Overlays, err = overlays(res, mounts, own); err != nil {
 		return nil, err
 	}
 	// Refused even with --workdir: the record keeps the mapped start for every later attach.
@@ -333,7 +334,7 @@ func writableMounts(ctx context.Context, g worktree.Git, res *nest.Resolved, rep
 // rm. S6 measured that a read-only mount listed after its read-write parent
 // holds in the VM even against root and umount. Every overlay names a host path
 // that exists: sbx fails opaquely on a missing one.
-func overlays(res *nest.Resolved, mounts []rwMount) ([]sbxenv.Mount, error) {
+func overlays(res *nest.Resolved, mounts []rwMount, own []struct{ kind, dir string }) ([]sbxenv.Mount, error) {
 	type read struct{ path, fix string }
 	denYAML := func(path string, global bool) string {
 		if global {
@@ -379,6 +380,16 @@ func overlays(res *nest.Resolved, mounts []rwMount) ([]sbxenv.Mount, error) {
 	var out []sbxenv.Mount
 	targets := map[string]bool{}
 	for _, r := range protected {
+		for _, o := range own {
+			for _, f := range []string{filepath.Clean(r.path), worktree.ResolvePath(r.path)} {
+				for _, d := range []string{filepath.Clean(o.dir), worktree.ResolvePath(o.dir)} {
+					if _, under := relUnder(f, d); under {
+						return nil, fmt.Errorf("%s lies under den's %s dir %s, which `den rm` deletes — move it out of den's %s dir %s, and %s",
+							r.path, o.kind, o.dir, o.kind, o.dir, r.fix)
+					}
+				}
+			}
+		}
 		seen, err := seenThrough(r.path, r.fix, mounts)
 		if err != nil {
 			return nil, err
@@ -416,6 +427,10 @@ func seenThrough(f, fix string, mounts []rwMount) ([]sbxenv.Mount, error) {
 					return nil, fmt.Errorf("%s crosses the symlink %s inside the mounted folder %s, which the VM can "+
 						"replace — move it out of every mounted folder or reference its real path %s, and %s",
 						f, link, s, worktree.ResolvePath(f), fix)
+				}
+				if rel == "." {
+					return nil, fmt.Errorf("%s is the mounted folder %s itself, so its read-only overlay would share a target with the mount — "+
+						"put it in a sub folder, or outside every mounted folder, and %s", f, s, fix)
 				}
 				out = append(out, sbxenv.Mount{Path: c, Target: filepath.Join(m.target, rel), ReadOnly: true})
 				break
