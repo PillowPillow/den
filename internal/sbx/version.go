@@ -7,16 +7,9 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-// MinVersion is the oldest sbx den supports.
-//
-// Judged by `den doctor` ONLY (spec 2026-09-16-sbx-0.43-compat §5, kept by
-// spec 2026-10-13-sbx-0.48-compat §3): no other command checks — `den rm` in
-// particular must never refuse and strand a live VM over a version number
-// (doctrine T13/T16). v0.48.0 is the floor because den decodes only the bare
-// arrays `sbx ls --json` and `sbx template ls --json` return from that
-// release on; an older sbx gets a refusal from those decoders that names the
-// upgrade, and `den doctor` names both versions.
-const MinVersion = "v0.48.0"
+// MinVersion is the oldest sbx den supports: the floor of the V2 spike results
+// (v0.53.0), checked once by the commands that create or run a sandbox.
+const MinVersion = "v0.53.0"
 
 // ParseVersion reads the version out of `sbx version`, whose output is one
 // line: "sbx version v0.48.0 <commit>" from v0.48.0 on, "sbx version: v0.43.0

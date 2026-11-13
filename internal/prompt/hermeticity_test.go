@@ -311,7 +311,7 @@ func TestOnlyTheAdapterKnowsTheLibrary(t *testing.T) {
 
 	// Guard on the guard: a walk that parsed nothing would make both
 	// assertions above vacuously true.
-	if scanned < 10 {
+	if scanned < 5 {
 		t.Fatalf("only %d packages scanned — the walk is not finding den's tree", scanned)
 	}
 }

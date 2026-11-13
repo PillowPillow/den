@@ -8,8 +8,8 @@ import (
 
 func TestParseVersion(t *testing.T) {
 	cases := map[string]string{
-		"sbx version v0.48.0 5caf923e0587d376848f6f388eca3e0f5ca00e2d\n": "v0.48.0",
-		"sbx version v0.48.0\n":                                           "v0.48.0",
+		"sbx version v0.53.0 5caf923e0587d376848f6f388eca3e0f5ca00e2d\n": "v0.53.0",
+		"sbx version v0.53.0\n":                                           "v0.53.0",
 		"noise\nsbx version v1.2.3 abc\n":                                 "v1.2.3",
 		"sbx version: v0.43.0 79805a6e3c6667520dc2da4f6bdeddae9b700969\n": "v0.43.0",
 		"sbx version: v0.38.0\n":                                          "v0.38.0",
@@ -28,14 +28,14 @@ func TestParseVersion(t *testing.T) {
 // state, and `den doctor` must not start a daemon to read a number.
 func TestVersionRunsThePlainCommand(t *testing.T) {
 	f := &Fake{Responses: map[string]Response{
-		"version": {Output: []byte("sbx version v0.48.0 abc\n")},
+		"version": {Output: []byte("sbx version v0.53.0 abc\n")},
 	}}
 	got, err := Version(context.Background(), f)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != "v0.48.0" {
-		t.Errorf("Version = %q, want v0.48.0", got)
+	if got != "v0.53.0" {
+		t.Errorf("Version = %q, want v0.53.0", got)
 	}
 	if !f.HasCalled("version") || len(f.Calls) != 1 || len(f.Calls[0]) != 1 {
 		t.Errorf("calls = %v, want exactly [version]", f.Calls)

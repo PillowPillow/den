@@ -51,14 +51,6 @@ func Home(flagValue string) (string, error) {
 	return filepath.Abs(raw)
 }
 
-// GlobalPath is the SOLE definition of where the global config lives:
-// <denHome>/config.yaml. Every reader and every message that names the file
-// to fix must go through this, or a divergence between them would be
-// invisible (same doctrine as agent/mixin.go's mixinDir/mixinPath).
-func GlobalPath(denHome string) string {
-	return filepath.Join(denHome, "config.yaml")
-}
-
 // ExpandPath expands a leading "~" in a path. Deliberately minimal: neither
 // $VAR nor ~user. The $HOME values found in bin_dirs target the VM's home and
 // must cross den untouched (see spec §9.1).
