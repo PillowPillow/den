@@ -408,7 +408,7 @@ func TestCreateRendersOverlaysLastAndReadOnly(t *testing.T) {
 	mustCreate(t, f, p)
 
 	env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml"))
-	got := strings.NewReplacer(f.home, "/home", f.proj, "/proj", f.src, "/src").Replace(env)
+	got := strings.NewReplacer(f.home, "/denhome", f.proj, "/proj", f.src, "/src").Replace(env)
 	want := readFile(t, filepath.Join("testdata", "overlays.golden"))
 	if got != want {
 		t.Errorf("sbxenv.yaml mismatch\n--- got\n%s\n--- want\n%s", got, want)
