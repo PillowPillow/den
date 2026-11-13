@@ -185,8 +185,9 @@ before any side effect) or a reference sbx resolves itself, passed through verba
   `<denHome>/run/<instance>/` for a global nest. It holds only the generated `sbxenv.yaml`. The run
   dir is den's and disposable: `den rm` deletes it without checking it for changes, so keep
   nothing there. With `start: .`, the workspace is the project folder instead, which is the only
-  way a VM reaches your project's `den.yaml` and scripts; den then also refuses a local kit under
-  that folder, since the VM could rewrite it (a layer there is refused whatever `start` says).
+  way a VM reaches your project's `den.yaml` and scripts; den then mounts every file it reads from
+  that folder (the `den.yaml`, a local kit, a layer) read-only, so the VM reads them but cannot
+  rewrite them (see [Layers](#layers)).
 - **Ports.** Published through the sandbox at create time. den prints sbx's port table after each
   create; run `sbx ports <instance>` to see it again.
 - **Worktrees.** See [Worktrees](#worktrees).
@@ -238,8 +239,8 @@ name is the VM's name and the handle of every other command.
 
 Every refusal den can decide from the config, the flags, its records and `sbx ls` comes before the
 first file, worktree or sbx call that changes state: unknown nest, missing repo, missing profile,
-missing image (`den build`), a missing local kit, a local kit or a layer under a mounted folder,
-`-i` without a terminal, an sbx older than v0.53.0.
+missing image (`den build`), a missing local kit or layer, a missing `build.includes` or
+`build.steps` file under a mounted folder, `-i` without a terminal, an sbx older than v0.53.0.
 
 On an instance that already exists den attaches and changes nothing. If the nest's config changed
 since the instance was created, it warns and tells you to `den rm` then `den up`; a selection flag
@@ -326,10 +327,14 @@ nests:
     layers: [~/.den/layers/api-secrets.yaml]
 ```
 
-A layer must be a file outside every folder the VM can write: the project folder, a repo, the
-worktree root and the workspace. sbx acts on the layer at the next `create` and `rm`, so a layer the
-VM could rewrite would hand the VM host-side actions. den checks both the written and the
-symlink-resolved paths, and refuses before any side effect. Independently, den passes
+sbx acts on a layer at the next `create` and `rm`, so a layer the VM could rewrite would hand the
+VM host-side actions. A layer may still live in a folder the VM can write (the workspace, a repo or
+its worktree): den then mounts it read-only over that folder, at the path where the VM sees it. The
+same goes for every other file den or sbx reads for the instance: the `den.yaml` files the nest
+resolves from, its local kits, and its base's `build.includes` and `build.steps`. den checks both
+the written and the symlink-resolved paths. The host enforces the read-only mount even against root
+in the VM. What the VM can still do is create a *new* file beside them, a `den.yaml` in a sub
+folder for one, which den would read if you ran it from there. Independently, den passes
 `--force --skip-host-commands` to every `sbx env create` and `sbx env rm`, so no `lifecycle:`
 command or command-backed MCP server in a layer ever runs on the host.
 

@@ -258,6 +258,8 @@ func envOf(denHome string, p *Plan, trios map[string]gitTrio) sbxenv.Env {
 			e.Mounts = append(e.Mounts, sbxenv.Mount{Path: filepath.Join(profile, name), Target: path.Join(claudeHome, name), ReadOnly: true})
 		}
 	}
+	// Last: a later entry wins in sbx, and an overlay sits under a read-write mount (P12, S6).
+	e.Mounts = append(e.Mounts, p.Overlays...)
 	for _, port := range res.Ports {
 		e.Ports = append(e.Ports, sbxenv.Port{Sandbox: port.Sandbox, Host: port.Host})
 	}

@@ -57,9 +57,12 @@ refusal decidable from config, flags, registry and `sbx ls` *before the first si
 `Create` writes worktrees, generated files and the record, then calls
 `sbx --no-input env create --force --skip-host-commands`. **No `env create` or `env rm` may lack
 `--skip-host-commands`**: it keeps a `lifecycle:` command or a command-backed MCP server that a VM
-could have written from ever running on the host. Likewise a `layers:` file or a local kit under
-any mounted folder (lexical or symlink-resolved) is refused, since sbx acts on layers at every create
-and rm and a kit carries the egress allowlist and credentials.
+could have written from ever running on the host. Likewise every file den or sbx reads for the
+instance (its `den.yaml` files, local kits, layers, the base's `build.includes`/`build.steps`) that
+lies under a read-write mount (lexical or symlink-resolved) is mounted read-only over it at the path
+the VM sees (`Plan.Overlays`, appended after every other mount), since sbx acts on layers at every
+create and rm and a kit carries the egress allowlist and credentials. Accepted residual: the VM can
+still create a *new* file beside them.
 `den up` attaches Claude (`sbx run --name <i> --workdir <start>`); `den shell` is the way to `bash -l`.
 
 **What den created is recorded, not re-derived.** `internal/registry` writes

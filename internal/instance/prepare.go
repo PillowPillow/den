@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/registry"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/sbxenv"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -36,6 +38,7 @@ type Plan struct {
 	ConfigHash string
 	State      State
 	Record     *registry.Record // set when State == Live or Recorded
+	Overlays   []sbxenv.Mount   // read-only, after every other mount; empty on the Live path
 }
 
 // Prepare resolves o into a Plan and makes every refusal den can decide before
@@ -110,10 +113,17 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if err := checkImage(ctx, d.Sbx, res); err != nil {
 		return nil, err
 	}
-	if err := checkKits(res, repos, wt, p.Workspace); err != nil {
+	if err := checkKits(res); err != nil {
 		return nil, err
 	}
-	if err := checkLayers(res, repos, p.Workspace); err != nil {
+	if err := checkLayers(res); err != nil {
+		return nil, err
+	}
+	mounts, err := writableMounts(ctx, d.Git, res, repos, wt, p.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	if p.Overlays, err = overlays(res, mounts); err != nil {
 		return nil, err
 	}
 	// Refused even with --workdir: the record keeps the mapped start for every later attach.
@@ -280,18 +290,7 @@ func checkImage(ctx context.Context, r sbx.Runner, res *nest.Resolved) error {
 }
 
 // checkKits checks local kits only; config.Load has made every local one absolute.
-// A kit carries the egress allowlist and credentials sbx applies at the next
-// create, so a kit the VM can rewrite would hand the VM its own policy. The
-// project folder counts only as the workspace: it is mounted only with `start: .`.
-func checkKits(res *nest.Resolved, repos []nest.Repo, wt *worktree.Name, workspace string) error {
-	type mounted struct{ what, dir string }
-	dirs := []mounted{{"the workspace", workspace}, {"the worktree root", res.Root}}
-	for _, r := range repos {
-		dirs = append(dirs, mounted{"repo " + r.Name, r.Path})
-		if wt != nil {
-			dirs = append(dirs, mounted{"the worktree of repo " + r.Name, worktree.Path(res.Layout, res.Root, wt.Dir, r.Path)})
-		}
-	}
+func checkKits(res *nest.Resolved) error {
 	for _, k := range res.Kits {
 		if !filepath.IsAbs(k) {
 			continue
@@ -299,13 +298,6 @@ func checkKits(res *nest.Resolved, repos []nest.Repo, wt *worktree.Name, workspa
 		spec := filepath.Join(k, "spec.yaml")
 		if st, err := os.Stat(spec); err != nil || !st.Mode().IsRegular() {
 			return fmt.Errorf("kit %s: no %s — a local kit is a directory holding spec.yaml; %s", k, spec, kitFix(res, k))
-		}
-		for _, m := range dirs {
-			if within(k, m.dir) {
-				return fmt.Errorf("kit %s is under %s (%s), which the VM can write — move it out of every mounted "+
-					"folder (under ~/.den/, for one) or reference it by git or OCI, and %s",
-					k, m.what, m.dir, kitFix(res, k))
-			}
 		}
 	}
 	return nil
@@ -323,18 +315,7 @@ func kitFix(res *nest.Resolved, k string) string {
 	return "fix " + strings.Join(at, " and ")
 }
 
-// checkLayers enforces P7: sbx acts on a layer at every create and rm, so a
-// layer the VM can rewrite would hand the VM those host-side actions.
-func checkLayers(res *nest.Resolved, repos []nest.Repo, workspace string) error {
-	type mounted struct{ what, dir string }
-	var dirs []mounted
-	if !res.File.Global {
-		dirs = append(dirs, mounted{"the project folder", res.File.Dir})
-	}
-	for _, r := range repos {
-		dirs = append(dirs, mounted{"repo " + r.Name, r.Path})
-	}
-	dirs = append(dirs, mounted{"the worktree root", res.Root}, mounted{"the workspace", workspace})
+func checkLayers(res *nest.Resolved) error {
 	for _, l := range res.Layers {
 		st, err := os.Stat(l)
 		if err != nil {
@@ -343,33 +324,110 @@ func checkLayers(res *nest.Resolved, repos []nest.Repo, workspace string) error 
 		if !st.Mode().IsRegular() {
 			return fmt.Errorf("layer %s is not a file — fix `layers:` of nest %q in %s", l, res.Name, res.File.Path)
 		}
-		for _, m := range dirs {
-			if within(l, m.dir) {
-				return fmt.Errorf("layer %s is under %s (%s), which the VM can write — move it out of every "+
-					"mounted folder and fix `layers:` of nest %q in %s", l, m.what, m.dir, res.Name, res.File.Path)
-			}
-		}
 	}
 	return nil
 }
 
-// within checks the lexical and the resolved form of both paths: a symlink
-// inside a mount resolves outside it, yet the VM can replace that symlink.
-func within(child, parent string) bool {
-	for _, c := range []string{filepath.Clean(child), worktree.ResolvePath(child)} {
-		for _, p := range []string{filepath.Clean(parent), worktree.ResolvePath(parent)} {
-			if under(c, p) {
-				return true
+// rwMount is a read-write mount envOf declares: its host source and the VM path it lands at.
+type rwMount struct{ source, target string }
+
+// writableMounts lists the read-write mounts envOf declares. Under -w the main
+// clone is not one of them (its worktree lands at its path), nor is the worktree root.
+func writableMounts(ctx context.Context, g worktree.Git, res *nest.Resolved, repos []nest.Repo, wt *worktree.Name, workspace string) ([]rwMount, error) {
+	mounts := []rwMount{{workspace, workspace}}
+	for _, r := range repos {
+		if wt == nil {
+			mounts = append(mounts, rwMount{r.Path, r.Path})
+			continue
+		}
+		common, err := worktree.CommonGitDir(ctx, g, r.Path)
+		if err != nil {
+			return nil, err
+		}
+		mounts = append(mounts,
+			rwMount{worktree.Path(res.Layout, res.Root, wt.Dir, r.Path), r.Path},
+			rwMount{common, path.Join(sbxenv.GitMountRoot, r.Name)})
+	}
+	return mounts, nil
+}
+
+// overlays mounts read-only, where the VM sees it, every file den or sbx reads
+// for this instance that lies under a read-write mount (P12): a kit carries the
+// egress allowlist and credentials, and sbx acts on a layer at every create and
+// rm. S6 measured that a read-only mount listed after its read-write parent
+// holds in the VM even against root and umount. Every overlay names a host path
+// that exists: sbx fails opaquely on a missing one.
+func overlays(res *nest.Resolved, mounts []rwMount) ([]sbxenv.Mount, error) {
+	protected := []string{res.File.Path, res.BaseFile.Path}
+	if _, err := os.Stat(res.GlobalFile); err == nil {
+		protected = append(protected, res.GlobalFile)
+	}
+	for _, k := range res.Kits {
+		if filepath.IsAbs(k) {
+			protected = append(protected, k)
+		}
+	}
+	protected = append(protected, res.Layers...)
+	for _, b := range []struct {
+		field string
+		paths []string
+	}{{"includes", res.Base.Build.Includes}, {"steps", res.Base.Build.Steps}} {
+		for _, f := range b.paths {
+			if len(seenThrough(f, mounts)) == 0 {
+				continue
+			}
+			// Missing, it could not be overlaid, and the VM could write the script den build would run.
+			if _, err := os.Stat(f); err != nil {
+				return nil, fmt.Errorf("`build.%s` entry %s: %v — fix `build.%s` of base %q in %s",
+					b.field, f, &config.FileError{Err: err}, b.field, res.BaseName, res.BaseFile.Path)
+			}
+			protected = append(protected, f)
+		}
+	}
+	var out []sbxenv.Mount
+	targets := map[string]bool{}
+	for _, f := range protected {
+		for _, o := range seenThrough(f, mounts) {
+			if !targets[o.Target] {
+				targets[o.Target] = true
+				out = append(out, o)
 			}
 		}
 	}
-	return false
+	return out, nil
 }
 
-// under compares component-wise: /a/bc is not under /a/b.
-func under(child, parent string) bool {
+// seenThrough returns a read-only overlay of f for each mount that holds its
+// written or its symlink-resolved form: the VM can replace a symlink inside a
+// mount, and write through a mount the file a symlink outside it resolves to.
+// The target is computed from the very forms that matched: mixing a lexical
+// form with a resolved one would yield a ../ path.
+func seenThrough(f string, mounts []rwMount) []sbxenv.Mount {
+	forms := []string{filepath.Clean(f)}
+	if r := worktree.ResolvePath(f); r != forms[0] {
+		forms = append(forms, r)
+	}
+	var out []sbxenv.Mount
+	for _, c := range forms {
+		for _, m := range mounts {
+			for _, s := range []string{filepath.Clean(m.source), worktree.ResolvePath(m.source)} {
+				if rel, ok := relUnder(c, s); ok {
+					out = append(out, sbxenv.Mount{Path: c, Target: filepath.Join(m.target, rel), ReadOnly: true})
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// relUnder compares component-wise: /a/bc is not under /a/b.
+func relUnder(child, parent string) (string, bool) {
 	rel, err := filepath.Rel(parent, child)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
 }
 
 // mapStart turns `start:` into a VM path. A repo mounts at its main clone

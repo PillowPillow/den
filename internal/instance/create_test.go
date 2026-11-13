@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -393,4 +394,23 @@ func TestPrepareRefusesARetryWhoseWorktreeMoved(t *testing.T) {
 	prepareErr(t, f, Options{Nest: "am", Branch: "feat"},
 		"api", worktree.Path("central", filepath.Join(f.home, "wt"), "feat", api),
 		worktree.Path("central", moved, "feat", api), "`den rm am.feat`")
+}
+
+func TestCreateRendersOverlaysLastAndReadOnly(t *testing.T) {
+	f := newFixture(t)
+	writeFile(t, filepath.Join(f.home, "profiles", "p", "CLAUDE.md"), "# notes\n")
+	api := f.repo(t, "api")
+	layer := writeFile(t, filepath.Join(api, "sbx", "extra.yaml"), "env: {}\n")
+	writeFile(t, filepath.Join(f.proj, "kits", "k", "spec.yaml"), "kind: mixin\n")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false)) +
+		fmt.Sprintf("\nkits: [./kits/k]\nlayers: [%q]\nstart: .", layer)})
+	p := mustPrepare(t, f, Options{Nest: "am"})
+	mustCreate(t, f, p)
+
+	env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml"))
+	got := strings.NewReplacer(f.home, "/home", f.proj, "/proj", f.src, "/src").Replace(env)
+	want := readFile(t, filepath.Join("testdata", "overlays.golden"))
+	if got != want {
+		t.Errorf("sbxenv.yaml mismatch\n--- got\n%s\n--- want\n%s", got, want)
+	}
 }

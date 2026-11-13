@@ -16,6 +16,7 @@ import (
 	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/registry"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/sbxenv"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -433,22 +434,6 @@ func kitBody(f *fixture, kit string) string {
 	return repos(repoEntry(filepath.Join(f.src, "api"), false)) + fmt.Sprintf("\nkits: [%q]", kit)
 }
 
-func TestPrepareRefusesAKitUnderARepo(t *testing.T) {
-	f := newFixture(t)
-	api := f.repo(t, "api")
-	kit := filepath.Dir(writeFile(t, filepath.Join(api, "kits", "mine", "spec.yaml"), "kind: mixin\n"))
-	f.global(t, map[string]string{"am": kitBody(f, kit)})
-	prepareErr(t, f, Options{Nest: "am"}, "kit "+kit, "repo api", api, "move it out", "`kits:` of nest")
-}
-
-func TestPrepareRefusesAKitUnderTheWorkspaceWithStartDot(t *testing.T) {
-	f := newFixture(t)
-	f.repo(t, "api")
-	kit := filepath.Dir(writeFile(t, filepath.Join(f.proj, "kits", "mine", "spec.yaml"), "kind: mixin\n"))
-	f.project(t, map[string]string{"am": kitBody(f, "./kits/mine") + "\nstart: ."})
-	prepareErr(t, f, Options{Nest: "am"}, "kit "+kit, "the workspace", f.proj, "move it out")
-}
-
 func TestPrepareAcceptsAKitUnderTheProjectFolderWithoutStartDot(t *testing.T) {
 	f := newFixture(t)
 	f.repo(t, "api")
@@ -457,49 +442,12 @@ func TestPrepareAcceptsAKitUnderTheProjectFolderWithoutStartDot(t *testing.T) {
 	mustPrepare(t, f, Options{Nest: "am"})
 }
 
-func TestPrepareRefusesAKitUnderAWorktree(t *testing.T) {
-	f := newFixture(t)
-	api := f.gitRepo(t, "api")
-	wt := worktree.Path("per-repo", "", "feat", api)
-	kit := filepath.Dir(writeFile(t, filepath.Join(wt, "kit", "spec.yaml"), "kind: mixin\n"))
-	f.global(t, map[string]string{"am": repos(repoEntry(api, false)) + fmt.Sprintf("\nkits: [%q]\nworktrees: {layout: per-repo}", kit)})
-	prepareErr(t, f, Options{Nest: "am", Branch: "feat"}, "kit "+kit, "move it out")
-}
-
-func TestPrepareRefusesAKitUnderTheWorktreeRoot(t *testing.T) {
-	f := newFixture(t)
-	f.repo(t, "api")
-	kit := filepath.Dir(writeFile(t, filepath.Join(f.home, "wt", "kit", "spec.yaml"), "kind: mixin\n"))
-	f.global(t, map[string]string{"am": kitBody(f, kit)})
-	prepareErr(t, f, Options{Nest: "am"}, "kit "+kit, "the worktree root")
-}
-
 func TestPrepareAcceptsAKitBesideARepo(t *testing.T) {
 	f := newFixture(t)
 	f.repo(t, "api")
 	kit := filepath.Dir(writeFile(t, filepath.Join(f.src, "api-kits", "mine", "spec.yaml"), "kind: mixin\n"))
 	f.global(t, map[string]string{"am": kitBody(f, kit)})
 	mustPrepare(t, f, Options{Nest: "am"})
-}
-
-func TestPrepareAcceptsAKitUnderTheDenHomeForAGlobalNest(t *testing.T) {
-	f := newFixture(t)
-	f.repo(t, "api")
-	kit := filepath.Dir(writeFile(t, filepath.Join(f.home, "kits", "mine", "spec.yaml"), "kind: mixin\n"))
-	f.global(t, map[string]string{"am": kitBody(f, kit)})
-	mustPrepare(t, f, Options{Nest: "am"})
-}
-
-func TestPrepareRefusesASymlinkedKitInsideARepo(t *testing.T) {
-	f := newFixture(t)
-	api := f.repo(t, "api")
-	safe := filepath.Dir(writeFile(t, filepath.Join(f.src, "safe", "spec.yaml"), "kind: mixin\n"))
-	kit := filepath.Join(api, "kitlink")
-	if err := os.Symlink(safe, kit); err != nil {
-		t.Fatal(err)
-	}
-	f.global(t, map[string]string{"am": kitBody(f, kit)})
-	prepareErr(t, f, Options{Nest: "am"}, "kit "+kit, "repo api", "move it out")
 }
 
 func TestPrepareGlobalNestWorkspaceIsTheRunDir(t *testing.T) {
@@ -545,68 +493,6 @@ func layerBody(f *fixture, layer string) string {
 	return repos(repoEntry(filepath.Join(f.src, "api"), false)) + fmt.Sprintf("\nlayers: [%q]", layer)
 }
 
-func TestPrepareRefusesALayerUnderTheProjectFolder(t *testing.T) {
-	f := newFixture(t)
-	f.repo(t, "api")
-	layer := writeFile(t, filepath.Join(f.proj, "layers", "secrets.yaml"), "secrets: {}\n")
-	f.project(t, map[string]string{"am": layerBody(f, "./layers/secrets.yaml")})
-	prepareErr(t, f, Options{Nest: "am"}, layer, f.proj, "layers")
-}
-
-func TestPrepareRefusesALayerUnderARepo(t *testing.T) {
-	f := newFixture(t)
-	api := f.repo(t, "api")
-	layer := writeFile(t, filepath.Join(api, "sbx", "extra.yaml"), "secrets: {}\n")
-	f.global(t, map[string]string{"am": layerBody(f, layer)})
-	prepareErr(t, f, Options{Nest: "am"}, layer, api, "layers")
-}
-
-func TestPrepareRefusesASymlinkedLayerInsideARepo(t *testing.T) {
-	for name, link := range map[string]func(t *testing.T, api, safe string) string{
-		"leaf symlink": func(t *testing.T, api, safe string) string {
-			l := filepath.Join(api, "sbx", "extra.yaml")
-			if err := os.MkdirAll(filepath.Dir(l), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(filepath.Join(safe, "x.yaml"), l); err != nil {
-				t.Fatal(err)
-			}
-			return l
-		},
-		"symlinked directory": func(t *testing.T, api, safe string) string {
-			if err := os.Symlink(safe, filepath.Join(api, "linkdir")); err != nil {
-				t.Fatal(err)
-			}
-			return filepath.Join(api, "linkdir", "x.yaml")
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			f := newFixture(t)
-			api := f.repo(t, "api")
-			safe := filepath.Join(f.src, "safe")
-			writeFile(t, filepath.Join(safe, "x.yaml"), "secrets: {}\n")
-			layer := link(t, api, safe)
-			f.global(t, map[string]string{"am": layerBody(f, layer)})
-			prepareErr(t, f, Options{Nest: "am"}, layer, api, "layers")
-		})
-	}
-}
-
-func TestPrepareRefusesALayerUnderTheWorktreeRootOrTheRunDir(t *testing.T) {
-	for name, dir := range map[string]func(*fixture) string{
-		"worktree root": func(f *fixture) string { return filepath.Join(f.home, "wt") },
-		"run dir":       func(f *fixture) string { return filepath.Join(f.home, "run", "am") },
-	} {
-		t.Run(name, func(t *testing.T) {
-			f := newFixture(t)
-			f.repo(t, "api")
-			layer := writeFile(t, filepath.Join(dir(f), "x.yaml"), "secrets: {}\n")
-			f.global(t, map[string]string{"am": layerBody(f, layer)})
-			prepareErr(t, f, Options{Nest: "am"}, layer, dir(f))
-		})
-	}
-}
-
 func TestPrepareAcceptsALayerBesideARepo(t *testing.T) {
 	f := newFixture(t)
 	f.repo(t, "api")
@@ -624,6 +510,158 @@ func TestPrepareRefusesAMissingLayer(t *testing.T) {
 	layer := filepath.Join(f.src, "nope.yaml")
 	f.global(t, map[string]string{"am": layerBody(f, layer)})
 	prepareErr(t, f, Options{Nest: "am"}, layer, "layers")
+}
+
+func ro(path, target string) sbxenv.Mount {
+	return sbxenv.Mount{Path: path, Target: target, ReadOnly: true}
+}
+
+func wantOverlays(t *testing.T, p *Plan, want ...sbxenv.Mount) {
+	t.Helper()
+	if len(p.Overlays) == 0 && len(want) == 0 {
+		return
+	}
+	if !reflect.DeepEqual(p.Overlays, want) {
+		t.Errorf("overlays\n%+v\nwant\n%+v", p.Overlays, want)
+	}
+}
+
+func symlink(t *testing.T, target, link string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	return link
+}
+
+func TestPrepareOverlaysAKitUnderTheWorkspace(t *testing.T) {
+	f := newFixture(t)
+	f.repo(t, "api")
+	kit := filepath.Dir(writeFile(t, filepath.Join(f.proj, "kits", "k", "spec.yaml"), "kind: mixin\n"))
+	f.project(t, map[string]string{"am": kitBody(f, "./kits/k") + "\nstart: ."})
+	file := filepath.Join(f.proj, "den.yaml")
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(file, file), ro(kit, kit))
+}
+
+func TestPrepareOverlaysALayerUnderARepo(t *testing.T) {
+	f := newFixture(t)
+	api := f.repo(t, "api")
+	layer := writeFile(t, filepath.Join(api, "sbx", "extra.yaml"), "secrets: {}\n")
+	f.global(t, map[string]string{"am": layerBody(f, layer)})
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(layer, layer))
+}
+
+func TestPrepareOverlaysTheProjectDenYamlWithStartDot(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nstart: ."})
+	file := filepath.Join(f.proj, "den.yaml")
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(file, file))
+
+	f.project(t, map[string]string{"am": repos(repoEntry(filepath.Join(f.src, "api"), false))})
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}))
+}
+
+func TestPrepareOverlaysTheProjectDenYamlAtTheRootOfARepo(t *testing.T) {
+	f := newFixture(t)
+	f.proj = f.repo(t, "api")
+	f.project(t, map[string]string{"am": repos(repoEntry(f.proj, false))})
+	file := filepath.Join(f.proj, "den.yaml")
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(file, file))
+}
+
+// buildBase writes a global file whose base b provisions with these includes and steps.
+func buildBase(t *testing.T, f *fixture, includes, steps []string) string {
+	t.Helper()
+	flow := func(paths []string) string {
+		quoted := make([]string, len(paths))
+		for i, p := range paths {
+			quoted[i] = fmt.Sprintf("%q", p)
+		}
+		return "[" + strings.Join(quoted, ", ") + "]"
+	}
+	return writeFile(t, filepath.Join(f.home, "den.yaml"), fmt.Sprintf(
+		"schema: 1\nbases:\n  b: {image: \"b:v1\", build: {includes: %s, steps: %s}}\nnests:\n  am:\n    base: b\n    profile: p\n    repos: [{path: %q}]\n",
+		flow(includes), flow(steps), filepath.Join(f.src, "api")))
+}
+
+func TestPrepareOverlaysBuildStepsUnderAMountedRepo(t *testing.T) {
+	f := newFixture(t)
+	api := f.repo(t, "api")
+	include := writeFile(t, filepath.Join(api, "build", "lib.sh"), "set -e\n")
+	step := writeFile(t, filepath.Join(api, "build", "10-node.sh"), "true\n")
+	outside := writeFile(t, filepath.Join(f.home, "steps", "20-go.sh"), "true\n")
+	buildBase(t, f, []string{include}, []string{step, outside})
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(include, include), ro(step, step))
+}
+
+func TestPrepareRefusesAMissingBuildStepUnderAMountedRepo(t *testing.T) {
+	f := newFixture(t)
+	api := f.repo(t, "api")
+	step := filepath.Join(api, "build", "10-node.sh")
+	global := buildBase(t, f, nil, []string{step})
+	prepareErr(t, f, Options{Nest: "am"}, step, "fix `build.steps` of base \"b\" in "+global)
+}
+
+func TestPrepareMapsTheOverlayTargetThroughAWorktreeMount(t *testing.T) {
+	f := newFixture(t)
+	api := f.gitRepo(t, "api")
+	wt := worktree.Path("central", filepath.Join(f.home, "wt"), "feat", api)
+	inTree := filepath.Dir(writeFile(t, filepath.Join(wt, "kit", "spec.yaml"), "kind: mixin\n"))
+	inGit := filepath.Dir(writeFile(t, filepath.Join(api, ".git", "den-kit", "spec.yaml"), "kind: mixin\n"))
+	f.global(t, map[string]string{"am": repos(repoEntry(api, false)) + fmt.Sprintf("\nkits: [%q, %q]", inTree, inGit)})
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am", Branch: "feat"}),
+		ro(inTree, filepath.Join(api, "kit")),
+		ro(worktree.ResolvePath(inGit), "/den-git/api/den-kit"))
+}
+
+func TestPrepareAddsNoOverlayOutsideMounts(t *testing.T) {
+	f := newFixture(t)
+	f.repo(t, "api")
+	kit := filepath.Dir(writeFile(t, filepath.Join(f.home, "kits", "mine", "spec.yaml"), "kind: mixin\n"))
+	f.global(t, map[string]string{"am": kitBody(f, kit)})
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}))
+}
+
+func TestPrepareOverlaysASymlinkedKitByItsResolvedForm(t *testing.T) {
+	f := newFixture(t)
+	api := f.repo(t, "api")
+	realKit := filepath.Dir(writeFile(t, filepath.Join(api, "kits", "k", "spec.yaml"), "kind: mixin\n"))
+	link := symlink(t, realKit, filepath.Join(f.home, "kits", "link"))
+	f.global(t, map[string]string{"am": kitBody(f, link)})
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(worktree.ResolvePath(realKit), realKit))
+}
+
+func TestPrepareOverlaysASymlinkedLayerInsideARepoAtItsLexicalPath(t *testing.T) {
+	for name, link := range map[string]func(t *testing.T, api, safe string) string{
+		"leaf symlink": func(t *testing.T, api, safe string) string {
+			return symlink(t, filepath.Join(safe, "x.yaml"), filepath.Join(api, "sbx", "extra.yaml"))
+		},
+		"symlinked directory": func(t *testing.T, api, safe string) string {
+			return filepath.Join(symlink(t, safe, filepath.Join(api, "linkdir")), "x.yaml")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			api := f.repo(t, "api")
+			safe := filepath.Join(f.src, "safe")
+			writeFile(t, filepath.Join(safe, "x.yaml"), "secrets: {}\n")
+			layer := link(t, api, safe)
+			f.global(t, map[string]string{"am": layerBody(f, layer)})
+			wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(layer, layer))
+		})
+	}
+}
+
+func TestPrepareOverlaysBothEndsOfALinkBetweenMountedRepos(t *testing.T) {
+	f := newFixture(t)
+	api, web := f.repo(t, "api"), f.repo(t, "web")
+	realKit := filepath.Dir(writeFile(t, filepath.Join(web, "kits", "k", "spec.yaml"), "kind: mixin\n"))
+	link := symlink(t, realKit, filepath.Join(api, "kitlink"))
+	f.global(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, false)) + fmt.Sprintf("\nkits: [%q]", link)})
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(link, link), ro(worktree.ResolvePath(realKit), realKit))
 }
 
 func TestConfigHashIgnoresOtherNests(t *testing.T) {

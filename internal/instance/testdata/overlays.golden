@@ -1,0 +1,27 @@
+schemaVersion: "1"
+name: am
+agent: den-claude
+kits:
+  - /home/gen/.kits/den-claude
+  - /proj/kits/k
+  - /home/gen/am/network
+workspace: /proj
+additionalWorkspaces:
+  - path: /home/profiles/p
+    target: /den/profile
+    readOnly: true
+  - path: /src/api
+  - path: /home/profiles/p/CLAUDE.md
+    target: /home/agent/.claude/CLAUDE.md
+    readOnly: true
+  - path: /proj/den.yaml
+    target: /proj/den.yaml
+    readOnly: true
+  - path: /proj/kits/k
+    target: /proj/kits/k
+    readOnly: true
+  - path: /src/api/sbx/extra.yaml
+    target: /src/api/sbx/extra.yaml
+    readOnly: true
+sandboxOptions:
+  template: b:v1
