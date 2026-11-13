@@ -131,8 +131,12 @@ func ensureWorktree(ctx context.Context, g worktree.Git, p *Plan, r nest.Repo, f
 	if absent {
 		*fresh = append(*fresh, worktree.Target{Layout: res.Layout, Root: res.Root, Worktree: p.Worktree.Dir, RepoPath: r.Path, WorktreePath: wt})
 	}
-	if err := worktree.Lock(ctx, g, r.Path, wt); err != nil {
-		return gitTrio{}, false, err
+	// A worktree found in place is the user's: locking it would leave den's
+	// lock on a tree `den rm` never reclaims.
+	if created {
+		if err := worktree.Lock(ctx, g, r.Path, wt); err != nil {
+			return gitTrio{}, false, err
+		}
 	}
 	admin, err := worktree.AdminDir(ctx, g, wt)
 	if err != nil {

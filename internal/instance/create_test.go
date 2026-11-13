@@ -150,6 +150,30 @@ func TestCreateDoesNotClaimAWorktreeItFoundInPlace(t *testing.T) {
 	}
 }
 
+func TestCreateLocksOnlyTheWorktreesItCreated(t *testing.T) {
+	f := newFixture(t)
+	api, web := f.committedRepo(t, "api"), f.committedRepo(t, "web")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, false))})
+	found := worktree.Path("central", filepath.Join(f.home, "wt"), "feat", api)
+	if _, err := f.git.Run(context.Background(), api, "worktree", "add", "-q", "-b", "feat", found); err != nil {
+		t.Fatal(err)
+	}
+	mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am", Branch: "feat"}))
+
+	for repo, wantLocked := range map[string]bool{api: false, web: true} {
+		out, err := f.git.Run(context.Background(), repo, "worktree", "list", "--porcelain")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(string(out), "locked"); got != wantLocked {
+			t.Errorf("%s: locked = %t, want %t:\n%s", repo, got, wantLocked, out)
+		}
+		if wantLocked && !strings.Contains(string(out), "locked "+worktree.LockReason) {
+			t.Errorf("%s: not locked with reason %q:\n%s", repo, worktree.LockReason, out)
+		}
+	}
+}
+
 func TestCreateRecordsBeforeSbxCreate(t *testing.T) {
 	f := newFixture(t)
 	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})

@@ -250,6 +250,17 @@ func (g failingRemove) Run(ctx context.Context, dir string, args ...string) ([]b
 	return g.Git.Run(ctx, dir, args...)
 }
 
+// recordingGit is real git that also records the argv of every Run.
+type recordingGit struct {
+	worktree.Git
+	calls *[][]string
+}
+
+func (g recordingGit) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	*g.calls = append(*g.calls, args)
+	return g.Git.Run(ctx, dir, args...)
+}
+
 func TestRmKeepsTheRecordWhenAWorktreeRemovalFails(t *testing.T) {
 	f := newFixture(t)
 	api, web := f.committedRepo(t, "api"), f.committedRepo(t, "web")
@@ -301,6 +312,8 @@ func TestRmNeverTouchesAWorktreeFoundInPlace(t *testing.T) {
 		t.Fatalf("setup: the worktree was recorded as den's: %+v", rec.Repos[0])
 	}
 	notes := writeFile(t, filepath.Join(wt, "notes.txt"), "work\n")
+	calls := &[][]string{}
+	f.git = recordingGit{Git: f.git, calls: calls}
 
 	if err := f.remove(rec.Instance, false); err != nil {
 		t.Fatal(err)
@@ -310,8 +323,16 @@ func TestRmNeverTouchesAWorktreeFoundInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "locked "+worktree.LockReason) {
-		t.Errorf("rm unlocked a worktree it found in place:\n%s", out)
+	if !strings.Contains(string(out), "worktree "+worktree.ResolvePath(wt)+"\n") {
+		t.Errorf("rm unregistered a worktree it found in place:\n%s", out)
+	}
+	if strings.Contains(string(out), "locked") {
+		t.Errorf("a worktree found in place got locked:\n%s", out)
+	}
+	for _, c := range *calls {
+		if len(c) > 1 && c[0] == "worktree" && c[1] != "list" {
+			t.Errorf("rm ran `git %s` on a worktree it found in place", strings.Join(c, " "))
+		}
 	}
 }
 
