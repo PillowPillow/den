@@ -268,15 +268,13 @@ func TestEnsureDistinguishesAnInaccessibleRepo(t *testing.T) {
 
 // prepareWorktree sets up the fixture shared by almost every Remove test: a
 // repo "api", its worktree "feat12" in central layout, and the Target that
-// designates it — including den_home, since that is where the trash lives.
+// designates it.
 func prepareWorktree(t *testing.T) (repo, worktreePath string, target Target) {
 	t.Helper()
 	repo = testRepo(t, "api")
 	target = Target{
-		DenHome:  t.TempDir(),
 		Layout:   "central",
 		Root:     t.TempDir(),
-		Nest:     "api.feat12",
 		Worktree: "feat12",
 		RepoPath: repo,
 	}
@@ -298,7 +296,7 @@ func TestRemoveDeletesTheIntermediateDirThatBecameEmpty(t *testing.T) {
 	_, worktreePath, target := prepareWorktree(t)
 	parent := filepath.Dir(worktreePath)
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("removal: %v", err)
 	}
 	if _, err := os.Stat(parent); !os.IsNotExist(err) {
@@ -329,7 +327,7 @@ func TestRemoveKeepsTheIntermediateDirStillInUse(t *testing.T) {
 		t.Fatalf("setting up the second repo: %v", err)
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("removing the first: %v", err)
 	}
 	if _, err := os.Stat(worktreePathB); err != nil {
@@ -339,7 +337,7 @@ func TestRemoveKeepsTheIntermediateDirStillInUse(t *testing.T) {
 		t.Errorf("%s still carries a worktree: it must remain: %v", parent, err)
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), targetB); err != nil {
+	if err := Remove(context.Background(), NewGit(), targetB); err != nil {
 		t.Fatalf("removing the second: %v", err)
 	}
 	if _, err := os.Stat(parent); !os.IsNotExist(err) {
@@ -358,7 +356,7 @@ func TestRemoveKeepsIntermediateDirHoldingSomethingElse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("a non-empty intermediate directory must not fail the removal: %v", err)
 	}
 	if _, err := os.Stat(intruder); err != nil {
@@ -366,10 +364,10 @@ func TestRemoveKeepsIntermediateDirHoldingSomethingElse(t *testing.T) {
 	}
 }
 
-// The directory disappeared by hand: Remove prunes the registration and
-// returns "" without error. This is exactly the case where the empty
-// intermediate directory lingers most reliably, so it must be cleaned up
-// here too, not only after a successful move to the trash.
+// The directory disappeared by hand: Remove prunes the registration without
+// error. This is exactly the case where the empty intermediate directory
+// lingers most reliably, so it must be cleaned up here too, not only after a
+// successful removal.
 func TestRemoveDeletesIntermediateDirAfterManualRemoval(t *testing.T) {
 	_, worktreePath, target := prepareWorktree(t)
 	parent := filepath.Dir(worktreePath)
@@ -377,12 +375,8 @@ func TestRemoveDeletesIntermediateDirAfterManualRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dest, err := Remove(context.Background(), NewGit(), target)
-	if err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("removal: %v", err)
-	}
-	if dest != "" {
-		t.Errorf("nothing was moved to the trash, dest = %q", dest)
 	}
 	if _, err := os.Stat(parent); !os.IsNotExist(err) {
 		t.Errorf("%s should have disappeared too (err = %v)", parent, err)
@@ -398,15 +392,13 @@ func TestRemoveDeletesIntermediateDirAfterManualRemoval(t *testing.T) {
 // unexercised — the test would stay green without it.
 func TestRemoveDoesNotTouchRootWithoutWorktreeName(t *testing.T) {
 	target := Target{
-		DenHome:  t.TempDir(),
 		Layout:   "central",
 		Root:     t.TempDir(),
-		Nest:     "api",
 		Worktree: "",
 		RepoPath: testRepo(t, "api"),
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("removal: %v", err)
 	}
 	if _, err := os.Stat(target.Root); err != nil {
@@ -422,14 +414,14 @@ func TestRemoveRefusesADirtyWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("a worktree with uncommitted changes must be refused without force")
 	}
 	// "an error + an intact directory" is what git alone already provides:
 	// dropping den's guard entirely would leave both assertions green. The
 	// markers below are what distinguishes den's guard from git's own net.
-	for _, expected := range []string{worktreePath, "draft.txt", "uncommitted", "--keep-worktrees"} {
+	for _, expected := range []string{worktreePath, "draft.txt", "uncommitted", "--force"} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Errorf("the message must contain %q; got: %v", expected, err)
 		}
@@ -438,7 +430,7 @@ func TestRemoveRefusesADirtyWorktree(t *testing.T) {
 		t.Errorf("the refused worktree must be INTACT: %v", err)
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), withForce(target, true)); err != nil {
+	if err := Remove(context.Background(), NewGit(), withForce(target, true)); err != nil {
 		t.Fatalf("with force, the removal must succeed: %v", err)
 	}
 }
@@ -447,17 +439,17 @@ func TestRemoveRefusesADirtyWorktree(t *testing.T) {
 // hand. Without this branch git would fail on the missing path.
 func TestRemoveOnAnAlreadyAbsentWorktreeIsIdempotent(t *testing.T) {
 	_, _, target := prepareWorktree(t)
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("first removal: %v", err)
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Errorf("an already-absent worktree must return nil; got: %v", err)
 	}
 	// A worktree den never created is treated the same way.
 	never := target
 	never.Worktree = "never-created"
-	if _, err := Remove(context.Background(), NewGit(), never); err != nil {
+	if err := Remove(context.Background(), NewGit(), never); err != nil {
 		t.Errorf("a never-created worktree must return nil; got: %v", err)
 	}
 }
@@ -481,14 +473,14 @@ func TestRemoveRefusesAModifiedTrackedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("an uncommitted modification of a tracked file must be refused without force")
 	}
 	// git also refuses on its own; accepting ONLY den's message is what
 	// distinguishes our guard from git's own safety net — otherwise the user
 	// gets an English "fatal:" instead of an actionable instruction.
-	for _, expected := range []string{worktreePath, "uncommitted", "--keep-worktrees"} {
+	for _, expected := range []string{worktreePath, "uncommitted", "--force"} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Errorf("the message must contain %q to be actionable; got: %v", expected, err)
 		}
@@ -571,7 +563,7 @@ func TestRemoveRefusesAnIgnoredFile(t *testing.T) {
 	git(t, worktreePath, "commit", "-m", "ignore .env")
 	writeFile(t, filepath.Join(worktreePath, ".env"), "SECRET=hunter2\n")
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("an unrecoverable ignored file must be refused without force")
 	}
@@ -598,7 +590,7 @@ func TestRemoveAcceptsADirIgnoredAsAWhole(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(worktreePath, "node_modules", "pkg", "index.js"), "module.exports={}\n")
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("a directory ignored as a whole must not block removal: %v", err)
 	}
 }
@@ -616,7 +608,7 @@ func TestRemoveClearsAnOrphanedRegistration(t *testing.T) {
 		t.Fatalf("setup: expected an orphaned registration, got:\n%s", list)
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if list := git(t, repo, "worktree", "list"); strings.Contains(list, "prunable") {
@@ -779,14 +771,14 @@ func TestRemoveRefusesAWorktreeFromAnotherRepo(t *testing.T) {
 	// Both repos are named "api": Path, which only keeps the basename, names
 	// for repoB the worktree repoA just obtained.
 	targetB := Target{
-		DenHome: t.TempDir(), Layout: "central", Root: root,
-		Nest: "beta.feat12", Worktree: "feat12", RepoPath: repoB, Force: true,
+		Layout: "central", Root: root,
+		Worktree: "feat12", RepoPath: repoB, Force: true,
 	}
 	if got := Path(targetB.Layout, targetB.Root, targetB.Worktree, targetB.RepoPath); got != worktreePath {
 		t.Fatalf("setup: both targets must aim at the same directory; %q vs %q", got, worktreePath)
 	}
 
-	_, err = Remove(context.Background(), NewGit(), targetB)
+	err = Remove(context.Background(), NewGit(), targetB)
 	if err == nil {
 		t.Fatal("Remove must refuse a worktree foreign to the given repo")
 	}
@@ -840,23 +832,18 @@ func (g *spyGit) call(prefix ...string) []string {
 	return nil
 }
 
-// den no longer deletes: it moves. `git worktree remove` carries its own
-// safety net, but that net is the SAME code as `git status`: when status
-// sees nothing, remove sees nothing either. Calling `remove` would therefore
-// reintroduce irreversibility without adding any protection.
-func TestRemoveNeverCallsWorktreeRemove(t *testing.T) {
+// Removal goes through git, which also drops the admin dir; --force because
+// dirtyFiles has already judged the tree.
+func TestRemoveCallsWorktreeRemoveForce(t *testing.T) {
 	for _, force := range []bool{false, true} {
 		t.Run(fmt.Sprintf("force=%v", force), func(t *testing.T) {
 			_, _, target := prepareWorktree(t)
 			spy := &spyGit{real: NewGit()}
-			if _, err := Remove(context.Background(), spy, withForce(target, force)); err != nil {
+			if err := Remove(context.Background(), spy, withForce(target, force)); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if argv := spy.call("worktree", "remove"); argv != nil {
-				t.Errorf("`git worktree remove` was issued: %v", argv)
-			}
-			if argv := spy.call("worktree", "prune"); argv == nil {
-				t.Errorf("the registration must be pruned; calls: %v", spy.calls)
+			if argv := spy.call("worktree", "remove", "--force"); argv == nil {
+				t.Errorf("`git worktree remove --force` was not issued; calls: %v", spy.calls)
 			}
 		})
 	}
@@ -882,7 +869,7 @@ func TestRemoveRefusesASecretInANonIgnoredDir(t *testing.T) {
 		t.Fatal("setup: conf/ should not be ignored itself")
 	}
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("a non-ignored directory whose content is ignored must be refused without force")
 	}
@@ -911,7 +898,7 @@ func TestRemoveAcceptsAnIgnoredDirWithAQuotedName(t *testing.T) {
 		writeFile(t, filepath.Join(worktreePath, name, "x.bin"), "cache\n")
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("an ignored dir with a quoted name must not block removal: %v", err)
 	}
 }
@@ -923,13 +910,13 @@ func TestRemoveAcceptsAnIgnoredDirWithAQuotedName(t *testing.T) {
 // closed loop.
 func TestRemoveReportsALockedWorktree(t *testing.T) {
 	repo, worktreePath, target := prepareWorktree(t)
-	git(t, repo, "worktree", "lock", worktreePath)
+	git(t, repo, "worktree", "lock", "--reason", "usb", worktreePath)
 	if err := os.RemoveAll(worktreePath); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, force := range []bool{false, true} {
-		_, err := Remove(context.Background(), NewGit(), withForce(target, force))
+		err := Remove(context.Background(), NewGit(), withForce(target, force))
 		if err == nil {
 			t.Fatalf("force=%v: Remove must not claim to have cleaned up a locked registration", force)
 		}
@@ -976,7 +963,7 @@ func TestRemoveRefusesASecretUnderAContentOnlyRule(t *testing.T) {
 				t.Fatal("setup: conf (without /) should not be ignored")
 			}
 
-			_, err := Remove(context.Background(), NewGit(), target)
+			err := Remove(context.Background(), NewGit(), target)
 			if err == nil {
 				t.Fatal("a rule that only covers the CONTENT does not make the directory disposable")
 			}
@@ -998,7 +985,7 @@ func TestRemoveSeesUntrackedWorkDespiteRepoConfig(t *testing.T) {
 	git(t, worktreePath, "config", "status.showUntrackedFiles", "no")
 	writeFile(t, filepath.Join(worktreePath, "draft.txt"), "wip\n")
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("the untracked draft must be refused regardless of repo config")
 	}
@@ -1032,7 +1019,7 @@ func TestRemoveRefusesALocallyMarkedFile(t *testing.T) {
 				t.Fatalf("setup: git should report nothing, got %q", status)
 			}
 
-			_, err := Remove(context.Background(), NewGit(), target)
+			err := Remove(context.Background(), NewGit(), target)
 			if err == nil {
 				t.Fatal("a locally marked, modified file must not be destroyed without force")
 			}
@@ -1076,7 +1063,7 @@ func TestRemoveAcceptsASparseCheckout(t *testing.T) {
 		t.Fatalf("setup: the out-of-cone file should be absent from disk")
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("a sparse-checkout must not block removal: %v", err)
 	}
 }
@@ -1106,7 +1093,7 @@ func TestRemoveAcceptsARepoUnderIgnoreStat(t *testing.T) {
 
 	t.Run("setting active", func(t *testing.T) {
 		_, target := prepare(t)
-		if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+		if err := Remove(context.Background(), NewGit(), target); err != nil {
 			t.Fatalf("a clean worktree must stay removable: %v", err)
 		}
 	})
@@ -1120,7 +1107,7 @@ func TestRemoveAcceptsARepoUnderIgnoreStat(t *testing.T) {
 		if flags := git(t, worktreePath, "ls-files", "-v"); !strings.Contains(flags, "h f1.txt") {
 			t.Fatalf("setup: the bits must survive --unset, got:\n%s", flags)
 		}
-		if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+		if err := Remove(context.Background(), NewGit(), target); err != nil {
 			t.Fatalf("a clean worktree must stay removable: %v", err)
 		}
 	})
@@ -1134,7 +1121,7 @@ func TestRemoveAcceptsARepoUnderIgnoreStat(t *testing.T) {
 			t.Fatalf("setup: git should see nothing, got %q", status)
 		}
 
-		_, err := Remove(context.Background(), NewGit(), target)
+		err := Remove(context.Background(), NewGit(), target)
 		if err == nil {
 			t.Fatal("a real modification under assume-unchanged must be refused")
 		}
@@ -1185,7 +1172,7 @@ func TestRemoveRefusesAPathGitCannotHash(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			start := time.Now()
-			_, err := Remove(ctx, NewGit(), target)
+			err := Remove(ctx, NewGit(), target)
 			elapsed := time.Since(start)
 
 			if elapsed > 5*time.Second {
@@ -1234,7 +1221,7 @@ func TestRemoveAcceptsAnIntactSymlink(t *testing.T) {
 				t.Fatalf("setup: the worktree must be clean, got %q", status)
 			}
 
-			if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+			if err := Remove(context.Background(), NewGit(), target); err != nil {
 				t.Fatalf("an intact symlink must not block removal: %v", err)
 			}
 		})
@@ -1259,7 +1246,7 @@ func TestRemoveAppliesGitattributesFilters(t *testing.T) {
 		t.Fatalf("setup: the worktree must be clean, got %q", status)
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("converted line endings are not a modification: %v", err)
 	}
 }
@@ -1281,7 +1268,7 @@ func TestRemoveRefusesAMarkedFileReplacedBySymlink(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("a tracked file replaced by a broken symlink must not be destroyed without force")
 	}
@@ -1311,7 +1298,7 @@ func TestRemoveRefusesAFileReplacedBySymlinkWithSameText(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("a tracked file turned into a symlink is a modification, even with equal text")
 	}
@@ -1347,7 +1334,7 @@ func TestRemoveSeesAModificationDespiteFsmonitor(t *testing.T) {
 		t.Fatalf("setup: expected an uppercase flag, got:\n%s", flags)
 	}
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("a modification hidden by fsmonitor must not be destroyed without force")
 	}
@@ -1366,7 +1353,7 @@ func TestRemoveRefusesWhenAProbeIsSilent(t *testing.T) {
 			git(t, worktreePath, "update-index", "--skip-worktree", "local.conf")
 
 			g := gitFailingOn{real: NewGit(), prefix: []string{probe}}
-			_, err := Remove(context.Background(), g, target)
+			err := Remove(context.Background(), g, target)
 			if err == nil {
 				t.Fatalf("a failure of git %s must not authorize removal", probe)
 			}
@@ -1400,8 +1387,8 @@ func TestDeadEndGuardsHoldUnderASymlinkedRoot(t *testing.T) {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 		target = Target{
-			DenHome: t.TempDir(), Layout: "central", Root: link,
-			Nest: "api.feat12", Worktree: "feat12", RepoPath: repo,
+			Layout: "central", Root: link,
+			Worktree: "feat12", RepoPath: repo,
 		}
 		worktreePath, err := Ensure(context.Background(), NewGit(), target.Layout, target.Root, wtName(target.Worktree), target.RepoPath)
 		if err != nil {
@@ -1416,7 +1403,7 @@ func TestDeadEndGuardsHoldUnderASymlinkedRoot(t *testing.T) {
 		if err := os.RemoveAll(worktreePath); err != nil {
 			t.Fatal(err)
 		}
-		_, err := Remove(context.Background(), NewGit(), target)
+		err := Remove(context.Background(), NewGit(), target)
 		if err == nil {
 			t.Fatal("Remove must not claim to have cleaned up a locked registration")
 		}
@@ -1455,7 +1442,7 @@ func TestRemoveDoesNotInventAFileOnARename(t *testing.T) {
 	git(t, worktreePath, "commit", "-m", "add ab cd.txt")
 	git(t, worktreePath, "mv", "ab cd.txt", "xy.txt")
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("an uncommitted rename is a modification: refusal expected")
 	}
@@ -1498,293 +1485,176 @@ func TestEnsureFollowsASymlinkedWorktreeRoot(t *testing.T) {
 		t.Errorf("diverging paths: %q then %q", first, second)
 	}
 	target := Target{
-		DenHome: t.TempDir(), Layout: "central", Root: link,
-		Nest: "api.feat12", Worktree: "feat12", RepoPath: repo,
+		Layout: "central", Root: link,
+		Worktree: "feat12", RepoPath: repo,
 	}
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Errorf("removal must hold through the symlink: %v", err)
 	}
 }
 
-// ── The trash ────────────────────────────────────────────────────────────
-//
-// Five rounds of review proved that the enumeration of the ways git hides
-// work does not converge, and that the `git worktree remove` safety net
-// falls WITH `git status`'s, since it is the same code. The answer is not
-// one more verdict: it is to never delete.
+// ── Lock, admin dir, definitive removal ──────────────────────────────────
 
-// readEntries returns the names of a directory's entries, or nil if it does
-// not exist.
-func readEntries(t *testing.T, dir string) []string {
+func lockedLine(t *testing.T, repo, worktreePath string) string {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+	inBlock := false
+	for _, line := range strings.Split(git(t, repo, "worktree", "list", "--porcelain"), "\n") {
+		if path, ok := strings.CutPrefix(line, "worktree "); ok {
+			inBlock = samePath(path, worktreePath)
+			continue
 		}
-		t.Fatalf("reading %s: %v", dir, err)
+		if inBlock && strings.HasPrefix(line, "locked") {
+			return line
+		}
 	}
-	var names []string
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	slices.Sort(names)
-	return names
+	return ""
 }
 
-// The structural property: the directory is not destroyed, it is moved.
-func TestRemoveMovesTheWorktreeToTrash(t *testing.T) {
-	repo, worktreePath, target := prepareWorktree(t)
-	writeFile(t, filepath.Join(worktreePath, "tracked.txt"), "committed\n")
-	git(t, worktreePath, "add", "tracked.txt")
-	git(t, worktreePath, "commit", "-m", "add tracked.txt")
+func TestLockIsIdempotent(t *testing.T) {
+	repo, worktreePath, _ := prepareWorktree(t)
 
-	dest, err := Remove(context.Background(), NewGit(), target)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
-		t.Errorf("the worktree must have left %s; got: %v", worktreePath, err)
-	}
-	trash := filepath.Join(target.DenHome, "trash")
-	if dest == "" {
-		t.Fatal("Remove must return the path of the trash entry")
-	}
-	if filepath.Dir(dest) != trash {
-		t.Errorf("the entry must live under %s; got %s", trash, dest)
-	}
-	// The name must let the user find THEIR directory among others: without
-	// the nest and the repo, the trash is an anonymous pile.
-	for _, expected := range []string{target.Nest, filepath.Base(repo)} {
-		if !strings.Contains(filepath.Base(dest), expected) {
-			t.Errorf("the entry name must contain %q; got %q", expected, filepath.Base(dest))
+	for i := 0; i < 2; i++ {
+		if err := Lock(context.Background(), NewGit(), repo, worktreePath); err != nil {
+			t.Fatalf("Lock #%d: %v", i+1, err)
 		}
 	}
-	if content, err := os.ReadFile(filepath.Join(dest, "tracked.txt")); err != nil || string(content) != "committed\n" {
-		t.Errorf("the content must have followed the move; got %q, err %v", content, err)
+	if got := lockedLine(t, repo, worktreePath); got != "locked den" {
+		t.Errorf("worktree list shows %q, expected \"locked den\"", got)
+	}
+}
+
+func TestLockRefusesAForeignLock(t *testing.T) {
+	repo, worktreePath, _ := prepareWorktree(t)
+	git(t, repo, "worktree", "lock", "--reason", "usb", worktreePath)
+
+	err := Lock(context.Background(), NewGit(), repo, worktreePath)
+	if err == nil {
+		t.Fatal("a lock with another reason must not be taken over")
+	}
+	if !strings.Contains(err.Error(), "usb") {
+		t.Errorf("the message must name the foreign reason; got: %v", err)
+	}
+	if got := lockedLine(t, repo, worktreePath); got != "locked usb" {
+		t.Errorf("the foreign lock must be untouched; got %q", got)
+	}
+}
+
+func TestAdminDirReadsGitsSuffix(t *testing.T) {
+	repo := testRepo(t, "api")
+	root := t.TempDir()
+	var admins []string
+	for _, branch := range []string{"a", "b"} {
+		wt, err := Ensure(context.Background(), NewGit(), "central", root, wtName(branch), repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		admin, err := AdminDir(context.Background(), NewGit(), wt)
+		if err != nil {
+			t.Fatalf("AdminDir(%s): %v", branch, err)
+		}
+		if info, err := os.Stat(admin); err != nil || !info.IsDir() {
+			t.Errorf("admin dir %s must exist: %v", admin, err)
+		}
+		admins = append(admins, admin)
+	}
+	if filepath.Base(admins[0]) == filepath.Base(admins[1]) {
+		t.Errorf("two worktrees of one repo share the admin dir name %q", filepath.Base(admins[0]))
+	}
+	common, err := CommonGitDir(context.Background(), NewGit(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, admin := range admins {
+		if filepath.Dir(admin) != filepath.Join(common, "worktrees") {
+			t.Errorf("admin dir %s must sit under %s in the same resolved form", admin, filepath.Join(common, "worktrees"))
+		}
+	}
+}
+
+func TestRemoveUnlocksADenLock(t *testing.T) {
+	repo, worktreePath, target := prepareWorktree(t)
+	if err := Lock(context.Background(), NewGit(), repo, worktreePath); err != nil {
+		t.Fatal(err)
 	}
 
-	// The git registration must be pruned, or Ensure would refuse to
-	// recreate this worktree forever.
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Errorf("the worktree must be gone: %v", err)
+	}
+	if !strings.Contains(git(t, repo, "branch", "--list", target.Worktree), target.Worktree) {
+		t.Errorf("branch %s must survive", target.Worktree)
+	}
+	if list := git(t, repo, "worktree", "list"); strings.Contains(list, worktreePath) {
+		t.Errorf("the registration must be gone, got:\n%s", list)
+	}
+}
+
+func TestRemoveRefusesAForeignLock(t *testing.T) {
+	repo, worktreePath, target := prepareWorktree(t)
+	git(t, repo, "worktree", "lock", "--reason", "usb", worktreePath)
+
+	err := Remove(context.Background(), NewGit(), withForce(target, true))
+	if err == nil {
+		t.Fatal("a foreign lock must refuse the removal")
+	}
+	if !strings.Contains(err.Error(), "usb") {
+		t.Errorf("the message must name the lock reason; got: %v", err)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Errorf("the worktree must be INTACT in place: %v", err)
+	}
+}
+
+func TestRemoveClearsADenLockedRegistrationWhoseDirectoryIsGone(t *testing.T) {
+	repo, worktreePath, target := prepareWorktree(t)
+	if err := Lock(context.Background(), NewGit(), repo, worktreePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(worktreePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
 	if list := git(t, repo, "worktree", "list"); strings.Contains(list, worktreePath) {
 		t.Errorf("the registration must be pruned, got:\n%s", list)
 	}
-	if _, err := Ensure(context.Background(), NewGit(), target.Layout, target.Root, wtName(target.Worktree), target.RepoPath); err != nil {
-		t.Errorf("the re-spawn must succeed after the move to trash: %v", err)
-	}
-	// The branch survives: the user's commits are never at stake.
-	if _, err := tolerantGit(t, repo, "show-ref", "--verify", "refs/heads/"+target.Worktree); err != nil {
-		t.Errorf("branch %s must survive: %v", target.Worktree, err)
-	}
 }
 
-// THE case the trash exists to make reversible: --force no longer loses
-// anything. An IGNORED file is the worst of the three — invisible to `git
-// status`, to the `git worktree remove` safety net, and absent from the
-// object store.
-func TestRemoveWithForceKeepsTheWorkInTrash(t *testing.T) {
+func TestRemoveWithForceDiscardsIgnoredAndUntrackedFiles(t *testing.T) {
 	_, worktreePath, target := prepareWorktree(t)
 	writeFile(t, filepath.Join(worktreePath, ".gitignore"), ".env\n")
 	git(t, worktreePath, "add", ".gitignore")
 	git(t, worktreePath, "commit", "-m", "ignore .env")
 	writeFile(t, filepath.Join(worktreePath, ".env"), "SECRET=hunter2\n")
-	writeFile(t, filepath.Join(worktreePath, "draft.txt"), "IRREPLACEABLE WORK\n")
+	writeFile(t, filepath.Join(worktreePath, "draft.txt"), "wip\n")
 
-	dest, err := Remove(context.Background(), NewGit(), withForce(target, true))
-	if err != nil {
-		t.Fatalf("with force, the move to trash must succeed: %v", err)
-	}
-	for _, c := range []struct{ name, content string }{
-		{".env", "SECRET=hunter2\n"},
-		{"draft.txt", "IRREPLACEABLE WORK\n"},
-	} {
-		got, err := os.ReadFile(filepath.Join(dest, c.name))
-		if err != nil || string(got) != c.content {
-			t.Errorf("%s must be recoverable in %s; got %q, err %v", c.name, dest, got, err)
-		}
-	}
-}
-
-// den_home and worktree_root can live on different filesystems: os.Rename
-// then fails with EXDEV. Copying a large worktree by hand would be slow and
-// interruptible — the fallback trash lands under worktree_root, which
-// necessarily shares the worktree's filesystem since it carries it.
-func TestRemoveFallsBackWhenTrashIsOnAnotherFilesystem(t *testing.T) {
-	_, worktreePath, target := prepareWorktree(t)
-	elsewhere, err := os.MkdirTemp("/dev/shm", "den-trash-")
-	if err != nil {
-		t.Skipf("no second filesystem available: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(elsewhere) })
-	if device(t, elsewhere) == device(t, worktreePath) {
-		t.Skip("/dev/shm is on the same filesystem as the worktree")
-	}
-	target.DenHome = elsewhere
-	writeFile(t, filepath.Join(worktreePath, "draft.txt"), "IRREPLACEABLE WORK\n")
-
-	dest, err := Remove(context.Background(), NewGit(), withForce(target, true))
-	if err != nil {
-		t.Fatalf("a den_home on another filesystem must not prevent the trash: %v", err)
-	}
-	if filepath.Dir(dest) != filepath.Join(target.Root, ".trash") {
-		t.Errorf("the fallback must live under %s; got %s", filepath.Join(target.Root, ".trash"), dest)
-	}
-	if got, err := os.ReadFile(filepath.Join(dest, "draft.txt")); err != nil ||
-		string(got) != "IRREPLACEABLE WORK\n" {
-		t.Errorf("the work must be recoverable; got %q, err %v", got, err)
+	if err := Remove(context.Background(), NewGit(), withForce(target, true)); err != nil {
+		t.Fatalf("with force, the removal must succeed: %v", err)
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
-		t.Errorf("the worktree must have left %s; got: %v", worktreePath, err)
+		t.Errorf("the worktree must be gone: %v", err)
 	}
 }
 
-func device(t *testing.T, path string) uint64 {
-	t.Helper()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat of %s: %v", path, err)
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		t.Skipf("device number unavailable for %s", path)
-	}
-	return uint64(st.Dev)
-}
-
-// A trash without retention is a disk leak. The purge runs on the timestamp
-// IN THE NAME — the one den wrote — and never on a name it cannot read: a
-// directory the user stashed there must not go.
-func TestRemovePurgesEntriesTooOld(t *testing.T) {
-	_, _, target := prepareWorktree(t)
-	trash := filepath.Join(target.DenHome, "trash")
-	if err := os.MkdirAll(trash, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-trashRetention - 24*time.Hour).Format(timestampFormat)
-	recent := time.Now().Add(-24 * time.Hour).Format(timestampFormat)
-
-	toPurge := old + "-api.feat12-api"
-	toKeep := []string{
-		recent + "-api.feat12-api",
-		// Stopped by the FORM guard: its 15th byte is not a "-".
-		"stashed-by-the-user",
-		// PASSES the form guard (byte 15 = "-") but its prefix is not a
-		// date. This is the only witness that actually reaches parsing,
-		// and hence the only one that holds its fail-closed behaviour:
-		// without it, ignoring the ParseInLocation error leaves "when" at
-		// the zero time, the gap exceeds retention, and the user's
-		// stashed directory gets deleted.
-		"hand-saved-copy-2026-07-28",
-	}
-	for _, name := range append([]string{toPurge}, toKeep...) {
-		if err := os.MkdirAll(filepath.Join(trash, name), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		writeFile(t, filepath.Join(trash, name, "marker"), "x\n")
-	}
-	// A FILE with a perfectly timestamped name: not a trash entry, and the
-	// purge must not touch it.
-	witnessFile := old + "-file-stashed"
-	writeFile(t, filepath.Join(trash, witnessFile), "user's note\n")
-	toKeep = append(toKeep, witnessFile)
-
-	// Setup: the parsing witness does pass the form guard, or it would
-	// prove nothing more than "stashed-by-the-user".
-	if n := "hand-saved-copy-2026-07-28"; n[len(timestampFormat)] != '-' {
-		t.Fatalf("setup: %q must carry a \"-\" at position %d, it carries %q",
-			n, len(timestampFormat), n[len(timestampFormat)])
-	}
-
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	remaining := readEntries(t, trash)
-	if slices.Contains(remaining, toPurge) {
-		t.Errorf("the expired entry %q must be purged; remaining: %v", toPurge, remaining)
-	}
-	for _, keep := range toKeep {
-		if !slices.Contains(remaining, keep) {
-			t.Errorf("entry %q must NOT be purged; remaining: %v", keep, remaining)
-		}
-	}
-}
-
-// `git worktree lock` exists for removable volumes and network mounts. git
-// refuses to touch it; den must refuse BEFORE moving, or it leaves a
-// directory in the trash AND a registration that `prune` silently skips.
+// A lock by someone else (removable volume, network mount) is theirs to lift:
+// den refuses before removing anything.
 func TestRemoveRefusesALockedWorktreeStillPresent(t *testing.T) {
 	repo, worktreePath, target := prepareWorktree(t)
-	git(t, repo, "worktree", "lock", worktreePath)
+	git(t, repo, "worktree", "lock", "--reason", "usb", worktreePath)
 
-	_, err := Remove(context.Background(), NewGit(), withForce(target, true))
+	err := Remove(context.Background(), NewGit(), withForce(target, true))
 	if err == nil {
-		t.Fatal("a locked worktree must not be moved to the trash")
+		t.Fatal("a worktree locked by someone else must not be removed")
 	}
 	if !strings.Contains(err.Error(), "git worktree unlock") {
 		t.Errorf("the message must cite git worktree unlock; got: %v", err)
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Errorf("the locked worktree must be INTACT in place: %v", err)
-	}
-	if names := readEntries(t, filepath.Join(target.DenHome, "trash")); len(names) != 0 {
-		t.Errorf("nothing must have been moved; trash: %v", names)
-	}
-}
-
-// Without den_home there is no trash — and without a trash, den touches
-// nothing. This is a caller mistake, not a user case: the refusal must name
-// it rather than invent a location.
-func TestRemoveRefusesWithoutDenHome(t *testing.T) {
-	_, worktreePath, target := prepareWorktree(t)
-	target.DenHome = ""
-	// DIRTY on purpose: while this guard used to run after the dirtiness
-	// check, the user got sent to a trash path built from an empty
-	// den_home.
-	writeFile(t, filepath.Join(worktreePath, "draft.txt"), "wip\n")
-
-	_, err := Remove(context.Background(), NewGit(), target)
-	if err == nil {
-		t.Fatal("a Target without DenHome must be refused")
-	}
-	if !strings.Contains(err.Error(), "den_home") {
-		t.Errorf("the refusal must name the real cause; got: %v", err)
-	}
-	if strings.Contains(err.Error(), "the trash") {
-		t.Errorf("the message must not name a trash that does not exist; got: %v", err)
-	}
-	if _, err := os.Stat(worktreePath); err != nil {
-		t.Errorf("the worktree must be INTACT: %v", err)
-	}
-}
-
-// Two moves to trash for the same nest and repo within the same second
-// carry the same computed name. Tested on the function rather than through
-// two Remove calls: otherwise the collision would only occur if the clock
-// cooperates.
-func TestFreeEntryAvoidsCollisions(t *testing.T) {
-	trash := t.TempDir()
-	taken := filepath.Join(trash, "20260728-184530-api.feat12-api")
-	if err := os.MkdirAll(taken, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(taken, "already-here"), "x\n")
-
-	free, err := freeEntry(trash, "20260728-184530-api.feat12-api")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if free == taken {
-		t.Fatalf("freeEntry returned an already-occupied path: %s", free)
-	}
-	if _, err := os.Stat(free); !os.IsNotExist(err) {
-		t.Errorf("%s must be free; got: %v", free, err)
-	}
-	// The original name must stay recognizable: a suffix, not a different
-	// name.
-	if !strings.HasPrefix(filepath.Base(free), "20260728-184530-api.feat12-api") {
-		t.Errorf("the name must stay recognizable; got %q", filepath.Base(free))
 	}
 }
 
@@ -1864,7 +1734,7 @@ func TestRemoveRefusesASymlinkReplacedByAFileWithSameText(t *testing.T) {
 		t.Fatalf("setup: git should report nothing, got %q", status)
 	}
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("a tracked symlink turned into a regular file is a modification, even with equal content")
 	}
@@ -1894,7 +1764,7 @@ func TestRemoveDoesNotInventAFileOnAWorkingTreeRename(t *testing.T) {
 		t.Skipf("git does not produce a column-Y rename here: %q", status)
 	}
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("an uncommitted rename is a modification: refusal expected")
 	}
@@ -2011,9 +1881,9 @@ func TestRemoveRefusesWhenTheIndexIsSilent(t *testing.T) {
 	git(t, worktreePath, "update-index", "--skip-worktree", "local.conf")
 
 	g := gitFailingOn{real: NewGit(), prefix: []string{"ls-files", "-s"}}
-	_, err := Remove(context.Background(), g, target)
+	err := Remove(context.Background(), g, target)
 	if err == nil {
-		t.Fatal("a failure of `git ls-files -s` must not authorize the move to trash")
+		t.Fatal("a failure of `git ls-files -s` must not authorize the removal")
 	}
 	if !strings.Contains(err.Error(), "simulated failure") {
 		t.Errorf("the failure must surface unchanged; got: %v", err)
@@ -2163,7 +2033,7 @@ func TestRemoveRefusesAMarkedSymlinkRepointed(t *testing.T) {
 		t.Fatalf("setup: git should report nothing, got %q", status)
 	}
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("a marked symlink repointed elsewhere is a modification: refusal expected")
 	}
@@ -2190,7 +2060,7 @@ func TestRemoveAsksGitOnceAboutIgnoredDirs(t *testing.T) {
 	git(t, worktreePath, "commit", "-m", "ignore caches")
 
 	spy := &spyGit{real: NewGit()}
-	if _, err := Remove(context.Background(), spy, target); err != nil {
+	if err := Remove(context.Background(), spy, target); err != nil {
 		t.Fatalf("three directories ignored as a whole must not block removal: %v", err)
 	}
 	if n := spy.count("check-ignore"); n != 1 {
@@ -2205,7 +2075,7 @@ func TestRemoveAsksGitOnceAboutIgnoredDirs(t *testing.T) {
 // positional alignment. No test mixed both answers: two had only one
 // non-ignored candidate (rc=1, empty table), the third only ignored
 // candidates. "rc=0 ⇒ the whole batch is disposable" therefore passed the
-// entire suite — and sent the secret to the trash WITHOUT refusal.
+// entire suite — and removed the secret WITHOUT refusal.
 func TestRemoveDistinguishesTwoIgnoredDirsInTheSameBatch(t *testing.T) {
 	_, worktreePath, target := prepareWorktree(t)
 	writeFile(t, filepath.Join(worktreePath, ".gitignore"), "node_modules/\n*.env\n")
@@ -2230,7 +2100,7 @@ func TestRemoveDistinguishesTwoIgnoredDirsInTheSameBatch(t *testing.T) {
 		}
 	}
 
-	_, err := Remove(context.Background(), NewGit(), target)
+	err := Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("a secret in a non-ignored directory must be refused, even next to disposable cache")
 	}
@@ -2258,18 +2128,15 @@ func TestRemoveRefusesWhenLockStatusIsUndecidable(t *testing.T) {
 	_, worktreePath, target := prepareWorktree(t)
 
 	g := gitFailingOn{real: NewGit(), prefix: []string{"worktree", "list"}}
-	_, err := Remove(context.Background(), g, withForce(target, true))
+	err := Remove(context.Background(), g, withForce(target, true))
 	if err == nil {
-		t.Fatal("an undecidable lock must not authorize the move to trash")
+		t.Fatal("an undecidable lock must not authorize the removal")
 	}
 	if !strings.Contains(err.Error(), "simulated failure") {
 		t.Errorf("the failure must surface unchanged; got: %v", err)
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Errorf("the worktree must be INTACT in place: %v", err)
-	}
-	if names := readEntries(t, filepath.Join(target.DenHome, "trash")); len(names) != 0 {
-		t.Errorf("nothing must have been moved; trash: %v", names)
 	}
 }
 
@@ -2285,7 +2152,7 @@ func TestRemoveDoesNotClaimToHaveCleanedUpWithoutVerifying(t *testing.T) {
 	}
 
 	g := gitFailingOn{real: NewGit(), prefix: []string{"worktree", "list"}}
-	_, err := Remove(context.Background(), g, target)
+	err := Remove(context.Background(), g, target)
 	if err == nil {
 		t.Fatal("Remove must not return nil when it could not verify the registration")
 	}
@@ -2297,90 +2164,6 @@ func TestRemoveDoesNotClaimToHaveCleanedUpWithoutVerifying(t *testing.T) {
 	// decide.
 	if _, err := Ensure(context.Background(), g, target.Layout, target.Root, wtName(target.Worktree), target.RepoPath); err == nil {
 		t.Error("Ensure must not proceed either without being able to read the listing")
-	}
-}
-
-// M-1. The nest name and the repo's basename compose the entry name.
-// safeComponent's comment asserts that ".." cannot designate the trash's
-// parent; nothing verified it.
-func TestRemoveDoesNotEscapeTheTrash(t *testing.T) {
-	_, _, target := prepareWorktree(t)
-	target.Nest = "a/../../../escape"
-
-	dest, err := Remove(context.Background(), NewGit(), target)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	trash := filepath.Join(target.DenHome, "trash")
-	if filepath.Dir(dest) != trash {
-		t.Errorf("the entry must stay INSIDE %s; got it at %s", trash, dest)
-	}
-	if _, err := os.Stat(dest); err != nil {
-		t.Errorf("the entry must exist where Remove announces it: %v", err)
-	}
-}
-
-// M-2. freeEntry's two guards, whose comment "Lstat and not Stat" was
-// verified by nothing.
-func TestFreeEntry(t *testing.T) {
-	// A DANGLING symlink occupies the name just as much: os.Stat would say
-	// "does not exist", and the following rename would fail with ENOTDIR.
-	t.Run("a dangling symlink occupies the name", func(t *testing.T) {
-		dir := t.TempDir()
-		taken := filepath.Join(dir, "base")
-		if err := os.Symlink("/does/not/exist", taken); err != nil {
-			t.Skipf("symlinks unavailable: %v", err)
-		}
-		free, err := freeEntry(dir, "base")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if free == taken {
-			t.Errorf("freeEntry returned a name occupied by a broken symlink: %s", free)
-		}
-	})
-
-	// Not being able to inspect is not "it's free".
-	t.Run("inspection not possible", func(t *testing.T) {
-		if os.Geteuid() == 0 {
-			t.Skip("root traverses directories regardless of permissions")
-		}
-		dir := filepath.Join(t.TempDir(), "locked")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(dir, 0o000); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-
-		if free, err := freeEntry(dir, "base"); err == nil {
-			t.Errorf("an impossible inspection must produce an error; got %q", free)
-		}
-	})
-}
-
-// M-4. The fallback is reserved for EXDEV. The positive direction was
-// tested, not the negative: falling back on the slightest error would turn
-// a failure into a silent move to a location the user does not expect.
-func TestRemoveOnlyFallsBackOnAnotherFilesystem(t *testing.T) {
-	_, worktreePath, target := prepareWorktree(t)
-	// The primary trash is a FILE: MkdirAll fails with ENOTDIR, not EXDEV,
-	// and on the SAME filesystem as the fallback.
-	if err := os.MkdirAll(target.DenHome, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(target.DenHome, "trash"), "not a directory\n")
-
-	_, err := Remove(context.Background(), NewGit(), withForce(target, true))
-	if err == nil {
-		t.Fatal("an unusable trash must produce an error")
-	}
-	if _, err := os.Stat(worktreePath); err != nil {
-		t.Errorf("the worktree must be INTACT: %v", err)
-	}
-	if names := readEntries(t, filepath.Join(target.Root, ".trash")); len(names) != 0 {
-		t.Errorf("the fallback must not be attempted outside EXDEV; got: %v", names)
 	}
 }
 
@@ -2401,8 +2184,8 @@ func TestRemoveAcceptsAnIntactSymlinkInASha256Repo(t *testing.T) {
 	git(t, repo, "commit", "--allow-empty", "-m", "initial")
 
 	target := Target{
-		DenHome: t.TempDir(), Layout: "central", Root: t.TempDir(),
-		Nest: "api.feat12", Worktree: "feat12", RepoPath: repo,
+		Layout: "central", Root: t.TempDir(),
+		Worktree: "feat12", RepoPath: repo,
 	}
 	worktreePath, err := Ensure(context.Background(), NewGit(), target.Layout, target.Root, wtName(target.Worktree), target.RepoPath)
 	if err != nil {
@@ -2427,7 +2210,7 @@ func TestRemoveAcceptsAnIntactSymlinkInASha256Repo(t *testing.T) {
 		t.Fatalf("setup: expected a 64-character hash, got %+v", index["link.txt"])
 	}
 
-	if _, err := Remove(context.Background(), NewGit(), target); err != nil {
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
 		t.Fatalf("an intact symlink in a SHA-256 repo must not block removal: %v", err)
 	}
 }
@@ -2454,8 +2237,8 @@ func TestRemoveRefusesAMarkedSubmodule(t *testing.T) {
 	git(t, repo, "commit", "-m", "add the submodule")
 
 	target := Target{
-		DenHome: t.TempDir(), Layout: "central", Root: t.TempDir(),
-		Nest: "api.feat12", Worktree: "feat12", RepoPath: repo,
+		Layout: "central", Root: t.TempDir(),
+		Worktree: "feat12", RepoPath: repo,
 	}
 	worktreePath, err := Ensure(context.Background(), NewGit(), target.Layout, target.Root, wtName(target.Worktree), target.RepoPath)
 	if err != nil {
@@ -2469,7 +2252,7 @@ func TestRemoveRefusesAMarkedSubmodule(t *testing.T) {
 		t.Fatalf("setup: git should report nothing, got %q", status)
 	}
 
-	_, err = Remove(context.Background(), NewGit(), target)
+	err = Remove(context.Background(), NewGit(), target)
 	if err == nil {
 		t.Fatal("a marked gitlink must be refused: den does not know what it carries")
 	}
@@ -2696,7 +2479,6 @@ func wtName(s string) Name { return Name{Dir: s, Branch: s} }
 // between the spawn and the rm made Path() aim at a directory that never
 // existed, and the real one stayed on disk with no message about it.
 func TestRemoveUsesTheRecordedPathOverTheCalculatedOne(t *testing.T) {
-	denHome := t.TempDir()
 	repo := testRepo(t, "api")
 
 	// Created under the root in force at spawn time...
@@ -2707,20 +2489,15 @@ func TestRemoveUsesTheRecordedPathOverTheCalculatedOne(t *testing.T) {
 	}
 
 	// ...and removed while config.yaml now names a different root.
-	dest, err := Remove(context.Background(), NewGit(), Target{
-		DenHome:      denHome,
+	err = Remove(context.Background(), NewGit(), Target{
 		Layout:       "central",
 		Root:         filepath.Join(t.TempDir(), "worktrees-now"),
-		Nest:         "api.feat12",
 		Worktree:     "feat12",
 		RepoPath:     repo,
 		WorktreePath: created,
 	})
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
-	}
-	if dest == "" {
-		t.Fatal("the recorded worktree must be found and moved, not reported as already gone")
 	}
 	if _, err := os.Stat(created); !os.IsNotExist(err) {
 		t.Errorf("%s must have left its place: %v", created, err)
