@@ -1,0 +1,357 @@
+package instance
+
+import (
+	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/PillowPillow/den/internal/registry"
+	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/worktree"
+)
+
+// commitFile commits name with body at the tip of repo's current branch.
+func (f *fixture) commitFile(t *testing.T, repo, name, body string) {
+	t.Helper()
+	writeFile(t, filepath.Join(repo, name), body)
+	for _, args := range [][]string{{"add", name}, {"commit", "-q", "-m", "add " + name}} {
+		if _, err := f.git.Run(context.Background(), repo, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// created runs a real Create of nest am on branch feat, then lists its VM and forgets the calls Create made.
+func (f *fixture) created(t *testing.T, nestBody string) registry.Record {
+	t.Helper()
+	f.project(t, map[string]string{"am": nestBody})
+	rec := mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am", Branch: "feat"}))
+	f.live(rec.Instance)
+	f.fake.Calls = nil
+	return rec
+}
+
+func (f *fixture) remove(instance string, force bool) error {
+	return Remove(context.Background(), f.deps(), instance, force)
+}
+
+func (f *fixture) removedVM() bool {
+	return f.fake.HasCalled("--no-input", "rm") || f.fake.HasCalled("--no-input", "env", "rm")
+}
+
+func mustExist(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, p := range paths {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s is gone: %v", p, err)
+		}
+	}
+}
+
+func mustBeGone(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, p := range paths {
+		if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s survived: %v", p, err)
+		}
+	}
+}
+
+func recordPath(t *testing.T, home, instance string) string {
+	t.Helper()
+	p, err := registry.Path(home, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func wantErr(t *testing.T, err error, wants ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("want an error containing %q", wants)
+	}
+	for _, w := range wants {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("error %q lacks %q", err, w)
+		}
+	}
+}
+
+func TestRmRefusesADirtyWorktreeAndTouchesNothing(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	notes := writeFile(t, filepath.Join(rec.Repos[0].Mount, "notes.txt"), "work\n")
+
+	wantErr(t, f.remove(rec.Instance, false), "notes.txt", "--force")
+	if f.removedVM() {
+		t.Errorf("the VM went before the refusal: %v", f.fake.Calls)
+	}
+	mustExist(t, recordPath(t, f.home, rec.Instance), rec.Repos[0].Mount, notes, rec.RunDir, rec.GenDir)
+}
+
+func TestRmRefusesAnIgnoredFile(t *testing.T) {
+	f := newFixture(t)
+	api := f.committedRepo(t, "api")
+	f.commitFile(t, api, ".gitignore", ".env\n")
+	rec := f.created(t, repos(repoEntry(api, false)))
+	env := writeFile(t, filepath.Join(rec.Repos[0].Mount, ".env"), "TOKEN=x\n")
+
+	wantErr(t, f.remove(rec.Instance, false), ".env", "--force")
+	if f.removedVM() {
+		t.Errorf("the VM went before the refusal: %v", f.fake.Calls)
+	}
+	mustExist(t, recordPath(t, f.home, rec.Instance), env)
+}
+
+func TestRmRefusesAModifiedTrackedFile(t *testing.T) {
+	f := newFixture(t)
+	api := f.committedRepo(t, "api")
+	f.commitFile(t, api, "main.go", "package main\n")
+	rec := f.created(t, repos(repoEntry(api, false)))
+	writeFile(t, filepath.Join(rec.Repos[0].Mount, "main.go"), "package main // edited\n")
+
+	wantErr(t, f.remove(rec.Instance, false), "main.go", "--force")
+	if f.removedVM() {
+		t.Errorf("the VM went before the refusal: %v", f.fake.Calls)
+	}
+	mustExist(t, recordPath(t, f.home, rec.Instance), rec.Repos[0].Mount)
+}
+
+func TestRmKeepsACleanWorktreeWhenASiblingIsDirty(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false), repoEntry(f.committedRepo(t, "web"), false)))
+	writeFile(t, filepath.Join(rec.Repos[1].Mount, "b.txt"), "b\n")
+
+	wantErr(t, f.remove(rec.Instance, false), "b.txt", "--force")
+	if f.removedVM() {
+		t.Errorf("the VM went before the refusal: %v", f.fake.Calls)
+	}
+	mustExist(t, recordPath(t, f.home, rec.Instance), rec.Repos[0].Mount, rec.Repos[1].Mount)
+}
+
+func TestRmForceRemovesAll(t *testing.T) {
+	f := newFixture(t)
+	api := f.committedRepo(t, "api")
+	rec := f.created(t, repos(repoEntry(api, false)))
+	writeFile(t, filepath.Join(rec.Repos[0].Mount, "notes.txt"), "work\n")
+
+	if err := f.remove(rec.Instance, true); err != nil {
+		t.Fatal(err)
+	}
+	if !f.removedVM() {
+		t.Errorf("no VM removal: %v", f.fake.Calls)
+	}
+	mustBeGone(t, rec.Repos[0].Mount, rec.RunDir, rec.GenDir, recordPath(t, f.home, rec.Instance))
+	if _, err := f.git.Run(context.Background(), api, "rev-parse", "--verify", "-q", "refs/heads/feat"); err != nil {
+		t.Errorf("rm deleted branch feat: %v", err)
+	}
+	mustExist(t, filepath.Join(f.home, "gen", ".kits", "den-claude", "spec.yaml"))
+}
+
+func TestRmPassesSkipHostCommands(t *testing.T) {
+	f := newFixture(t)
+	layer := writeFile(t, filepath.Join(f.src, "layer.yaml"), "schemaVersion: \"1\"\n")
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false))+"\nlayers: ["+layer+"]")
+
+	if err := f.remove(rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	want := append([]string{"--no-input", "env", "rm", "--force", "--skip-host-commands"}, rec.EnvFiles...)
+	if len(rec.EnvFiles) != 2 || !slices.ContainsFunc(f.fake.Calls, func(c []string) bool { return slices.Equal(c, want) }) {
+		t.Errorf("calls %v, want %v", f.fake.Calls, want)
+	}
+	if f.fake.HasCalled("--no-input", "rm") {
+		t.Errorf("sbx rm ran beside env rm: %v", f.fake.Calls)
+	}
+}
+
+func TestRmUsesSbxRmWhenAnEnvFileIsGone(t *testing.T) {
+	f := newFixture(t)
+	layer := writeFile(t, filepath.Join(f.src, "layer.yaml"), "schemaVersion: \"1\"\n")
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false))+"\nlayers: ["+layer+"]")
+	if err := os.Remove(layer); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.remove(rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--no-input", "rm", "--force", rec.Instance}
+	if !slices.ContainsFunc(f.fake.Calls, func(c []string) bool { return slices.Equal(c, want) }) {
+		t.Errorf("calls %v, want %v", f.fake.Calls, want)
+	}
+	if f.fake.HasCalled("--no-input", "env", "rm") {
+		t.Errorf("env rm ran with a missing env file: %v", f.fake.Calls)
+	}
+}
+
+func TestRmSkipsTheVMWhenSbxDoesNotListIt(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	f.respond("ls --json", `[]`)
+
+	if err := f.remove(rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	if f.removedVM() {
+		t.Errorf("removed a VM sbx does not list: %v", f.fake.Calls)
+	}
+	mustBeGone(t, rec.Repos[0].Mount, recordPath(t, f.home, rec.Instance))
+}
+
+func TestRmRefusesWhenSbxLsFails(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	f.fake.Responses["ls --json"] = sbx.Response{Err: errors.New("daemon down")}
+
+	wantErr(t, f.remove(rec.Instance, false), "daemon down")
+	mustExist(t, rec.Repos[0].Mount, recordPath(t, f.home, rec.Instance))
+}
+
+func TestRmRefusesWithoutARecord(t *testing.T) {
+	f := newFixture(t)
+	err := f.remove("am", false)
+	want := "no den V2 record for \"am\" — den only removes what it created; use `sbx rm am`"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error %v, want %q", err, want)
+	}
+	if len(f.fake.Calls) != 0 {
+		t.Errorf("sbx calls %v, want none", f.fake.Calls)
+	}
+}
+
+func TestRmRefusesARecordOfAnotherSchema(t *testing.T) {
+	f := newFixture(t)
+	path := writeFile(t, recordPath(t, f.home, "am"), "schema: 2\ninstance: am\n")
+
+	wantErr(t, f.remove("am", false), path, "schema 2")
+	if len(f.fake.Calls) != 0 {
+		t.Errorf("sbx calls %v, want none", f.fake.Calls)
+	}
+	mustExist(t, path)
+}
+
+// failingRemove is real git, except that `git worktree remove` fails in one repo.
+type failingRemove struct {
+	worktree.Git
+	repo string
+}
+
+func (g failingRemove) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if dir == g.repo && len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+		return nil, errors.New("disk on fire")
+	}
+	return g.Git.Run(ctx, dir, args...)
+}
+
+func TestRmKeepsTheRecordWhenAWorktreeRemovalFails(t *testing.T) {
+	f := newFixture(t)
+	api, web := f.committedRepo(t, "api"), f.committedRepo(t, "web")
+	rec := f.created(t, repos(repoEntry(api, false), repoEntry(web, false)))
+	f.git = failingRemove{Git: f.git, repo: api}
+
+	wantErr(t, f.remove(rec.Instance, false), "disk on fire", rec.Repos[0].Mount, "den rm "+rec.Instance)
+	if !f.removedVM() {
+		t.Errorf("no VM removal: %v", f.fake.Calls)
+	}
+	mustExist(t, recordPath(t, f.home, rec.Instance), rec.RunDir, rec.GenDir, rec.Repos[0].Mount)
+	mustBeGone(t, rec.Repos[1].Mount)
+}
+
+func TestRmStopsWhenTheVMRemovalFails(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	f.fake.Responses[strings.Join(append([]string{"--no-input", "env", "rm", "--force", "--skip-host-commands"}, rec.EnvFiles...), " ")] =
+		sbx.Response{Err: errors.New("vm stuck")}
+
+	wantErr(t, f.remove(rec.Instance, false), "vm stuck")
+	mustExist(t, recordPath(t, f.home, rec.Instance), rec.RunDir, rec.GenDir, rec.Repos[0].Mount)
+}
+
+func TestRmNeverTouchesAMountedRepo(t *testing.T) {
+	f := newFixture(t)
+	api := f.repo(t, "api")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false))})
+	rec := mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am"}))
+	f.live(rec.Instance)
+	writeFile(t, filepath.Join(api, "notes.txt"), "work\n")
+
+	if err := f.remove(rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	mustExist(t, api, filepath.Join(api, "notes.txt"))
+	mustBeGone(t, recordPath(t, f.home, rec.Instance))
+}
+
+func TestRmNeverTouchesAWorktreeFoundInPlace(t *testing.T) {
+	f := newFixture(t)
+	api := f.committedRepo(t, "api")
+	wt := worktree.Path("central", filepath.Join(f.home, "wt"), "feat", api)
+	if _, err := f.git.Run(context.Background(), api, "worktree", "add", "-q", "-b", "feat", wt); err != nil {
+		t.Fatal(err)
+	}
+	rec := f.created(t, repos(repoEntry(api, false)))
+	if rec.Repos[0].Worktree {
+		t.Fatalf("setup: the worktree was recorded as den's: %+v", rec.Repos[0])
+	}
+	notes := writeFile(t, filepath.Join(wt, "notes.txt"), "work\n")
+
+	if err := f.remove(rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	mustExist(t, wt, notes)
+	out, err := f.git.Run(context.Background(), api, "worktree", "list", "--porcelain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "locked "+worktree.LockReason) {
+		t.Errorf("rm unlocked a worktree it found in place:\n%s", out)
+	}
+}
+
+func TestRmRemovesAGlobalNestRunDir(t *testing.T) {
+	f := newFixture(t)
+	f.global(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+	rec := mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am"}))
+	f.live(rec.Instance)
+	if rec.RunDir != filepath.Join(f.home, "run", "am") {
+		t.Fatalf("setup: run dir %s", rec.RunDir)
+	}
+
+	if err := f.remove(rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	mustBeGone(t, rec.RunDir, rec.GenDir, recordPath(t, f.home, rec.Instance))
+}
+
+func TestRmRefusesARecordedDirDenDidNotPlace(t *testing.T) {
+	for name, tamper := range map[string]func(r *registry.Record, elsewhere string){
+		"run dir": func(r *registry.Record, elsewhere string) { r.RunDir = elsewhere },
+		"gen dir": func(r *registry.Record, elsewhere string) { r.GenDir = elsewhere },
+		"empty":   func(r *registry.Record, _ string) { r.GenDir = "" },
+		"project": func(r *registry.Record, elsewhere string) { r.Project = filepath.Dir(elsewhere) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+			elsewhere := filepath.Join(f.src, "keep")
+			writeFile(t, filepath.Join(elsewhere, "precious"), "x\n")
+			tamper(&rec, elsewhere)
+			if err := registry.Write(f.home, rec); err != nil {
+				t.Fatal(err)
+			}
+
+			wantErr(t, f.remove(rec.Instance, true), recordPath(t, f.home, rec.Instance))
+			if f.removedVM() {
+				t.Errorf("the VM went before the refusal: %v", f.fake.Calls)
+			}
+			mustExist(t, filepath.Join(elsewhere, "precious"), recordPath(t, f.home, rec.Instance), rec.Repos[0].Mount)
+		})
+	}
+}

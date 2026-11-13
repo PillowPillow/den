@@ -80,6 +80,7 @@ func NewRoot(deps Deps) *cobra.Command {
 	root.AddCommand(newExecCmd(deps, &denHome))
 	root.AddCommand(newShellCmd(deps, &denHome))
 	root.AddCommand(newLsCmd(deps, &denHome))
+	root.AddCommand(newRmCmd(deps, &denHome))
 	return root
 }
 
