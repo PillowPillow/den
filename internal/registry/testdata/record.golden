@@ -1,0 +1,28 @@
+schema: 1
+instance: api.feat-12
+nest: api
+config_file: /p/den.yaml
+project: /p
+run_dir: /p/.den/run/api.feat-12
+gen_dir: /h/.den/gen
+env_files:
+    - /h/.den/gen/base.yaml
+    - /p/.den/run/api.feat-12/sbxenv.yaml
+config_hash: abc123
+start: claude
+worktree:
+    branch: feature/12
+    dir: feat-12
+    layout: central
+    root: /h/.den/wt
+repos:
+    - name: api
+      repo: /dev/api
+      mount: /h/.den/wt/feat-12/api
+      target: /work/api
+      worktree: true
+    - name: lib
+      repo: /dev/lib
+      mount: /dev/lib
+      target: /work/lib
+      worktree: false
