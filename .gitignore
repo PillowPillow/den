@@ -21,3 +21,4 @@
 # snapshot of a machine at a moment, not project documentation. What a handoff proves and the
 # project keeps belongs in `docs/superpowers/specs/` or `CLAUDE.md`.
 /docs/superpowers/handoffs/
+.DS_Store
