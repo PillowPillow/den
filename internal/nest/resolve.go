@@ -36,6 +36,7 @@ type Resolved struct {
 	Layout      string
 	Root        string
 	Layers      []string
+	AgentImage  string
 	Warnings    []string
 }
 
@@ -210,7 +211,8 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 		return nil, fmt.Errorf("%s: nest %q is not declared there", file.Path, name)
 	}
 	r := &Resolved{Name: name, File: file, GlobalFile: global.Path, BaseName: n.Base, Profile: n.Profile,
-		Start: n.Start, Ports: n.Ports, Layers: n.Layers}
+		Start: n.Start, Ports: n.Ports, Layers: n.Layers,
+		AgentImage: global.File.Agents["claude"].Image}
 
 	base, ok := file.File.Bases[n.Base]
 	r.BaseFile = file

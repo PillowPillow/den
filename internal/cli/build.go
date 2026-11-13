@@ -29,8 +29,12 @@ func newBuildCmd(deps Deps, denHome *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			global, err := config.LoadGlobal(home)
+			if err != nil {
+				return err
+			}
 			d := instance.Deps{Sbx: deps.Sbx, DenHome: home, Cwd: cwd, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}
-			return base.Build(cmd.Context(), d, args[0], b)
+			return base.Build(cmd.Context(), d, args[0], b, global.File.Agents["claude"].Image)
 		},
 	}
 }

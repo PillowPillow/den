@@ -505,23 +505,24 @@ func hashedStart(res *nest.Resolved, mapped string, mapErr error) string {
 // an edit to another nest of the same den.yaml must not report drift.
 func configHash(res *nest.Resolved, repos []nest.Repo, start, branch string) (string, error) {
 	in := struct {
-		Base    string            `yaml:"base"`
-		Image   string            `yaml:"image"`
-		Kits    []string          `yaml:"kits"`
-		Allow   []string          `yaml:"allow"`
-		Env     map[string]string `yaml:"env"`
-		Ports   []config.Port     `yaml:"ports"`
-		Start   string            `yaml:"start"`
-		Layers  []string          `yaml:"layers"`
-		Profile string            `yaml:"profile"`
-		Repos   []string          `yaml:"repos"`
-		Branch  string            `yaml:"branch"`
-		Layout  string            `yaml:"layout"`
-		Root    string            `yaml:"root"`
+		Base       string            `yaml:"base"`
+		Image      string            `yaml:"image"`
+		Kits       []string          `yaml:"kits"`
+		Allow      []string          `yaml:"allow"`
+		Env        map[string]string `yaml:"env"`
+		Ports      []config.Port     `yaml:"ports"`
+		Start      string            `yaml:"start"`
+		Layers     []string          `yaml:"layers"`
+		Profile    string            `yaml:"profile"`
+		Repos      []string          `yaml:"repos"`
+		Branch     string            `yaml:"branch"`
+		Layout     string            `yaml:"layout"`
+		Root       string            `yaml:"root"`
+		AgentImage string            `yaml:"agent_image"`
 	}{
 		Base: res.BaseName, Image: res.Base.Image, Kits: res.Kits, Allow: res.Allow, Env: res.Env,
 		Ports: res.Ports, Start: start, Layers: res.Layers, Profile: res.Profile,
-		Branch: branch, Layout: res.Layout, Root: res.Root,
+		Branch: branch, Layout: res.Layout, Root: res.Root, AgentImage: res.AgentImage,
 	}
 	for _, r := range repos {
 		in.Repos = append(in.Repos, r.Path)

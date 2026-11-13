@@ -24,3 +24,19 @@ func NetworkKit(allow []string) []byte {
 
 // GitFile is the .git file that points a worktree at its admin dir.
 func GitFile(adminDir string) []byte { return []byte("gitdir: " + adminDir + "\n") }
+
+// DenClaudeKitWithImage swaps the pinned image for another; an empty image returns the embedded spec as is.
+// The embedded spec holds exactly one `  image:` line, a test keeps it so.
+func DenClaudeKitWithImage(image string) []byte {
+	spec := DenClaudeKit()
+	if image == "" {
+		return spec
+	}
+	lines := strings.Split(string(spec), "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(l, "  image: ") {
+			lines[i] = "  image: " + image
+		}
+	}
+	return []byte(strings.Join(lines, "\n"))
+}

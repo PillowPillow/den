@@ -38,8 +38,12 @@ func (f *buildFixture) step(t *testing.T, name, body string) string {
 }
 
 func (f *buildFixture) build(b config.Base) error {
+	return f.buildWith(b, "")
+}
+
+func (f *buildFixture) buildWith(b config.Base, agentImage string) error {
 	d := instance.Deps{Sbx: f.fake, DenHome: f.home, Cwd: f.src, Out: &f.out, Err: &f.err}
-	return Build(context.Background(), d, "devx", b)
+	return Build(context.Background(), d, "devx", b, agentImage)
 }
 
 func (f *buildFixture) calls() []string {
@@ -242,5 +246,21 @@ func TestBuildRefusesAnOldSbx(t *testing.T) {
 	}
 	if got := f.calls(); len(got) != 0 {
 		t.Errorf("calls %v", got)
+	}
+}
+
+func TestBuildUsesTheConfiguredAgentImage(t *testing.T) {
+	f := newBuildFixture(t)
+	one := f.step(t, "one.sh", "echo one\n")
+	image := "registry.test/claude@sha256:" + strings.Repeat("ab", 32)
+	if err := f.buildWith(config.Base{Image: "devx:v1", Build: config.Build{Steps: []string{one}}}, image); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(f.home, "gen", ".kits", "den-claude", "spec.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "  image: "+image+"\n") {
+		t.Errorf("den-claude kit does not carry %s:\n%s", image, raw)
 	}
 }

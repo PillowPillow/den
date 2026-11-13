@@ -407,3 +407,33 @@ func TestCreateRendersOverlaysLastAndReadOnly(t *testing.T) {
 		t.Errorf("sbxenv.yaml mismatch\n--- got\n%s\n--- want\n%s", got, want)
 	}
 }
+
+func TestWriteDenClaudeKitUsesTheConfiguredImage(t *testing.T) {
+	home := t.TempDir()
+	image := "registry.test/claude@sha256:" + strings.Repeat("cd", 32)
+	dir, err := WriteDenClaudeKit(home, image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, filepath.Join(dir, "spec.yaml"))
+	if !strings.Contains(got, "  image: "+image+"\n") || strings.Count(got, "image:") != 1 {
+		t.Errorf("kit does not carry exactly the configured image:\n%s", got)
+	}
+	if _, err := WriteDenClaudeKit(home, ""); err != nil {
+		t.Fatal(err)
+	}
+	if back := readFile(t, filepath.Join(dir, "spec.yaml")); back != string(sbxenv.DenClaudeKit()) {
+		t.Errorf("an empty image must restore the embedded pin")
+	}
+}
+
+func TestWriteDenClaudeKitDefaultsToTheEmbeddedPin(t *testing.T) {
+	home := t.TempDir()
+	dir, err := WriteDenClaudeKit(home, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, filepath.Join(dir, "spec.yaml")); got != string(sbxenv.DenClaudeKit()) {
+		t.Errorf("kit differs from the embedded one")
+	}
+}

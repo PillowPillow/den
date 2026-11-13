@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -60,6 +61,8 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
+var agentImagePattern = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
+
 // validate returns one line per problem, so a file is fixed in one pass.
 func validate(f *File, global bool) []string {
 	var out []string
@@ -84,6 +87,18 @@ func validate(f *File, global bool) []string {
 		}
 		if f.Profiles != nil {
 			add("profiles: %s", move)
+		}
+		if f.Agents != nil {
+			add("agents: %s", move)
+		}
+	}
+	for _, name := range sortedKeys(f.Agents) {
+		if name != "claude" {
+			add("agents.%s: unknown agent — this den knows `claude` only", name)
+			continue
+		}
+		if img := f.Agents[name].Image; !agentImagePattern.MatchString(img) {
+			add("agents.%s.image: %q must pin a digest, <ref>@sha256:<64 hex> — `docker buildx imagetools inspect <ref>` prints it", name, img)
 		}
 	}
 	for _, name := range sortedKeys(f.Profiles) {

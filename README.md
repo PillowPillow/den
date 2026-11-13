@@ -92,7 +92,7 @@ Every command takes `--den-home <dir>` (or `$DEN_HOME`) to use another directory
 There are two kinds of file, with the same name and the same strict schema:
 
 - the **global file**, `<denHome>/den.yaml`: your machine. It is the only one that may carry
-  `worktrees`, `repos`, `env`, `network` and `profiles`;
+  `worktrees`, `repos`, `env`, `network`, `profiles` and `agents`;
 - a **project file**, `den.yaml` in a project folder: bases and nests that travel with the project.
   den finds it by walking up from the current directory. A project file carrying a global-only key
   is refused.
@@ -118,6 +118,9 @@ network:
     - api.anthropic.com
 profiles:                      # a profile is a named list of kits, see "Profiles"
   perso: [~/.den/kits/perso]
+agents:                        # optional; `claude` is the only key
+  claude:
+    image: docker.io/sbx/claude@sha256:<64 hex>   # must pin a digest; default: the pin embedded in den
 
 # --- both kinds of file -----------------------------------------------------
 profile: perso                 # default profile of every nest of this file
@@ -161,7 +164,15 @@ should end in `:v2` (see [Coexistence](#coexistence-with-v1)).
 
 `from` names the template the build VM starts from. Left empty, the build starts from the
 `docker.io/sbx/claude` image that den pins by digest, so every `den build` starts from the same
-Claude Code. A build step that runs `claude update` is how a base moves to a newer one.
+Claude Code. `agents.claude.image` in the global file replaces that pin (a digest is required: a
+tag or an image without `@sha256:<64 hex>` is a load error).
+
+To move to a newer Claude image: run `docker buildx imagetools inspect docker.io/sbx/claude:latest`,
+copy the index digest into `agents.claude.image` as `docker.io/sbx/claude@sha256:<digest>`, then
+`den build <base>` for each base. An instance that already exists keeps its old image; `den up` on
+it warns that the config changed (the image is part of the config hash), and `den rm` then `den up`
+recreates it on the new one. A build step that runs `claude update` also moves a base to a newer
+Claude Code, without changing the image.
 
 A kit is a directory holding `spec.yaml` (a path starting with `./`, `../`, `/` or `~`, checked
 before any side effect) or a reference sbx resolves itself, passed through verbatim.

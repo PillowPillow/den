@@ -745,3 +745,14 @@ func TestPrepareWritesNothingButTheIndex(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigHashCoversTheAgentImage(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+	before := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash
+	writeFile(t, filepath.Join(f.home, "den.yaml"), "schema: 1\nagents:\n  claude:\n    image: r.test/c@sha256:"+strings.Repeat("ef", 32)+"\n")
+	after := mustPrepare(t, f, Options{Nest: "am"})
+	if after.Resolved.AgentImage == "" || after.ConfigHash == before {
+		t.Errorf("AgentImage %q, hash unchanged: %v", after.Resolved.AgentImage, after.ConfigHash == before)
+	}
+}

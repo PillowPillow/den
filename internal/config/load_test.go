@@ -253,3 +253,28 @@ func TestLoadAbsolutizesProfileKitsAndValidatesNames(t *testing.T) {
 	mustFail(t, "schema: 1\nprofiles:\n  a/b: []\n", true, "profiles.a/b")
 	mustFail(t, "schema: 1\nprofile: a/b\n", true, "profile:")
 }
+
+const digest64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func TestLoadAcceptsAnAgentImageWithDigest(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "den.yaml", "schema: 1\nagents:\n  claude:\n    image: docker.io/sbx/claude@sha256:"+digest64+"\n")
+	l, err := Load(p, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.File.Agents["claude"].Image; got != "docker.io/sbx/claude@sha256:"+digest64 {
+		t.Errorf("image = %q", got)
+	}
+}
+
+func TestLoadRefusesAnAgentImageWithoutDigest(t *testing.T) {
+	mustFail(t, "schema: 1\nagents:\n  claude:\n    image: docker.io/sbx/claude:latest\n", true, "agents.claude.image", "@sha256:")
+}
+
+func TestLoadRefusesAnUnknownAgent(t *testing.T) {
+	mustFail(t, "schema: 1\nagents:\n  codex:\n    image: x.io/codex@sha256:"+digest64+"\n", true, "agents.codex", "claude")
+}
+
+func TestLoadRefusesAgentsInAProjectFile(t *testing.T) {
+	mustFail(t, minimalNest+"agents:\n  claude:\n    image: x.io/c@sha256:"+digest64+"\n", false, "agents", "move it to")
+}

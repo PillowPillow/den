@@ -188,7 +188,7 @@ func recordedAsCreated(rec *registry.Record, repo string) bool {
 
 // writeGenerated rewrites GenDir from scratch, so a repo the selection dropped leaves no stale .git file behind.
 func writeGenerated(denHome string, p *Plan, trios map[string]gitTrio) error {
-	if _, err := WriteDenClaudeKit(denHome); err != nil {
+	if _, err := WriteDenClaudeKit(denHome, p.Resolved.AgentImage); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(p.GenDir); err != nil {
@@ -208,11 +208,13 @@ func writeGenerated(denHome string, p *Plan, trios map[string]gitTrio) error {
 }
 
 // WriteDenClaudeKit refreshes the shared den-claude kit and returns its directory.
-func WriteDenClaudeKit(denHome string) (string, error) {
+// An empty image keeps the pin embedded in den.
+func WriteDenClaudeKit(denHome, image string) (string, error) {
 	dir := denClaudeKitDir(denHome)
 	kit := filepath.Join(dir, "spec.yaml")
-	if current, err := os.ReadFile(kit); err != nil || !bytes.Equal(current, sbxenv.DenClaudeKit()) {
-		if err := WriteGenFile(kit, sbxenv.DenClaudeKit()); err != nil {
+	want := sbxenv.DenClaudeKitWithImage(image)
+	if current, err := os.ReadFile(kit); err != nil || !bytes.Equal(current, want) {
+		if err := WriteGenFile(kit, want); err != nil {
 			return "", err
 		}
 	}

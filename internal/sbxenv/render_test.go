@@ -118,3 +118,19 @@ func TestGitFile(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestDenClaudeKitHoldsExactlyOneImageLine(t *testing.T) {
+	if n := strings.Count(string(DenClaudeKit()), "\n  image: "); n != 1 {
+		t.Fatalf("embedded spec has %d `  image:` lines, want 1: WithAgentImage replaces that line", n)
+	}
+}
+
+func TestDenClaudeKitWithAgentImage(t *testing.T) {
+	if got := DenClaudeKitWithImage(""); !bytes.Equal(got, DenClaudeKit()) {
+		t.Error("an empty image must leave the embedded spec byte-identical")
+	}
+	got := string(DenClaudeKitWithImage("r.test/c@sha256:" + strings.Repeat("0", 64)))
+	if !strings.Contains(got, "\n  image: r.test/c@sha256:"+strings.Repeat("0", 64)+"\n") || strings.Contains(got, "docker.io/sbx/claude@") {
+		t.Errorf("image not replaced:\n%s", got)
+	}
+}

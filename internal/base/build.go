@@ -14,7 +14,7 @@ import (
 )
 
 // Build runs b's provisioning in a build VM named <name>-build and saves it as b.Image.
-func Build(ctx context.Context, d instance.Deps, name string, b config.Base) (err error) {
+func Build(ctx context.Context, d instance.Deps, name string, b config.Base, agentImage string) (err error) {
 	if err := instance.CheckSbx(ctx, d.Sbx); err != nil {
 		return err
 	}
@@ -51,7 +51,7 @@ func Build(ctx context.Context, d instance.Deps, name string, b config.Base) (er
 	if err := instance.WriteGenFile(filepath.Join(gen, "network", "spec.yaml"), sbxenv.NetworkKit(b.Build.Network.Allow)); err != nil {
 		return err
 	}
-	claudeKit, err := instance.WriteDenClaudeKit(d.DenHome)
+	claudeKit, err := instance.WriteDenClaudeKit(d.DenHome, agentImage)
 	if err != nil {
 		return err
 	}
