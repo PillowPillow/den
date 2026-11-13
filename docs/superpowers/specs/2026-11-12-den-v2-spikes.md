@@ -204,3 +204,28 @@ tirage de l'image ; le second passe.
   l'hôte [mesuré].
 - Non vérifié : Claude applique-t-il le style de sortie et les agents copiés ? `claude -p` sort en 137, puis un second
   essai ne rend rien. À vérifier en tâche 14 (`/status`).
+
+## S6b–S6d — essais du 13 nov. 2026, pendant la tâche 16 (sbx v0.53.0 `2c62838`)
+
+VM jetables `den-probe-s6b`, `den-probe-s6c`, `den-probe-s6d`, supprimées ensuite. Espace de travail `A/` ; `B/` en
+`additionalWorkspaces` en lecture-écriture, comme un dépôt monté ; les surcouches en `readOnly: true` au même chemin,
+listées après `B/`.
+
+### S6b — surcouche sous un dépôt monté : **tenue**
+
+`B/kits` (dossier) et `B/den.yaml` (fichier) en surcouche. Ajouter, tronquer, `touch` : « Read-only file system » ;
+`rm`, `mv` : « Device or resource busy » ; en root aussi ; après `sudo umount B/den.yaml`, l'écriture échoue toujours
+[mesuré]. Écrire ailleurs dans `B/` et créer `B/sub/den.yaml` : possible, atteint l'hôte (le reste accepté de S6).
+
+### S6c — surcouche à l'emplacement d'un lien symbolique : **`env create` échoue**
+
+`B/kitlink` et `B/den.yaml` sont des liens vers des cibles hors de `B/`. Surcouche avec pour source le lien, ou avec
+pour source la cible résolue, et pour cible le chemin du lien : « failed to run sandbox container », aucune VM.
+Témoin sans lien (`C/kits` sous `C/`) : créé. `sbx -D` ne nomme pas la cause [mesuré]. D'où le refus d'un fichier
+protégé dont le chemin traverse un lien sous la racine du montage.
+
+### S6d — renommer un parent d'une surcouche : **refusé**
+
+Surcouches `B/a/k` (dossier) et `B/p/q/f.sh` (fichier). `mv` du parent (`B/a`, `B/p/q`) et du grand-parent (`B/p`),
+avec `sudo` et après `sudo umount B/a/k` : « Read-only file system » ; planter `B/a/k/spec.yaml` : refusé. Fichiers
+de l'hôte intacts [mesuré]. L'hôte protège chaque ancêtre d'un chemin en surcouche dans le montage.
