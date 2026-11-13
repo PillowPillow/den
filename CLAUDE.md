@@ -61,8 +61,9 @@ could have written from ever running on the host. Likewise every file den or sbx
 instance (its `den.yaml` files, local kits, layers, the base's `build.includes`/`build.steps`) that
 lies under a read-write mount (lexical or symlink-resolved) is mounted read-only over it at the path
 the VM sees (`Plan.Overlays`, appended after every other mount), since sbx acts on layers at every
-create and rm and a kit carries the egress allowlist and credentials. Accepted residual: the VM can
-still create a *new* file beside them.
+create and rm and a kit carries the egress allowlist and credentials. One whose written path crosses
+a symlink below the mount root is refused instead: sbx cannot overlay a symlink's path (S6c).
+Accepted residual: the VM can still create a *new* file beside them.
 `den up` attaches Claude (`sbx run --name <i> --workdir <start>`); `den shell` is the way to `bash -l`.
 
 **What den created is recorded, not re-derived.** `internal/registry` writes

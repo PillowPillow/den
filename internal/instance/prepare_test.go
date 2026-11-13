@@ -634,13 +634,15 @@ func TestPrepareOverlaysASymlinkedKitByItsResolvedForm(t *testing.T) {
 	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(worktree.ResolvePath(realKit), realKit))
 }
 
-func TestPrepareOverlaysASymlinkedLayerInsideARepoAtItsLexicalPath(t *testing.T) {
-	for name, link := range map[string]func(t *testing.T, api, safe string) string{
-		"leaf symlink": func(t *testing.T, api, safe string) string {
-			return symlink(t, filepath.Join(safe, "x.yaml"), filepath.Join(api, "sbx", "extra.yaml"))
+func TestPrepareRefusesASymlinkedLayerInsideARepo(t *testing.T) {
+	for name, link := range map[string]func(t *testing.T, api, safe string) (layer, crossed string){
+		"leaf symlink": func(t *testing.T, api, safe string) (string, string) {
+			l := symlink(t, filepath.Join(safe, "x.yaml"), filepath.Join(api, "sbx", "extra.yaml"))
+			return l, l
 		},
-		"symlinked directory": func(t *testing.T, api, safe string) string {
-			return filepath.Join(symlink(t, safe, filepath.Join(api, "linkdir")), "x.yaml")
+		"symlinked directory": func(t *testing.T, api, safe string) (string, string) {
+			dir := symlink(t, safe, filepath.Join(api, "linkdir"))
+			return filepath.Join(dir, "x.yaml"), dir
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -648,20 +650,43 @@ func TestPrepareOverlaysASymlinkedLayerInsideARepoAtItsLexicalPath(t *testing.T)
 			api := f.repo(t, "api")
 			safe := filepath.Join(f.src, "safe")
 			writeFile(t, filepath.Join(safe, "x.yaml"), "secrets: {}\n")
-			layer := link(t, api, safe)
+			layer, crossed := link(t, api, safe)
 			f.global(t, map[string]string{"am": layerBody(f, layer)})
-			wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(layer, layer))
+			prepareErr(t, f, Options{Nest: "am"}, layer+" crosses the symlink "+crossed+" inside the mounted folder "+api,
+				"move it out of every mounted folder or reference its real path",
+				"fix `layers:` of nest \"am\" in "+filepath.Join(f.home, "den.yaml"))
 		})
 	}
 }
 
-func TestPrepareOverlaysBothEndsOfALinkBetweenMountedRepos(t *testing.T) {
+func TestPrepareRefusesAKitLinkedBetweenMountedRepos(t *testing.T) {
 	f := newFixture(t)
 	api, web := f.repo(t, "api"), f.repo(t, "web")
 	realKit := filepath.Dir(writeFile(t, filepath.Join(web, "kits", "k", "spec.yaml"), "kind: mixin\n"))
 	link := symlink(t, realKit, filepath.Join(api, "kitlink"))
 	f.global(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, false)) + fmt.Sprintf("\nkits: [%q]", link)})
-	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(link, link), ro(worktree.ResolvePath(realKit), realKit))
+	prepareErr(t, f, Options{Nest: "am"}, link+" crosses the symlink "+link+" inside the mounted folder "+api,
+		"fix `kits:` of nest \"am\" in "+filepath.Join(f.home, "den.yaml"))
+}
+
+func TestPrepareRefusesAProjectReachedThroughASymlinkInsideARepo(t *testing.T) {
+	f := newFixture(t)
+	api := f.repo(t, "api")
+	realProj := f.proj
+	f.proj = symlink(t, realProj, filepath.Join(api, "proj"))
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false))})
+	file := filepath.Join(f.proj, "den.yaml")
+	prepareErr(t, f, Options{Nest: "am"}, file+" crosses the symlink "+f.proj+" inside the mounted folder "+api,
+		"run den from "+worktree.ResolvePath(realProj))
+}
+
+func TestPrepareOverlaysAFileUnderASymlinkedRepoRoot(t *testing.T) {
+	f := newFixture(t)
+	realAPI := f.repo(t, "real-api")
+	api := symlink(t, realAPI, filepath.Join(f.src, "api"))
+	layer := writeFile(t, filepath.Join(api, "x.yaml"), "secrets: {}\n")
+	f.global(t, map[string]string{"am": layerBody(f, layer)})
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(layer, layer))
 }
 
 func TestConfigHashIgnoresOtherNests(t *testing.T) {

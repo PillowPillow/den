@@ -240,7 +240,8 @@ name is the VM's name and the handle of every other command.
 Every refusal den can decide from the config, the flags, its records and `sbx ls` comes before the
 first file, worktree or sbx call that changes state: unknown nest, missing repo, missing profile,
 missing image (`den build`), a missing local kit or layer, a missing `build.includes` or
-`build.steps` file under a mounted folder, `-i` without a terminal, an sbx older than v0.53.0.
+`build.steps` file under a mounted folder, a file den reads through a symlink inside a mounted
+folder, `-i` without a terminal, an sbx older than v0.53.0.
 
 On an instance that already exists den attaches and changes nothing. If the nest's config changed
 since the instance was created, it warns and tells you to `den rm` then `den up`; a selection flag
@@ -332,9 +333,11 @@ VM host-side actions. A layer may still live in a folder the VM can write (the w
 its worktree): den then mounts it read-only over that folder, at the path where the VM sees it. The
 same goes for every other file den or sbx reads for the instance: the `den.yaml` files the nest
 resolves from, its local kits, and its base's `build.includes` and `build.steps`. den checks both
-the written and the symlink-resolved paths. The host enforces the read-only mount even against root
-in the VM. What the VM can still do is create a *new* file beside them, a `den.yaml` in a sub
-folder for one, which den would read if you ran it from there. Independently, den passes
+the written and the symlink-resolved paths, and refuses a file whose written path goes through a
+symlink inside a mounted folder (the VM could replace that link): reference its real path instead.
+The host enforces the read-only mount even against root in the VM. What the VM can still do is
+create a *new* file beside them, a `den.yaml` in a sub folder for one, which den would read if you
+ran it from there. Independently, den passes
 `--force --skip-host-commands` to every `sbx env create` and `sbx env rm`, so no `lifecycle:`
 command or command-backed MCP server in a layer ever runs on the host.
 

@@ -358,36 +358,56 @@ func writableMounts(ctx context.Context, g worktree.Git, res *nest.Resolved, rep
 // holds in the VM even against root and umount. Every overlay names a host path
 // that exists: sbx fails opaquely on a missing one.
 func overlays(res *nest.Resolved, mounts []rwMount) ([]sbxenv.Mount, error) {
-	protected := []string{res.File.Path, res.BaseFile.Path}
+	type read struct{ path, fix string }
+	denYAML := func(path string, global bool) string {
+		if global {
+			return "set DEN_HOME to " + filepath.Dir(worktree.ResolvePath(path))
+		}
+		return "run den from " + filepath.Dir(worktree.ResolvePath(path))
+	}
+	protected := []read{
+		{res.File.Path, denYAML(res.File.Path, res.File.Global)},
+		{res.BaseFile.Path, denYAML(res.BaseFile.Path, res.BaseFile.Global)},
+	}
 	if _, err := os.Stat(res.GlobalFile); err == nil {
-		protected = append(protected, res.GlobalFile)
+		protected = append(protected, read{res.GlobalFile, denYAML(res.GlobalFile, true)})
 	}
 	for _, k := range res.Kits {
 		if filepath.IsAbs(k) {
-			protected = append(protected, k)
+			protected = append(protected, read{k, kitFix(res, k)})
 		}
 	}
-	protected = append(protected, res.Layers...)
+	for _, l := range res.Layers {
+		protected = append(protected, read{l, fmt.Sprintf("fix `layers:` of nest %q in %s", res.Name, res.File.Path)})
+	}
 	for _, b := range []struct {
 		field string
 		paths []string
 	}{{"includes", res.Base.Build.Includes}, {"steps", res.Base.Build.Steps}} {
 		for _, f := range b.paths {
-			if len(seenThrough(f, mounts)) == 0 {
+			fix := fmt.Sprintf("fix `build.%s` of base %q in %s", b.field, res.BaseName, res.BaseFile.Path)
+			seen, err := seenThrough(f, fix, mounts)
+			if err != nil {
+				return nil, err
+			}
+			if len(seen) == 0 {
 				continue
 			}
 			// Missing, it could not be overlaid, and the VM could write the script den build would run.
 			if _, err := os.Stat(f); err != nil {
-				return nil, fmt.Errorf("`build.%s` entry %s: %v — fix `build.%s` of base %q in %s",
-					b.field, f, &config.FileError{Err: err}, b.field, res.BaseName, res.BaseFile.Path)
+				return nil, fmt.Errorf("`build.%s` entry %s: %v — %s", b.field, f, &config.FileError{Err: err}, fix)
 			}
-			protected = append(protected, f)
+			protected = append(protected, read{f, fix})
 		}
 	}
 	var out []sbxenv.Mount
 	targets := map[string]bool{}
-	for _, f := range protected {
-		for _, o := range seenThrough(f, mounts) {
+	for _, r := range protected {
+		seen, err := seenThrough(r.path, r.fix, mounts)
+		if err != nil {
+			return nil, err
+		}
+		for _, o := range seen {
 			if !targets[o.Target] {
 				targets[o.Target] = true
 				out = append(out, o)
@@ -398,11 +418,11 @@ func overlays(res *nest.Resolved, mounts []rwMount) ([]sbxenv.Mount, error) {
 }
 
 // seenThrough returns a read-only overlay of f for each mount that holds its
-// written or its symlink-resolved form: the VM can replace a symlink inside a
-// mount, and write through a mount the file a symlink outside it resolves to.
-// The target is computed from the very forms that matched: mixing a lexical
-// form with a resolved one would yield a ../ path.
-func seenThrough(f string, mounts []rwMount) []sbxenv.Mount {
+// written or its symlink-resolved form; a symlink outside every mount is out of
+// the VM's reach, so the resolved form is overlaid where the VM sees it. The
+// target is computed from the very forms that matched: mixing a lexical form
+// with a resolved one would yield a ../ path.
+func seenThrough(f, fix string, mounts []rwMount) ([]sbxenv.Mount, error) {
 	forms := []string{filepath.Clean(f)}
 	if r := worktree.ResolvePath(f); r != forms[0] {
 		forms = append(forms, r)
@@ -411,14 +431,38 @@ func seenThrough(f string, mounts []rwMount) []sbxenv.Mount {
 	for _, c := range forms {
 		for _, m := range mounts {
 			for _, s := range []string{filepath.Clean(m.source), worktree.ResolvePath(m.source)} {
-				if rel, ok := relUnder(c, s); ok {
-					out = append(out, sbxenv.Mount{Path: c, Target: filepath.Join(m.target, rel), ReadOnly: true})
-					break
+				rel, ok := relUnder(c, s)
+				if !ok {
+					continue
 				}
+				// S6c: sbx env create fails on an overlay at a symlink's path, whatever its source.
+				if link := symlinkBelow(s, rel); link != "" {
+					return nil, fmt.Errorf("%s crosses the symlink %s inside the mounted folder %s, which the VM can "+
+						"replace — move it out of every mounted folder or reference its real path %s, and %s",
+						f, link, s, worktree.ResolvePath(f), fix)
+				}
+				out = append(out, sbxenv.Mount{Path: c, Target: filepath.Join(m.target, rel), ReadOnly: true})
+				break
 			}
 		}
 	}
-	return out
+	return out, nil
+}
+
+// symlinkBelow returns the first symlink among the components rel adds to
+// root, root itself excluded: a link at or above a mount root is outside the VM.
+func symlinkBelow(root, rel string) string {
+	if rel == "." {
+		return ""
+	}
+	p := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		p = filepath.Join(p, part)
+		if st, err := os.Lstat(p); err == nil && st.Mode()&os.ModeSymlink != 0 {
+			return p
+		}
+	}
+	return ""
 }
 
 // relUnder compares component-wise: /a/bc is not under /a/b.
