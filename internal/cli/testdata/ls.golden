@@ -1,0 +1,4 @@
+INSTANCE  NEST   BRANCH  STATUS   PROJECT
+am.feat   am     feat/1  stopped  /p/am
+glob      tools  main    running
+zeta      dg             running  /p/dg
