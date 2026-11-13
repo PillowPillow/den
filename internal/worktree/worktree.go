@@ -198,8 +198,9 @@ func Ensure(ctx context.Context, g Git, layout, root string, wt Name, repoPath s
 	if registered {
 		return "", fmt.Errorf(
 			"worktree %s is still registered in %s but its directory is gone — "+
-				"run `den rm <instance>` on the den instance that created it to clear the registration, then `den up` again",
-			worktreePath, repoPath)
+				"run `den rm <instance>` on the den instance that created it to clear the registration, then `den up` again; "+
+				"if no den instance created it, run `git worktree prune` in %s (unlock it first if `git worktree list` shows it locked)",
+			worktreePath, repoPath, repoPath)
 	}
 
 	// `git worktree add <path> <branch>` if the branch already exists,

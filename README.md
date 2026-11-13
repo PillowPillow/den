@@ -185,8 +185,8 @@ before any side effect) or a reference sbx resolves itself, passed through verba
   `<denHome>/run/<instance>/` for a global nest. It holds only the generated `sbxenv.yaml`. The run
   dir is den's and disposable: `den rm` deletes it without checking it for changes, so keep
   nothing there. With `start: .`, the workspace is the project folder instead, which is the only
-  way a VM reaches your project's `den.yaml` and scripts; den then refuses a local kit or a layer
-  under that folder, since the VM could rewrite it.
+  way a VM reaches your project's `den.yaml` and scripts; den then also refuses a local kit under
+  that folder, since the VM could rewrite it (a layer there is refused whatever `start` says).
 - **Ports.** Published through the sandbox at create time. den prints sbx's port table after each
   create; run `sbx ports <instance>` to see it again.
 - **Worktrees.** See [Worktrees](#worktrees).

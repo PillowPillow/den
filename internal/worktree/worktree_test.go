@@ -634,7 +634,7 @@ func TestEnsureReportsAnOrphanedRegistration(t *testing.T) {
 	if err == nil {
 		t.Fatal("an orphaned registration must produce an actionable error")
 	}
-	for _, expected := range []string{worktreePath, "`den rm <instance>`", "`den up`"} {
+	for _, expected := range []string{worktreePath, "`den rm <instance>`", "`den up`", "`git worktree prune`"} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Errorf("the message must contain %q; got: %v", expected, err)
 		}
