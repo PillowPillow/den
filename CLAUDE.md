@@ -4,10 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`den` is a Go CLI that drives `sbx` microVM sandboxes: one command spawns (or re-attaches to) a
-multi-project VM without retyping stack, kits, egress policy and worktrees by hand. `~/.den/` is the
-single source of truth; `DEN_HOME` / `--den-home` redirects it, which is what makes the whole suite
-hermetic.
+`den` is a Go CLI that drives `sbx` microVM sandboxes (V2, branch `v2`): it resolves a **nest**
+from a `den.yaml`, generates the `sbxenv.yaml` files `sbx env create` reads, runs Claude Code in the
+VM through a `den-claude` agent kit, and records what it created so `den rm` can undo exactly that.
+Seven commands: `up`, `exec`, `shell`, `ls`, `rm`, `build`, `version`. `~/.den/` is the single
+source of truth; `DEN_HOME` / `--den-home` redirects it, which is what makes the whole suite
+hermetic. The sbx floor is **v0.53.0** (`sbx.MinVersion`), checked once by `up`, `exec` and `build`
+before their first side effect.
 
 ## Commands
 
@@ -19,85 +22,78 @@ task lint        # go vet ./... then test -z "$(gofmt -l .)"   — gofmt is enfo
 task build       # go build -ldflags "-X .../cli.Version=$(git describe --tags --always --dirty)" -o den ./cmd/den
                  # the ONLY documented way to build: a plain `go build` answers `den dev`
 
-go test ./internal/spawn/ -run TestSpawnAddsNoWorkspaceOutsideMountMode -count=1   # single test
+go test ./internal/instance/ -run TestCreatePassesNoInputForceAndSkipHostCommands -count=1   # single test
 ```
 
 ## Architecture
 
-**Identity is the sandbox name** `<nest>[.<instance>]`. Component 2 is the INSTANCE — the `--as`
-label, or the flattened branch of `-w`, or empty — not necessarily a worktree branch
-(`sbx.Sandbox.Instance()`'s own comment: "It is NOT 'the worktree'"). `sbx create` has no `--label`
-(probed 2026-07-28), so that string is the only handle: `den ls`/`sh`/`rm`/`ports`, scoped policy,
-the mixin cache and the worktree trash all key off it. `sbx.SandboxName` / `sbx.SplitName` own the
-format; `-w` flattens a branch name into a legal component (`feature/123` → sandbox
-`api.feature-123`) while git keeps the branch as typed.
+**Identity is the instance name** `<nest>[.<flattened branch>]`, which is also the sandbox name.
+`sbx.SandboxName` / `sbx.SplitName` own the format; `-w` flattens a branch into a legal component
+(`feature/123` becomes `api.feature-123`) while git keeps the branch as typed. The record under
+`state/v2/` keeps the real branch, so nothing re-derives it from the name.
 
-**Config cascade**: global (`~/.den/config.yaml`) ← stack (`stacks/<n>/stack.yaml`) ← nest
-(`nests/<n>.yaml`) ← flags, resolved by `nest.Resolve` into a `*nest.Resolved` that spawn consumes.
-Decoding is **strict YAML everywhere** (`KnownFields(true)`): an unknown key is a load error, never a
-silence. Spec §12 gives the reason — a silent `egres:` typo empties the allowlist, and the
-fail-closed settle-loop then dies with no visible cause. Two readers escape the rule, and neither
-loads config: `manifest.LaxMounts` reads `repos[].mount` alone out of a creation record the strict
-decoder already refused (typically a newer den's, refused on `schema`), for its single caller
-`newMountGuard` in `den rm` — there, reading nothing means guessing that no sibling mounts a
-directory, and guessing wrong moves a live VM's workspace to the trash; `agent.ReadMixin` rereads
-the mixin den itself generated under `cache/`.
+**Config**: `den.yaml` has two kinds, one strict schema (`internal/config`): the global file in the
+den home (the only one allowed `worktrees`, `repos`, `env`, `network`) and a project file found by
+walking up from the cwd. Decoding is `KnownFields(true)` everywhere: an unknown key is a load error
+naming the file, never a silence (a silent `network:` typo would empty an allowlist). `nest.Find`
+locates the declaring file (project, then `state/v2/nests.yaml`, then global); `nest.Resolve`
+merges global, base and nest into a `*nest.Resolved`. A nest name declared by two live files is
+refused.
 
-**Every system access is injected through `cli.Deps`** (`internal/cli/root.go`), and `deps.Sbx` is
-the *single* `sbx.Runner` shared by `ls`, `shell`, `ports`, `up` and `run` — structurally there is no second
-runner to keep in sync. The other fields are injected because the real implementations touch the
-machine: `Scanner` binds host sockets, `Open` spawns a browser, `SSHAgent` forks `ssh-add`, `IsTTY`
-reads the terminal. Hard-wiring any of them breaks the suite's hermeticity.
+**Layout on disk** (all under the den home, none of it read by v1, see the coexistence note below):
+`den.yaml`, `profiles/<name>/`, `run/<instance>/` (global nests; project nests use
+`<project>/.den/run/<instance>/`), `gen/<instance>/` (egress kit, worktree `.git` files),
+`gen/.kits/den-claude/` (the shared agent kit), `gen/.build/<base>/` (build files), `build/<base>/`
+(the build VM's scratch workspace), `wt/` (default worktree root) and `state/v2/` (the registry).
+The leading dot on `.kits` and `.build` is deliberate: no sandbox name can start with one, so
+`den rm <name>` can never own them.
 
-**Spawn sequence** (`internal/spawn/spawn.go`, spec §6) is ordered on purpose: everything rejectable
-from config alone (flag contradictions, sandbox name, missing repos / `ssh.dir` / kits) happens
-*before the first side effect*, so a refusal never leaves an orphaned worktree; the fail-closed
-settle-loop runs *before* attach, including under `--detach`. On the attach branch nothing is
-reapplied to a live VM — den warns about mixin drift and missing git dirs instead of recreating.
+**Everything runs through `sbx env`.** `internal/sbxenv` renders `sbxenv.yaml` (pure, deterministic)
+plus the two kits den generates: `den-claude` (embedded, `kind: sandbox`, image pinned to the
+`docker.io/sbx/claude` index digest, no `credentials` block so the subscription OAuth token keeps
+working) and a per-instance network mixin carrying the egress allowlist. `internal/instance`
+(`Prepare` then `Create`/`Attach`/`Exec`/`Remove`) is the orchestration: `Prepare` makes every
+refusal decidable from config, flags, registry and `sbx ls` *before the first side effect*;
+`Create` writes worktrees, generated files and the record, then calls
+`sbx --no-input env create --force --skip-host-commands`. **No `env create` or `env rm` may lack
+`--skip-host-commands`**: it keeps a `lifecycle:` command or a command-backed MCP server that a VM
+could have written from ever running on the host. Likewise a `layers:` file under any mounted
+folder (lexical or symlink-resolved) is refused, since sbx acts on layers at every create and rm.
+`den up` attaches Claude (`sbx run --name <i> --workdir <start>`); `den shell` is the way to `bash -l`.
 
-**Ports publish on demand only.** `internal/spawn` must never import `internal/ports`, and
-`internal/cli` must import none of `net`, `hash/fnv`, `os/exec` — both invariants are locked by
-`internal/ports/hermeticity_test.go`, which fails with an import-graph message if you break them.
+**What den created is recorded, not re-derived.** `internal/registry` writes
+`<denHome>/state/v2/instances/<instance>.yaml` (schema-stamped, atomic, refused when its `instance`
+differs from its file name) *before* `sbx env create`. `up` distinguishes Live (record and VM),
+Recorded (record, no VM: recreate) and Foreign (VM, no record: refuse, never adopt). `den rm` acts
+only on a readable record, removes only worktrees the record marks den-created, deletes only run
+and gen dirs at the paths den places, and goes VM first, record last, so no orphan VM is left.
+`state/` is never purged.
 
-**What den mounted is recorded, not re-derived.** `internal/manifest` writes
-`<denHome>/state/sandboxes/<sandbox>.yaml` on the create branch, before `sbx create`; `den rm`,
-`den ls` and `den doctor` replay it. Every reader falls back on the old derivation when the file is
-absent or unreadable — `den rm` must never refuse and strand a live VM (doctrine T13/T16), and den
-never deletes a record it could not read (it may belong to a newer den). `state/` is not `cache/`:
-it is never purged.
+**Worktrees** (`internal/worktree`): `-w` makes one per repo, locked with `git worktree lock`, mounted
+at the main clone path with the common git dir at `/den-git/<repo>` and a read-only generated `.git`.
+There is no trash: `den rm` refuses (VM included) a worktree with modified, untracked or ignored
+files, or a detached HEAD holding commits no ref contains, unless `--force`. A failed `Create` rolls
+back the worktrees that call made, without force.
 
-**Team sources** live under `sources/<n>/` (`internal/source`) — plain git clones carrying the
-den-home partial layout (`stacks/`, `lib/`, `kits/`, `nests/`, no `config.yaml`: personal config
-never travels through a source). References are `<source>:<name>` on the personal side (`corp:backend`,
-CLI/`defaults.stack`/local nests only); **inside** a source, `stack:`/`parent:` are bare and resolve
-in that source alone — a prefixed reference there is a lint refusal, because the install name is
-chosen per machine and the source's own CI knows none. `internal/lint` is the single checkout
-validator (confinement, DAG, bare references, spec 2026-08-04 §5) shared by `den lint`, `den source
-add` (post-clone, refuses **and deletes** the clone) and `den source update` (pre-fast-forward,
-fail-closed) — one judge, so lint can never accept what a spawn would later refuse.
+**Every system access is injected through `cli.Deps`** (`internal/cli/root.go`): one `sbx.Runner`
+shared by all commands, plus `Git`, `Prompt`, `IsTTY`, `Getwd`, `Out`, `Err`. Hard-wiring any of them
+breaks the suite's hermeticity. Read helpers (`sbx.Ls`, `Templates`, `Version`) keep sbx's plain
+argv; state-changing and command-running calls get `--no-input`; interactive attaches get none.
+`den exec` requires `--` and sends its own messages to stderr, so stdout is the command's alone.
+
+**Coexistence with v1** (until cutover): V2 touches only the paths above and `:v2` image tags; v1 owns
+`config.yaml`, `stacks/`, `nests/`, `state/sandboxes/`, `worktrees/`, `trash/`, `sources/` and
+`:v1` tags. V2 never reads or writes those.
 
 ## Test conventions
 
-- No test calls `t.Parallel()`, opens a socket, or spawns a process. Keep it that way — hermeticity
-  is the reason the untestable one-liners (`ports.ListenScanner`, `ports.OpenURL`,
-  `spawn.LooksInteractive`) are isolated behind interfaces.
-- `spawn.LooksInteractive` is a HALF exception since #66: it delegates to `spawn.isTerminal`, whose
-  negative verdicts are tested against real files (`internal/spawn/isterminal_test.go` —
-  `/dev/null`, a regular file, a closed file). Only "a real terminal answers true" stays untested,
-  and it stays that way on purpose. The test file is tagged `darwin || linux`: the
-  `!darwin && !linux` build keeps the pre-#66 `os.ModeCharDevice` heuristic, under which
-  `/dev/null` answers true.
-- `isTerminal` takes an `*os.File`, never a bare descriptor, and that signature is load-bearing —
-  the fallback needs a `Stat`, and a `Stat` from a descriptor means `os.NewFile`, whose finalizer
-  closes den's own stdin and stdout at the next GC (reproduced; `isterminal_other.go` carries the
-  story). That file is the one no gate TESTS — `isterminal_test.go` is tagged `darwin || linux`
-  and `task typecheck` only compiles it under `GOOS=windows`. Read its body; nothing will fail
-  for you.
-- Packages running real git (`cli`, `spawn`, `worktree`) call `worktree.NeutralizeGitEnvironment()`
-  in `TestMain`. Without it the suite has actually committed into unrelated repos via an inherited
-  `GIT_DIR`/`GIT_WORK_TREE`.
-- `sbx.Fake` lives in `internal/sbx/fake.go` — a production file on purpose, since `policy`, `cli`
-  and `agent` all need it. Don't move it into `_test.go`.
+- No test calls `t.Parallel()`, opens a socket, or spawns a process other than git. Keep it that way.
+- Packages running real git (`worktree`, `instance`) call `worktree.NeutralizeGitEnvironment()` in
+  `TestMain`. Without it the suite has actually committed into unrelated repos via an inherited
+  `GIT_DIR`/`GIT_WORK_TREE`. `internal/worktree/hermeticity_test.go` fails when a package that runs
+  git lacks it.
+- `sbx.Fake` lives in `internal/sbx/fake.go` — a production file on purpose, since `cli`, `instance`
+  and `base` all need it. Don't move it into `_test.go`.
 - Goldens live in `internal/*/testdata/*.golden` and are compared by hand; **there is no `-update`
   flag**, edit them manually.
 
@@ -107,41 +103,26 @@ fail-closed) — one judge, so lint can never accept what a spawn would later re
   **French**.
 - The dominant style is a long "why" comment at the decision site — what was rejected and what
   regression the choice prevents. Terse code visibly does not match; match the density around you.
-- Errors name the file to fix and the remedy (`fix `repos:` in <path>`, "run `den doctor`"). den
-  refuses rather than normalizing in silence (spec §2).
+- Errors name the file to fix and the remedy (`fix `repos:` in <path>`, "run `den rm <instance>`"). den
+  refuses rather than normalizing in silence.
 
 ## Stale artifacts — don't trust these
 
-- `README.md` no longer lags on `den ports` nor on `den build` (both notes were themselves stale —
-  the rows and the sections are there). `den build` shipped with #8.
-- `README.md`'s `den build` section was rewritten on 2026-08-03 for the model den actually ships:
-  den owns `create` → N × `exec` → `stop` → `template save` → `rm`, the per-stack `build.sh` is
-  gone, and a stack declares `provision.includes` / `provision.steps` instead. README and spec §6
-  now agree; the earlier note here said they deliberately did not, and telling you to prefer the
-  spec over the README is no longer right. The spec remains the source of truth on **intent**, but
-  a divergence is now a bug in one of them, not a phase.
-- Everything under `docs/superpowers/plans/` and `.superpowers/sdd/` is historical and never
-  rewritten — each document describes the state on its own date. Several of those
-  reports still say `sbx` is not installed on this machine. It is (`/opt/homebrew/bin/sbx`,
-  **v0.48.0 `5caf923`** as of 2026-10-13). den now REQUIRES sbx ≥ v0.48.0 (`sbx.MinVersion`),
-  judged by `den doctor` alone: from v0.48.0 on, `sbx ls --json` and `sbx template ls --json`
-  return bare arrays and `sbx version` drops its colon, and den reads only that surface. The spec
-  `docs/superpowers/specs/2026-07-27-den-cli-design.md` remains the source of truth, and its
-  §14.0 to **§14.4** the only place that says what a real `sbx` has actually answered. §14.4 is
-  the current one. What it adds to §14.3: `sbx exec` prints its restart line
-  (`✓ sandbox <name> — started`) on **stderr** now; the idle auto-stop still happens on v0.48.0;
-  `sbx mount` exists (v0.45.0) but refuses a stopped sandbox, shows its mounts only in
-  `sbx inspect --json` `runtime_mounts`, and mounts `HOST:HOST:ro` read-write on a wrong target —
-  so den does not mount live. There is no v0.44.x: sbx went v0.43.0 → v0.45.0. There is no
-  v0.40.x nor v0.41.x either: sbx went v0.39.0 → v0.42.0. `den exec -T` / `den run -T` do not
-  hang (measured 2026-09-16, §14.3).
-- `.claude/worktrees/feat+spawn-interactive/` is a full shadow copy of the tree. Exclude it from
-  greps or every search returns doubled hits.
-- Il n'y a plus de `Makefile` : le runner est `Taskfile.yml` depuis le 2026-08-04. Les plans
-  datés sous `docs/superpowers/` disent encore `make lint && make test` — c'est correct **à leur
-  date** et ils ne sont pas réécrits. Traduire en `task check` en les lisant.
-- Les plans datés sous `docs/superpowers/` disent `den <nest>` pour spawner. C'était
-  vrai à leur date : la forme nue a été remplacée par `den spawn <nest>` le 2026-08-05 (spec
-  `2026-08-05-spawn-command-design.md`), puis `den spawn <nest>` a lui-même été remplacé par
-  `den up <nest>` / `den run <nest> <cmd>` le 2026-08-16, sans alias (spec
-  `2026-08-16-up-run-command-design.md`). Traduire en lisant, comme pour `make` → `task`.
+- The V2 decisions are in `docs/superpowers/plans/2026-11-12-den-v2-0.md` (P1 to P11) and the
+  scope in `docs/superpowers/specs/2026-11-12-den-v2-scope-design.md`; the sbx measurements are in
+  `2026-11-12-den-v2-spikes.md`. Everything else under `docs/superpowers/` (the v1 spec
+  `2026-07-27-den-cli-design.md` included) and everything under `.superpowers/sdd/` is historical
+  and never rewritten: each document describes the state on its own date. Read them as v1.
+- v1 vocabulary that no longer exists: `config.yaml`, stacks, `stack.yaml`, team sources
+  (`den source`, `den lint`), `den spawn`, `den ports`, `den doctor`, `den update`, `den init`, the
+  worktree trash, the SSH-agent key mount and the egress settle loop. A few v1 words survive in
+  `internal/sbx` error strings (`den doctor`); there is no such command in V2.
+- The v1 binary on a machine answers `den` too. `den version` names the code it runs; a plain
+  `go build` answers `den dev`, so build with `task build`.
+- sbx is installed (`/opt/homebrew/bin/sbx`). V2 requires **v0.53.0 or later** and reads only the
+  surface of `sbx env`, `sbx ls --json`, `sbx template`, `sbx run`, `sbx exec` and `sbx ports`. An
+  sbx that is not signed in (`sbx login`) fails every `sbx ls` den makes.
+- `.claude/worktrees/` may hold a full shadow copy of the tree. Exclude it from greps or every
+  search returns doubled hits.
+- There is no `Makefile`: the runner is `Taskfile.yml`. Dated plans under `docs/superpowers/` say
+  `make lint && make test`; read it as `task check`.
