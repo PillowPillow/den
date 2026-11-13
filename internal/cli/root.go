@@ -77,6 +77,7 @@ func NewRoot(deps Deps) *cobra.Command {
 		},
 	})
 	root.AddCommand(newUpCmd(deps, &denHome))
+	root.AddCommand(newExecCmd(deps, &denHome))
 	return root
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/registry"
+	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sbxenv"
 	"github.com/PillowPillow/den/internal/worktree"
 )
@@ -255,16 +256,16 @@ func Attach(ctx context.Context, d Deps, r registry.Record) error {
 	return d.Sbx.Attach(ctx, "run", "--name", r.Instance, "--workdir", r.Start)
 }
 
-// Up creates the instance unless its VM runs, then attaches unless detach.
-// A live instance is never recreated: den warns about drift instead.
-func Up(ctx context.Context, d Deps, o Options, detach bool) error {
+// ensure prepares the instance and creates it unless its VM runs. A live
+// instance is never recreated: den warns about drift instead.
+func ensure(ctx context.Context, d Deps, o Options) (*Plan, registry.Record, error) {
 	p, err := Prepare(ctx, d, o)
 	if err != nil {
-		return err
+		return nil, registry.Record{}, err
 	}
 	if p.State == Live && o.Branch != "" {
 		if err := checkBranch(p, o.Branch); err != nil {
-			return err
+			return nil, registry.Record{}, err
 		}
 	}
 	for _, w := range p.Resolved.Warnings {
@@ -279,18 +280,42 @@ func Up(ctx context.Context, d Deps, o Options, detach bool) error {
 			fmt.Fprintf(d.Err, "warning: %s is ignored: %s is running with the repos it was created with — "+
 				"run `den rm %s` then `den up` to change them\n", selectionFlag(s), p.Instance, p.Instance)
 		}
-	}
-	var rec registry.Record
-	if p.State == Live {
-		rec = *p.Record
+		rec := *p.Record
 		rec.Start = p.Start
-	} else if rec, err = Create(ctx, d, p); err != nil {
+		return p, rec, nil
+	}
+	rec, err := Create(ctx, d, p)
+	if err != nil {
+		return nil, registry.Record{}, err
+	}
+	return p, rec, nil
+}
+
+// Up creates the instance unless its VM runs, then attaches unless detach.
+func Up(ctx context.Context, d Deps, o Options, detach bool) error {
+	_, rec, err := ensure(ctx, d, o)
+	if err != nil || detach {
 		return err
 	}
-	if detach {
-		return nil
-	}
 	return Attach(ctx, d, rec)
+}
+
+// Exec is Up's scripted twin: it never asks, and pipes one command through sbx
+// in the start folder. The command's own status comes back as a *sbx.ChildExit.
+func Exec(ctx context.Context, d Deps, o Options, argv []string) error {
+	o.NoInput = true
+	_, rec, err := ensure(ctx, d, o)
+	if err != nil {
+		return err
+	}
+	args := append([]string{"--no-input", "exec", "-w", rec.Start, rec.Instance}, argv...)
+	if err := d.Sbx.Pipe(ctx, args...); err != nil {
+		if code, ok := sbx.ExitCodeOf(err); ok && code > 0 {
+			return &sbx.ChildExit{Code: code}
+		}
+		return err
+	}
+	return nil
 }
 
 // checkBranch refuses a branch other than the recorded one: two branches can

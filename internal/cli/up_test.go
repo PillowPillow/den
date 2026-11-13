@@ -16,12 +16,13 @@ import (
 type upFixture struct {
 	home, proj, src string
 	fake            *sbx.Fake
+	prompt          *prompt.Fake
 	out, err        bytes.Buffer
 }
 
 func newUpFixture(t *testing.T) *upFixture {
 	t.Helper()
-	f := &upFixture{home: t.TempDir(), proj: t.TempDir(), src: t.TempDir()}
+	f := &upFixture{home: t.TempDir(), proj: t.TempDir(), src: t.TempDir(), prompt: &prompt.Fake{}}
 	writeTestFile(t, filepath.Join(f.home, "profiles", "p", "settings.json"), `{"permissions":{"defaultMode":"bypassPermissions"}}`)
 	f.fake = &sbx.Fake{Responses: map[string]sbx.Response{
 		"version":            {Output: []byte("sbx version v0.53.0 abc\n")},
@@ -72,14 +73,16 @@ func (f *upFixture) live(names ...string) {
 	f.fake.Responses["ls --json"] = sbx.Response{Output: []byte("[" + strings.Join(entries, ",") + "]")}
 }
 
-func (f *upFixture) up(args ...string) error {
+func (f *upFixture) up(args ...string) error { return f.up2("up", args...) }
+
+func (f *upFixture) up2(cmd string, args ...string) error {
 	f.out.Reset()
 	f.err.Reset()
 	root := NewRoot(Deps{
-		Sbx: f.fake, Prompt: &prompt.Fake{}, IsTTY: func() bool { return false },
+		Sbx: f.fake, Prompt: f.prompt, IsTTY: func() bool { return false },
 		Getwd: func() (string, error) { return f.proj, nil }, Out: &f.out, Err: &f.err,
 	})
-	root.SetArgs(append([]string{"--den-home", f.home, "up"}, args...))
+	root.SetArgs(append([]string{"--den-home", f.home, cmd}, args...))
 	return root.Execute()
 }
 
