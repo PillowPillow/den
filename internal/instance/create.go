@@ -89,7 +89,7 @@ func writeRecord(ctx context.Context, d Deps, p *Plan, fresh *[]worktree.Target)
 	if err != nil {
 		return registry.Record{}, err
 	}
-	if err := writeGenFile(envFile, env); err != nil {
+	if err := WriteGenFile(envFile, env); err != nil {
 		return registry.Record{}, err
 	}
 	if !res.File.Global {
@@ -168,26 +168,35 @@ func recordedAsCreated(rec *registry.Record, repo string) bool {
 
 // writeGenerated rewrites GenDir from scratch, so a repo the selection dropped leaves no stale .git file behind.
 func writeGenerated(denHome string, p *Plan, trios map[string]gitTrio) error {
-	kit := filepath.Join(denClaudeKitDir(denHome), "spec.yaml")
-	if current, err := os.ReadFile(kit); err != nil || !bytes.Equal(current, sbxenv.DenClaudeKit()) {
-		if err := writeGenFile(kit, sbxenv.DenClaudeKit()); err != nil {
-			return err
-		}
+	if _, err := WriteDenClaudeKit(denHome); err != nil {
+		return err
 	}
 	if err := os.RemoveAll(p.GenDir); err != nil {
 		return fmt.Errorf("clearing %s: %w", p.GenDir, err)
 	}
-	if err := writeGenFile(filepath.Join(p.GenDir, "network", "spec.yaml"), sbxenv.NetworkKit(p.Resolved.Allow)); err != nil {
+	if err := WriteGenFile(filepath.Join(p.GenDir, "network", "spec.yaml"), sbxenv.NetworkKit(p.Resolved.Allow)); err != nil {
 		return err
 	}
 	for _, r := range p.Repos {
 		if t, ok := trios[r.Name]; ok {
-			if err := writeGenFile(gitFilePath(p, r), sbxenv.GitFile(t.gitdir)); err != nil {
+			if err := WriteGenFile(gitFilePath(p, r), sbxenv.GitFile(t.gitdir)); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// WriteDenClaudeKit refreshes the shared den-claude kit and returns its directory.
+func WriteDenClaudeKit(denHome string) (string, error) {
+	dir := denClaudeKitDir(denHome)
+	kit := filepath.Join(dir, "spec.yaml")
+	if current, err := os.ReadFile(kit); err != nil || !bytes.Equal(current, sbxenv.DenClaudeKit()) {
+		if err := WriteGenFile(kit, sbxenv.DenClaudeKit()); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
 }
 
 // denClaudeKitDir starts with a dot, which no instance name can: `den rm kits` must never own it.
@@ -238,10 +247,11 @@ func ignoreDenDir(project string) error {
 	if _, err := os.Stat(ignore); err == nil {
 		return nil
 	}
-	return writeGenFile(ignore, []byte("*\n"))
+	return WriteGenFile(ignore, []byte("*\n"))
 }
 
-func writeGenFile(name string, content []byte) error {
+// WriteGenFile writes a den-generated file, creating its directory.
+func WriteGenFile(name string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(name), err)
 	}
