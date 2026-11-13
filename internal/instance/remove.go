@@ -34,6 +34,9 @@ func Remove(ctx context.Context, d Deps, instance string, force bool) error {
 	if err != nil {
 		return err
 	}
+	if err := checkSiblings(d.DenHome, instance, targets); err != nil {
+		return fmt.Errorf("den rm %s removed nothing: %w", instance, err)
+	}
 	var refusals []error
 	for _, t := range targets {
 		if err := worktree.CheckRemovable(ctx, d.Git, t); err != nil {
@@ -105,6 +108,38 @@ func removalPlan(denHome, file string, rec registry.Record, force bool) ([]workt
 		})
 	}
 	return targets, nil
+}
+
+// checkSiblings refuses to remove a worktree another instance mounts: two nests
+// sharing a repo and a -w branch share its worktree, which only the first created.
+// An unreadable record could be such a sibling, so it refuses too.
+func checkSiblings(denHome, instance string, targets []worktree.Target) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	records, broken, err := registry.List(denHome)
+	if err != nil {
+		return err
+	}
+	if len(broken) > 0 {
+		return fmt.Errorf("%v — den cannot tell whether that record's instance mounts a worktree this one created; "+
+			"fix or remove %s, then retry", broken[0].Err, broken[0].Path)
+	}
+	for _, t := range targets {
+		mine := worktree.ResolvePath(t.WorktreePath)
+		for _, other := range records {
+			if other.Instance == instance {
+				continue
+			}
+			for _, r := range other.Repos {
+				if worktree.ResolvePath(r.Mount) == mine {
+					return fmt.Errorf("worktree %s is also mounted by instance %s — run `den rm %s` first",
+						t.WorktreePath, other.Instance, other.Instance)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // vmRemoval prefers `env rm`, which undoes what `env create` set up; it needs every

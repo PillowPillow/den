@@ -377,6 +377,59 @@ func TestRmNeverTouchesAWorktreeFoundInPlace(t *testing.T) {
 	}
 }
 
+func TestRmRefusesAWorktreeASiblingInstanceMounts(t *testing.T) {
+	f := newFixture(t)
+	api := f.committedRepo(t, "api")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false)), "bm": repos(repoEntry(api, false))})
+	first := mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am", Branch: "feat"}))
+	second := mustCreate(t, f, mustPrepare(t, f, Options{Nest: "bm", Branch: "feat"}))
+	if !first.Repos[0].Worktree || second.Repos[0].Worktree || first.Repos[0].Mount != second.Repos[0].Mount {
+		t.Fatalf("setup: want one worktree, den-created for am only: %+v / %+v", first.Repos[0], second.Repos[0])
+	}
+	f.respond("ls --json", `[{"name":"am.feat","status":"running"},{"name":"bm.feat","status":"running"}]`)
+	f.fake.Calls = nil
+
+	wantErr(t, f.remove(first.Instance, false), "bm.feat", first.Repos[0].Mount, "`den rm bm.feat`")
+	if f.removedVM() {
+		t.Errorf("removed the VM despite the refusal: %v", f.fake.Calls)
+	}
+	mustExist(t, first.Repos[0].Mount, first.RunDir, recordPath(t, f.home, first.Instance))
+
+	if err := f.remove(second.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.remove(first.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	mustBeGone(t, first.Repos[0].Mount)
+}
+
+func TestRmRefusesAWorktreeWhileARecordIsUnreadable(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	broken := writeFile(t, recordPath(t, f.home, "zz"), "schema: 99\ninstance: zz\n")
+
+	wantErr(t, f.remove(rec.Instance, false), broken, "fix or remove "+broken)
+	if f.removedVM() {
+		t.Errorf("removed the VM despite the refusal: %v", f.fake.Calls)
+	}
+	mustExist(t, rec.Repos[0].Mount, recordPath(t, f.home, rec.Instance), broken)
+}
+
+func TestRmWithoutAWorktreeIgnoresAnUnreadableRecord(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+	rec := mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am"}))
+	f.live(rec.Instance)
+	broken := writeFile(t, recordPath(t, f.home, "zz"), "schema: 99\ninstance: zz\n")
+
+	if err := f.remove(rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	mustBeGone(t, recordPath(t, f.home, rec.Instance))
+	mustExist(t, broken)
+}
+
 func TestRmRemovesAGlobalNestRunDir(t *testing.T) {
 	f := newFixture(t)
 	f.global(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
