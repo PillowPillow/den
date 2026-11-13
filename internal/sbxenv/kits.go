@@ -35,7 +35,7 @@ func DenClaudeKitWithImage(image string) []byte {
 	lines := strings.Split(string(spec), "\n")
 	for i, l := range lines {
 		if strings.HasPrefix(l, "  image: ") {
-			lines[i] = "  image: " + image
+			lines[i] = "  image: " + scalar(image)
 		}
 	}
 	return []byte(strings.Join(lines, "\n"))

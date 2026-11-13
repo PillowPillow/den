@@ -134,3 +134,19 @@ func TestDenClaudeKitWithAgentImage(t *testing.T) {
 		t.Errorf("image not replaced:\n%s", got)
 	}
 }
+
+func TestDenClaudeKitWithAgentImageQuotesYAMLSpecials(t *testing.T) {
+	for _, img := range []string{"*x@sha256:" + strings.Repeat("0", 64), "!x@sha256:" + strings.Repeat("1", 64)} {
+		var spec struct {
+			Sandbox struct {
+				Image string `yaml:"image"`
+			} `yaml:"sandbox"`
+		}
+		if err := yaml.Unmarshal(DenClaudeKitWithImage(img), &spec); err != nil {
+			t.Fatalf("%q: spec does not parse: %v", img, err)
+		}
+		if spec.Sandbox.Image != img {
+			t.Errorf("image = %q, want %q", spec.Sandbox.Image, img)
+		}
+	}
+}
