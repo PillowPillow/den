@@ -518,7 +518,7 @@ func configHash(res *nest.Resolved, repos []nest.Repo, start, branch string) (st
 		Branch     string            `yaml:"branch"`
 		Layout     string            `yaml:"layout"`
 		Root       string            `yaml:"root"`
-		AgentImage string            `yaml:"agent_image"`
+		AgentImage string            `yaml:"agent_image,omitempty"`
 	}{
 		Base: res.BaseName, Image: res.Base.Image, Kits: res.Kits, Allow: res.Allow, Env: res.Env,
 		Ports: res.Ports, Start: start, Layers: res.Layers, Profile: res.Profile,

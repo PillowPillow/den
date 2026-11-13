@@ -2,6 +2,8 @@ package instance
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
@@ -12,12 +14,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/registry"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sbxenv"
 	"github.com/PillowPillow/den/internal/worktree"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestMain(m *testing.M) {
@@ -754,5 +759,36 @@ func TestConfigHashCoversTheAgentImage(t *testing.T) {
 	after := mustPrepare(t, f, Options{Nest: "am"})
 	if after.Resolved.AgentImage == "" || after.ConfigHash == before {
 		t.Errorf("AgentImage %q, hash unchanged: %v", after.Resolved.AgentImage, after.ConfigHash == before)
+	}
+}
+
+func TestConfigHashWithoutAgentImageIsTheHashBeforeTheField(t *testing.T) {
+	res := &nest.Resolved{Name: "am", BaseName: "b", Kits: []string{"k"}}
+	legacy := struct {
+		Base    string            `yaml:"base"`
+		Image   string            `yaml:"image"`
+		Kits    []string          `yaml:"kits"`
+		Allow   []string          `yaml:"allow"`
+		Env     map[string]string `yaml:"env"`
+		Ports   []config.Port     `yaml:"ports"`
+		Start   string            `yaml:"start"`
+		Layers  []string          `yaml:"layers"`
+		Profile string            `yaml:"profile"`
+		Repos   []string          `yaml:"repos"`
+		Branch  string            `yaml:"branch"`
+		Layout  string            `yaml:"layout"`
+		Root    string            `yaml:"root"`
+	}{Base: "b", Kits: []string{"k"}}
+	raw, err := yaml.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(raw)
+	got, err := configHash(res, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := hex.EncodeToString(sum[:]); got != want {
+		t.Errorf("hash %s, want the pre-agent_image hash %s: every live instance would report drift", got, want)
 	}
 }
