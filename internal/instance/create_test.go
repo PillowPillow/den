@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/registry"
 	"github.com/PillowPillow/den/internal/sbxenv"
 	"github.com/PillowPillow/den/internal/worktree"
@@ -271,4 +272,75 @@ func TestCreateRefusesAnAdminDirOutsideTheCommonGitDir(t *testing.T) {
 	if len(f.fake.Calls) != 3 {
 		t.Errorf("sbx calls %v, want only Prepare's", f.fake.Calls)
 	}
+}
+
+func TestCreateRollsBackTheWorktreesItMadeWhenALaterRepoFails(t *testing.T) {
+	f := newFixture(t)
+	api, web := f.committedRepo(t, "api"), f.committedRepo(t, "web")
+	if _, err := f.git.Run(context.Background(), web, "worktree", "add", "-q", "-b", "feat", filepath.Join(f.src, "elsewhere")); err != nil {
+		t.Fatal(err)
+	}
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, false))})
+	p := mustPrepare(t, f, Options{Nest: "am", Branch: "feat"})
+
+	if _, err := Create(context.Background(), f.deps(), p); err == nil {
+		t.Fatal("want web's worktree to fail: feat is checked out elsewhere")
+	}
+	wt := worktree.Path("central", filepath.Join(f.home, "wt"), "feat", api)
+	if _, err := os.Stat(wt); err == nil {
+		t.Errorf("%s survived the rollback", wt)
+	}
+	if _, err := f.git.Run(context.Background(), api, "rev-parse", "--verify", "-q", "refs/heads/feat"); err != nil {
+		t.Errorf("the rollback deleted branch feat of api: %v", err)
+	}
+	if _, err := registry.Read(f.home, "am.feat"); err == nil {
+		t.Errorf("a record was written for a failed create")
+	}
+	if f.fake.HasCalled("--no-input", "env", "create") {
+		t.Errorf("env create ran after a failed worktree")
+	}
+}
+
+func TestCreateRollbackKeepsAWorktreeFoundInPlace(t *testing.T) {
+	f := newFixture(t)
+	api, web := f.committedRepo(t, "api"), f.committedRepo(t, "web")
+	wt := worktree.Path("central", filepath.Join(f.home, "wt"), "feat", api)
+	if _, err := f.git.Run(context.Background(), api, "worktree", "add", "-q", "-b", "feat", wt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.git.Run(context.Background(), web, "worktree", "add", "-q", "-b", "feat", filepath.Join(f.src, "elsewhere")); err != nil {
+		t.Fatal(err)
+	}
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, false))})
+	p := mustPrepare(t, f, Options{Nest: "am", Branch: "feat"})
+
+	if _, err := Create(context.Background(), f.deps(), p); err == nil {
+		t.Fatal("want web's worktree to fail")
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("the rollback removed %s, which den found in place: %v", wt, err)
+	}
+}
+
+func TestPrepareRefusesARetryThatDropsADenWorktree(t *testing.T) {
+	f := newFixture(t)
+	api, web := f.committedRepo(t, "api"), f.committedRepo(t, "web")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, true))})
+	mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am", Branch: "feat"}))
+
+	prepareErr(t, f, Options{Nest: "am", Branch: "feat", Selection: nest.Selection{Without: []string{"web"}}},
+		"web", worktree.Path("central", filepath.Join(f.home, "wt"), "feat", web), "`den rm am.feat`")
+}
+
+func TestPrepareRefusesARetryWhoseWorktreeMoved(t *testing.T) {
+	f := newFixture(t)
+	api := f.committedRepo(t, "api")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false))})
+	mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am", Branch: "feat"}))
+
+	moved := filepath.Join(f.src, "wt2")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false)) + "\nworktrees: {root: " + moved + "}"})
+	prepareErr(t, f, Options{Nest: "am", Branch: "feat"},
+		"api", worktree.Path("central", filepath.Join(f.home, "wt"), "feat", api),
+		worktree.Path("central", moved, "feat", api), "`den rm am.feat`")
 }

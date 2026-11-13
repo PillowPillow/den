@@ -94,6 +94,11 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	if state == Recorded {
+		if err := checkRecordedWorktrees(rec, res, repos, wt); err != nil {
+			return nil, err
+		}
+	}
 	if err := checkRepos(ctx, d.Git, res, repos, wt != nil); err != nil {
 		return nil, err
 	}
@@ -155,6 +160,32 @@ func attachPlan(p *Plan, o Options) (*Plan, error) {
 		return nil, err
 	}
 	return p, nil
+}
+
+// checkRecordedWorktrees refuses a retry that would drop a worktree den
+// created: Create rewrites the record from the new plan, and `den rm` would
+// never reclaim a worktree the record no longer names.
+func checkRecordedWorktrees(rec *registry.Record, res *nest.Resolved, repos []nest.Repo, wt *worktree.Name) error {
+	for _, r := range rec.Repos {
+		if !r.Worktree {
+			continue
+		}
+		var now string
+		for _, repo := range repos {
+			if repo.Path == r.Repo && wt != nil {
+				now = worktree.Path(res.Layout, res.Root, wt.Dir, repo.Path)
+			}
+		}
+		switch {
+		case now == "":
+			return fmt.Errorf("repo %s of %s has a worktree den created at %s, and this selection drops it — "+
+				"run `den rm %s` first, or keep that repo", r.Name, rec.Instance, r.Mount, rec.Instance)
+		case worktree.ResolvePath(now) != worktree.ResolvePath(r.Mount):
+			return fmt.Errorf("repo %s of %s has a worktree den created at %s, but the config now puts it at %s — "+
+				"run `den rm %s` first, or restore `worktrees:` in %s", r.Name, rec.Instance, r.Mount, now, rec.Instance, res.File.Path)
+		}
+	}
+	return nil
 }
 
 // CheckSbx refuses an sbx below MinVersion, and one whose version it cannot read.

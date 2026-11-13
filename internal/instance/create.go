@@ -31,8 +31,29 @@ type gitTrio struct {
 
 // Create makes the worktrees, writes the generated files and the record, then
 // runs `sbx env create`. The record goes before sbx, so a failed create still
-// leaves `den rm` something to replay.
+// leaves `den rm` something to replay; a failure before it rolls back the
+// worktrees this call made, which no record would ever name.
 func Create(ctx context.Context, d Deps, p *Plan) (registry.Record, error) {
+	var fresh []worktree.Target
+	rec, err := writeRecord(ctx, d, p, &fresh)
+	if err != nil {
+		return registry.Record{}, rollback(context.WithoutCancel(ctx), d.Git, fresh, err)
+	}
+	args := append([]string{"--no-input", "env", "create", "--force", "--skip-host-commands"}, rec.EnvFiles...)
+	if err := d.Sbx.Stream(ctx, d.Err, args...); err != nil {
+		return rec, fmt.Errorf("creating %s: %w — fix the cause, then run `den up %s` again, or `den rm %s`",
+			p.Instance, err, p.Resolved.Name, p.Instance)
+	}
+	// The VM exists: a failed listing must not cost the user the attach.
+	if err := d.Sbx.Stream(ctx, d.Out, "--no-input", "ports", p.Instance); err != nil {
+		fmt.Fprintf(d.Err, "warning: listing the ports of %s: %v — run `sbx ports %s`\n", p.Instance, err, p.Instance)
+	}
+	return rec, nil
+}
+
+// writeRecord does every step up to and including registry.Write, appending to
+// fresh each worktree it creates as soon as it exists.
+func writeRecord(ctx context.Context, d Deps, p *Plan, fresh *[]worktree.Target) (registry.Record, error) {
 	res := p.Resolved
 	rec := registry.Record{
 		Instance: p.Instance, Nest: res.Name, ConfigFile: res.File.Path,
@@ -49,7 +70,7 @@ func Create(ctx context.Context, d Deps, p *Plan) (registry.Record, error) {
 	for _, r := range p.Repos {
 		entry := registry.Repo{Name: r.Name, Repo: r.Path, Mount: r.Path, Target: r.Path}
 		if p.Worktree != nil {
-			trio, created, err := ensureWorktree(ctx, d.Git, p, r)
+			trio, created, err := ensureWorktree(ctx, d.Git, p, r, fresh)
 			if err != nil {
 				return registry.Record{}, err
 			}
@@ -80,28 +101,34 @@ func Create(ctx context.Context, d Deps, p *Plan) (registry.Record, error) {
 	if err := registry.Write(d.DenHome, rec); err != nil {
 		return registry.Record{}, err
 	}
-	args := append([]string{"--no-input", "env", "create", "--force", "--skip-host-commands"}, rec.EnvFiles...)
-	if err := d.Sbx.Stream(ctx, d.Err, args...); err != nil {
-		return rec, fmt.Errorf("creating %s: %w — fix the cause, then run `den up %s` again, or `den rm %s`",
-			p.Instance, err, res.Name, p.Instance)
-	}
-	// The VM exists: a failed listing must not cost the user the attach.
-	if err := d.Sbx.Stream(ctx, d.Out, "--no-input", "ports", p.Instance); err != nil {
-		fmt.Fprintf(d.Err, "warning: listing the ports of %s: %v — run `sbx ports %s`\n", p.Instance, err, p.Instance)
-	}
 	return rec, nil
+}
+
+// rollback never forces: a worktree the user already wrote into stays, and the error names it.
+func rollback(ctx context.Context, g worktree.Git, fresh []worktree.Target, cause error) error {
+	errs := []error{cause}
+	for i := len(fresh) - 1; i >= 0; i-- {
+		if err := worktree.Remove(ctx, g, fresh[i]); err != nil {
+			errs = append(errs, fmt.Errorf("rolling back worktree %s failed, so it stays on disk: %w", fresh[i].WorktreePath, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ensureWorktree reports den as the creator of a worktree that was absent, or
 // that the previous record of this instance already credited to den: `den rm`
 // reclaims only those.
-func ensureWorktree(ctx context.Context, g worktree.Git, p *Plan, r nest.Repo) (gitTrio, bool, error) {
+func ensureWorktree(ctx context.Context, g worktree.Git, p *Plan, r nest.Repo, fresh *[]worktree.Target) (gitTrio, bool, error) {
 	res := p.Resolved
 	_, statErr := os.Stat(worktree.Path(res.Layout, res.Root, p.Worktree.Dir, r.Path))
-	created := errors.Is(statErr, fs.ErrNotExist) || recordedAsCreated(p.Record, r.Path)
+	absent := errors.Is(statErr, fs.ErrNotExist)
+	created := absent || recordedAsCreated(p.Record, r.Path)
 	wt, err := worktree.Ensure(ctx, g, res.Layout, res.Root, *p.Worktree, r.Path)
 	if err != nil {
 		return gitTrio{}, false, err
+	}
+	if absent {
+		*fresh = append(*fresh, worktree.Target{Layout: res.Layout, Root: res.Root, Worktree: p.Worktree.Dir, RepoPath: r.Path, WorktreePath: wt})
 	}
 	if err := worktree.Lock(ctx, g, r.Path, wt); err != nil {
 		return gitTrio{}, false, err
