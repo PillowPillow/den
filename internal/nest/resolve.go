@@ -76,52 +76,52 @@ func Find(denHome, cwd, name string) (file, global *config.Loaded, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	seen := map[string]*config.Loaded{}
-	for _, f := range []*config.Loaded{project, global} {
-		if f != nil {
-			seen[f.Path] = f
-		}
-	}
-	var indexed []*config.Loaded
-	for _, n := range sortedNames(ix.Nests) {
-		path := ix.Nests[n]
-		if _, ok := seen[path]; ok || !declares(path, n) {
-			continue
-		}
-		l, err := config.Load(path, filepath.Clean(path) == global.Path)
+	if path, ok := ix.Nests[name]; ok && declares(path, name) && !isLoaded(path, project, global) {
+		l, err := config.Load(path, false)
 		if err != nil {
 			return nil, nil, err
 		}
-		seen[path] = l
-		indexed = append(indexed, l)
-	}
-	if path, ok := ix.Nests[name]; ok {
-		if l, ok := seen[path]; ok && l != global {
-			if _, ok := l.File.Nests[name]; ok {
-				return l, global, nil
-			}
+		if _, ok := l.File.Nests[name]; ok {
+			return l, global, nil
 		}
 	}
 	if _, ok := global.File.Nests[name]; ok {
 		return global, global, nil
 	}
+	known := []*config.Loaded{project, global}
+	var unreadable []string
+	for _, n := range sortedNames(ix.Nests) {
+		path := ix.Nests[n]
+		if !declares(path, n) || isLoaded(path, project, global) {
+			continue
+		}
+		l, err := config.Load(path, false)
+		if err != nil {
+			unreadable = append(unreadable, fmt.Sprintf("%s (%s)", path, shortReason(path, err)))
+			continue
+		}
+		known = append(known, l)
+	}
 	var names, files []string
-	for _, f := range append([]*config.Loaded{project, global}, indexed...) {
+	for _, f := range known {
 		if f == nil {
 			continue
 		}
-		for _, n := range sortedNames(f.File.Nests) {
-			names = append(names, n)
-		}
+		names = append(names, sortedNames(f.File.Nests)...)
 		if len(f.File.Nests) > 0 {
 			files = append(files, f.Path)
 		}
 	}
+	names, files = dedupe(names), dedupe(files)
+	suffix := ""
+	if len(unreadable) > 0 {
+		suffix = "; unreadable: " + strings.Join(unreadable, ", ")
+	}
 	sort.Strings(names)
 	if len(names) == 0 {
-		return nil, nil, fmt.Errorf("unknown nest %q; no nest is declared in %s", name, global.Path)
+		return nil, nil, fmt.Errorf("unknown nest %q; no nest is declared in %s%s", name, global.Path, suffix)
 	}
-	return nil, nil, fmt.Errorf("unknown nest %q; nests den can see: %s (from %s)", name, strings.Join(names, ", "), strings.Join(files, ", "))
+	return nil, nil, fmt.Errorf("unknown nest %q; nests den can see: %s (from %s)%s", name, strings.Join(names, ", "), strings.Join(files, ", "), suffix)
 }
 
 // FindBase looks name up in the project file reached from cwd, then in the global file.
@@ -251,4 +251,27 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 		}
 	}
 	return r, nil
+}
+
+func isLoaded(path string, loaded ...*config.Loaded) bool {
+	for _, l := range loaded {
+		if l != nil && l.Path == filepath.Clean(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func dedupe(in []string) []string {
+	sort.Strings(in)
+	return appendUnique(nil, in...)
+}
+
+// shortReason keeps the first line of a load error; the path is already named beside it.
+func shortReason(path string, err error) string {
+	msg := strings.TrimPrefix(err.Error(), path+": ")
+	if i := strings.Index(msg, "\n"); i >= 0 {
+		msg = msg[:i]
+	}
+	return msg
 }

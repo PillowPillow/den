@@ -336,3 +336,40 @@ func TestFindBasePrefersTheProjectFile(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+func indexWithCorruptFile(t *testing.T) (home, elsewhere, good, bad string) {
+	t.Helper()
+	home, elsewhere = t.TempDir(), t.TempDir()
+	write(t, home, "den.yaml", nestFile("glob"))
+	a, b := t.TempDir(), t.TempDir()
+	good = write(t, a, "den.yaml", nestFile("api"))
+	bad = write(t, b, "den.yaml", nestFile("zzz"))
+	for _, d := range []string{a, b} {
+		if _, _, err := Find(home, d, map[string]string{a: "api", b: "zzz"}[d]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, b, "den.yaml", nestFile("zzz")+"future_key: 1\n")
+	return home, elsewhere, good, bad
+}
+
+func TestFindIgnoresAnUnrelatedCorruptIndexedFile(t *testing.T) {
+	home, elsewhere, good, _ := indexWithCorruptFile(t)
+	f, _, err := Find(home, elsewhere, "api")
+	if err != nil || f.Path != good {
+		t.Fatalf("%v %v", f, err)
+	}
+}
+
+func TestFindNamesACorruptIndexedFileWhenUnknown(t *testing.T) {
+	home, elsewhere, good, bad := indexWithCorruptFile(t)
+	_, _, err := Find(home, elsewhere, "nope")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	for _, want := range []string{`unknown nest "nope"`, "api", "glob", good, "unreadable: " + bad} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
