@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/mod/semver"
@@ -211,10 +212,10 @@ func checkRepos(ctx context.Context, g worktree.Git, res *nest.Resolved, repos [
 	for _, r := range repos {
 		st, err := os.Stat(r.Path)
 		if err != nil {
-			return fmt.Errorf("nest %q: repo %s: %v — fix `repos:` in %s", res.Name, r.Path, &config.FileError{Err: err}, res.File.Path)
+			return fmt.Errorf("nest %q: repo %s: %v — %s", res.Name, r.Path, &config.FileError{Err: err}, repoFix(res, r))
 		}
 		if !st.IsDir() {
-			return fmt.Errorf("nest %q: repo %s is not a directory — fix `repos:` in %s", res.Name, r.Path, res.File.Path)
+			return fmt.Errorf("nest %q: repo %s is not a directory — %s", res.Name, r.Path, repoFix(res, r))
 		}
 		if !withWorktree {
 			continue
@@ -224,10 +225,17 @@ func checkRepos(ctx context.Context, g worktree.Git, res *nest.Resolved, repos [
 		out, err := g.Run(ctx, r.Path, "rev-parse", "--show-toplevel")
 		if err != nil || worktree.ResolvePath(strings.TrimSpace(string(out))) != worktree.ResolvePath(r.Path) {
 			return fmt.Errorf("nest %q: repo %s is not the root of a git repository, and -w makes a worktree of every repo — "+
-				"drop -w, or fix `repos:` in %s", res.Name, r.Path, res.File.Path)
+				"drop -w, or %s", res.Name, r.Path, repoFix(res, r))
 		}
 	}
 	return nil
+}
+
+func repoFix(res *nest.Resolved, r nest.Repo) string {
+	if r.Key != "" {
+		return fmt.Sprintf("fix `repos.%s` in %s", r.Key, res.GlobalFile)
+	}
+	return fmt.Sprintf("fix `repos:` of nest %q in %s", res.Name, res.File.Path)
 }
 
 func checkProfile(denHome string, res *nest.Resolved) error {
@@ -274,11 +282,22 @@ func checkKits(res *nest.Resolved) error {
 		}
 		spec := filepath.Join(k, "spec.yaml")
 		if st, err := os.Stat(spec); err != nil || !st.Mode().IsRegular() {
-			return fmt.Errorf("kit %s: no %s — a local kit is a directory holding spec.yaml; "+
-				"fix `kits:` of nest %q (in %s) or of its base %q", k, spec, res.Name, res.File.Path, res.BaseName)
+			return fmt.Errorf("kit %s: no %s — a local kit is a directory holding spec.yaml; %s", k, spec, kitFix(res, k))
 		}
 	}
 	return nil
+}
+
+// kitFix names every declaration of k: res.Kits merges the base's and the nest's.
+func kitFix(res *nest.Resolved, k string) string {
+	var at []string
+	if slices.Contains(res.Base.Kits, k) {
+		at = append(at, fmt.Sprintf("`kits:` of base %q in %s", res.BaseName, res.BaseFile.Path))
+	}
+	if n, ok := res.File.File.Nests[res.Name]; !ok || slices.Contains(n.Kits, k) || len(at) == 0 {
+		at = append(at, fmt.Sprintf("`kits:` of nest %q in %s", res.Name, res.File.Path))
+	}
+	return "fix " + strings.Join(at, " and ")
 }
 
 // checkLayers enforces P7: sbx acts on a layer at every create and rm, so a

@@ -397,6 +397,28 @@ func TestPrepareRefusesALocalKitWithoutASpec(t *testing.T) {
 	mustPrepare(t, f, Options{Nest: "am"})
 }
 
+func TestPrepareNamesTheGlobalKeyOfAMissingRepo(t *testing.T) {
+	f := newFixture(t)
+	missing := filepath.Join(f.src, "gone")
+	global := writeFile(t, filepath.Join(f.home, "den.yaml"), fmt.Sprintf("schema: 1\nrepos: {api: %q}\n", missing))
+	writeFile(t, filepath.Join(f.proj, "den.yaml"),
+		"schema: 1\nbases:\n  b: {image: \"b:v1\"}\nnests:\n  am:\n    base: b\n    profile: p\n    repos: [{key: api}]\n")
+	prepareErr(t, f, Options{Nest: "am"}, missing, "fix `repos.api` in "+global)
+}
+
+func TestPrepareNamesTheFileDeclaringTheBaseOfABrokenKit(t *testing.T) {
+	f := newFixture(t)
+	kit := filepath.Join(f.src, "kit")
+	if err := os.MkdirAll(kit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	global := writeFile(t, filepath.Join(f.home, "den.yaml"),
+		fmt.Sprintf("schema: 1\nbases:\n  g: {image: \"b:v1\", kits: [%q]}\n", kit))
+	writeFile(t, filepath.Join(f.proj, "den.yaml"), fmt.Sprintf(
+		"schema: 1\nnests:\n  am:\n    base: g\n    profile: p\n    repos: [{path: %q}]\n", f.repo(t, "api")))
+	prepareErr(t, f, Options{Nest: "am"}, filepath.Join(kit, "spec.yaml"), "fix `kits:` of base \"g\" in "+global)
+}
+
 func TestPrepareGlobalNestWorkspaceIsTheRunDir(t *testing.T) {
 	f := newFixture(t)
 	f.global(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})

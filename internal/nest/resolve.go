@@ -10,27 +10,32 @@ import (
 	"github.com/PillowPillow/den/internal/config"
 )
 
+// Repo.Key is the global `repos:` key the path came from, "" for a path written in the nest.
 type Repo struct {
 	Name, Path string
 	Optional   bool
+	Key        string
 }
 
+// Resolved keeps GlobalFile and BaseFile so a refusal names the file that holds the value at fault.
 type Resolved struct {
-	Name     string
-	File     *config.Loaded
-	BaseName string
-	Base     config.Base
-	Profile  string
-	Repos    []Repo
-	Kits     []string
-	Allow    []string
-	Env      map[string]string
-	Ports    []config.Port
-	Start    string
-	Layout   string
-	Root     string
-	Layers   []string
-	Warnings []string
+	Name       string
+	File       *config.Loaded
+	GlobalFile string
+	BaseName   string
+	Base       config.Base
+	BaseFile   *config.Loaded
+	Profile    string
+	Repos      []Repo
+	Kits       []string
+	Allow      []string
+	Env        map[string]string
+	Ports      []config.Port
+	Start      string
+	Layout     string
+	Root       string
+	Layers     []string
+	Warnings   []string
 }
 
 func sortedNames[V any](m map[string]V) []string {
@@ -203,11 +208,14 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 	if !ok {
 		return nil, fmt.Errorf("%s: nest %q is not declared there", file.Path, name)
 	}
-	r := &Resolved{Name: name, File: file, BaseName: n.Base, Profile: n.Profile, Start: n.Start, Ports: n.Ports, Layers: n.Layers}
+	r := &Resolved{Name: name, File: file, GlobalFile: global.Path, BaseName: n.Base, Profile: n.Profile,
+		Start: n.Start, Ports: n.Ports, Layers: n.Layers}
 
 	base, ok := file.File.Bases[n.Base]
+	r.BaseFile = file
 	if !ok {
 		base, ok = global.File.Bases[n.Base]
+		r.BaseFile = global
 	}
 	if !ok {
 		where := file.Path
@@ -235,7 +243,7 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 				return nil, fmt.Errorf("%s: repos.%s: %w", global.Path, ref.Key, err)
 			}
 		}
-		repo := Repo{Name: filepath.Base(path), Path: path, Optional: ref.Optional}
+		repo := Repo{Name: filepath.Base(path), Path: path, Optional: ref.Optional, Key: ref.Key}
 		if seen[repo.Name] {
 			return nil, fmt.Errorf("nest %q in %s: two repos are named %q; the /den-git/<name> mount and `start:` need unique names", name, file.Path, repo.Name)
 		}
