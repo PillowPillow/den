@@ -170,3 +170,37 @@ peut écrire tout le reste.
   piste (d)).
 - S2 : comportement d'une recréation `sbx env` d'une VM qui avait un kit ajouté à chaud [non vérifié].
 - S3 (d) : le code 137 isolé, non reproduit.
+
+## S6–S7 — essais du 13 nov. 2026 (sbx v0.53.0 `2c62838`)
+
+Lancés après la revue finale, sur décision de l'utilisateur (briefing D1, D2). VM jetables `den-probe-overlay` et
+`den-probe-profile`, supprimées ensuite. Ils fondent P12 et P13 de l'amendement du plan.
+
+### S6 — montage en lecture seule par-dessus un dossier monté : **tenu**
+
+Montage : le dossier projet en espace de travail en lecture-écriture ; `den.yaml` (fichier), `kits/` et `steps/`
+(dossiers) en `additionalWorkspaces` `readOnly: true` au même chemin. L'agent (uid 1000) a `sudo` sans mot de passe.
+
+- Écrire, tronquer, `chmod`, supprimer, renommer `den.yaml` : refusé (« Read-only file system », « Device or resource
+  busy »). Remplacer par un autre fichier ou un lien symbolique : refusé. Écrire, ajouter, supprimer, renommer dans
+  `kits/` et `steps/` : refusé.
+- En root : refusé. Après `sudo umount` de la surcouche et `sudo mount -o remount,rw` de l'espace de travail : toujours
+  refusé — l'hôte applique la lecture seule par chemin [mesuré].
+- Après un arrêt automatique puis un redémarrage de la VM : protection intacte. Remplacement atomique de `den.yaml`
+  côté hôte : la VM voit le nouveau contenu, toujours en lecture seule.
+- Reste possible : créer un **nouveau** fichier à côté (`sub/den.yaml`), qui atteint l'hôte. Accepté par l'utilisateur.
+
+### S7 — configuration Claude par kit : **`files/home/` oui, `agentInstructions` d'un mixin non**
+
+Kit `kind: sandbox` (copie de `den-claude` + `agentInstructions`) et mixin (`agentInstructions` +
+`files/home/.claude/{settings.json, output-styles/, agents/}`). Premier `env create` en échec sur un délai réseau au
+tirage de l'image ; le second passe.
+
+- `files/home/.claude/…` est copié tel quel dans `/home/agent/.claude/` à la création ; `settings.json` reste celui
+  du kit (aucun réglage injecté par notre kit d'agent) [mesuré].
+- `agentInstructions` : sbx écrit dans la VM un `CLAUDE.md` (17 Ko de consignes sbx + le texte du kit `sandbox`) dans
+  le dossier **parent** de l'espace de travail ; le texte d'un **mixin** va dans `kits-agent-context/<kit>.md`, que
+  `CLAUDE.md` cite seulement (« à lire si pertinent »). Ce n'est donc pas une consigne globale. Rien n'est écrit sur
+  l'hôte [mesuré].
+- Non vérifié : Claude applique-t-il le style de sortie et les agents copiés ? `claude -p` sort en 137, puis un second
+  essai ne rend rien. À vérifier en tâche 14 (`/status`).
