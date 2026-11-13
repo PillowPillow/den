@@ -285,9 +285,22 @@ func checkLayers(res *nest.Resolved, repos []nest.Repo, workspace string) error 
 	return nil
 }
 
-// within compares canonical paths component-wise: /a/bc is not under /a/b.
+// within checks the lexical and the resolved form of both paths: a symlink
+// inside a mount resolves outside it, yet the VM can replace that symlink.
 func within(child, parent string) bool {
-	rel, err := filepath.Rel(worktree.ResolvePath(parent), worktree.ResolvePath(child))
+	for _, c := range []string{filepath.Clean(child), worktree.ResolvePath(child)} {
+		for _, p := range []string{filepath.Clean(parent), worktree.ResolvePath(parent)} {
+			if under(c, p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// under compares component-wise: /a/bc is not under /a/b.
+func under(child, parent string) bool {
+	rel, err := filepath.Rel(parent, child)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 

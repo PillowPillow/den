@@ -437,6 +437,37 @@ func TestPrepareRefusesALayerUnderARepo(t *testing.T) {
 	prepareErr(t, f, Options{Nest: "am"}, layer, api, "layers")
 }
 
+func TestPrepareRefusesASymlinkedLayerInsideARepo(t *testing.T) {
+	for name, link := range map[string]func(t *testing.T, api, safe string) string{
+		"leaf symlink": func(t *testing.T, api, safe string) string {
+			l := filepath.Join(api, "sbx", "extra.yaml")
+			if err := os.MkdirAll(filepath.Dir(l), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(safe, "x.yaml"), l); err != nil {
+				t.Fatal(err)
+			}
+			return l
+		},
+		"symlinked directory": func(t *testing.T, api, safe string) string {
+			if err := os.Symlink(safe, filepath.Join(api, "linkdir")); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(api, "linkdir", "x.yaml")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			api := f.repo(t, "api")
+			safe := filepath.Join(f.src, "safe")
+			writeFile(t, filepath.Join(safe, "x.yaml"), "secrets: {}\n")
+			layer := link(t, api, safe)
+			f.global(t, map[string]string{"am": layerBody(f, layer)})
+			prepareErr(t, f, Options{Nest: "am"}, layer, api, "layers")
+		})
+	}
+}
+
 func TestPrepareRefusesALayerUnderTheWorktreeRootOrTheRunDir(t *testing.T) {
 	for name, dir := range map[string]func(*fixture) string{
 		"worktree root": func(f *fixture) string { return filepath.Join(f.home, "wt") },
