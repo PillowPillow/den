@@ -109,14 +109,15 @@ func removalPlan(denHome, file string, rec registry.Record, force bool) ([]workt
 
 // vmRemoval prefers `env rm`, which undoes what `env create` set up; it needs every
 // file the create read, and an empty list would name no environment at all.
+// A file whose hash differs from the create's may have been rewritten by a VM
+// that mounts it, so `env rm` would run what that VM wrote: `rm` reads no file.
 func vmRemoval(rec registry.Record) []string {
-	complete := len(rec.EnvFiles) > 0
-	for _, f := range rec.EnvFiles {
-		if _, err := os.Stat(f); err != nil {
-			complete = false
-		}
+	intact := len(rec.EnvFiles) > 0 && len(rec.EnvHashes) == len(rec.EnvFiles)
+	for i := 0; intact && i < len(rec.EnvFiles); i++ {
+		sum, err := fileHash(rec.EnvFiles[i])
+		intact = err == nil && sum == rec.EnvHashes[i]
 	}
-	if !complete {
+	if !intact {
 		return []string{"--no-input", "rm", "--force", rec.Instance}
 	}
 	return append([]string{"--no-input", "env", "rm", "--force", "--skip-host-commands"}, rec.EnvFiles...)

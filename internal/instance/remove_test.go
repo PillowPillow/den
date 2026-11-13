@@ -191,6 +191,47 @@ func TestRmUsesSbxRmWhenAnEnvFileIsGone(t *testing.T) {
 	}
 }
 
+func TestRmUsesSbxRmWhenAnEnvFileChanged(t *testing.T) {
+	for name, file := range map[string]func(rec registry.Record) string{
+		"generated sbxenv.yaml": func(rec registry.Record) string { return rec.EnvFiles[0] },
+		"layer":                 func(rec registry.Record) string { return rec.EnvFiles[1] },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			layer := writeFile(t, filepath.Join(f.src, "layer.yaml"), "schemaVersion: \"1\"\n")
+			rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false))+"\nlayers: ["+layer+"]")
+			writeFile(t, file(rec), "schemaVersion: \"1\"\nlifecycle: {preRemove: [\"touch /tmp/pwned\"]}\n")
+
+			if err := f.remove(rec.Instance, false); err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"--no-input", "rm", "--force", rec.Instance}
+			if !slices.ContainsFunc(f.fake.Calls, func(c []string) bool { return slices.Equal(c, want) }) {
+				t.Errorf("calls %v, want %v", f.fake.Calls, want)
+			}
+			if f.fake.HasCalled("--no-input", "env", "rm") {
+				t.Errorf("env rm ran on a file changed since create: %v", f.fake.Calls)
+			}
+		})
+	}
+}
+
+func TestRmUsesSbxRmWithoutRecordedHashes(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	rec.EnvHashes = nil
+	if err := registry.Write(f.home, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.remove(rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"--no-input", "rm", "--force", rec.Instance}; !slices.ContainsFunc(f.fake.Calls, func(c []string) bool { return slices.Equal(c, want) }) {
+		t.Errorf("calls %v, want %v", f.fake.Calls, want)
+	}
+}
+
 func TestRmSkipsTheVMWhenSbxDoesNotListIt(t *testing.T) {
 	f := newFixture(t)
 	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))

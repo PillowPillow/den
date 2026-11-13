@@ -2,6 +2,8 @@ package instance
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -197,6 +199,17 @@ func TestCreatePassesNoInputForceAndSkipHostCommands(t *testing.T) {
 	files := []string{filepath.Join(p.RunDir, "sbxenv.yaml"), layer}
 	if !reflect.DeepEqual(rec.EnvFiles, files) {
 		t.Errorf("recorded env files %v, want %v", rec.EnvFiles, files)
+	}
+	var hashes []string
+	for _, file := range files {
+		sum := sha256.Sum256([]byte(readFile(t, file)))
+		hashes = append(hashes, hex.EncodeToString(sum[:]))
+	}
+	if !reflect.DeepEqual(rec.EnvHashes, hashes) {
+		t.Errorf("recorded env hashes %v, want %v", rec.EnvHashes, hashes)
+	}
+	if onDisk, err := registry.Read(f.home, "am"); err != nil || !reflect.DeepEqual(onDisk.EnvHashes, hashes) {
+		t.Errorf("record on disk %+v (%v), want env hashes %v", onDisk.EnvHashes, err, hashes)
 	}
 	want := append([]string{"--no-input", "env", "create", "--force", "--skip-host-commands"}, files...)
 	if !slices.ContainsFunc(f.fake.Calls, func(c []string) bool { return slices.Equal(c, want) }) {

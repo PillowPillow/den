@@ -8,6 +8,9 @@ gen_dir: /h/.den/gen
 env_files:
     - /h/.den/gen/base.yaml
     - /p/.den/run/api.feat-12/sbxenv.yaml
+env_hashes:
+    - e3b0c442
+    - 9f86d081
 config_hash: abc123
 start: claude
 worktree:

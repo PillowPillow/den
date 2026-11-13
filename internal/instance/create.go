@@ -3,6 +3,8 @@ package instance
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -99,10 +101,27 @@ func writeRecord(ctx context.Context, d Deps, p *Plan, fresh *[]worktree.Target)
 	}
 
 	rec.EnvFiles = append([]string{envFile}, res.Layers...)
+	for _, f := range rec.EnvFiles {
+		sum, err := fileHash(f)
+		if err != nil {
+			return registry.Record{}, err
+		}
+		rec.EnvHashes = append(rec.EnvHashes, sum)
+	}
 	if err := registry.Write(d.DenHome, rec); err != nil {
 		return registry.Record{}, err
 	}
 	return rec, nil
+}
+
+// fileHash is the hex sha256 of a file's bytes.
+func fileHash(name string) (string, error) {
+	raw, err := os.ReadFile(name)
+	if err != nil {
+		return "", fmt.Errorf("hashing %s: %w", name, err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // rollback never forces: a worktree the user already wrote into stays, and the error names it.

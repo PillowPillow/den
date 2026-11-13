@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
@@ -20,16 +22,21 @@ func (f *upFixture) mountedAm(t *testing.T) registry.Record {
 	rec := registry.Record{
 		Instance: "am", Nest: "am", ConfigFile: filepath.Join(f.proj, "den.yaml"), Project: f.proj,
 		RunDir: run, GenDir: filepath.Join(f.home, "gen", "am"),
-		EnvFiles: []string{writeEnvFile(t, filepath.Join(run, "sbxenv.yaml"))}, Start: api,
+		EnvFiles: []string{writeEnvFile(t, filepath.Join(run, "sbxenv.yaml"))}, EnvHashes: []string{envFileHash}, Start: api,
 		Repos: []registry.Repo{{Name: "api", Repo: api, Mount: api, Target: api}},
 	}
 	f.record(t, rec)
 	return rec
 }
 
+const envFileBody = "schemaVersion: \"1\"\n"
+
+// envFileHash is the sha256 of envFileBody, as Create records it.
+var envFileHash = func() string { sum := sha256.Sum256([]byte(envFileBody)); return hex.EncodeToString(sum[:]) }()
+
 func writeEnvFile(t *testing.T, path string) string {
 	t.Helper()
-	writeTestFile(t, path, "schemaVersion: \"1\"\n")
+	writeTestFile(t, path, envFileBody)
 	return path
 }
 

@@ -19,6 +19,7 @@ func sample() Record {
 		RunDir:     "/p/.den/run/api.feat-12",
 		GenDir:     "/h/.den/gen",
 		EnvFiles:   []string{"/h/.den/gen/base.yaml", "/p/.den/run/api.feat-12/sbxenv.yaml"},
+		EnvHashes:  []string{"e3b0c442", "9f86d081"},
 		ConfigHash: "abc123",
 		Start:      "claude",
 		Worktree: &Worktree{

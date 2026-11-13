@@ -33,6 +33,7 @@ type Record struct {
 	RunDir     string    `yaml:"run_dir"`
 	GenDir     string    `yaml:"gen_dir"`
 	EnvFiles   []string  `yaml:"env_files"`
+	EnvHashes  []string  `yaml:"env_hashes"` // sha256 per EnvFiles entry: `den rm` hands sbx only files nothing rewrote
 	ConfigHash string    `yaml:"config_hash"`
 	Start      string    `yaml:"start"`
 	Worktree   *Worktree `yaml:"worktree,omitempty"`
