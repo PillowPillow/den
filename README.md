@@ -80,6 +80,7 @@ The repository ships a den home you can copy and edit: [`examples/den-home/den.y
 mkdir -p ~/.den
 cp examples/den-home/den.yaml ~/.den/den.yaml      # then edit the repo paths
 mkdir -p ~/.den/kits/perso                         # your profile kit, see "Profiles"
+printf 'schemaVersion: "2"\nkind: mixin\nname: perso\nversion: 1.0.0\n' > ~/.den/kits/perso/spec.yaml
 
 den build example     # once: provision the base image and save it as the sbx template `example:v2`
 den up demo           # create the instance `demo` if needed, then run Claude in it
@@ -188,7 +189,7 @@ before any side effect) or a reference sbx resolves itself, passed through verba
   once den has seen it.
 - **Repos.** Each repo is mounted in the VM at the same path it has on the host. Two repos with the
   same folder name are refused.
-- **Merge order.** Egress is global, then base, then nest. Kits are base, then nest. Env is global,
+- **Merge order.** Egress is global, then base, then nest. Kits are base, then nest, then the profile's. Env is global,
   then nest (the nest wins).
 - **Start.** `start` is `<repo>[/<sub folder>]` (the repo's folder name), or `.` for the project
   folder (project files only). Empty means the first repo. `--workdir <vm path>` overrides it for
@@ -218,11 +219,18 @@ profile: perso
 ```
 
 A profile kit is an ordinary local kit (`kind: mixin`) that carries your Claude configuration as
-files copied into the VM's home:
+files copied into the VM's home. Its `spec.yaml` is required, and the smallest one is:
+
+```yaml
+schemaVersion: "2"
+kind: mixin
+name: perso
+version: 1.0.0
+```
 
 ```
 ~/.den/kits/perso/
-  spec.yaml                      # kind: mixin
+  spec.yaml                      # the spec above
   files/home/.claude/CLAUDE.md
   files/home/.claude/settings.json
   files/home/.claude/output-styles/
@@ -359,7 +367,9 @@ its worktree): den then mounts it read-only over that folder, at the path where 
 same goes for every other file den or sbx reads for the instance: the `den.yaml` files the nest
 resolves from, its local kits, and its base's `build.includes` and `build.steps`. den checks both
 the written and the symlink-resolved paths, and refuses a file whose written path goes through a
-symlink inside a mounted folder (the VM could replace that link): reference its real path instead.
+symlink inside a mounted folder (the VM could replace that link): reference its real path instead. The read-only overlay holds only inside the instance that reads the
+file: any other VM that mounts the same folder read-write (another nest sharing the repo, or a v1 VM)
+can still write it.
 The host enforces the read-only mount even against root in the VM. What the VM can still do is
 create a *new* file beside them, a `den.yaml` in a sub folder for one, which den would read if you
 ran it from there. Independently, den passes

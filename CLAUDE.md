@@ -64,7 +64,9 @@ lies under a read-write mount (lexical or symlink-resolved) is mounted read-only
 the VM sees (`Plan.Overlays`, appended after every other mount), since sbx acts on layers at every
 create and rm and a kit carries the egress allowlist and credentials. One whose written path crosses
 a symlink below the mount root is refused instead: sbx cannot overlay a symlink's path (S6c).
-Accepted residual: the VM can still create a *new* file beside them.
+Accepted residual: the VM can still create a *new* file beside them, and the overlay holds only inside
+the instance that reads the file: any other VM mounting the same folder read-write (another nest sharing
+the repo, or a v1 VM) can still write it.
 `den up` attaches Claude (`sbx run --name <i> --workdir <start>`); `den shell` is the way to `bash -l`.
 
 **What den created is recorded, not re-derived.** `internal/registry` writes
