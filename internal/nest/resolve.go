@@ -1,0 +1,254 @@
+// Package nest finds a V2 nest, claims its name, and resolves it against the global file.
+package nest
+
+import (
+	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/PillowPillow/den/internal/config"
+)
+
+type Repo struct {
+	Name, Path string
+	Optional   bool
+}
+
+type Resolved struct {
+	Name     string
+	File     *config.Loaded
+	BaseName string
+	Base     config.Base
+	Profile  string
+	Repos    []Repo
+	Kits     []string
+	Allow    []string
+	Env      map[string]string
+	Ports    []config.Port
+	Start    string
+	Layout   string
+	Root     string
+	Layers   []string
+	Warnings []string
+}
+
+func sortedNames[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func loadProject(denHome, cwd string) (*config.Loaded, error) {
+	path, ok, err := config.FindProject(cwd, denHome)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return config.Load(path, false)
+}
+
+// Find returns the file declaring name and the global file.
+func Find(denHome, cwd, name string) (file, global *config.Loaded, err error) {
+	global, err = config.LoadGlobal(denHome)
+	if err != nil {
+		return nil, nil, err
+	}
+	project, err := loadProject(denHome, cwd)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, f := range []*config.Loaded{project, global} {
+		if f != nil {
+			if err := Claim(denHome, f); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	if project != nil {
+		if _, ok := project.File.Nests[name]; ok {
+			return project, global, nil
+		}
+	}
+	ix, err := readIndex(denHome)
+	if err != nil {
+		return nil, nil, err
+	}
+	seen := map[string]*config.Loaded{}
+	for _, f := range []*config.Loaded{project, global} {
+		if f != nil {
+			seen[f.Path] = f
+		}
+	}
+	var indexed []*config.Loaded
+	for _, n := range sortedNames(ix.Nests) {
+		path := ix.Nests[n]
+		if _, ok := seen[path]; ok || !declares(path, n) {
+			continue
+		}
+		l, err := config.Load(path, filepath.Clean(path) == global.Path)
+		if err != nil {
+			return nil, nil, err
+		}
+		seen[path] = l
+		indexed = append(indexed, l)
+	}
+	if path, ok := ix.Nests[name]; ok {
+		if l, ok := seen[path]; ok && l != global {
+			if _, ok := l.File.Nests[name]; ok {
+				return l, global, nil
+			}
+		}
+	}
+	if _, ok := global.File.Nests[name]; ok {
+		return global, global, nil
+	}
+	var names, files []string
+	for _, f := range append([]*config.Loaded{project, global}, indexed...) {
+		if f == nil {
+			continue
+		}
+		for _, n := range sortedNames(f.File.Nests) {
+			names = append(names, n)
+		}
+		if len(f.File.Nests) > 0 {
+			files = append(files, f.Path)
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return nil, nil, fmt.Errorf("unknown nest %q; no nest is declared in %s", name, global.Path)
+	}
+	return nil, nil, fmt.Errorf("unknown nest %q; nests den can see: %s (from %s)", name, strings.Join(names, ", "), strings.Join(files, ", "))
+}
+
+// FindBase looks name up in the project file reached from cwd, then in the global file.
+func FindBase(denHome, cwd, name string) (config.Base, *config.Loaded, error) {
+	project, err := loadProject(denHome, cwd)
+	if err != nil {
+		return config.Base{}, nil, err
+	}
+	global, err := config.LoadGlobal(denHome)
+	if err != nil {
+		return config.Base{}, nil, err
+	}
+	var tried []string
+	for _, f := range []*config.Loaded{project, global} {
+		if f == nil {
+			continue
+		}
+		if b, ok := f.File.Bases[name]; ok {
+			return b, f, nil
+		}
+		tried = append(tried, f.Path)
+	}
+	return config.Base{}, nil, fmt.Errorf("unknown base %q; looked in %s", name, strings.Join(tried, " and "))
+}
+
+func appendUnique(dst []string, in ...string) []string {
+	for _, s := range in {
+		dup := false
+		for _, d := range dst {
+			if d == s {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			dst = append(dst, s)
+		}
+	}
+	return dst
+}
+
+// absPath expands ~ and anchors a relative path at dir.
+func absPath(p, dir string) (string, error) {
+	e, err := config.ExpandPath(p)
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(e) {
+		return filepath.Clean(e), nil
+	}
+	return filepath.Join(dir, e), nil
+}
+
+// Resolve merges global, base and nest into what an instance prepares from.
+func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolved, error) {
+	n, ok := file.File.Nests[name]
+	if !ok {
+		return nil, fmt.Errorf("%s: nest %q is not declared there", file.Path, name)
+	}
+	r := &Resolved{Name: name, File: file, BaseName: n.Base, Profile: n.Profile, Start: n.Start, Ports: n.Ports, Layers: n.Layers}
+
+	base, ok := file.File.Bases[n.Base]
+	if !ok {
+		base, ok = global.File.Bases[n.Base]
+	}
+	if !ok {
+		where := file.Path
+		if file != global {
+			where += " nor " + global.Path
+		}
+		return nil, fmt.Errorf("nest %q: base %q is declared neither in %s; add it to one of them", name, n.Base, where)
+	}
+	r.Base = base
+
+	seen := map[string]bool{}
+	for _, ref := range n.Repos {
+		path := ref.Path
+		if ref.Key != "" {
+			raw, ok := global.File.Repos[ref.Key]
+			if !ok {
+				if ref.Optional {
+					r.Warnings = append(r.Warnings, fmt.Sprintf("optional repo key %q is not in repos: of %s; dropped", ref.Key, global.Path))
+					continue
+				}
+				return nil, fmt.Errorf("nest %q: repo key %q is not in repos: of %s; add it there", name, ref.Key, global.Path)
+			}
+			var err error
+			if path, err = absPath(raw, global.Dir); err != nil {
+				return nil, fmt.Errorf("%s: repos.%s: %w", global.Path, ref.Key, err)
+			}
+		}
+		repo := Repo{Name: filepath.Base(path), Path: path, Optional: ref.Optional}
+		if seen[repo.Name] {
+			return nil, fmt.Errorf("nest %q in %s: two repos are named %q; the /den-git/<name> mount and `start:` need unique names", name, file.Path, repo.Name)
+		}
+		seen[repo.Name] = true
+		r.Repos = append(r.Repos, repo)
+	}
+
+	r.Kits = appendUnique(appendUnique(nil, base.Kits...), n.Kits...)
+	r.Allow = appendUnique(appendUnique(appendUnique(nil, global.File.Network.Allow...), base.Network.Allow...), n.Network.Allow...)
+	r.Env = map[string]string{}
+	for k, v := range global.File.Env {
+		r.Env[k] = v
+	}
+	for k, v := range n.Env {
+		r.Env[k] = v
+	}
+
+	r.Layout, r.Root = "central", filepath.Join(denHome, "wt")
+	for _, src := range []struct {
+		w   *config.Worktrees
+		dir string
+	}{{global.File.Worktrees, global.Dir}, {n.Worktrees, file.Dir}} {
+		if src.w == nil {
+			continue
+		}
+		if src.w.Layout != "" {
+			r.Layout = src.w.Layout
+		}
+		if src.w.Root != "" {
+			p, err := absPath(src.w.Root, src.dir)
+			if err != nil {
+				return nil, fmt.Errorf("%s: worktrees.root: %w", src.dir, err)
+			}
+			r.Root = p
+		}
+	}
+	return r, nil
+}
