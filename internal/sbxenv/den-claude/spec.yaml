@@ -1,0 +1,24 @@
+schemaVersion: "2"
+kind: sandbox
+name: den-claude
+version: 1.0.0
+description: >-
+  den's Claude agent: no credentials block, so sbx keeps the Authorization header and the
+  subscription OAuth token works (spike S3, option d). The base image provides Claude Code.
+sandbox:
+  image: docker.io/sbx/claude@sha256:5762bbc534e2709cbe5e14cb17bd3e67bba2434d572aca48dd31d43c9ac189f9
+  entrypoint: ["claude", "--dangerously-skip-permissions", "--settings", "/den/profile/settings.json"]
+permissions:
+  network:
+    allow:
+      - api.anthropic.com
+setup:
+  startup:
+    - command:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+          printf '%s\n' 'claude() { command claude --dangerously-skip-permissions --settings /den/profile/settings.json "$@"; }' \
+            | sudo tee /etc/profile.d/den-claude.sh >/dev/null
+          sudo chmod 0644 /etc/profile.d/den-claude.sh

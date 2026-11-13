@@ -1,0 +1,9 @@
+schemaVersion: "2"
+kind: mixin
+name: den-network
+version: 1.0.0
+permissions:
+  network:
+    allow:
+      - api.github.com
+      - registry.npmjs.org

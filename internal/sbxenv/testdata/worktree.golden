@@ -1,0 +1,25 @@
+schemaVersion: "1"
+name: am.feat
+agent: den-claude
+kits:
+  - /h/.den/gen/.kits/den-claude
+  - /h/.den/kits/pillow-env
+  - /h/.den/gen/am.feat/network
+workspace: /h/.den/run/am.feat
+additionalWorkspaces:
+  - path: /h/.den/profiles/perso
+    target: /den/profile
+    readOnly: true
+  - path: /h/.den/wt/feat/am-backend
+    target: /h/dev/am-backend
+  - path: /h/dev/am-backend/.git
+    target: /den-git/am-backend
+  - path: /h/.den/gen/am.feat/git/am-backend.git
+    target: /h/dev/am-backend/.git
+    readOnly: true
+env:
+  PAGER: cat
+ports:
+  - sandbox: 5657
+sandboxOptions:
+  template: pillow:v2
