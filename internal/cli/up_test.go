@@ -156,6 +156,36 @@ func TestUpAttachesAtTheWorkdirOnALiveInstance(t *testing.T) {
 	}
 }
 
+func TestUpWorkdirAtCreationIsOneOff(t *testing.T) {
+	f := newUpFixture(t)
+	api := f.dir(t, "api")
+	f.project(t, [2]string{"am", "repos: [{path: " + api + "}]"})
+	if err := f.up("am", "--workdir", "/once"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.fake.HasAttached("run", "--name", "am", "--workdir", "/once") {
+		t.Errorf("attaches %v, want the --workdir", f.fake.Attaches)
+	}
+	if rec, err := registry.Read(f.home, "am"); err != nil || rec.Start != api {
+		t.Fatalf("recorded start %q (%v), want the mapped %q", rec.Start, err, api)
+	}
+
+	f.live("am")
+	f.fake.Attaches = nil
+	if err := f.up("am"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.fake.HasAttached("run", "--name", "am", "--workdir", api) {
+		t.Errorf("attaches %v, want the mapped start", f.fake.Attaches)
+	}
+	if err := f.up2("shell", "am"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.fake.HasAttached("exec", "-it", "-w", api, "am", "bash", "-l") {
+		t.Errorf("attaches %v, want the shell at the mapped start", f.fake.Attaches)
+	}
+}
+
 func TestUpDetachDoesNotAttach(t *testing.T) {
 	f := newUpFixture(t)
 	f.project(t, [2]string{"am", "repos: [{path: " + f.dir(t, "api") + "}]"})

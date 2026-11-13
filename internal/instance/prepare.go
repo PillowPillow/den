@@ -30,7 +30,8 @@ type Plan struct {
 	RunDir     string         // <project>/.den/run/<instance> or <denHome>/run/<instance>
 	GenDir     string         // <denHome>/gen/<instance>
 	Workspace  string         // project folder when start is ".", else RunDir (P10)
-	Start      string         // VM path
+	Start      string         // VM path mapped from `start:`, the one the record keeps
+	Workdir    string         // --workdir: this attach or exec only, never recorded
 	ConfigHash string
 	State      State
 	Record     *registry.Record // set when State == Live or Recorded
@@ -114,16 +115,13 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if err := checkLayers(res, repos, p.Workspace); err != nil {
 		return nil, err
 	}
-	start, startErr := mapStart(res, repos, o.Selection)
-	if startErr != nil && o.Workdir == "" {
-		return nil, startErr
+	// Refused even with --workdir: the record keeps the mapped start for every later attach.
+	start, err := mapStart(res, repos, o.Selection)
+	if err != nil {
+		return nil, err
 	}
-	p.Repos, p.Start = repos, start
-	if o.Workdir != "" {
-		p.Start = o.Workdir
-	}
-	// start, never p.Start: a hashed --workdir would read as drift on the next `den up` without it.
-	if p.ConfigHash, err = configHash(res, repos, hashedStart(res, start, startErr), o.Branch); err != nil {
+	p.Repos, p.Start, p.Workdir = repos, start, o.Workdir
+	if p.ConfigHash, err = configHash(res, repos, start, o.Branch); err != nil {
 		return nil, err
 	}
 	return p, nil
@@ -148,10 +146,7 @@ func attachPlan(p *Plan, o Options) (*Plan, error) {
 		branch = rec.Worktree.Branch
 		p.Worktree = &worktree.Name{Dir: rec.Worktree.Dir, Branch: rec.Worktree.Branch}
 	}
-	p.Start = rec.Start
-	if o.Workdir != "" {
-		p.Start = o.Workdir
-	}
+	p.Start, p.Workdir = rec.Start, o.Workdir
 	// A start the recorded repos cannot map is a config change: it must hash
 	// differently, never refuse an attach to a running VM.
 	start, startErr := mapStart(res, p.Repos, o.Selection)
@@ -341,7 +336,8 @@ func mapStart(res *nest.Resolved, repos []nest.Repo, sel nest.Selection) (string
 	switch res.Start {
 	case "":
 		if len(repos) == 0 {
-			return "", fmt.Errorf("nest %q: no repo is selected, so the start folder has no default — keep a repo, or pass --workdir", res.Name)
+			return "", fmt.Errorf("nest %q: no repo is selected, so the start folder has no default — keep a repo, "+
+				"or set `start:` in %s", res.Name, res.File.Path)
 		}
 		return repos[0].Path, nil
 	case ".":
@@ -356,8 +352,8 @@ func mapStart(res *nest.Resolved, repos []nest.Repo, sel nest.Selection) (string
 	var names []string
 	for _, r := range res.Repos {
 		if r.Name == name {
-			return "", fmt.Errorf("nest %q: start %q is in repo %q, which %s dropped — keep that repo, or pass --workdir",
-				res.Name, res.Start, name, selectionFlag(sel))
+			return "", fmt.Errorf("nest %q: start %q is in repo %q, which %s dropped — keep that repo, "+
+				"or fix `start:` in %s", res.Name, res.Start, name, selectionFlag(sel), res.File.Path)
 		}
 		names = append(names, r.Name)
 	}

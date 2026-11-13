@@ -284,9 +284,16 @@ func WriteGenFile(name string, content []byte) error {
 	return nil
 }
 
-// Attach runs Claude in the instance, in its start folder (P1).
-func Attach(ctx context.Context, d Deps, r registry.Record) error {
-	return d.Sbx.Attach(ctx, "run", "--name", r.Instance, "--workdir", r.Start)
+// Attach runs Claude in the instance, in workdir when set, else in its start folder (P1).
+func Attach(ctx context.Context, d Deps, r registry.Record, workdir string) error {
+	return d.Sbx.Attach(ctx, "run", "--name", r.Instance, "--workdir", startOf(r, workdir))
+}
+
+func startOf(r registry.Record, workdir string) string {
+	if workdir != "" {
+		return workdir
+	}
+	return r.Start
 }
 
 // ensure prepares the instance and creates it unless its VM runs. A live
@@ -313,9 +320,7 @@ func ensure(ctx context.Context, d Deps, o Options) (*Plan, registry.Record, err
 			fmt.Fprintf(d.Err, "warning: %s is ignored: %s is running with the repos it was created with — "+
 				"run `den rm %s` then `den up` to change them\n", selectionFlag(s), p.Instance, p.Instance)
 		}
-		rec := *p.Record
-		rec.Start = p.Start
-		return p, rec, nil
+		return p, *p.Record, nil
 	}
 	rec, err := Create(ctx, d, p)
 	if err != nil {
@@ -326,22 +331,22 @@ func ensure(ctx context.Context, d Deps, o Options) (*Plan, registry.Record, err
 
 // Up creates the instance unless its VM runs, then attaches unless detach.
 func Up(ctx context.Context, d Deps, o Options, detach bool) error {
-	_, rec, err := ensure(ctx, d, o)
+	p, rec, err := ensure(ctx, d, o)
 	if err != nil || detach {
 		return err
 	}
-	return Attach(ctx, d, rec)
+	return Attach(ctx, d, rec, p.Workdir)
 }
 
 // Exec is Up's scripted twin: it never asks, and pipes one command through sbx
 // in the start folder. The command's own status comes back as a *sbx.ChildExit.
 func Exec(ctx context.Context, d Deps, o Options, argv []string) error {
 	o.NoInput = true
-	_, rec, err := ensure(ctx, d, o)
+	p, rec, err := ensure(ctx, d, o)
 	if err != nil {
 		return err
 	}
-	args := append([]string{"--no-input", "exec", "-w", rec.Start, rec.Instance}, argv...)
+	args := append([]string{"--no-input", "exec", "-w", startOf(rec, p.Workdir), rec.Instance}, argv...)
 	if err := d.Sbx.Pipe(ctx, args...); err != nil {
 		if code, ok := sbx.ExitCodeOf(err); ok && code > 0 {
 			return &sbx.ChildExit{Code: code}

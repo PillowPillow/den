@@ -225,7 +225,7 @@ Creates the instance if it does not exist, then attaches Claude to it (`sbx run`
 | `-w, --worktree <branch>` | run on a git worktree of every repo, on that branch |
 | `--only a,b` / `--without a,b` | keep only / drop these optional repos |
 | `-i, --interactive` | pick the optional repos from a checklist |
-| `--workdir <vm path>` | start Claude in this folder instead of `start` |
+| `--workdir <vm path>` | start Claude in this folder instead of `start`, this time only (the instance keeps `start`) |
 | `--detach` | create the instance and stop before attaching |
 
 The instance is named `<nest>`, or `<nest>.<branch>` with `-w`; slashes in the branch are

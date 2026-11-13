@@ -291,8 +291,8 @@ func TestPrepareWorkdirOverridesTheStart(t *testing.T) {
 	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
 	base := mustPrepare(t, f, Options{Nest: "am"})
 	p := mustPrepare(t, f, Options{Nest: "am", Workdir: "/somewhere/else"})
-	if p.Start != "/somewhere/else" {
-		t.Errorf("start %q, want the --workdir value", p.Start)
+	if p.Start != base.Start || p.Workdir != "/somewhere/else" {
+		t.Errorf("start %q workdir %q, want the mapped %q and the --workdir value", p.Start, p.Workdir, base.Start)
 	}
 	if p.ConfigHash != base.ConfigHash {
 		t.Errorf("--workdir changed the config hash; a later `den up` without it would report drift")
@@ -317,6 +317,25 @@ func TestPrepareRefusesAStartInARepoTheSelectionDropped(t *testing.T) {
 	api, web := f.repo(t, "api"), f.repo(t, "web")
 	f.project(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, true)) + "\nstart: web/src"})
 	prepareErr(t, f, Options{Nest: "am", Selection: nest.Selection{Without: []string{"web"}}}, `"web"`, "--without")
+}
+
+func TestPrepareRefusesAnUnmappableStartEvenWithWorkdir(t *testing.T) {
+	f := newFixture(t)
+	api, web := f.repo(t, "api"), f.repo(t, "web")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, true)) + "\nstart: web/src"})
+	o := Options{Nest: "am", Workdir: "/elsewhere", Selection: nest.Selection{Without: []string{"web"}}}
+	_, err := Prepare(context.Background(), f.deps(), o)
+	if err == nil {
+		t.Fatal("want a refusal: --workdir is one-off and the record needs a start")
+	}
+	for _, w := range []string{`"web"`, "--without", "fix `start:` in " + filepath.Join(f.proj, "den.yaml")} {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("error %q lacks %q", err, w)
+		}
+	}
+	if strings.Contains(err.Error(), "--workdir") {
+		t.Errorf("error %q offers --workdir, which no longer sets the start", err)
+	}
 }
 
 func TestPrepareRefusesAStartNamingNoRepo(t *testing.T) {
