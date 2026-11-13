@@ -137,6 +137,13 @@ func decode(path string, content []byte) (Record, error) {
 			"%s: schema %d, but this den only understands schema %d — the file was written by "+
 				"another version of den and is left untouched", path, r.Schema, Schema)
 	}
+	// The file name is what Path derives from the instance: a record copied or
+	// renamed by hand would hand `den rm x` the run dir and VM of another instance.
+	if named := strings.TrimSuffix(filepath.Base(path), ".yaml"); r.Instance != named {
+		return Record{}, fmt.Errorf(
+			"%s: records instance %q, but its file name says %q — den leaves it untouched; "+
+				"rename the file to %s.yaml or remove it", path, r.Instance, named, r.Instance)
+	}
 	return r, nil
 }
 

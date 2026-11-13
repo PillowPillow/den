@@ -176,3 +176,27 @@ func TestDirNeverPointsAtV1State(t *testing.T) {
 		t.Errorf("Dir = %s collides with v1 state", d)
 	}
 }
+
+func TestReadRefusesARecordWhoseInstanceDiffersFromItsFile(t *testing.T) {
+	denHome := t.TempDir()
+	path := writeRaw(t, denHome, "api", "schema: 1\ninstance: web\n")
+	_, err := Read(denHome, "api")
+	if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), `"web"`) {
+		t.Fatalf("want a refusal naming %s and the recorded instance, got %v", path, err)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Error("a mismatch refusal must not look like absence")
+	}
+}
+
+func TestListReportsARecordWhoseInstanceDiffersFromItsFileAsBroken(t *testing.T) {
+	denHome := t.TempDir()
+	path := writeRaw(t, denHome, "api", "schema: 1\ninstance: web\n")
+	got, broken, err := List(denHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 || len(broken) != 1 || broken[0].Path != path {
+		t.Errorf("records %#v, broken %#v", got, broken)
+	}
+}
