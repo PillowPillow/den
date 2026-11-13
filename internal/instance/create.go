@@ -44,8 +44,8 @@ func Create(ctx context.Context, d Deps, p *Plan) (registry.Record, error) {
 	}
 	args := append([]string{"--no-input", "env", "create", "--force", "--skip-host-commands"}, rec.EnvFiles...)
 	if err := d.Sbx.Stream(ctx, d.Err, args...); err != nil {
-		return rec, fmt.Errorf("creating %s: %w — fix the cause, then run `den up %s` again, or `den rm %s`",
-			p.Instance, err, p.Resolved.Name, p.Instance)
+		return rec, fmt.Errorf("creating %s: %w — fix the cause, then run `%s` again, or `den rm %s`",
+			p.Instance, err, upCommand(p), p.Instance)
 	}
 	// The VM exists: a failed listing must not cost the user the attach.
 	if err := d.Sbx.Stream(ctx, d.Out, "--no-input", "ports", p.Instance); err != nil {
@@ -313,12 +313,12 @@ func ensure(ctx context.Context, d Deps, o Options) (*Plan, registry.Record, err
 	}
 	if p.State == Live {
 		if p.ConfigHash != p.Record.ConfigHash {
-			fmt.Fprintf(d.Err, "warning: %s changed since %s was created — run `den rm %s` then `den up` to apply it\n",
-				p.Resolved.File.Path, p.Instance, p.Instance)
+			fmt.Fprintf(d.Err, "warning: %s changed since %s was created — run `den rm %s` then `%s` to apply it\n",
+				p.Resolved.File.Path, p.Instance, p.Instance, upCommand(p))
 		}
 		if s := o.Selection; len(s.Only) > 0 || len(s.Without) > 0 || s.Interactive {
 			fmt.Fprintf(d.Err, "warning: %s is ignored: %s is running with the repos it was created with — "+
-				"run `den rm %s` then `den up` to change them\n", selectionFlag(s), p.Instance, p.Instance)
+				"run `den rm %s` then `%s` to change them\n", selectionFlag(s), p.Instance, p.Instance, upCommand(p))
 		}
 		return p, *p.Record, nil
 	}
@@ -354,6 +354,14 @@ func Exec(ctx context.Context, d Deps, o Options, argv []string) error {
 		return err
 	}
 	return nil
+}
+
+// upCommand is the `den up` that makes p again, -w included.
+func upCommand(p *Plan) string {
+	if p.Worktree != nil {
+		return fmt.Sprintf("den up %s -w %s", p.Resolved.Name, p.Worktree.Branch)
+	}
+	return "den up " + p.Resolved.Name
 }
 
 // checkBranch refuses a branch other than the recorded one: two branches can

@@ -189,6 +189,19 @@ func TestCreateRecordsBeforeSbxCreate(t *testing.T) {
 	}
 }
 
+func TestCreateFailureNamesTheFullUpCommand(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.committedRepo(t, "api"), false))})
+	p := mustPrepare(t, f, Options{Nest: "am", Branch: "feature/12"})
+	f.fake.Default.Err = errors.New("boom")
+	_, err := Create(context.Background(), f.deps(), p)
+	for _, w := range []string{"boom", "`den up am -w feature/12`", "`den rm am.feature-12`"} {
+		if err == nil || !strings.Contains(err.Error(), w) {
+			t.Errorf("error %v lacks %q", err, w)
+		}
+	}
+}
+
 func TestCreatePassesNoInputForceAndSkipHostCommands(t *testing.T) {
 	f := newFixture(t)
 	layer := writeFile(t, filepath.Join(f.src, "layer.yaml"), "schemaVersion: \"1\"\n")

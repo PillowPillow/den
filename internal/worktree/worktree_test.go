@@ -634,10 +634,13 @@ func TestEnsureReportsAnOrphanedRegistration(t *testing.T) {
 	if err == nil {
 		t.Fatal("an orphaned registration must produce an actionable error")
 	}
-	for _, expected := range []string{worktreePath, "den rm"} {
+	for _, expected := range []string{worktreePath, "`den rm <instance>`", "`den up`"} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Errorf("the message must contain %q; got: %v", expected, err)
 		}
+	}
+	if strings.Contains(err.Error(), "spawn") {
+		t.Errorf("the message names a command den V2 lacks; got: %v", err)
 	}
 	if strings.Contains(err.Error(), "fatal:") {
 		t.Errorf("the message must not relay git's English fatal error; got: %v", err)
@@ -1637,6 +1640,30 @@ func TestRemoveClearsADenLockedRegistrationWhoseDirectoryIsGone(t *testing.T) {
 	}
 	if list := git(t, repo, "worktree", "list"); strings.Contains(list, worktreePath) {
 		t.Errorf("the registration must be pruned, got:\n%s", list)
+	}
+}
+
+func TestRemoveDoesNotBlameALockItLiftedItself(t *testing.T) {
+	repo, worktreePath, target := prepareWorktree(t)
+	if err := Lock(context.Background(), NewGit(), repo, worktreePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(worktreePath); err != nil {
+		t.Fatal(err)
+	}
+	stubbornPrune := scriptedGit{real: NewGit(), prefix: []string{"worktree", "prune"}}
+
+	err := Remove(context.Background(), stubbornPrune, target)
+	if err == nil {
+		t.Fatal("a registration that survives the prune must be reported")
+	}
+	for _, want := range []string{worktreePath, repo, "git worktree prune", "git worktree list"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the message must contain %q; got: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "unlock") {
+		t.Errorf("den lifted its own lock, so unlock is no remedy; got: %v", err)
 	}
 }
 

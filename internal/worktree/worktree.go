@@ -198,7 +198,7 @@ func Ensure(ctx context.Context, g Git, layout, root string, wt Name, repoPath s
 	if registered {
 		return "", fmt.Errorf(
 			"worktree %s is still registered in %s but its directory is gone — "+
-				"run `den rm` on this nest to clear the registration, then spawn again",
+				"run `den rm <instance>` on the den instance that created it to clear the registration, then `den up` again",
 			worktreePath, repoPath)
 	}
 
@@ -480,12 +480,19 @@ func Remove(ctx context.Context, g Git, c Target) error {
 		// re-check den would return nil claiming to have cleaned up, and Ensure
 		// would later send the user back to `den rm` — the command that just told
 		// them it succeeded.
-		registered, _, _, err := worktreeEntry(ctx, g, repoPath, worktreePath)
+		registered, lockedNow, _, err := worktreeEntry(ctx, g, repoPath, worktreePath)
 		if err != nil {
 			return err
 		}
-		if registered {
+		if registered && lockedNow {
 			return lockedRegistrationError(worktreePath, repoPath)
+		}
+		// Unlocked, by den above or by nobody: a lock is not what keeps it.
+		if registered {
+			return fmt.Errorf(
+				"the registration of worktree %s survives `git worktree prune` in %s while its directory is gone — "+
+					"inspect `git worktree list --porcelain` in %s to see what keeps it, clear it, run `git worktree prune`, then retry",
+				worktreePath, repoPath, repoPath)
 		}
 		removeParentDir(c, worktreePath)
 		return nil

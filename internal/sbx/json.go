@@ -82,7 +82,7 @@ func decodeList(command string, output []byte, v any) error {
 	}
 	if trimmed := bytes.TrimSpace(raw); len(trimmed) > 0 && trimmed[0] == '{' {
 		return fmt.Errorf("sbx %s: output has the pre-v0.48.0 shape — den requires sbx %s or "+
-			"later; upgrade sbx, then check with `den doctor`", command, MinVersion)
+			"later; upgrade sbx, then check with `sbx version`", command, MinVersion)
 	}
 	if err := json.Unmarshal(raw, v); err != nil {
 		return fmt.Errorf("sbx %s: unreadable JSON output (%w): %s", command, err, string(output))

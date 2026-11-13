@@ -145,10 +145,13 @@ func TestValidateCreatableSandboxNameRefusesANameShorterThanSbxAccepts(t *testin
 	if err == nil {
 		t.Fatal("expected a refusal on a one-character sandbox name")
 	}
-	for _, want := range []string{`"a"`, "--as", "-w"} {
+	for _, want := range []string{`"a"`, "nest name", "rename the nest", "-w"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %v, want it to contain %q", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), "--as") {
+		t.Errorf("error = %v names --as, which den V2 lacks", err)
 	}
 }
 
@@ -192,10 +195,23 @@ func TestValidateCreatableSandboxNameRefusesANameLongerThanSbxAccepts(t *testing
 	if err == nil {
 		t.Fatal("expected a refusal on a 64-byte sandbox name")
 	}
-	for _, want := range []string{"64", "63", "--as"} {
+	for _, want := range []string{"64", "63", `nest name "api" is 3`, "branch name flattens to 60", "shorten the nest name or the branch name"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %v, want it to contain %q", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), "--as") {
+		t.Errorf("error = %v names --as, which den V2 lacks", err)
+	}
+}
+
+func TestValidateCreatableSandboxNameRefusesALongNameWithoutABranch(t *testing.T) {
+	err := ValidateCreatableSandboxName(strings.Repeat("a", MaxNameLength+1))
+	if err == nil {
+		t.Fatal("expected a refusal on a 64-byte sandbox name")
+	}
+	if !strings.Contains(err.Error(), "shorten the name") || strings.Contains(err.Error(), "branch") {
+		t.Errorf("error = %v, want only the name to shorten: there is no branch", err)
 	}
 }
 
@@ -208,8 +224,13 @@ func TestValidateCreatableSandboxNameRefusesATrailingHyphen(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a refusal on a sandbox name ending in \"-\"")
 	}
-	if !strings.Contains(err.Error(), "alphanumeric") {
-		t.Errorf("error = %v, want it to name the trailing-character rule", err)
+	for _, want := range []string{"alphanumeric", "branch name", "letter or digit"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "--as") {
+		t.Errorf("error = %v names --as, which den V2 lacks", err)
 	}
 }
 

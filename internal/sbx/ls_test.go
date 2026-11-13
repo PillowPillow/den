@@ -168,7 +168,7 @@ func TestLsRefusesThePreV048Shape(t *testing.T) {
 	if err == nil {
 		t.Fatal("the pre-v0.48.0 object shape must be refused")
 	}
-	if !containsAll(err.Error(), "sbx ls", "pre-v0.48.0 shape", MinVersion, "upgrade sbx", "den doctor") {
+	if !containsAll(err.Error(), "sbx ls", "pre-v0.48.0 shape", MinVersion, "upgrade sbx", "`sbx version`") {
 		t.Errorf("message = %q, want the shape, the floor and the remedy", err)
 	}
 }
@@ -262,7 +262,7 @@ func TestLsMissingBinaryProducesAnActionableMessage(t *testing.T) {
 		t.Fatal("a missing binary must produce an error")
 	}
 	message := err.Error()
-	if !containsAll(message, "sbx", "not found in the PATH", "den doctor") {
+	if !containsAll(message, "sbx", "not found in the PATH", "`sbx version`") {
 		t.Errorf("unhelpful message: %s", message)
 	}
 	if strings.Contains(message, "executable file not found") {

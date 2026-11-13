@@ -123,14 +123,13 @@ type ExecError struct {
 // handling, the first line a new user sees is os/exec's:
 // `exec: "sbx": executable file not found in $PATH` — with no remedy.
 //
-// `den doctor` is named because it diagnoses EXACTLY this case (doctor.go,
-// step 1, via exec.LookPath) and will say in the same breath whether the rest
-// of the install holds up. The argv is NOT rendered: when the binary is
-// missing, no argument would have changed anything, and citing it would drown
-// the one fact that matters.
+// `sbx version` is named because it is the check den itself runs first
+// (instance.CheckSbx), and `sbx login` because a fresh install needs it. The
+// argv is NOT rendered: when the binary is missing, no argument would have
+// changed anything, and citing it would drown the one fact that matters.
 func missingBinaryMessage(bin string) string {
 	return fmt.Sprintf(
-		"%q not found in the PATH — install it, then check your setup with `den doctor`", bin)
+		"%q not found in the PATH — install sbx and sign in with `sbx login`, then check it with `sbx version`", bin)
 }
 
 // Detail is the CAUSE alone — everything Error renders except the argv.

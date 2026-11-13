@@ -33,10 +33,8 @@ func TestExecRunMissingBinary(t *testing.T) {
 // `exec: "sbx": executable file not found in $PATH` (os/exec's message, with
 // no remedy).
 //
-// `den doctor` is named because it diagnoses EXACTLY this case
-// (internal/doctor/doctor.go, step 1: "sbx binary not found in the PATH") —
-// and because before this test, `den doctor` appeared in NO user-facing
-// message in the project, only in comments.
+// `sbx version` is named because it is the one check den itself runs first
+// (instance.CheckSbx), and `sbx login` because a fresh install needs it.
 //
 // The absence of the os/exec wording is asserted SEPARATELY from the presence
 // of the actionable one: a message that added the translation without
@@ -51,7 +49,7 @@ func TestExecRunMissingBinaryProducesAnActionableMessage(t *testing.T) {
 	}
 	message := err.Error()
 
-	for _, want := range []string{bin, "not found in the PATH", "den doctor"} {
+	for _, want := range []string{bin, "not found in the PATH", "`sbx login`", "`sbx version`"} {
 		if !strings.Contains(message, want) {
 			t.Errorf("the message must contain %q; got: %s", want, message)
 		}
@@ -144,7 +142,7 @@ func TestExecAttachMissingBinaryProducesAnActionableMessage(t *testing.T) {
 	}
 	message := err.Error()
 
-	for _, want := range []string{bin, "not found in the PATH", "den doctor"} {
+	for _, want := range []string{bin, "not found in the PATH", "`sbx login`", "`sbx version`"} {
 		if !strings.Contains(message, want) {
 			t.Errorf("the message must contain %q; got: %s", want, message)
 		}
@@ -272,7 +270,7 @@ func TestExecStreamMissingBinaryProducesAnActionableMessage(t *testing.T) {
 	if err == nil {
 		t.Fatal("a missing binary must produce an error")
 	}
-	for _, want := range []string{bin, "not found in the PATH", "den doctor"} {
+	for _, want := range []string{bin, "not found in the PATH", "`sbx version`"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the message must contain %q; got: %s", want, err.Error())
 		}
@@ -912,7 +910,7 @@ func TestPipeReportsAMissingBinary(t *testing.T) {
 	if !errors.Is(err, exec.ErrNotFound) {
 		t.Fatalf("a missing binary must stay recognizable; got %v", err)
 	}
-	if !strings.Contains(err.Error(), "den doctor") {
+	if !strings.Contains(err.Error(), "`sbx version`") {
 		t.Errorf("the message must name the remedy; got %q", err.Error())
 	}
 }

@@ -268,8 +268,13 @@ func checkImage(ctx context.Context, r sbx.Runner, res *nest.Resolved) error {
 		return err
 	}
 	if sbx.FindTemplate(list, res.Base.Image) == nil {
-		return fmt.Errorf("base %q: image %q is not among sbx's templates — run `den build %s`",
-			res.BaseName, res.Base.Image, res.BaseName)
+		// den build sees the project file reached from its cwd, and the global file from anywhere.
+		where := ""
+		if !res.BaseFile.Global {
+			where = " from " + res.BaseFile.Dir
+		}
+		return fmt.Errorf("base %q: image %q is not among sbx's templates — run `den build %s`%s",
+			res.BaseName, res.Base.Image, res.BaseName, where)
 	}
 	return nil
 }

@@ -247,7 +247,17 @@ func TestPrepareNamesDenBuildWhenTheImageIsMissing(t *testing.T) {
 	f := newFixture(t)
 	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
 	f.respond("template ls --json", `[{"repository":"docker.io/library/other","tag":"v1"}]`)
-	prepareErr(t, f, Options{Nest: "am"}, "b:v1", "`den build b`")
+	prepareErr(t, f, Options{Nest: "am"}, "b:v1", "run `den build b` from "+f.proj)
+}
+
+func TestPrepareNamesDenBuildAloneForAGlobalBase(t *testing.T) {
+	f := newFixture(t)
+	f.global(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+	f.respond("template ls --json", `[{"repository":"docker.io/library/other","tag":"v1"}]`)
+	_, err := Prepare(context.Background(), f.deps(), Options{Nest: "am"})
+	if err == nil || !strings.Contains(err.Error(), "run `den build b`") || strings.Contains(err.Error(), " from ") {
+		t.Errorf("error %v, want `den build b` with no folder: the global file is visible from anywhere", err)
+	}
 }
 
 func TestPrepareRefusesAnOldSbx(t *testing.T) {

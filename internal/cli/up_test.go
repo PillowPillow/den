@@ -218,9 +218,32 @@ func TestUpWarnsOnDrift(t *testing.T) {
 	if err := f.up("am"); err != nil {
 		t.Fatal(err)
 	}
-	want := "warning: " + filepath.Join(f.proj, "den.yaml") + " changed since am was created — run `den rm am` then `den up` to apply it\n"
+	want := "warning: " + filepath.Join(f.proj, "den.yaml") + " changed since am was created — run `den rm am` then `den up am` to apply it\n"
 	if !strings.Contains(f.err.String(), want) {
 		t.Errorf("stderr %q lacks %q", f.err.String(), want)
+	}
+}
+
+func TestUpDriftAndSelectionWarningsNameTheBranch(t *testing.T) {
+	f := newUpFixture(t)
+	f.project(t, [2]string{"am", "repos: [{path: /h/dev/api, optional: true}]"})
+	f.record(t, registry.Record{
+		Instance: "am.feature-x", Nest: "am", ConfigFile: filepath.Join(f.proj, "den.yaml"), Start: "/h/dev/api", ConfigHash: "stale",
+		RunDir: filepath.Join(f.proj, ".den", "run", "am.feature-x"), GenDir: filepath.Join(f.home, "gen", "am.feature-x"),
+		Worktree: &registry.Worktree{Branch: "feature/x", Dir: "feature-x", Layout: "central", Root: filepath.Join(f.home, "wt")},
+		Repos:    []registry.Repo{{Name: "api", Repo: "/h/dev/api", Mount: filepath.Join(f.home, "wt", "feature-x", "api"), Target: "/h/dev/api", Worktree: true}},
+	})
+	f.live("am.feature-x")
+	if err := f.up("am", "-w", "feature/x", "--without", "api"); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{
+		"changed since am.feature-x was created — run `den rm am.feature-x` then `den up am -w feature/x` to apply it",
+		"--without is ignored", "run `den rm am.feature-x` then `den up am -w feature/x` to change them",
+	} {
+		if !strings.Contains(f.err.String(), w) {
+			t.Errorf("stderr %q lacks %q", f.err.String(), w)
+		}
 	}
 }
 

@@ -141,31 +141,36 @@ func ValidateCreatableSandboxName(name string) error {
 	if err := ValidateSandboxName(name); err != nil {
 		return err
 	}
+	nest, branch := SplitName(name)
 	if len(name) < MinNameLength {
-		// The remedy names both exits, because which one applies is the
-		// user's call: rename the nest, or give this sandbox an instance.
+		// Only a bare one-character nest is this short: any branch adds two characters.
 		return fmt.Errorf(
 			"sandbox name %q: %d characters, and sbx refuses anything under %d "+
-				"(`name must match regexp ^[a-zA-Z0-9][a-zA-Z0-9.-]+$`) — rename the nest, "+
-				"or name the instance with `--as` or `-w`", name, len(name), MinNameLength)
+				"(`name must match regexp ^[a-zA-Z0-9][a-zA-Z0-9.-]+$`) — the nest name %q is too short; "+
+				"rename the nest, or run it on a branch with -w", name, len(name), MinNameLength, nest)
 	}
 	if len(name) > MaxNameLength {
-		// The remedy names --as, not "shorten the branch": the branch is the
-		// user's and stays as typed in git — only the sandbox's instance
-		// label needs to be short.
+		// Without a separator the whole name is one component: a nest, or
+		// `den build`'s <base>-build.
+		remedy := fmt.Sprintf("shorten the name %q (the nest name, or the base name for `den build`)", nest)
+		if branch != "" {
+			remedy = fmt.Sprintf("the nest name %q is %d characters and the branch name flattens to %d (%q); "+
+				"shorten the nest name or the branch name", nest, len(nest), len(branch), branch)
+		}
 		return fmt.Errorf(
 			"sandbox name %q: %d characters, and sbx refuses anything over %d "+
-				"(`sandbox name cannot exceed 63 characters`) — shorten the nest, or name the "+
-				"instance with `--as <short-label>` instead of the branch",
-			name, len(name), MaxNameLength)
+				"(`sandbox name cannot exceed 63 characters`) — %s", name, len(name), MaxNameLength, remedy)
 	}
 	if last := rune(name[len(name)-1]); !config.IsAlphanumeric(last) {
 		// Only "-" can reach here: "." is excluded from the component
 		// charset, and an empty worktree never appends the separator.
+		remedy := "rename the nest so it ends in a letter or digit"
+		if branch != "" {
+			remedy = fmt.Sprintf("the branch name flattens to %q; pick a branch name that ends in a letter or digit", branch)
+		}
 		return fmt.Errorf(
 			"sandbox name %q: ends with %q, and sbx refuses that (`sandbox name must end "+
-				"with an alphanumeric character`) — a branch ending in \"-\" flattens to this; "+
-				"name the instance with `--as`", name, string(last))
+				"with an alphanumeric character`) — %s", name, string(last), remedy)
 	}
 	if name == ReservedName {
 		return fmt.Errorf(
