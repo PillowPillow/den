@@ -13,7 +13,6 @@ import (
 
 const (
 	AgentName      = "den-claude"
-	ProfileTarget  = "/den/profile"
 	GitMountRoot   = "/den-git"
 	NetworkKitName = "den-network"
 )

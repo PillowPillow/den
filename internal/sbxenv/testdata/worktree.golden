@@ -7,9 +7,6 @@ kits:
   - /h/.den/gen/am.feat/network
 workspace: /h/.den/run/am.feat
 additionalWorkspaces:
-  - path: /h/.den/profiles/perso
-    target: /den/profile
-    readOnly: true
   - path: /h/.den/wt/feat/am-backend
     target: /h/dev/am-backend
   - path: /h/dev/am-backend/.git

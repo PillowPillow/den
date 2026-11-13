@@ -7,13 +7,7 @@ kits:
   - /denhome/gen/am/network
 workspace: /proj
 additionalWorkspaces:
-  - path: /denhome/profiles/p
-    target: /den/profile
-    readOnly: true
   - path: /src/api
-  - path: /denhome/profiles/p/CLAUDE.md
-    target: /home/agent/.claude/CLAUDE.md
-    readOnly: true
   - path: /proj/den.yaml
     target: /proj/den.yaml
     readOnly: true

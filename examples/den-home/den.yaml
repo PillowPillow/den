@@ -7,6 +7,9 @@ network:
   allow:
     - api.anthropic.com
 
+profiles:
+  perso: [~/.den/kits/perso]
+
 bases:
   example:
     image: example:v2

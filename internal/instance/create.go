@@ -23,9 +23,6 @@ import (
 // EnvFileName is the one file den writes into a run dir.
 const EnvFileName = "sbxenv.yaml"
 
-// claudeHome is where the den-claude agent reads Claude's user files in the VM.
-const claudeHome = "/home/agent/.claude"
-
 // gitTrio is what -w mounts for one repo (S1): the worktree at the main clone
 // path, the common git dir, and a read-only .git pointing at its admin dir.
 type gitTrio struct {
@@ -233,12 +230,10 @@ func gitFilePath(p *Plan, r nest.Repo) string {
 
 func envOf(denHome string, p *Plan, trios map[string]gitTrio) sbxenv.Env {
 	res := p.Resolved
-	profile := filepath.Join(denHome, "profiles", res.Profile)
 	e := sbxenv.Env{
 		Name:      p.Instance,
 		Kits:      append(append([]string{denClaudeKitDir(denHome)}, res.Kits...), filepath.Join(p.GenDir, "network")),
 		Workspace: p.Workspace,
-		Mounts:    []sbxenv.Mount{{Path: profile, Target: sbxenv.ProfileTarget, ReadOnly: true}},
 		Env:       res.Env,
 		Template:  res.Base.Image,
 	}
@@ -252,11 +247,6 @@ func envOf(denHome string, p *Plan, trios map[string]gitTrio) sbxenv.Env {
 			sbxenv.Mount{Path: t.worktree, Target: r.Path},
 			sbxenv.Mount{Path: t.common, Target: path.Join(sbxenv.GitMountRoot, r.Name)},
 			sbxenv.Mount{Path: gitFilePath(p, r), Target: filepath.Join(r.Path, ".git"), ReadOnly: true})
-	}
-	for _, name := range []string{"CLAUDE.md", "skills"} {
-		if _, err := os.Stat(filepath.Join(profile, name)); err == nil {
-			e.Mounts = append(e.Mounts, sbxenv.Mount{Path: filepath.Join(profile, name), Target: path.Join(claudeHome, name), ReadOnly: true})
-		}
 	}
 	// Last: a later entry wins in sbx, and an overlay sits under a read-write mount (P12, S6).
 	e.Mounts = append(e.Mounts, p.Overlays...)

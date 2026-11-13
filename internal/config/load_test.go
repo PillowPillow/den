@@ -154,7 +154,7 @@ func TestLoadAcceptsRepoKeyWithoutCheckingTheGlobalMap(t *testing.T) {
 
 func TestLoadRejectsIncompleteNestAndBase(t *testing.T) {
 	mustFail(t, "schema: 1\nnests:\n  am: {}\n", false,
-		"nests.am.base", "nests.am.profile", "nests.am.repos")
+		"nests.am.base", "nests.am.repos")
 	mustFail(t, "schema: 1\nbases:\n  b: {}\n", false, "bases.b.image")
 }
 
@@ -226,4 +226,30 @@ func TestExampleDenHomeIsValid(t *testing.T) {
 	if _, err := Load(filepath.Join("..", "..", "examples", "den-home", "den.yaml"), true); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestLoadRefusesProfilesInAProjectFile(t *testing.T) {
+	mustFail(t, minimalNest+"profiles:\n  perso: [./kits/perso]\n", false, "profiles", "global-only", "global den.yaml")
+}
+
+func TestLoadAcceptsANestWithoutProfile(t *testing.T) {
+	body := strings.Replace(minimalNest, "    profile: p\n", "", 1)
+	p := writeFile(t, t.TempDir(), "den.yaml", body)
+	if _, err := Load(p, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadAbsolutizesProfileKitsAndValidatesNames(t *testing.T) {
+	dir := t.TempDir()
+	p := writeFile(t, dir, "den.yaml", "schema: 1\nprofile: perso\nprofiles:\n  perso: [./kits/perso, \"docker.io/x/y:1\"]\n")
+	l, err := Load(p, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.File.Profiles["perso"]; got[0] != filepath.Join(l.Dir, "kits", "perso") || got[1] != "docker.io/x/y:1" {
+		t.Errorf("profile kits %v", got)
+	}
+	mustFail(t, "schema: 1\nprofiles:\n  a/b: []\n", true, "profiles.a/b")
+	mustFail(t, "schema: 1\nprofile: a/b\n", true, "profile:")
 }

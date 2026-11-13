@@ -38,10 +38,11 @@ walking up from the cwd. Decoding is `KnownFields(true)` everywhere: an unknown 
 naming the file, never a silence (a silent `network:` typo would empty an allowlist). `nest.Find`
 locates the declaring file (project, then `state/v2/nests.yaml`, then global); `nest.Resolve`
 merges global, base and nest into a `*nest.Resolved`. A nest name declared by two live files is
-refused.
+refused. A **profile** is a named kit list (`profiles:`, global file only) that `nest.Resolve` appends to
+`Kits` after the base's and the nest's; an undefined one is a warning, not a refusal.
 
 **Layout on disk** (all under the den home, none of it read by v1, see the coexistence note below):
-`den.yaml`, `profiles/<name>/`, `run/<instance>/` (global nests; project nests use
+`den.yaml`, `run/<instance>/` (global nests; project nests use
 `<project>/.den/run/<instance>/`), `gen/<instance>/` (egress kit, worktree `.git` files),
 `gen/.kits/den-claude/` (the shared agent kit), `gen/.build/<base>/` (build files), `build/<base>/`
 (the build VM's scratch workspace), `wt/` (default worktree root) and `state/v2/` (the registry).

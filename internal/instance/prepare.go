@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -105,9 +104,6 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 		}
 	}
 	if err := checkRepos(ctx, d.Git, res, repos, wt != nil); err != nil {
-		return nil, err
-	}
-	if err := checkProfile(d.DenHome, res); err != nil {
 		return nil, err
 	}
 	if err := checkImage(ctx, d.Sbx, res); err != nil {
@@ -248,30 +244,6 @@ func repoFix(res *nest.Resolved, r nest.Repo) string {
 	return fmt.Sprintf("fix `repos:` of nest %q in %s", res.Name, res.File.Path)
 }
 
-func checkProfile(denHome string, res *nest.Resolved) error {
-	path := filepath.Join(denHome, "profiles", res.Profile, "settings.json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("profile %q of nest %q: %s: %v — create it with "+
-			`{"permissions": {"defaultMode": "bypassPermissions"}}`, res.Profile, res.Name, path, &config.FileError{Err: err})
-	}
-	var s struct {
-		Permissions struct {
-			DefaultMode string `json:"defaultMode"`
-		} `json:"permissions"`
-	}
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return fmt.Errorf("%s: %v — fix that JSON", path, err)
-	}
-	// A17: Claude always runs in bypassPermissions in a den VM, and only user
-	// settings or a flag can turn it on.
-	if s.Permissions.DefaultMode != "bypassPermissions" {
-		return fmt.Errorf(`%s: permissions.defaultMode is %q; a den VM runs Claude in "bypassPermissions" — set it there`,
-			path, s.Permissions.DefaultMode)
-	}
-	return nil
-}
-
 func checkImage(ctx context.Context, r sbx.Runner, res *nest.Resolved) error {
 	list, err := sbx.Templates(ctx, r)
 	if err != nil {
@@ -303,14 +275,18 @@ func checkKits(res *nest.Resolved) error {
 	return nil
 }
 
-// kitFix names every declaration of k: res.Kits merges the base's and the nest's.
+// kitFix names every declaration of k: res.Kits merges the base's, the nest's and the profile's.
 func kitFix(res *nest.Resolved, k string) string {
 	var at []string
 	if slices.Contains(res.Base.Kits, k) {
 		at = append(at, fmt.Sprintf("`kits:` of base %q in %s", res.BaseName, res.BaseFile.Path))
 	}
-	if n, ok := res.File.File.Nests[res.Name]; !ok || slices.Contains(n.Kits, k) || len(at) == 0 {
+	inProfile := slices.Contains(res.ProfileKits, k)
+	if n, ok := res.File.File.Nests[res.Name]; !ok || slices.Contains(n.Kits, k) || (len(at) == 0 && !inProfile) {
 		at = append(at, fmt.Sprintf("`kits:` of nest %q in %s", res.Name, res.File.Path))
+	}
+	if inProfile {
+		at = append(at, fmt.Sprintf("`profiles.%s` in %s", res.Profile, res.GlobalFile))
 	}
 	return "fix " + strings.Join(at, " and ")
 }

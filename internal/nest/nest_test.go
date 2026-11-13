@@ -136,7 +136,6 @@ bases:
 nests:
   api:
     base: b
-    profile: p
     kits: [k2]
     env: {B: n, C: n}
     network: {allow: [z.com, w.com]}
@@ -371,5 +370,61 @@ func TestFindNamesACorruptIndexedFileWhenUnknown(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q lacks %q", err, want)
 		}
+	}
+}
+
+const profileGlobal = `schema: 1
+profile: filep
+profiles:
+  filep: [./kits/f]
+  nestp: [./kits/n, k1]
+bases:
+  b: {image: "b:v1", kits: [k1]}
+nests:
+  api:
+    base: b
+    kits: [k2]
+    repos: [{path: ./app}]
+`
+
+func TestResolveUsesTheFileProfileByDefault(t *testing.T) {
+	r, err := resolveRich(t, profileGlobal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Profile != "filep" || len(r.ProfileKits) != 1 || !strings.HasSuffix(r.ProfileKits[0], "kits/f") {
+		t.Fatalf("profile %q kits %v", r.Profile, r.ProfileKits)
+	}
+}
+
+func TestResolveNestProfileWinsOverTheFileProfile(t *testing.T) {
+	r, err := resolveRich(t, strings.Replace(profileGlobal, "    base: b\n", "    base: b\n    profile: nestp\n", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Profile != "nestp" || len(r.ProfileKits) != 2 {
+		t.Fatalf("profile %q kits %v", r.Profile, r.ProfileKits)
+	}
+}
+
+func TestResolveAppendsProfileKitsAfterBaseAndNestKits(t *testing.T) {
+	r, err := resolveRich(t, strings.Replace(profileGlobal, "    base: b\n", "    base: b\n    profile: nestp\n", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(r.GlobalFile)
+	if want := []string{"k1", "k2", filepath.Join(dir, "kits", "n")}; !reflect.DeepEqual(r.Kits, want) {
+		t.Fatalf("kits %v, want %v", r.Kits, want)
+	}
+}
+
+func TestResolveWarnsOnAnUndefinedProfile(t *testing.T) {
+	r, err := resolveRich(t, strings.Replace(profileGlobal, "    base: b\n", "    base: b\n    profile: ghost\n", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `profile "ghost" is not defined in profiles: of ` + r.GlobalFile + "; no profile kits"
+	if len(r.Warnings) != 1 || r.Warnings[0] != want || len(r.ProfileKits) != 0 || !reflect.DeepEqual(r.Kits, []string{"k1", "k2"}) {
+		t.Fatalf("warnings %v kits %v", r.Warnings, r.Kits)
 	}
 }

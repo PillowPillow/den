@@ -19,23 +19,24 @@ type Repo struct {
 
 // Resolved keeps GlobalFile and BaseFile so a refusal names the file that holds the value at fault.
 type Resolved struct {
-	Name       string
-	File       *config.Loaded
-	GlobalFile string
-	BaseName   string
-	Base       config.Base
-	BaseFile   *config.Loaded
-	Profile    string
-	Repos      []Repo
-	Kits       []string
-	Allow      []string
-	Env        map[string]string
-	Ports      []config.Port
-	Start      string
-	Layout     string
-	Root       string
-	Layers     []string
-	Warnings   []string
+	Name        string
+	File        *config.Loaded
+	GlobalFile  string
+	BaseName    string
+	Base        config.Base
+	BaseFile    *config.Loaded
+	Profile     string
+	ProfileKits []string
+	Repos       []Repo
+	Kits        []string
+	Allow       []string
+	Env         map[string]string
+	Ports       []config.Port
+	Start       string
+	Layout      string
+	Root        string
+	Layers      []string
+	Warnings    []string
 }
 
 func sortedNames[V any](m map[string]V) []string {
@@ -251,7 +252,19 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 		r.Repos = append(r.Repos, repo)
 	}
 
-	r.Kits = appendUnique(appendUnique(nil, base.Kits...), n.Kits...)
+	if r.Profile == "" {
+		r.Profile = file.File.Profile
+	}
+	if r.Profile != "" {
+		kits, ok := global.File.Profiles[r.Profile]
+		if ok {
+			r.ProfileKits = kits
+		} else {
+			r.Warnings = append(r.Warnings, fmt.Sprintf("profile %q is not defined in profiles: of %s; no profile kits", r.Profile, global.Path))
+		}
+	}
+
+	r.Kits = appendUnique(appendUnique(appendUnique(nil, base.Kits...), n.Kits...), r.ProfileKits...)
 	r.Allow = appendUnique(appendUnique(appendUnique(nil, global.File.Network.Allow...), base.Network.Allow...), n.Network.Allow...)
 	r.Env = map[string]string{}
 	for k, v := range global.File.Env {

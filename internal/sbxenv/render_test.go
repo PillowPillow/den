@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -40,7 +41,6 @@ func TestRenderWorktreeGolden(t *testing.T) {
 		Kits:      []string{"/h/.den/gen/.kits/den-claude", "/h/.den/kits/pillow-env", "/h/.den/gen/am.feat/network"},
 		Workspace: "/h/.den/run/am.feat",
 		Mounts: []Mount{
-			{Path: "/h/.den/profiles/perso", Target: ProfileTarget, ReadOnly: true},
 			{Path: "/h/.den/wt/feat/am-backend", Target: "/h/dev/am-backend"},
 			{Path: "/h/dev/am-backend/.git", Target: GitMountRoot + "/am-backend"},
 			{Path: "/h/.den/gen/am.feat/git/am-backend.git", Target: "/h/dev/am-backend/.git", ReadOnly: true},
@@ -95,21 +95,22 @@ func TestDenClaudeKitHasNoCredentialsBlock(t *testing.T) {
 	}
 }
 
-func TestDenClaudeKitEntrypointUsesProfileTarget(t *testing.T) {
+func TestDenClaudeKitHasNoSettingsFlag(t *testing.T) {
 	var m struct {
 		Sandbox struct {
 			Entrypoint []string `yaml:"entrypoint"`
 		} `yaml:"sandbox"`
+		Setup any `yaml:"setup"`
 	}
 	if err := yaml.Unmarshal(DenClaudeKit(), &m); err != nil {
 		t.Fatal(err)
 	}
-	for _, a := range m.Sandbox.Entrypoint {
-		if a == ProfileTarget+"/settings.json" {
-			return
-		}
+	if want := []string{"claude", "--dangerously-skip-permissions"}; !reflect.DeepEqual(m.Sandbox.Entrypoint, want) {
+		t.Errorf("entrypoint %v, want %v", m.Sandbox.Entrypoint, want)
 	}
-	t.Errorf("entrypoint %v lacks %s/settings.json", m.Sandbox.Entrypoint, ProfileTarget)
+	if m.Setup != nil {
+		t.Errorf("den-claude declares setup %v, want none", m.Setup)
+	}
 }
 
 func TestGitFile(t *testing.T) {

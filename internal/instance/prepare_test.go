@@ -28,7 +28,6 @@ func TestMain(m *testing.M) {
 const (
 	okVersion   = "sbx version v0.53.0 abc\n"
 	okTemplates = `[{"repository":"docker.io/library/b","tag":"v1"}]`
-	bypass      = `{"permissions":{"defaultMode":"bypassPermissions"},"model":"x"}`
 )
 
 type fixture struct {
@@ -41,7 +40,6 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{home: t.TempDir(), proj: t.TempDir(), src: t.TempDir(), prompt: &prompt.Fake{}}
-	writeFile(t, filepath.Join(f.home, "profiles", "p", "settings.json"), bypass)
 	f.fake = &sbx.Fake{Responses: map[string]sbx.Response{
 		"version":            {Output: []byte(okVersion)},
 		"ls --json":          {Output: []byte(`[]`)},
@@ -105,7 +103,7 @@ func denYAML(nests map[string]string) string {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		fmt.Fprintf(&b, "  %s:\n    base: b\n    profile: p\n", n)
+		fmt.Fprintf(&b, "  %s:\n    base: b\n", n)
 		for _, line := range strings.Split(strings.TrimSpace(nests[n]), "\n") {
 			b.WriteString("    " + line + "\n")
 		}
@@ -195,9 +193,6 @@ func TestPrepareLiveSkipsSelection(t *testing.T) {
 	created := mustPrepare(t, f, Options{Nest: "am", Selection: nest.Selection{Without: []string{"web"}}})
 	record(t, f.home, created)
 	f.live("am")
-	if err := os.RemoveAll(filepath.Join(f.home, "profiles")); err != nil {
-		t.Fatal(err)
-	}
 	f.fake.Calls = nil
 
 	p := mustPrepare(t, f, Options{Nest: "am", Selection: nest.Selection{Interactive: true}})
@@ -225,23 +220,6 @@ func TestPrepareChecksSbxOnTheLivePath(t *testing.T) {
 	f.live("am")
 	f.respond("version", "sbx version v0.52.0 abc\n")
 	prepareErr(t, f, Options{Nest: "am"}, "v0.52.0", sbx.MinVersion)
-}
-
-func TestPrepareRefusesAMissingProfile(t *testing.T) {
-	f := newFixture(t)
-	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
-	settings := filepath.Join(f.home, "profiles", "p", "settings.json")
-	if err := os.Remove(settings); err != nil {
-		t.Fatal(err)
-	}
-	prepareErr(t, f, Options{Nest: "am"}, settings, "profile")
-}
-
-func TestPrepareRefusesAProfileWithoutBypass(t *testing.T) {
-	f := newFixture(t)
-	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
-	settings := writeFile(t, filepath.Join(f.home, "profiles", "p", "settings.json"), `{"permissions":{"defaultMode":"acceptEdits"}}`)
-	prepareErr(t, f, Options{Nest: "am"}, settings, "permissions.defaultMode", "bypassPermissions")
 }
 
 func TestPrepareNamesDenBuildWhenTheImageIsMissing(t *testing.T) {
@@ -408,12 +386,27 @@ func TestPrepareRefusesALocalKitWithoutASpec(t *testing.T) {
 	mustPrepare(t, f, Options{Nest: "am"})
 }
 
+func TestPrepareNamesTheProfileOfAMissingProfileKit(t *testing.T) {
+	f := newFixture(t)
+	kit := filepath.Join(f.home, "kits", "perso")
+	global := writeFile(t, filepath.Join(f.home, "den.yaml"), fmt.Sprintf("schema: 1\nprofiles:\n  perso: [%q]\n", kit))
+	writeFile(t, filepath.Join(f.proj, "den.yaml"),
+		fmt.Sprintf("schema: 1\nprofile: perso\nbases:\n  b: {image: \"b:v1\"}\nnests:\n  am:\n    base: b\n    repos: [{path: %q}]\n", f.repo(t, "api")))
+	prepareErr(t, f, Options{Nest: "am"}, filepath.Join(kit, "spec.yaml"), "`profiles.perso` in "+global)
+
+	writeFile(t, filepath.Join(kit, "spec.yaml"), "kind: mixin\n")
+	p := mustPrepare(t, f, Options{Nest: "am"})
+	if got := p.Resolved.Kits; len(got) != 1 || got[0] != kit {
+		t.Errorf("kits %v, want [%s]", got, kit)
+	}
+}
+
 func TestPrepareNamesTheGlobalKeyOfAMissingRepo(t *testing.T) {
 	f := newFixture(t)
 	missing := filepath.Join(f.src, "gone")
 	global := writeFile(t, filepath.Join(f.home, "den.yaml"), fmt.Sprintf("schema: 1\nrepos: {api: %q}\n", missing))
 	writeFile(t, filepath.Join(f.proj, "den.yaml"),
-		"schema: 1\nbases:\n  b: {image: \"b:v1\"}\nnests:\n  am:\n    base: b\n    profile: p\n    repos: [{key: api}]\n")
+		"schema: 1\nbases:\n  b: {image: \"b:v1\"}\nnests:\n  am:\n    base: b\n    repos: [{key: api}]\n")
 	prepareErr(t, f, Options{Nest: "am"}, missing, "fix `repos.api` in "+global)
 }
 
@@ -426,7 +419,7 @@ func TestPrepareNamesTheFileDeclaringTheBaseOfABrokenKit(t *testing.T) {
 	global := writeFile(t, filepath.Join(f.home, "den.yaml"),
 		fmt.Sprintf("schema: 1\nbases:\n  g: {image: \"b:v1\", kits: [%q]}\n", kit))
 	writeFile(t, filepath.Join(f.proj, "den.yaml"), fmt.Sprintf(
-		"schema: 1\nnests:\n  am:\n    base: g\n    profile: p\n    repos: [{path: %q}]\n", f.repo(t, "api")))
+		"schema: 1\nnests:\n  am:\n    base: g\n    repos: [{path: %q}]\n", f.repo(t, "api")))
 	prepareErr(t, f, Options{Nest: "am"}, filepath.Join(kit, "spec.yaml"), "fix `kits:` of base \"g\" in "+global)
 }
 
@@ -583,7 +576,7 @@ func buildBase(t *testing.T, f *fixture, includes, steps []string) string {
 		return "[" + strings.Join(quoted, ", ") + "]"
 	}
 	return writeFile(t, filepath.Join(f.home, "den.yaml"), fmt.Sprintf(
-		"schema: 1\nbases:\n  b: {image: \"b:v1\", build: {includes: %s, steps: %s}}\nnests:\n  am:\n    base: b\n    profile: p\n    repos: [{path: %q}]\n",
+		"schema: 1\nbases:\n  b: {image: \"b:v1\", build: {includes: %s, steps: %s}}\nnests:\n  am:\n    base: b\n    repos: [{path: %q}]\n",
 		flow(includes), flow(steps), filepath.Join(f.src, "api")))
 }
 
@@ -733,7 +726,7 @@ func TestPrepareWritesNothingButTheIndex(t *testing.T) {
 	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
 	mustPrepare(t, f, Options{Nest: "am"})
 	for root, want := range map[string][]string{
-		f.home: {"profiles/p/settings.json", "state/v2/nests.yaml"},
+		f.home: {"state/v2/nests.yaml"},
 		f.proj: {"den.yaml"},
 	} {
 		var got []string

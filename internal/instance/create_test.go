@@ -72,7 +72,6 @@ func TestCreateWritesTheS1TrioForAWorktree(t *testing.T) {
 	}
 	gitFile := filepath.Join(p.GenDir, "git", "api.git")
 	want := "additionalWorkspaces:\n" +
-		"  - path: " + filepath.Join(f.home, "profiles", "p") + "\n    target: /den/profile\n    readOnly: true\n" +
 		"  - path: " + wt + "\n    target: " + api + "\n" +
 		"  - path: " + common + "\n    target: /den-git/api\n" +
 		"  - path: " + gitFile + "\n    target: " + api + "/.git\n    readOnly: true\n"
@@ -268,23 +267,18 @@ func TestCreateDoesNotWriteGitFilesIntoTheRunDir(t *testing.T) {
 	}
 }
 
-func TestCreateMountsTheProfileClaudeFilesWhenPresent(t *testing.T) {
+func TestCreateMountsNoProfileDirectory(t *testing.T) {
 	f := newFixture(t)
 	f.global(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
-	profile := filepath.Join(f.home, "profiles", "p")
+	writeFile(t, filepath.Join(f.home, "profiles", "p", "settings.json"), "{}")
+	writeFile(t, filepath.Join(f.home, "profiles", "p", "CLAUDE.md"), "x")
 	p := mustPrepare(t, f, Options{Nest: "am"})
 	mustCreate(t, f, p)
-	if env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml")); strings.Contains(env, "/home/agent/.claude") {
-		t.Errorf("mounted absent profile files:\n%s", env)
-	}
-
-	writeFile(t, filepath.Join(profile, "CLAUDE.md"), "x")
-	writeFile(t, filepath.Join(profile, "skills", "s", "SKILL.md"), "x")
-	mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am"}))
-	want := "  - path: " + filepath.Join(profile, "CLAUDE.md") + "\n    target: /home/agent/.claude/CLAUDE.md\n    readOnly: true\n" +
-		"  - path: " + filepath.Join(profile, "skills") + "\n    target: /home/agent/.claude/skills\n    readOnly: true\n"
-	if env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml")); !strings.Contains(env, want) {
-		t.Errorf("sbxenv.yaml:\n%s\nlacks:\n%s", env, want)
+	env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml"))
+	for _, absent := range []string{"/den/profile", "/home/agent/.claude", "profiles"} {
+		if strings.Contains(env, absent) {
+			t.Errorf("sbxenv.yaml mentions %q:\n%s", absent, env)
+		}
 	}
 }
 
@@ -398,7 +392,6 @@ func TestPrepareRefusesARetryWhoseWorktreeMoved(t *testing.T) {
 
 func TestCreateRendersOverlaysLastAndReadOnly(t *testing.T) {
 	f := newFixture(t)
-	writeFile(t, filepath.Join(f.home, "profiles", "p", "CLAUDE.md"), "# notes\n")
 	api := f.repo(t, "api")
 	layer := writeFile(t, filepath.Join(api, "sbx", "extra.yaml"), "env: {}\n")
 	writeFile(t, filepath.Join(f.proj, "kits", "k", "spec.yaml"), "kind: mixin\n")

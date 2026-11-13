@@ -24,7 +24,6 @@ type upFixture struct {
 func newUpFixture(t *testing.T) *upFixture {
 	t.Helper()
 	f := &upFixture{home: t.TempDir(), proj: t.TempDir(), src: t.TempDir(), prompt: &prompt.Fake{}}
-	writeTestFile(t, filepath.Join(f.home, "profiles", "p", "settings.json"), `{"permissions":{"defaultMode":"bypassPermissions"}}`)
 	f.fake = &sbx.Fake{Responses: map[string]sbx.Response{
 		"version":            {Output: []byte("sbx version v0.53.0 abc\n")},
 		"ls --json":          {Output: []byte(`[]`)},
@@ -49,7 +48,7 @@ func (f *upFixture) project(t *testing.T, nests ...[2]string) {
 	var b strings.Builder
 	b.WriteString("schema: 1\nbases:\n  b: {image: \"b:v1\"}\nnests:\n")
 	for _, n := range nests {
-		fmt.Fprintf(&b, "  %s:\n    base: b\n    profile: p\n", n[0])
+		fmt.Fprintf(&b, "  %s:\n    base: b\n", n[0])
 		for _, line := range strings.Split(strings.TrimSpace(n[1]), "\n") {
 			b.WriteString("    " + line + "\n")
 		}

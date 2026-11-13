@@ -82,6 +82,19 @@ func validate(f *File, global bool) []string {
 		if f.Network.Allow != nil {
 			add("network: %s", move)
 		}
+		if f.Profiles != nil {
+			add("profiles: %s", move)
+		}
+	}
+	for _, name := range sortedKeys(f.Profiles) {
+		if err := ValidateName("profile", name); err != nil {
+			add("profiles.%s: %v", name, err)
+		}
+	}
+	if f.Profile != "" {
+		if err := ValidateName("profile", f.Profile); err != nil {
+			add("profile: %v", err)
+		}
 	}
 	validateWorktrees("worktrees", f.Worktrees, add)
 
@@ -107,10 +120,10 @@ func validate(f *File, global bool) []string {
 		} else if err := ValidateName("base", n.Base); err != nil {
 			add("%s.base: %v", key, err)
 		}
-		if n.Profile == "" {
-			add("%s.profile: required", key)
-		} else if err := ValidateName("profile", n.Profile); err != nil {
-			add("%s.profile: %v", key, err)
+		if n.Profile != "" {
+			if err := ValidateName("profile", n.Profile); err != nil {
+				add("%s.profile: %v", key, err)
+			}
 		}
 		if len(n.Repos) == 0 {
 			add("%s.repos: a nest needs at least one repo", key)
@@ -207,6 +220,9 @@ func (l *Loaded) absolutize() error {
 		}
 	}
 
+	for _, list := range l.File.Profiles {
+		kits(list)
+	}
 	for name, b := range l.File.Bases {
 		kits(b.Kits)
 		paths(b.Build.Includes)

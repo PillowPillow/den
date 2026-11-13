@@ -1,7 +1,7 @@
 # den
 
 den drives [`sbx`](https://docs.docker.com/ai/sandboxes/) microVMs: one command creates (or
-re-attaches to) a sandbox that holds your repos, runs Claude Code with your profile, and keeps the
+re-attaches to) a sandbox that holds your repos, runs Claude Code with your profile kits, and keeps the
 egress allowlist, kits and ports you declared once in a `den.yaml`.
 
 den does not replace sbx. It writes the `sbxenv.yaml` files sbx reads, calls `sbx env create` and
@@ -79,8 +79,7 @@ The repository ships a den home you can copy and edit: [`examples/den-home/den.y
 ```bash
 mkdir -p ~/.den
 cp examples/den-home/den.yaml ~/.den/den.yaml      # then edit the repo paths
-mkdir -p ~/.den/profiles/perso
-echo '{"permissions": {"defaultMode": "bypassPermissions"}}' > ~/.den/profiles/perso/settings.json
+mkdir -p ~/.den/kits/perso                         # your profile kit, see "Profiles"
 
 den build example     # once: provision the base image and save it as the sbx template `example:v2`
 den up demo           # create the instance `demo` if needed, then run Claude in it
@@ -93,7 +92,7 @@ Every command takes `--den-home <dir>` (or `$DEN_HOME`) to use another directory
 There are two kinds of file, with the same name and the same strict schema:
 
 - the **global file**, `<denHome>/den.yaml`: your machine. It is the only one that may carry
-  `worktrees`, `repos`, `env` and `network`;
+  `worktrees`, `repos`, `env`, `network` and `profiles`;
 - a **project file**, `den.yaml` in a project folder: bases and nests that travel with the project.
   den finds it by walking up from the current directory. A project file carrying a global-only key
   is refused.
@@ -117,8 +116,11 @@ env:                           # reaches every instance
 network:
   allow:                       # egress for every instance
     - api.anthropic.com
+profiles:                      # a profile is a named list of kits, see "Profiles"
+  perso: [~/.den/kits/perso]
 
 # --- both kinds of file -----------------------------------------------------
+profile: perso                 # default profile of every nest of this file
 bases:
   node:
     image: node:v2             # required: the sbx template `den build node` saves and a nest starts from
@@ -135,7 +137,7 @@ bases:
 nests:
   api:
     base: node                 # required; looked up in the nest's own file, then in the global file
-    profile: perso             # required; <denHome>/profiles/perso
+    profile: perso             # optional; wins over the file's `profile`
     repos:                     # required, at least one
       - key: api               # a key of the global `repos`
       - path: ~/src/api-docs   # or a host path; exactly one of key and path
@@ -194,25 +196,37 @@ before any side effect) or a reference sbx resolves itself, passed through verba
 
 ## Profiles
 
-A profile is the Claude configuration a nest runs with, kept under `<denHome>/profiles/<name>/`:
+A profile is a named list of kits, defined only in the global file and named by a top-level
+`profile:` (the default of every nest of that file) or by a nest's own `profile:` (which wins):
 
-| File | Reaches the VM as |
-|---|---|
-| `settings.json` (required) | `/den/profile/settings.json`, passed to every Claude launch with `--settings` |
-| `CLAUDE.md` (optional) | `/home/agent/.claude/CLAUDE.md`, read-only |
-| `skills/` (optional) | `/home/agent/.claude/skills/`, read-only |
-
-`settings.json` must set `permissions.defaultMode` to `bypassPermissions`; den refuses a profile
-that does not, because a den VM always runs Claude with permission prompts off (the VM and its
-egress allowlist are the boundary).
-
-```json
-{ "permissions": { "defaultMode": "bypassPermissions" } }
+```yaml
+# ~/.den/den.yaml
+profiles:
+  perso: [~/.den/kits/perso]
+profile: perso
 ```
 
-The profile directory is mounted read-only. A `claude` typed in a login shell (`den shell`) gets the
-same flags through `/etc/profile.d/den-claude.sh`; `den exec <nest> -- claude ...` runs no shell and
-does not, so pass `--settings /den/profile/settings.json` yourself there.
+A profile kit is an ordinary local kit (`kind: mixin`) that carries your Claude configuration as
+files copied into the VM's home:
+
+```
+~/.den/kits/perso/
+  spec.yaml                      # kind: mixin
+  files/home/.claude/CLAUDE.md
+  files/home/.claude/settings.json
+  files/home/.claude/output-styles/
+  files/home/.claude/agents/
+  files/home/.zshrc
+```
+
+Profile kits come after the base's and the nest's kits. A profile the machine does not define is
+skipped with a warning, never refused. Files under `files/home` are copied verbatim into
+`/home/agent` when the VM is created, so recreate the instance after an edit. Skills travel
+through `sbx skills import` or `files/home/.claude/skills/`. Ship `settings.json` from one profile
+kit per VM: which kit wins on a collision is unverified. A `settings.json` that sets the
+permission mode (the Claude Code settings key `"permissions": {"defaultMode": "bypassPermissions"}`,
+from the Claude Code settings schema) makes a `claude` typed inside `den shell` behave like the
+attached one; den's own launch already passes `--dangerously-skip-permissions`.
 
 ## Commands
 
@@ -238,7 +252,7 @@ flattened (`feature/123` becomes `demo.feature-123`) while git keeps the branch 
 name is the VM's name and the handle of every other command.
 
 Every refusal den can decide from the config, the flags, its records and `sbx ls` comes before the
-first file, worktree or sbx call that changes state: unknown nest, missing repo, missing profile,
+first file, worktree or sbx call that changes state: unknown nest, missing repo,
 missing image (`den build`), a missing local kit or layer, a missing `build.includes` or
 `build.steps` file under a mounted folder, a file den reads through a symlink inside a mounted
 folder, `-i` without a terminal, an sbx older than v0.53.0.
@@ -346,7 +360,6 @@ command or command-backed MCP server in a layer ever runs on the host.
 | Path | Content | Owner |
 |---|---|---|
 | `<denHome>/den.yaml` | global config | you |
-| `<denHome>/profiles/<name>/` | Claude profiles | you |
 | `<project>/den.yaml` | project bases and nests | you |
 | `<project>/.den/run/<instance>/` or `<denHome>/run/<instance>/` | the generated `sbxenv.yaml` (the VM's workspace) | den |
 | `<denHome>/gen/<instance>/` | generated egress kit and worktree `.git` files | den |
@@ -362,7 +375,7 @@ says, not what a VM may have edited since.
 
 ## Coexistence with v1
 
-V2 uses only paths v1 never reads or writes: `den.yaml`, `profiles/`, `run/`, `gen/`, `build/`,
+V2 uses only paths v1 never reads or writes: `den.yaml`, `run/`, `gen/`, `build/`,
 `state/v2/` and `wt/`. v1 keeps `config.yaml`, `stacks/`, `nests/`, `state/sandboxes/`,
 `worktrees/`, `trash/` and the `:v1` image tags. V2 base images use `:v2` tags (`node:v2`), so
 `den build` never overwrites a v1 template.
