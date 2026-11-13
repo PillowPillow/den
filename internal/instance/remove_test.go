@@ -355,3 +355,24 @@ func TestRmRefusesARecordedDirDenDidNotPlace(t *testing.T) {
 		})
 	}
 }
+
+func TestRmRefusesADetachedHeadNoRefContainsAndTouchesNothing(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	wt := rec.Repos[0].Mount
+	for _, args := range [][]string{{"checkout", "-q", "--detach"}, {"commit", "-q", "--allow-empty", "-m", "detached work"}} {
+		if _, err := f.git.Run(context.Background(), wt, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head, err := f.git.Run(context.Background(), wt, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantErr(t, f.remove(rec.Instance, false), strings.TrimSpace(string(head)), "--force")
+	if f.removedVM() {
+		t.Errorf("the VM went before the refusal: %v", f.fake.Calls)
+	}
+	mustExist(t, recordPath(t, f.home, rec.Instance), wt, rec.RunDir, rec.GenDir)
+}

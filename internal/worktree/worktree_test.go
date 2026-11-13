@@ -2567,3 +2567,45 @@ func TestRemoveTellsIgnoredFilesApartFromUncommittedWork(t *testing.T) {
 		}
 	})
 }
+
+func TestRemoveRefusesADetachedHeadNoRefContains(t *testing.T) {
+	_, worktreePath, target := prepareWorktree(t)
+	git(t, worktreePath, "checkout", "-q", "--detach")
+	git(t, worktreePath, "commit", "-q", "--allow-empty", "-m", "detached work")
+	short := git(t, worktreePath, "rev-parse", "--short", "HEAD")
+
+	err := Remove(context.Background(), NewGit(), target)
+	if err == nil {
+		t.Fatal("a detached HEAD no ref contains must be refused without force")
+	}
+	for _, expected := range []string{worktreePath, short, "git branch", "--force"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("the message must contain %q; got: %v", expected, err)
+		}
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Errorf("the refused worktree must be INTACT: %v", err)
+	}
+}
+
+func TestRemoveForceDiscardsADetachedHeadNoRefContains(t *testing.T) {
+	_, worktreePath, target := prepareWorktree(t)
+	git(t, worktreePath, "checkout", "-q", "--detach")
+	git(t, worktreePath, "commit", "-q", "--allow-empty", "-m", "detached work")
+
+	if err := Remove(context.Background(), NewGit(), withForce(target, true)); err != nil {
+		t.Fatalf("with force, the removal must succeed: %v", err)
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Errorf("the worktree survived a forced removal: %v", err)
+	}
+}
+
+func TestRemoveAcceptsADetachedHeadABranchContains(t *testing.T) {
+	_, worktreePath, target := prepareWorktree(t)
+	git(t, worktreePath, "checkout", "-q", "--detach", "main")
+
+	if err := Remove(context.Background(), NewGit(), target); err != nil {
+		t.Fatalf("a detached HEAD on a commit main contains loses nothing: %v", err)
+	}
+}

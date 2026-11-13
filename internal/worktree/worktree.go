@@ -398,8 +398,43 @@ func CheckRemovable(ctx context.Context, g Git, c Target) error {
 		if err := d.refusal(worktreePath); err != nil {
 			return err
 		}
+		if err := unreachableHead(ctx, g, worktreePath); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// unreachableHead refuses a detached HEAD at a commit no branch, remote-tracking
+// branch or tag contains: its only reference is the worktree's own HEAD and
+// reflog, which live in the admin dir `git worktree remove` deletes — a clean
+// status says nothing about it.
+func unreachableHead(ctx context.Context, g Git, worktreePath string) error {
+	// Any failure reads as detached: the probes below then fail loudly or judge the commit.
+	if _, err := g.Run(ctx, worktreePath, "symbolic-ref", "-q", "HEAD"); err == nil {
+		return nil
+	}
+	out, err := g.Run(ctx, worktreePath, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("reading the HEAD of %s: %w", worktreePath, err)
+	}
+	head := strings.TrimSpace(string(out))
+	out, err = g.Run(ctx, worktreePath, "for-each-ref", "--count=1", "--format=%(refname)", "--contains", head,
+		"refs/heads", "refs/remotes", "refs/tags")
+	if err != nil {
+		return fmt.Errorf("looking for a ref that contains the HEAD of %s: %w", worktreePath, err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		return nil
+	}
+	short := head
+	if out, err := g.Run(ctx, worktreePath, "rev-parse", "--short", head); err == nil {
+		short = strings.TrimSpace(string(out))
+	}
+	return fmt.Errorf(
+		"worktree %s has a detached HEAD at %s, a commit no branch, remote-tracking branch or tag contains — "+
+			"removing the worktree would lose it: run `git branch <name> %s` in %s to keep it, "+
+			"or retry with --force to discard it for good", worktreePath, short, short, worktreePath)
 }
 
 // Remove deletes the worktree for good. Refuses if the tree is dirty and Force
