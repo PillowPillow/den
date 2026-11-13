@@ -50,31 +50,40 @@ func loadProject(denHome, cwd string) (*config.Loaded, error) {
 	return config.Load(path, false)
 }
 
-// Find returns the file declaring name and the global file.
-func Find(denHome, cwd, name string) (file, global *config.Loaded, err error) {
+// load reads the project file reached from cwd and the global file, claims their nests, and reads the index.
+func load(denHome, cwd string) (project, global *config.Loaded, ix index, err error) {
 	global, err = config.LoadGlobal(denHome)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, index{}, err
 	}
-	project, err := loadProject(denHome, cwd)
+	project, err = loadProject(denHome, cwd)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, index{}, err
 	}
 	for _, f := range []*config.Loaded{project, global} {
 		if f != nil {
 			if err := Claim(denHome, f); err != nil {
-				return nil, nil, err
+				return nil, nil, index{}, err
 			}
 		}
+	}
+	ix, err = readIndex(denHome)
+	if err != nil {
+		return nil, nil, index{}, err
+	}
+	return project, global, ix, nil
+}
+
+// Find returns the file declaring name and the global file.
+func Find(denHome, cwd, name string) (file, global *config.Loaded, err error) {
+	project, global, ix, err := load(denHome, cwd)
+	if err != nil {
+		return nil, nil, err
 	}
 	if project != nil {
 		if _, ok := project.File.Nests[name]; ok {
 			return project, global, nil
 		}
-	}
-	ix, err := readIndex(denHome)
-	if err != nil {
-		return nil, nil, err
 	}
 	if path, ok := ix.Nests[name]; ok && declares(path, name) && !isLoaded(path, project, global) {
 		l, err := config.Load(path, false)
@@ -88,6 +97,19 @@ func Find(denHome, cwd, name string) (file, global *config.Loaded, err error) {
 	if _, ok := global.File.Nests[name]; ok {
 		return global, global, nil
 	}
+	return nil, nil, fmt.Errorf("unknown nest %q; %s", name, visible(project, global, ix))
+}
+
+// Visible describes the nests den can see from cwd, worded as Find's refusal of an unknown name lists them.
+func Visible(denHome, cwd string) (string, error) {
+	project, global, ix, err := load(denHome, cwd)
+	if err != nil {
+		return "", err
+	}
+	return visible(project, global, ix), nil
+}
+
+func visible(project, global *config.Loaded, ix index) string {
 	known := []*config.Loaded{project, global}
 	var unreadable []string
 	for _, n := range sortedNames(ix.Nests) {
@@ -119,9 +141,9 @@ func Find(denHome, cwd, name string) (file, global *config.Loaded, err error) {
 	}
 	sort.Strings(names)
 	if len(names) == 0 {
-		return nil, nil, fmt.Errorf("unknown nest %q; no nest is declared in %s%s", name, global.Path, suffix)
+		return fmt.Sprintf("no nest is declared in %s%s", global.Path, suffix)
 	}
-	return nil, nil, fmt.Errorf("unknown nest %q; nests den can see: %s (from %s)%s", name, strings.Join(names, ", "), strings.Join(files, ", "), suffix)
+	return fmt.Sprintf("nests den can see: %s (from %s)%s", strings.Join(names, ", "), strings.Join(files, ", "), suffix)
 }
 
 // FindBase looks name up in the project file reached from cwd, then in the global file.
