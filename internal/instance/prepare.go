@@ -110,7 +110,7 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if err := checkImage(ctx, d.Sbx, res); err != nil {
 		return nil, err
 	}
-	if err := checkKits(res); err != nil {
+	if err := checkKits(res, repos, wt, p.Workspace); err != nil {
 		return nil, err
 	}
 	if err := checkLayers(res, repos, p.Workspace); err != nil {
@@ -275,7 +275,18 @@ func checkImage(ctx context.Context, r sbx.Runner, res *nest.Resolved) error {
 }
 
 // checkKits checks local kits only; config.Load has made every local one absolute.
-func checkKits(res *nest.Resolved) error {
+// A kit carries the egress allowlist and credentials sbx applies at the next
+// create, so a kit the VM can rewrite would hand the VM its own policy. The
+// project folder counts only as the workspace: it is mounted only with `start: .`.
+func checkKits(res *nest.Resolved, repos []nest.Repo, wt *worktree.Name, workspace string) error {
+	type mounted struct{ what, dir string }
+	dirs := []mounted{{"the workspace", workspace}, {"the worktree root", res.Root}}
+	for _, r := range repos {
+		dirs = append(dirs, mounted{"repo " + r.Name, r.Path})
+		if wt != nil {
+			dirs = append(dirs, mounted{"the worktree of repo " + r.Name, worktree.Path(res.Layout, res.Root, wt.Dir, r.Path)})
+		}
+	}
 	for _, k := range res.Kits {
 		if !filepath.IsAbs(k) {
 			continue
@@ -283,6 +294,13 @@ func checkKits(res *nest.Resolved) error {
 		spec := filepath.Join(k, "spec.yaml")
 		if st, err := os.Stat(spec); err != nil || !st.Mode().IsRegular() {
 			return fmt.Errorf("kit %s: no %s — a local kit is a directory holding spec.yaml; %s", k, spec, kitFix(res, k))
+		}
+		for _, m := range dirs {
+			if within(k, m.dir) {
+				return fmt.Errorf("kit %s is under %s (%s), which the VM can write — move it out of every mounted "+
+					"folder (under ~/.den/, for one) or reference it by git or OCI, and %s",
+					k, m.what, m.dir, kitFix(res, k))
+			}
 		}
 	}
 	return nil

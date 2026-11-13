@@ -419,6 +419,79 @@ func TestPrepareNamesTheFileDeclaringTheBaseOfABrokenKit(t *testing.T) {
 	prepareErr(t, f, Options{Nest: "am"}, filepath.Join(kit, "spec.yaml"), "fix `kits:` of base \"g\" in "+global)
 }
 
+func kitBody(f *fixture, kit string) string {
+	return repos(repoEntry(filepath.Join(f.src, "api"), false)) + fmt.Sprintf("\nkits: [%q]", kit)
+}
+
+func TestPrepareRefusesAKitUnderARepo(t *testing.T) {
+	f := newFixture(t)
+	api := f.repo(t, "api")
+	kit := filepath.Dir(writeFile(t, filepath.Join(api, "kits", "mine", "spec.yaml"), "kind: mixin\n"))
+	f.global(t, map[string]string{"am": kitBody(f, kit)})
+	prepareErr(t, f, Options{Nest: "am"}, "kit "+kit, "repo api", api, "move it out", "`kits:` of nest")
+}
+
+func TestPrepareRefusesAKitUnderTheWorkspaceWithStartDot(t *testing.T) {
+	f := newFixture(t)
+	f.repo(t, "api")
+	kit := filepath.Dir(writeFile(t, filepath.Join(f.proj, "kits", "mine", "spec.yaml"), "kind: mixin\n"))
+	f.project(t, map[string]string{"am": kitBody(f, "./kits/mine") + "\nstart: ."})
+	prepareErr(t, f, Options{Nest: "am"}, "kit "+kit, "the workspace", f.proj, "move it out")
+}
+
+func TestPrepareAcceptsAKitUnderTheProjectFolderWithoutStartDot(t *testing.T) {
+	f := newFixture(t)
+	f.repo(t, "api")
+	writeFile(t, filepath.Join(f.proj, "kits", "mine", "spec.yaml"), "kind: mixin\n")
+	f.project(t, map[string]string{"am": kitBody(f, "./kits/mine")})
+	mustPrepare(t, f, Options{Nest: "am"})
+}
+
+func TestPrepareRefusesAKitUnderAWorktree(t *testing.T) {
+	f := newFixture(t)
+	api := f.gitRepo(t, "api")
+	wt := worktree.Path("per-repo", "", "feat", api)
+	kit := filepath.Dir(writeFile(t, filepath.Join(wt, "kit", "spec.yaml"), "kind: mixin\n"))
+	f.global(t, map[string]string{"am": repos(repoEntry(api, false)) + fmt.Sprintf("\nkits: [%q]\nworktrees: {layout: per-repo}", kit)})
+	prepareErr(t, f, Options{Nest: "am", Branch: "feat"}, "kit "+kit, "move it out")
+}
+
+func TestPrepareRefusesAKitUnderTheWorktreeRoot(t *testing.T) {
+	f := newFixture(t)
+	f.repo(t, "api")
+	kit := filepath.Dir(writeFile(t, filepath.Join(f.home, "wt", "kit", "spec.yaml"), "kind: mixin\n"))
+	f.global(t, map[string]string{"am": kitBody(f, kit)})
+	prepareErr(t, f, Options{Nest: "am"}, "kit "+kit, "the worktree root")
+}
+
+func TestPrepareAcceptsAKitBesideARepo(t *testing.T) {
+	f := newFixture(t)
+	f.repo(t, "api")
+	kit := filepath.Dir(writeFile(t, filepath.Join(f.src, "api-kits", "mine", "spec.yaml"), "kind: mixin\n"))
+	f.global(t, map[string]string{"am": kitBody(f, kit)})
+	mustPrepare(t, f, Options{Nest: "am"})
+}
+
+func TestPrepareAcceptsAKitUnderTheDenHomeForAGlobalNest(t *testing.T) {
+	f := newFixture(t)
+	f.repo(t, "api")
+	kit := filepath.Dir(writeFile(t, filepath.Join(f.home, "kits", "mine", "spec.yaml"), "kind: mixin\n"))
+	f.global(t, map[string]string{"am": kitBody(f, kit)})
+	mustPrepare(t, f, Options{Nest: "am"})
+}
+
+func TestPrepareRefusesASymlinkedKitInsideARepo(t *testing.T) {
+	f := newFixture(t)
+	api := f.repo(t, "api")
+	safe := filepath.Dir(writeFile(t, filepath.Join(f.src, "safe", "spec.yaml"), "kind: mixin\n"))
+	kit := filepath.Join(api, "kitlink")
+	if err := os.Symlink(safe, kit); err != nil {
+		t.Fatal(err)
+	}
+	f.global(t, map[string]string{"am": kitBody(f, kit)})
+	prepareErr(t, f, Options{Nest: "am"}, "kit "+kit, "repo api", "move it out")
+}
+
 func TestPrepareGlobalNestWorkspaceIsTheRunDir(t *testing.T) {
 	f := newFixture(t)
 	f.global(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
