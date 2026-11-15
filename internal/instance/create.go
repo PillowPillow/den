@@ -336,9 +336,8 @@ func Up(ctx context.Context, d Deps, o Options, detach bool) error {
 }
 
 // startDetached leaves the VM running whether ensure created it, found it
-// running or found it stopped. A VM that `sbx exec` started stops by itself
-// about a minute after its last command; one started by `sbx run --detach`
-// stays up (measured on sbx v0.53.0), so that is the call, never an exec.
+// running or found it stopped: ensure never starts a stopped Live VM, and
+// `sbx run --detach` is the sbx call that starts one without attaching.
 func startDetached(ctx context.Context, d Deps, p *Plan, instance string) error {
 	if _, err := d.Sbx.Run(ctx, "--no-input", "run", "--detach", "--name", instance); err != nil {
 		return fmt.Errorf("starting %s: %w — run `%s` to attach, or `den rm %s` then `%s --detach`",
