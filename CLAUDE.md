@@ -51,7 +51,8 @@ The leading dot on `.kits` and `.build` is deliberate: no sandbox name can start
 
 **Everything runs through `sbx env`.** `internal/sbxenv` renders `sbxenv.yaml` (pure, deterministic)
 plus the two kits den generates: `den-claude` (embedded, `kind: sandbox`, image pinned to the
-`docker.io/sbx/claude` index digest unless the global `agents.claude.image` (digest required, hashed into `configHash`) replaces it, no `credentials` block so the subscription OAuth token keeps
+`docker.io/docker/sandbox-templates:claude-code-docker` index digest (its ENTRYPOINT is `tini`: sbx runs
+the image ENTRYPOINT as PID 1, and `docker.io/sbx/claude`'s `claude` exits and stops the VM, S6e) unless the global `agents.claude.image` (digest required, hashed into `configHash`) replaces it, no `credentials` block so the subscription OAuth token keeps
 working) and a per-instance network mixin carrying the egress allowlist. `internal/instance`
 (`Prepare` then `Create`/`Attach`/`Exec`/`Remove`) is the orchestration: `Prepare` makes every
 refusal decidable from config, flags, registry and `sbx ls` *before the first side effect*;

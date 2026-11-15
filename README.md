@@ -121,7 +121,7 @@ profiles:                      # a profile is a named list of kits, see "Profile
   perso: [~/.den/kits/perso]
 agents:                        # optional; `claude` is the only key
   claude:
-    image: docker.io/sbx/claude@sha256:<64 hex>   # must pin a digest; default: the pin embedded in den
+    image: docker.io/docker/sandbox-templates@sha256:<64 hex>   # must pin a digest; default: the pin embedded in den
 
 # --- both kinds of file -----------------------------------------------------
 profile: perso                 # default profile of every nest of this file
@@ -164,12 +164,20 @@ refuses to start, naming `den build <base>`, while that template does not exist.
 should end in `:v2` (see [Coexistence](#coexistence-with-v1)).
 
 `from` names the template the build VM starts from. Left empty, the build starts from the
-`docker.io/sbx/claude` image that den pins by digest, so every `den build` starts from the same
-Claude Code. `agents.claude.image` in the global file replaces that pin (a digest is required: a
-tag or an image without `@sha256:<64 hex>` is a load error).
+`docker.io/docker/sandbox-templates:claude-code-docker` image that den pins by digest, so every
+`den build` starts from the same Claude Code. `agents.claude.image` in the global file replaces that
+pin (a digest is required: a tag or an image without `@sha256:<64 hex>` is a load error).
 
-To move to a newer Claude image: run `docker buildx imagetools inspect docker.io/sbx/claude:latest`,
-copy the index digest into `agents.claude.image` as `docker.io/sbx/claude@sha256:<digest>`, then
+The image must keep the VM alive: sbx runs the image's own `ENTRYPOINT` as the VM's first process,
+with its keep-alive command as arguments, and the kit's `entrypoint` only launches Claude when you
+attach. The `claude-code-docker` images use `tini --`. `docker.io/sbx/claude` uses `claude`, which
+exits within seconds and stops the VM, so every `den build` step and every `den exec` dies with
+status 137: do not use it. Check an image with
+`docker image inspect --format '{{json .Config.Entrypoint}}' <image>`.
+
+To move to a newer Claude image: run
+`docker buildx imagetools inspect docker.io/docker/sandbox-templates:claude-code-docker`, copy the
+index digest into `agents.claude.image` as `docker.io/docker/sandbox-templates@sha256:<digest>`, then
 `den build <base>` for each base. An instance that already exists keeps its old image; `den up` on
 it warns that the config changed (the image is part of the config hash), and `den rm` then `den up`
 recreates it on the new one. A build step that runs `claude update` also moves a base to a newer

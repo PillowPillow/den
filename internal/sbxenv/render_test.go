@@ -125,12 +125,29 @@ func TestDenClaudeKitHoldsExactlyOneImageLine(t *testing.T) {
 	}
 }
 
+func TestDenClaudeKitPinsAnImageWhoseEntrypointKeepsTheVMAlive(t *testing.T) {
+	var spec struct {
+		Sandbox struct {
+			Image string `yaml:"image"`
+		} `yaml:"sandbox"`
+	}
+	if err := yaml.Unmarshal(DenClaudeKit(), &spec); err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(spec.Sandbox.Image, "docker.io/sbx/claude") {
+		t.Error("docker.io/sbx/claude has ENTRYPOINT [claude]: sbx runs it as PID 1 and the VM stops within seconds (S6e)")
+	}
+	if !strings.HasPrefix(spec.Sandbox.Image, "docker.io/docker/sandbox-templates@sha256:") {
+		t.Errorf("image %q: want the tini-entrypoint sandbox-templates image pinned by digest", spec.Sandbox.Image)
+	}
+}
+
 func TestDenClaudeKitWithAgentImage(t *testing.T) {
 	if got := DenClaudeKitWithImage(""); !bytes.Equal(got, DenClaudeKit()) {
 		t.Error("an empty image must leave the embedded spec byte-identical")
 	}
 	got := string(DenClaudeKitWithImage("r.test/c@sha256:" + strings.Repeat("0", 64)))
-	if !strings.Contains(got, "\n  image: r.test/c@sha256:"+strings.Repeat("0", 64)+"\n") || strings.Contains(got, "docker.io/sbx/claude@") {
+	if !strings.Contains(got, "\n  image: r.test/c@sha256:"+strings.Repeat("0", 64)+"\n") || strings.Contains(got, "docker.io/docker/sandbox-templates@") {
 		t.Errorf("image not replaced:\n%s", got)
 	}
 }

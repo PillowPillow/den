@@ -257,18 +257,18 @@ func TestLoadAbsolutizesProfileKitsAndValidatesNames(t *testing.T) {
 const digest64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestLoadAcceptsAnAgentImageWithDigest(t *testing.T) {
-	p := writeFile(t, t.TempDir(), "den.yaml", "schema: 1\nagents:\n  claude:\n    image: docker.io/sbx/claude@sha256:"+digest64+"\n")
+	p := writeFile(t, t.TempDir(), "den.yaml", "schema: 1\nagents:\n  claude:\n    image: docker.io/docker/sandbox-templates@sha256:"+digest64+"\n")
 	l, err := Load(p, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := l.File.Agents["claude"].Image; got != "docker.io/sbx/claude@sha256:"+digest64 {
+	if got := l.File.Agents["claude"].Image; got != "docker.io/docker/sandbox-templates@sha256:"+digest64 {
 		t.Errorf("image = %q", got)
 	}
 }
 
 func TestLoadRefusesAnAgentImageWithoutDigest(t *testing.T) {
-	mustFail(t, "schema: 1\nagents:\n  claude:\n    image: docker.io/sbx/claude:latest\n", true, "agents.claude.image", "@sha256:")
+	mustFail(t, "schema: 1\nagents:\n  claude:\n    image: docker.io/docker/sandbox-templates:claude-code-docker\n", true, "agents.claude.image", "@sha256:")
 }
 
 func TestLoadRefusesAnUnknownAgent(t *testing.T) {
