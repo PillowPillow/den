@@ -212,6 +212,34 @@ func TestUpDetachDoesNotAttach(t *testing.T) {
 	if len(f.fake.Attaches) != 0 {
 		t.Errorf("attached with --detach: %v", f.fake.Attaches)
 	}
+	if !f.fake.HasCalled("--no-input", "run", "--detach", "--name", "am") {
+		t.Errorf("no detached run after the create: %v", f.fake.Calls)
+	}
+}
+
+func TestUpDetachStartsAStoppedLiveInstance(t *testing.T) {
+	f := newUpFixture(t)
+	f.liveAm(t, "stale")
+	f.fake.Responses["ls --json"] = sbx.Response{Output: []byte(`[{"name":"am","status":"stopped"}]`)}
+	if err := f.up("am", "--detach"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.fake.HasCalled("--no-input", "run", "--detach", "--name", "am") {
+		t.Errorf("stopped instance not started: %v", f.fake.Calls)
+	}
+	if f.hasEnvCreate() || len(f.fake.Attaches) != 0 {
+		t.Errorf("calls %v, attaches %v: want only the detached run", f.fake.Calls, f.fake.Attaches)
+	}
+}
+
+func TestUpDetachReportsAFailedStart(t *testing.T) {
+	f := newUpFixture(t)
+	f.liveAm(t, "stale")
+	f.fake.Responses["--no-input run --detach --name am"] = sbx.Response{Err: fmt.Errorf("boom")}
+	err := f.up("am", "--detach")
+	if err == nil || !strings.Contains(err.Error(), "am") || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error %v, want the failed start naming am", err)
+	}
 }
 
 func TestUpCreatesThenAttaches(t *testing.T) {

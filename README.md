@@ -272,7 +272,7 @@ Creates the instance if it does not exist, then attaches Claude to it (`sbx run`
 | `--only a,b` / `--without a,b` | keep only / drop these optional repos |
 | `-i, --interactive` | pick the optional repos from a checklist (needs a terminal) |
 | `--workdir <vm path>` | start Claude in this folder instead of `start`, this time only (the instance keeps `start`) |
-| `--detach` | create the instance and stop before attaching |
+| `--detach` | create or start the instance, leave its VM running, and do not attach |
 
 The instance is named `<nest>`, or `<nest>.<branch>` with `-w`; slashes in the branch are
 flattened (`feature/123` becomes `demo.feature-123`) while git keeps the branch as typed. That

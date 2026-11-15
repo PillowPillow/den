@@ -54,6 +54,6 @@ func newUpCmd(deps Deps, denHome *string) *cobra.Command {
 	f.StringSliceVar(&o.Selection.Without, "without", nil, "drop these optional repos")
 	f.BoolVarP(&o.Selection.Interactive, "interactive", "i", false, "pick the optional repos from a checklist")
 	f.StringVar(&o.Workdir, "workdir", "", "folder Claude starts in, as a VM path")
-	f.BoolVar(&detach, "detach", false, "create the instance without attaching")
+	f.BoolVar(&detach, "detach", false, "create or start the instance, leave it running, and do not attach")
 	return cmd
 }
