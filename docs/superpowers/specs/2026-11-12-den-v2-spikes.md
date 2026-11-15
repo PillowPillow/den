@@ -229,3 +229,23 @@ protégé dont le chemin traverse un lien sous la racine du montage.
 Surcouches `B/a/k` (dossier) et `B/p/q/f.sh` (fichier). `mv` du parent (`B/a`, `B/p/q`) et du grand-parent (`B/p`),
 avec `sudo` et après `sudo umount B/a/k` : « Read-only file system » ; planter `B/a/k/spec.yaml` : refusé. Fichiers
 de l'hôte intacts [mesuré]. L'hôte protège chaque ancêtre d'un chemin en surcouche dans le montage.
+
+## S6e — premier processus de la VM : **l'`ENTRYPOINT` de l'image, pas celui du kit** (15 nov. 2026, sbx v0.53.0)
+
+Constat de la tâche 14 : avec `from:` vide, chaque step de `den build` meurt en code 137, même une boucle `sleep`.
+
+- Image `docker.io/sbx/claude@sha256:5762bbc5…` (`ENTRYPOINT ["claude"]`, `CMD ["--dangerously-skip-permissions"]`).
+  Après `env create`, la VM tourne 2 à 4 s puis passe `stopped` ; `sbx exec` la redémarre, imprime, puis meurt en 137
+  quand elle s'arrête de nouveau. PID 1 : `claude sh -c 'trap … TERM; sleep infinity & wait'` [mesuré]. sbx lance
+  l'`ENTRYPOINT` de l'image avec sa commande de maintien en arguments ; Claude la lit comme une invite, sort, la VM
+  s'arrête.
+- Kit `den-claude` avec `entrypoint: ["tini", "--"]` et `command: [claude, …]` : PID 1 inchangé, même arrêt
+  [mesuré]. L'`entrypoint` du kit n'atteint pas le PID 1 ; il sert au lancement de l'agent (S3).
+- `extends: claude` : refusé, « "claude" is no longer a built-in agent » [mesuré].
+- Image `docker.io/docker/sandbox-templates@sha256:4a94d914…` (`claude-code-docker`, aussi `-0.10.0` ; amd64 et arm64 ;
+  `ENTRYPOINT ["tini","--"]` ; Claude Code 2.1.306, docker, xz) comme image du kit : PID 1
+  `tini -- sh -c …`, VM `running` après 12 s, `sbx exec` de 4 s tenu, `claude -p` → `OK` (jeton OAuth) [mesuré].
+  Les VM v1 (`am`, `dg-oauth`), bâties sur ce modèle, avaient le même PID 1.
+
+Décision : `den-claude` épingle ce dernier digest. Une image de `agents.claude.image` doit avoir un `ENTRYPOINT` qui
+garde la VM en vie.
