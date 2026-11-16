@@ -334,6 +334,9 @@ func Up(ctx context.Context, d Deps, o Options, detach bool) error {
 	if err != nil {
 		return err
 	}
+	for _, n := range template.Notices(ctx, d.Git, p.Resolved.Template) {
+		fmt.Fprintln(d.Err, n)
+	}
 	if detach {
 		return startDetached(ctx, d, p, rec.Instance)
 	}

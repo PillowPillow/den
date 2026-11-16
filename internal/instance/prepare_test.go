@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
@@ -987,5 +988,72 @@ func TestPrepareRefusesAnUnbuiltTemplateWhenNotLive(t *testing.T) {
 	prepareErr(t, f, Options{Nest: "am"}, notBuilt)
 	if f.fake.HasCalled("--no-input", "env", "create") {
 		t.Errorf("env create ran: %v", f.fake.Calls)
+	}
+}
+
+// remoteGit answers ls-remote itself and leaves every other git call to the real one.
+type remoteGit struct {
+	worktree.Git
+	answer func(ctx context.Context) ([]byte, error)
+}
+
+func (g remoteGit) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if slices.Contains(args, "ls-remote") {
+		return g.answer(ctx)
+	}
+	return g.Git.Run(ctx, dir, args...)
+}
+
+func repoTemplateNest(t *testing.T, answer func(ctx context.Context) ([]byte, error)) (*fixture, string) {
+	t.Helper()
+	f := newFixture(t)
+	_, commit := f.repoTemplate(t, "legacy", "https://example.test/legacy.git")
+	api := f.repo(t, "api")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false)) + "\ntemplate: legacy"})
+	f.git = remoteGit{Git: f.git, answer: answer}
+	return f, commit
+}
+
+func TestUpPrintsNoticesAndExecDoesNot(t *testing.T) {
+	newer := "feedfacefeedfacefeedfacefeedfacefeedface"
+	f, _ := repoTemplateNest(t, func(context.Context) ([]byte, error) { return []byte(newer + "\tHEAD\n"), nil })
+	var upErr, execErr, execOut strings.Builder
+	d := f.deps()
+	d.Err = &upErr
+	if err := Up(context.Background(), d, Options{Nest: "am"}, true); err != nil {
+		t.Fatal(err)
+	}
+	want := "template legacy: a newer definition is available"
+	if !strings.Contains(upErr.String(), want) || !strings.Contains(upErr.String(), "den build legacy --pull") {
+		t.Errorf("den up stderr %q lacks the notice", upErr.String())
+	}
+	f.live("am")
+	d = f.deps()
+	d.Err, d.Out = &execErr, &execOut
+	if err := Exec(context.Background(), d, Options{Nest: "am"}, []string{"true"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(execErr.String(), "newer definition") || strings.Contains(execOut.String(), "newer definition") {
+		t.Errorf("den exec printed a notice: stderr %q stdout %q", execErr.String(), execOut.String())
+	}
+}
+
+func TestUpNoticeRespectsItsDeadline(t *testing.T) {
+	f, _ := repoTemplateNest(t, func(ctx context.Context) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	var stderr strings.Builder
+	d := f.deps()
+	d.Err = &stderr
+	start := time.Now()
+	if err := Up(context.Background(), d, Options{Nest: "am"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took >= 4*time.Second {
+		t.Errorf("den up took %v behind a silent remote", took)
+	}
+	if strings.Contains(stderr.String(), "newer definition") {
+		t.Errorf("stderr %q has a notice", stderr.String())
 	}
 }
