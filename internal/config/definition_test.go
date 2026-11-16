@@ -76,11 +76,16 @@ func TestLoadDefinitionsRefusesAnEscape(t *testing.T) {
 		"steps up":    "build: {steps: [../../s.sh]}",
 		"includes":    "build: {includes: [/tmp/i.sh]}",
 		"kits symlnk": "kits: [./link]",
+		"dangling":    "build: {steps: [dangling]}",
+		"dir link":    "build: {steps: [link/missing.sh]}",
 	}
 	for name, field := range cases {
 		t.Run(name, func(t *testing.T) {
 			root := writeDefinitions(t, "schema: 1\ntemplates:\n  t:\n    "+field+"\n")
 			if err := os.Symlink(t.TempDir(), filepath.Join(root, "link")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(t.TempDir(), "missing.sh"), filepath.Join(root, "dangling")); err != nil {
 				t.Fatal(err)
 			}
 			_, err := LoadDefinitions(root)
@@ -156,5 +161,12 @@ func TestLoadDefinitionsRequiresTheSchema(t *testing.T) {
 	_, err := LoadDefinitions(root)
 	if err == nil || !strings.Contains(err.Error(), DefinitionFileName) || !strings.Contains(err.Error(), "schema: must be 1, got 0") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadDefinitionsAcceptsAMissingTailUnderTheRoot(t *testing.T) {
+	root := writeDefinitions(t, "schema: 1\ntemplates:\n  t:\n    build: {steps: [nodir/missing.sh]}\n")
+	if _, err := LoadDefinitions(root); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -130,8 +130,7 @@ func (l *LoadedDefinitions) confine(p string) (string, error) {
 	if !pathUnder(full, l.Root) {
 		return "", fmt.Errorf("%q leaves %s — a location may only cite its own files", p, l.Root)
 	}
-	// A missing target keeps the lexical check only: the build reports the missing file.
-	if resolved, err := filepath.EvalSymlinks(full); err == nil && !pathUnder(resolved, l.Root) {
+	if resolved := resolveExisting(full, 0); !pathUnder(resolved, l.Root) {
 		return "", fmt.Errorf("%q leaves %s through a symlink — a location may only cite its own files", p, l.Root)
 	}
 	return full, nil
@@ -151,4 +150,33 @@ func isKitReference(kit string) bool {
 func pathUnder(child, parent string) bool {
 	rel, err := filepath.Rel(parent, child)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolveExisting resolves every symlink on p's existing part and rejoins the missing tail, so a path through
+// a dangling link or an in-root directory link to outside is judged by where it would land; a tail that is
+// merely absent under an in-root directory still resolves in place and the build reports the missing file.
+func resolveExisting(p string, depth int) string {
+	if depth > 40 {
+		return p
+	}
+	tail := ""
+	for cur := p; ; cur = filepath.Dir(cur) {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, tail)
+		}
+		if st, err := os.Lstat(cur); err == nil && st.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(cur)
+			if err != nil {
+				return p
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(cur), target)
+			}
+			return resolveExisting(filepath.Join(target, tail), depth+1)
+		}
+		if filepath.Dir(cur) == cur {
+			return p
+		}
+		tail = filepath.Join(filepath.Base(cur), tail)
+	}
 }
