@@ -59,8 +59,8 @@ func LoadDefinitions(root string) (*LoadedDefinitions, error) {
 		return nil, err
 	}
 	l := &LoadedDefinitions{Path: path, Root: abs, File: f}
-	if f.Schema != 0 && f.Schema != DefinitionSchema {
-		return nil, fmt.Errorf("%s: schema %d is not supported (this den reads schema %d)", path, f.Schema, DefinitionSchema)
+	if f.Schema != DefinitionSchema {
+		return nil, fmt.Errorf("%s: invalid %s:\n  schema: must be %d, got %d", path, DefinitionFileName, DefinitionSchema, f.Schema)
 	}
 	var problems []string
 	for _, name := range sortedKeys(f.Templates) {
@@ -140,8 +140,8 @@ func (l *LoadedDefinitions) confine(p string) (string, error) {
 // isKitReference mirrors sbx.isRegistry (config cannot import sbx; keep the two in sync): a kit whose
 // first `/` component is a registry host is a reference sbx resolves itself, anything else is a path.
 func isKitReference(kit string) bool {
-	first, _, _ := strings.Cut(kit, "/")
-	if first == "." || first == ".." {
+	first, _, hasSlash := strings.Cut(kit, "/")
+	if !hasSlash || first == "." || first == ".." {
 		return false
 	}
 	return first == "localhost" || strings.ContainsAny(first, ".:")

@@ -119,3 +119,42 @@ func TestLoadDefinitionsNamesTheMissingFile(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestLoadDefinitionsKitReferenceOrPath(t *testing.T) {
+	cases := []struct {
+		kit    string
+		isPath bool
+	}{
+		{"kit.d", true},
+		{"my:kit", true},
+		{"localhost", true},
+		{"./kits/a", true},
+		{"kits/a", true},
+		{"localhost:5000/k", false},
+		{"docker.io/acme/kit:1", false},
+	}
+	for _, c := range cases {
+		t.Run(c.kit, func(t *testing.T) {
+			root := writeDefinitions(t, "schema: 1\ntemplates:\n  t:\n    kits: ["+c.kit+"]\n")
+			l, err := LoadDefinitions(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := c.kit
+			if c.isPath {
+				want = filepath.Join(root, c.kit)
+			}
+			if got := l.File.Templates["t"].Kits[0]; got != want {
+				t.Errorf("kit = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestLoadDefinitionsRequiresTheSchema(t *testing.T) {
+	root := writeDefinitions(t, "templates:\n  t: {}\n")
+	_, err := LoadDefinitions(root)
+	if err == nil || !strings.Contains(err.Error(), DefinitionFileName) || !strings.Contains(err.Error(), "schema: must be 1, got 0") {
+		t.Fatalf("err = %v", err)
+	}
+}
