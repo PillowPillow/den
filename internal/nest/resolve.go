@@ -15,6 +15,7 @@ type Repo struct {
 	Name, Path string
 	Optional   bool
 	Key        string
+	AdHoc      bool // added by --repo, not declared by the nest
 }
 
 // Resolved keeps GlobalFile and BaseFile so a refusal names the file that holds the value at fault.

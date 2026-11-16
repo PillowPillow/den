@@ -3,6 +3,7 @@ package nest
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/PillowPillow/den/internal/prompt"
@@ -10,6 +11,7 @@ import (
 
 type Selection struct {
 	Only, Without []string
+	Repos         []string // --repo, as typed: AddRepos resolves them
 	Interactive   bool
 }
 
@@ -86,6 +88,40 @@ func Select(ctx context.Context, r *Resolved, s Selection, p prompt.Prompter) ([
 	var out []Repo
 	for _, repo := range r.Repos {
 		if !repo.Optional || keep[repo.Name] {
+			out = append(out, repo)
+		}
+	}
+	return out, nil
+}
+
+// AddRepos appends the --repo folders to picked, in the order typed. A folder
+// the nest already declares keeps its declared entry, so `--without lib --repo
+// <lib's path>` mounts lib as the nest knows it.
+func AddRepos(r *Resolved, picked []Repo, raw []string, cwd string) ([]Repo, error) {
+	out := append([]Repo(nil), picked...)
+	for _, typed := range raw {
+		path, err := absPath(typed, cwd)
+		if err != nil {
+			return nil, fmt.Errorf("--repo %s: %w", typed, err)
+		}
+		repo := Repo{Name: filepath.Base(path), Path: path, AdHoc: true}
+		for _, declared := range r.Repos {
+			if declared.Path == path {
+				repo = declared
+			}
+		}
+		mounted := false
+		for _, have := range out {
+			if have.Path == repo.Path {
+				mounted = true
+				break
+			}
+			if have.Name == repo.Name {
+				return nil, fmt.Errorf("--repo %s: a repo named %q is already mounted from %s; "+
+					"the /den-git/<name> mount and `start:` need unique folder names", typed, repo.Name, have.Path)
+			}
+		}
+		if !mounted {
 			out = append(out, repo)
 		}
 	}

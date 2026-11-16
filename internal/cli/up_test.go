@@ -391,3 +391,56 @@ func TestUpRefusesAForeignSandbox(t *testing.T) {
 }
 
 func respJSON(s string) sbx.Response { return sbx.Response{Output: []byte(s)} }
+
+func TestUpRepoMountsAnExtraFolderAndKeepsItWithoutDrift(t *testing.T) {
+	f := newUpFixture(t)
+	api, extra := f.dir(t, "api"), f.dir(t, "extra")
+	f.project(t, [2]string{"am", "repos: [{path: " + api + "}]"})
+	if err := f.up("am", "--detach", "--repo", extra); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := registry.Read(f.home, "am")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range rec.Repos {
+		got = append(got, r.Repo)
+	}
+	if strings.Join(got, ",") != api+","+extra {
+		t.Fatalf("recorded repos %v, want the nest's then the --repo one", got)
+	}
+	f.live("am")
+	if err := f.up("am"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f.err.String(), "changed since") {
+		t.Errorf("drift reported on the next up: %q", f.err.String())
+	}
+}
+
+func TestUpWarnsThatRepoIsIgnoredOnALiveInstance(t *testing.T) {
+	f := newUpFixture(t)
+	f.liveAm(t, "stale")
+	if err := f.up("am", "--repo", f.dir(t, "extra")); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{"warning: ", "--repo is ignored", "am"} {
+		if !strings.Contains(f.err.String(), w) {
+			t.Errorf("stderr %q lacks %q", f.err.String(), w)
+		}
+	}
+}
+
+func TestUpRefusesAMissingRepoFolderBeforeAnySideEffect(t *testing.T) {
+	f := newUpFixture(t)
+	f.project(t, [2]string{"am", "repos: [{path: " + f.dir(t, "api") + "}]"})
+	missing := filepath.Join(f.src, "nope")
+	err := f.up("am", "--repo", missing)
+	if err == nil || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "--repo") {
+		t.Fatalf("error %v, want a refusal naming the folder and --repo", err)
+	}
+	if f.hasEnvCreate() {
+		t.Errorf("created despite the refusal: %v", f.fake.Calls)
+	}
+}

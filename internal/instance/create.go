@@ -310,7 +310,7 @@ func ensure(ctx context.Context, d Deps, o Options) (*Plan, registry.Record, err
 			fmt.Fprintf(d.Err, "warning: %s changed since %s was created — run `den rm %s` then `%s` to apply it\n",
 				p.Resolved.File.Path, p.Instance, p.Instance, upCommand(p))
 		}
-		if s := o.Selection; len(s.Only) > 0 || len(s.Without) > 0 || s.Interactive {
+		if s := o.Selection; len(s.Only) > 0 || len(s.Without) > 0 || len(s.Repos) > 0 || s.Interactive {
 			fmt.Fprintf(d.Err, "warning: %s is ignored: %s is running with the repos it was created with — "+
 				"run `den rm %s` then `%s` to change them\n", selectionFlag(s), p.Instance, p.Instance, upCommand(p))
 		}

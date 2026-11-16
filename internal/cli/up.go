@@ -17,7 +17,7 @@ func newUpCmd(deps Deps, denHome *string) *cobra.Command {
 		detach bool
 	)
 	cmd := &cobra.Command{
-		Use:   "up <nest> [-w <branch>] [--only a,b | --without a,b | -i] [--workdir <vm path>] [--detach]",
+		Use:   "up <nest> [-w <branch>] [--only a,b | --without a,b | -i] [--repo <path>]... [--workdir <vm path>] [--detach]",
 		Short: "Create a nest's instance if needed, then run Claude in it",
 		// MaximumNArgs, not ExactArgs: a missing nest gets the list of nests, not cobra's usage line.
 		Args: cobra.MaximumNArgs(1),
@@ -52,6 +52,7 @@ func newUpCmd(deps Deps, denHome *string) *cobra.Command {
 	f.StringVarP(&o.Branch, "worktree", "w", "", "run on a git worktree of every repo, on this branch")
 	f.StringSliceVar(&o.Selection.Only, "only", nil, "keep only these optional repos")
 	f.StringSliceVar(&o.Selection.Without, "without", nil, "drop these optional repos")
+	f.StringArrayVar(&o.Selection.Repos, "repo", nil, "also mount this folder, kept with the instance (repeatable)")
 	f.BoolVarP(&o.Selection.Interactive, "interactive", "i", false, "pick the optional repos from a checklist")
 	f.StringVar(&o.Workdir, "workdir", "", "folder Claude starts in, as a VM path")
 	f.BoolVar(&detach, "detach", false, "create or start the instance, leave it running, and do not attach")

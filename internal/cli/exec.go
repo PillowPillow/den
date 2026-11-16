@@ -13,7 +13,7 @@ import (
 func newExecCmd(deps Deps, denHome *string) *cobra.Command {
 	var o instance.Options
 	cmd := &cobra.Command{
-		Use:   "exec <nest> [-w <branch>] [--only a,b | --without a,b] [--workdir <vm path>] -- <cmd> [args…]",
+		Use:   "exec <nest> [-w <branch>] [--only a,b | --without a,b] [--repo <path>]... [--workdir <vm path>] -- <cmd> [args…]",
 		Short: "Create a nest's instance if needed, run one command in it, and return its exit code",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -55,6 +55,7 @@ func newExecCmd(deps Deps, denHome *string) *cobra.Command {
 	f.StringVarP(&o.Branch, "worktree", "w", "", "run on a git worktree of every repo, on this branch")
 	f.StringSliceVar(&o.Selection.Only, "only", nil, "keep only these optional repos")
 	f.StringSliceVar(&o.Selection.Without, "without", nil, "drop these optional repos")
+	f.StringArrayVar(&o.Selection.Repos, "repo", nil, "also mount this folder, kept with the instance (repeatable)")
 	f.BoolVarP(&o.Selection.Interactive, "interactive", "i", false, "refused: den exec never asks")
 	f.StringVar(&o.Workdir, "workdir", "", "folder the command runs in, as a VM path")
 	return cmd

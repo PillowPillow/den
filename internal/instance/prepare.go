@@ -98,6 +98,9 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	if repos, err = nest.AddRepos(res, repos, o.Selection.Repos, d.Cwd); err != nil {
+		return nil, err
+	}
 	if state == Recorded {
 		if err := checkRecordedWorktrees(rec, res, repos, wt); err != nil {
 			return nil, err
@@ -239,6 +242,9 @@ func checkRepos(ctx context.Context, g worktree.Git, res *nest.Resolved, repos [
 }
 
 func repoFix(res *nest.Resolved, r nest.Repo) string {
+	if r.AdHoc {
+		return "fix or drop `--repo " + r.Path + "`"
+	}
 	if r.Key != "" {
 		return fmt.Sprintf("fix `repos.%s` in %s", r.Key, res.GlobalFile)
 	}
@@ -502,6 +508,8 @@ func selectionFlag(sel nest.Selection) string {
 		return "--only"
 	case len(sel.Without) > 0:
 		return "--without"
+	case len(sel.Repos) > 0:
+		return "--repo"
 	case sel.Interactive:
 		return "-i"
 	}

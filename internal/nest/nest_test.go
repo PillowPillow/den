@@ -428,3 +428,37 @@ func TestResolveWarnsOnAnUndefinedProfile(t *testing.T) {
 		t.Fatalf("warnings %v kits %v", r.Warnings, r.Kits)
 	}
 }
+
+func TestAddReposAppendsInTypedOrderAndResolvesFromCwd(t *testing.T) {
+	picked := []Repo{{Name: "app", Path: "/a/app"}}
+	got, err := AddRepos(resolved(), picked, []string{"/b/zed", "../c/box"}, "/w/here")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Repo{{Name: "app", Path: "/a/app"}, {Name: "zed", Path: "/b/zed", AdHoc: true}, {Name: "box", Path: "/w/c/box", AdHoc: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestAddReposSkipsAMountedPathAndRestoresADroppedOptional(t *testing.T) {
+	picked := []Repo{{Name: "app", Path: "/a/app"}}
+	got, err := AddRepos(resolved(), picked, []string{"/a/app/", "/a/doc"}, "/w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Repo{{Name: "app", Path: "/a/app"}, {Name: "doc", Path: "/a/doc", Optional: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestAddReposRefusesAFolderNameAlreadyMounted(t *testing.T) {
+	picked := []Repo{{Name: "app", Path: "/a/app"}}
+	for _, raw := range [][]string{{"/other/app"}, {"/x/zed", "/y/zed"}} {
+		_, err := AddRepos(resolved(), picked, raw, "/w")
+		if err == nil || !strings.Contains(err.Error(), "--repo") || !strings.Contains(err.Error(), "unique") {
+			t.Fatalf("%v: error %v, want the name clash refusal", raw, err)
+		}
+	}
+}
