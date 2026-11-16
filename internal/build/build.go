@@ -79,6 +79,9 @@ type start struct {
 // child names the template whose build asked for this one, "" when the user did.
 func build(ctx context.Context, d Deps, global *config.Loaded, c template.Choice, child string, o Options) error {
 	name, tag := c.Name(), c.Tag()
+	if err := checkName(c, child); err != nil {
+		return err
+	}
 	src := template.SourceOf(c)
 	prev, err := template.ReadRecord(d.DenHome, name)
 	hasPrev := err == nil
@@ -147,9 +150,6 @@ func build(ctx context.Context, d Deps, global *config.Loaded, c template.Choice
 		return err
 	}
 	vm := name + "-build"
-	if err := sbx.ValidateCreatableSandboxName(vm); err != nil {
-		return err
-	}
 	boxes, err := sbx.Ls(ctx, d.Sbx)
 	if err != nil {
 		return err
@@ -184,6 +184,25 @@ func build(ctx context.Context, d Deps, global *config.Loaded, c template.Choice
 		Template: name, Tag: tag, Source: src, Commit: commit, DefinitionHash: hash, From: from,
 		BuiltAt: time.Now().UTC(),
 	})
+}
+
+// checkName refuses, before a trust entry or a clone, a name sbx would refuse only once the build
+// runs: the build VM <name>-build must be a sandbox name sbx creates, and the tag <name>:v2 an image
+// reference, which is lowercase.
+func checkName(c template.Choice, child string) error {
+	name := c.Name()
+	err := sbx.ValidateCreatableSandboxName(name + "-build")
+	if err == nil && strings.ToLower(name) != name {
+		err = fmt.Errorf("its sbx template %s must be lowercase", c.Tag())
+	}
+	if err == nil {
+		return nil
+	}
+	where := fmt.Sprintf("templates.%s in %s", c.Key, c.DeclaredIn.Path)
+	if child != "" {
+		where = fmt.Sprintf("the from: of template %q", child)
+	}
+	return fmt.Errorf("template name %q, from %s, cannot be built: %v — rename the template", name, where, err)
 }
 
 // confirmSource asks before den clones a URL that only a project file declares: the definition

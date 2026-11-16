@@ -669,6 +669,46 @@ func TestBuildRefusesAnImage(t *testing.T) {
 	}
 }
 
+func TestBuildRefusesAnIllegalNameBeforeTrustAndClone(t *testing.T) {
+	for name, entry := range map[string]string{
+		"uppercase":   "Kampn",
+		"leading dot": ".kampn",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			repo := newRepo(t, defs(entry, oneStep))
+			f.project(t, "templates:\n  bad:\n    repo: "+repo+"\n    name: "+entry+"\n")
+			err := f.build("bad", Options{Yes: true})
+			if err == nil || !strings.Contains(err.Error(), entry) || !strings.Contains(err.Error(), filepath.Join(f.cwd, "den.yaml")) {
+				t.Fatalf("err = %v, want a refusal naming %q and the project file", err, entry)
+			}
+			if ok, _ := template.Trusted(f.home, repo); ok {
+				t.Error("trusted before the name was checked")
+			}
+			if exists(template.StagingDir(f.home, entry)) || exists(template.CopyDir(f.home, entry)) {
+				t.Error("cloned before the name was checked")
+			}
+			if got := f.calls(); len(got) != 0 {
+				t.Errorf("sbx calls %v", got)
+			}
+		})
+	}
+}
+
+func TestBuildRefusesAnIllegalSiblingNameBeforeItsBuild(t *testing.T) {
+	f := newFixture(t)
+	loc := t.TempDir()
+	writeLocation(t, loc, strings.ReplaceAll(siblings, "digitaleo", "Digitaleo"))
+	f.global(t, "templates:\n  kampn:\n    dir: "+loc+"\n")
+	err := f.build("kampn", Options{})
+	if err == nil || !strings.Contains(err.Error(), `"Digitaleo"`) || !strings.Contains(err.Error(), `from: of template "kampn"`) {
+		t.Fatalf("err = %v, want a refusal naming the sibling and its child", err)
+	}
+	if got := f.calls(); len(got) != 0 {
+		t.Errorf("sbx calls %v", got)
+	}
+}
+
 func TestBuildRefusesAnUndeclaredTemplate(t *testing.T) {
 	f := newFixture(t)
 	loc := f.dirTemplate(t, "legacy", defs("other", oneStep))
