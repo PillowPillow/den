@@ -507,6 +507,104 @@ func TestBuildSkipsABuiltSibling(t *testing.T) {
 	}
 }
 
+func (f *fixture) siblingBuilt() {
+	f.templates(row("docker.io/docker/sandbox-templates", "claude-code-docker", digest), row("docker.io/library/digitaleo", "v2", "sha256:"+strings.Repeat("b", 64)))
+	f.fake.Calls = nil
+}
+
+func TestBuildRebuildsADriftedDirSibling(t *testing.T) {
+	f := newFixture(t)
+	loc := t.TempDir()
+	writeLocation(t, loc, siblings)
+	f.global(t, "templates:\n  kampn:\n    dir: "+loc+"\n")
+	if err := f.build("kampn", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	before := f.record(t, "kampn").DefinitionHash
+	writeFile(t, filepath.Join(loc, "one.sh"), "echo changed\n")
+	f.siblingBuilt()
+	if err := f.build("kampn", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"template save digitaleo-build digitaleo:v2", "template save kampn-build kampn:v2"}
+	if got := f.saves(); !slices.Equal(got, want) {
+		t.Errorf("saves %q, want %q", got, want)
+	}
+	if !f.fake.HasCalled("exec", "digitaleo-build", "--", "bash", "-lc", "echo changed\n") {
+		t.Errorf("digitaleo not rebuilt from its changed step: %v", f.calls())
+	}
+	if f.record(t, "kampn").DefinitionHash == before {
+		t.Error("kampn's definition hash did not move with its sibling's step")
+	}
+}
+
+func TestBuildWithPullRebuildsTheSiblingAtTheNewCommit(t *testing.T) {
+	f := newFixture(t)
+	repo := newRepo(t, siblings)
+	f.global(t, "templates:\n  kampn:\n    repo: "+repo+"\n")
+	if err := f.build("kampn", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	head := commitFile(t, repo, "README", "new\n")
+	f.siblingBuilt()
+	if err := f.build("kampn", Options{Pull: true}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"template save digitaleo-build digitaleo:v2", "template save kampn-build kampn:v2"}
+	if got := f.saves(); !slices.Equal(got, want) {
+		t.Errorf("saves %q, want %q", got, want)
+	}
+	for _, n := range []string{"digitaleo", "kampn"} {
+		if r := f.record(t, n); r.Commit != head {
+			t.Errorf("%s recorded at %s, want %s", n, r.Commit, head)
+		}
+	}
+}
+
+func TestBuildRefusesASiblingBuiltFromAnotherCommit(t *testing.T) {
+	f := newFixture(t)
+	repo := newRepo(t, siblings)
+	f.global(t, "templates:\n  kampn:\n    repo: "+repo+"\n")
+	if err := f.build("kampn", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	r := f.record(t, "digitaleo")
+	r.Commit = strings.Repeat("c", 40)
+	if err := template.WriteRecord(f.home, r); err != nil {
+		t.Fatal(err)
+	}
+	f.siblingBuilt()
+	err := f.build("kampn", Options{})
+	if err == nil || !strings.Contains(err.Error(), "den build kampn --pull") || !strings.Contains(err.Error(), r.Commit) {
+		t.Fatalf("err = %v, want a refusal naming `den build kampn --pull`", err)
+	}
+	if s := f.saves(); len(s) != 0 {
+		t.Errorf("saved %v before the refusal", s)
+	}
+}
+
+func TestBuildForceDoesNotReachTheSibling(t *testing.T) {
+	f := newFixture(t)
+	loc := t.TempDir()
+	writeLocation(t, loc, siblings)
+	f.global(t, "templates:\n  kampn:\n    dir: "+loc+"\n")
+	other := template.Record{Template: "digitaleo", Tag: "digitaleo:v2", Source: template.Source{Kind: "dir", Dir: "/elsewhere"},
+		DefinitionHash: "x", From: template.From{Ref: claudeCodeDocker, Digest: digest}}
+	if err := template.WriteRecord(f.home, other); err != nil {
+		t.Fatal(err)
+	}
+	err := f.build("kampn", Options{Force: true})
+	if err == nil || !strings.Contains(err.Error(), "den build digitaleo --force") || !strings.Contains(err.Error(), "/elsewhere") {
+		t.Fatalf("err = %v, want the sibling's refusal naming `den build digitaleo --force`", err)
+	}
+	if r := f.record(t, "digitaleo"); r.Source != other.Source {
+		t.Errorf("digitaleo's record moved to %+v", r.Source)
+	}
+	if s := f.saves(); len(s) != 0 {
+		t.Errorf("saved %v", s)
+	}
+}
+
 func TestBuildWithoutFromNeedsAnImageDefault(t *testing.T) {
 	noFrom := defs("kampn", "    build:\n      steps: [one.sh]\n")
 	for name, global := range map[string]string{

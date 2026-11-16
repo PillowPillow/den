@@ -202,9 +202,13 @@ templates:
   resolves itself; write Docker Hub kits as `docker.io/acme/kit:1`.
 - **`from`** is a sibling template's name, an image (same rules as a nest's value), or empty. Empty
   means the global `default_template`, which must then be an image. The definition is decoded strictly.
-- A template that is only the `from:` of a sibling, and is not declared under `templates:` in a
-  `den.yaml`, is built automatically when it is missing but cannot be updated on its own. Declare
-  it under `templates:` to rebuild it with `den build <name> [--pull]`.
+- A sibling a template starts `from:` is built with it: `den build <child>` first builds the sibling
+  when it is missing or stale, that is when a `dir` sibling's definition changed, or when a `repo`
+  sibling was built from another commit than the child's. `--pull` re-clones both; a child kept at
+  an older commit than its sibling is refused with `den build <child> --pull`. A sibling's files
+  count in its child's definition hash. `--force` on the child never reaches the sibling: a sibling
+  built from another source is refused with `den build <sibling> --force`, which needs the sibling
+  declared under `templates:`.
 
 `den build <template>` builds the sbx template `<name>:v2`. `den up` never clones and never
 builds: while the template is missing it refuses and names `den build <template>`. Once built,

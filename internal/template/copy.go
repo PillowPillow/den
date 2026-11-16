@@ -97,6 +97,9 @@ func RemoteHead(ctx context.Context, g worktree.Git, url, ref string) (string, e
 
 // DefinitionHash covers den-template.yaml and every local file the template cites, so a changed
 // kit, include or step marks the built image stale. A kit that is a registry reference is not a file.
+// The files of each sibling the template starts from, up its from: chain, count too: the image is
+// built on theirs, so a sibling's step edit must move the child's hash. They are labelled by template
+// so that a template with no sibling keeps the hash it always had.
 func DefinitionHash(d *config.LoadedDefinitions, name string) (string, error) {
 	def, ok := d.File.Templates[name]
 	if !ok {
@@ -117,6 +120,21 @@ func DefinitionHash(d *config.LoadedDefinitions, name string) (string, error) {
 		return "", fmt.Errorf("hashing %s: %w", d.Path, err)
 	}
 	add(config.DefinitionFileName, raw)
+	if err := hashCited(d, name, def, "", add); err != nil {
+		return "", err
+	}
+	// LoadDefinitions refuses a cycle; seen only keeps a hand-built value from looping.
+	seen := map[string]bool{name: true}
+	for cur := def.From; d.IsSibling(cur) && !seen[cur]; cur = d.File.Templates[cur].From {
+		seen[cur] = true
+		if err := hashCited(d, cur, d.File.Templates[cur], "template:"+cur+":", add); err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func hashCited(d *config.LoadedDefinitions, name string, def config.Definition, prefix string, add func(string, []byte)) error {
 	var cited []string
 	for _, k := range def.Kits {
 		if filepath.IsAbs(k) {
@@ -129,11 +147,11 @@ func DefinitionHash(d *config.LoadedDefinitions, name string) (string, error) {
 		// WalkDir does not follow a symlinked root; LoadDefinitions accepts one that stays under Root.
 		citedRel, err := filepath.Rel(d.Root, root)
 		if err != nil {
-			return "", fmt.Errorf("hashing %s cited by template %q in %s: %w", root, name, d.Path, err)
+			return fmt.Errorf("hashing %s cited by template %q in %s: %w", root, name, d.Path, err)
 		}
 		real, err := filepath.EvalSymlinks(root)
 		if err != nil {
-			return "", fmt.Errorf("hashing %s cited by template %q in %s: %w", root, name, d.Path, err)
+			return fmt.Errorf("hashing %s cited by template %q in %s: %w", root, name, d.Path, err)
 		}
 		err = filepath.WalkDir(real, func(p string, e fs.DirEntry, err error) error {
 			if err != nil {
@@ -143,7 +161,7 @@ func DefinitionHash(d *config.LoadedDefinitions, name string) (string, error) {
 			if err != nil {
 				return err
 			}
-			label := filepath.ToSlash(filepath.Join(citedRel, rel))
+			label := prefix + filepath.ToSlash(filepath.Join(citedRel, rel))
 			if e.Type()&fs.ModeSymlink != 0 {
 				target, err := os.Readlink(p)
 				if err != nil {
@@ -163,8 +181,8 @@ func DefinitionHash(d *config.LoadedDefinitions, name string) (string, error) {
 			return nil
 		})
 		if err != nil {
-			return "", fmt.Errorf("hashing %s cited by template %q in %s: %w", root, name, d.Path, err)
+			return fmt.Errorf("hashing %s cited by template %q in %s: %w", root, name, d.Path, err)
 		}
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return nil
 }

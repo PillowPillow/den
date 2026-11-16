@@ -54,7 +54,7 @@ func Build(ctx context.Context, d Deps, value string, o Options) error {
 	if c.IsImage() {
 		return fmt.Errorf("%q is an image; it has no build — use it as template: or default_template directly", value)
 	}
-	return build(ctx, d, global, c, o)
+	return build(ctx, d, global, c, "", o)
 }
 
 func loadProject(cwd, denHome string) (*config.Loaded, error) {
@@ -73,13 +73,20 @@ type start struct {
 	readDigest bool
 }
 
-func build(ctx context.Context, d Deps, global *config.Loaded, c template.Choice, o Options) error {
+// child names the template whose build asked for this one, "" when the user did.
+func build(ctx context.Context, d Deps, global *config.Loaded, c template.Choice, child string, o Options) error {
 	name, tag := c.Name(), c.Tag()
 	src := template.SourceOf(c)
 	prev, err := template.ReadRecord(d.DenHome, name)
 	hasPrev := err == nil
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
+	}
+	if hasPrev && prev.Source != src && child != "" {
+		return fmt.Errorf("template %q was built from %s, but template %q starts from a sibling of that name in %s, "+
+			"and a child's build never replaces another source's template — run `den build %s --force` "+
+			"(declare %s under templates: with that source first if no den.yaml does)",
+			name, template.DescribeSource(prev.Source), child, template.DescribeSource(src), name, name)
 	}
 	if hasPrev && prev.Source != src && !o.Force {
 		return fmt.Errorf("template %q was built from %s, but templates.%s in %s now declares %s — "+
@@ -150,7 +157,7 @@ func build(ctx context.Context, d Deps, global *config.Loaded, c template.Choice
 			"run `sbx rm %s` if it is a leftover, then `den build %s` again", vm, vm, c.Value)
 	}
 
-	st, err := startOf(ctx, d, global, c, defs, def, o)
+	st, err := startOf(ctx, d, global, c, defs, def, commit, staging != "", o)
 	if err != nil {
 		return err
 	}
@@ -204,26 +211,36 @@ func confirmSource(ctx context.Context, d Deps, c template.Choice, o Options) er
 	return template.Trust(d.DenHome, url)
 }
 
-// startOf resolves the definition's from: a sibling (built first when it has no usable build), an
-// image, or, when from is empty, the global default_template if it names an image.
-func startOf(ctx context.Context, d Deps, global *config.Loaded, c template.Choice, defs *config.LoadedDefinitions, def config.Definition, o Options) (start, error) {
+// startOf resolves the definition's from: a sibling (built first when it has no usable build or a
+// stale one), an image, or, when from is empty, the global default_template if it names an image.
+// commit is the checkout the child builds from, and fresh says it was cloned by this build.
+func startOf(ctx context.Context, d Deps, global *config.Loaded, c template.Choice, defs *config.LoadedDefinitions, def config.Definition,
+	commit string, fresh bool, o Options) (start, error) {
 	name := c.Name()
 	if defs.IsSibling(def.From) {
 		sib := c
 		sib.Entry.Name = def.From
-		need, err := needsBuild(ctx, d, sib)
+		need, err := needsBuild(ctx, d, sib, defs, commit, fresh)
 		if err != nil {
 			return start{}, err
 		}
 		if need {
 			fmt.Fprintf(d.Err, "den: building template %s first (template %s starts from it)\n", def.From, name)
-			if err := build(ctx, d, global, sib, o); err != nil {
+			// A sibling's copy sits at the commit its record names, so only a fresh clone can reach the
+			// child's. --force stays the user's to give per template: it would replace another source silently.
+			so := Options{Pull: o.Pull || fresh, Yes: o.Yes}
+			if err := build(ctx, d, global, sib, name, so); err != nil {
 				return start{}, err
 			}
 		}
 		rec, err := template.ReadRecord(d.DenHome, def.From)
 		if err != nil {
 			return start{}, err
+		}
+		// Building on a sibling of another commit would record a definition hash over files the image was not built from.
+		if template.SourceOf(c).Kind == "repo" && rec.Commit != commit {
+			return start{}, fmt.Errorf("template %q was built from commit %s, but template %q builds from its copy at %s — "+
+				"run `den build %s --pull` to build both from one commit", def.From, rec.Commit, name, commit, c.Value)
 		}
 		// The kit image is pinned by digest: never render "<repository>@" from an empty one.
 		if rec.From.Digest == "" {
@@ -247,8 +264,11 @@ func startOf(ctx context.Context, d Deps, global *config.Loaded, c template.Choi
 }
 
 // needsBuild says whether a sibling has no build a child can start from: no record, a record from
-// another source (its own build then refuses without --force), or no tag in sbx.
-func needsBuild(ctx context.Context, d Deps, sib template.Choice) (bool, error) {
+// another source (its own build then refuses), a stale record, or no tag in sbx. A repo sibling is
+// stale when it was built from another commit than the child's checkout, which only a fresh clone
+// can fix: from a kept copy it answers false and startOf refuses with the --pull remedy. A dir
+// sibling is stale when its definition hash moved.
+func needsBuild(ctx context.Context, d Deps, sib template.Choice, defs *config.LoadedDefinitions, commit string, fresh bool) (bool, error) {
 	rec, err := template.ReadRecord(d.DenHome, sib.Name())
 	if errors.Is(err, fs.ErrNotExist) {
 		return true, nil
@@ -256,8 +276,21 @@ func needsBuild(ctx context.Context, d Deps, sib template.Choice) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	if rec.Source != template.SourceOf(sib) {
+	src := template.SourceOf(sib)
+	if rec.Source != src {
 		return true, nil
+	}
+	if src.Kind == "repo" && rec.Commit != commit {
+		return fresh, nil
+	}
+	if src.Kind == "dir" {
+		hash, err := template.DefinitionHash(defs, sib.Name())
+		if err != nil {
+			return false, err
+		}
+		if hash != rec.DefinitionHash {
+			return true, nil
+		}
 	}
 	list, err := sbx.Templates(ctx, d.Sbx)
 	if err != nil {

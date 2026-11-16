@@ -289,3 +289,87 @@ func TestDefinitionHashFollowsAnInRootKitSymlink(t *testing.T) {
 		t.Fatal("a file under the symlinked kit did not move the hash")
 	}
 }
+
+func TestDefinitionHashCoversTheFromChain(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, content string) {
+		p := filepath.Join(root, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("den-template.yaml", `schema: 1
+templates:
+  root:
+    from: claude-code-docker
+    kits: [kits/r]
+    build:
+      includes: [inc/r.sh]
+      steps: [steps/r.sh]
+  digitaleo:
+    from: root
+    build:
+      steps: [steps/d.sh]
+  kampn:
+    from: digitaleo
+    build:
+      steps: [steps/k.sh]
+  other:
+    from: claude-code-docker
+    build:
+      steps: [steps/o.sh]
+`)
+	for _, rel := range []string{"kits/r/spec.yaml", "inc/r.sh", "steps/r.sh", "steps/d.sh", "steps/k.sh", "steps/o.sh"} {
+		write(rel, "one")
+	}
+	hash := func() string {
+		d, err := config.LoadDefinitions(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := DefinitionHash(d, "kampn")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	base := hash()
+	for _, rel := range []string{"steps/d.sh", "kits/r/spec.yaml", "inc/r.sh", "steps/r.sh"} {
+		write(rel, "two")
+		if hash() == base {
+			t.Fatalf("%s, cited by a template kampn starts from, did not move kampn's hash", rel)
+		}
+		write(rel, "one")
+	}
+	write("steps/o.sh", "two")
+	if hash() != base {
+		t.Fatal("a template outside the chain moved the hash")
+	}
+}
+
+func TestDefinitionHashOfATemplateWithoutSiblingIgnoresItsChildren(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "steps"), 0o755)
+	os.WriteFile(filepath.Join(root, "den-template.yaml"), []byte("schema: 1\ntemplates:\n"+
+		"  digitaleo:\n    from: claude-code-docker\n    build:\n      steps: [steps/d.sh]\n"+
+		"  kampn:\n    from: digitaleo\n    build:\n      steps: [steps/k.sh]\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "steps", "d.sh"), []byte("one"), 0o644)
+	os.WriteFile(filepath.Join(root, "steps", "k.sh"), []byte("one"), 0o644)
+	hash := func() string {
+		d, err := config.LoadDefinitions(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := DefinitionHash(d, "digitaleo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	base := hash()
+	os.WriteFile(filepath.Join(root, "steps", "k.sh"), []byte("two"), 0o644)
+	if hash() != base {
+		t.Fatal("a child's step moved its parent's hash")
+	}
+}
