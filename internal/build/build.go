@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/PillowPillow/den/internal/config"
@@ -52,7 +53,9 @@ func Build(ctx context.Context, d Deps, value string, o Options) error {
 		return err
 	}
 	if c.IsImage() {
-		return fmt.Errorf("%q is an image; it has no build — use it as template: or default_template directly", value)
+		return fmt.Errorf("no template is named %q in %s, so it is the image %s, which has no build — "+
+			"declare it under templates: there, or use the image directly as template: or default_template",
+			value, strings.Join(c.Searched, " or "), c.Image)
 	}
 	return build(ctx, d, global, c, "", o)
 }

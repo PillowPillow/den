@@ -41,7 +41,7 @@ func TestBuildCommandBuildsATemplate(t *testing.T) {
 func TestBuildCommandRefusesAnImage(t *testing.T) {
 	f := newUpFixture(t)
 	err := f.up2("build", "nope")
-	if err == nil || !strings.Contains(err.Error(), `"nope" is an image`) {
+	if err == nil || !strings.Contains(err.Error(), `no template is named "nope"`) || !strings.Contains(err.Error(), "which has no build") {
 		t.Fatalf("err = %v", err)
 	}
 	for _, c := range f.fake.Calls {

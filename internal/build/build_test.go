@@ -656,8 +656,11 @@ func TestBuildWithoutFromNeedsAnImageDefault(t *testing.T) {
 
 func TestBuildRefusesAnImage(t *testing.T) {
 	f := newFixture(t)
+	f.project(t, "templates: {}\n")
 	err := f.build("claude-code-docker", Options{})
-	want := `"claude-code-docker" is an image; it has no build — use it as template: or default_template directly`
+	want := `no template is named "claude-code-docker" in ` + filepath.Join(f.cwd, "den.yaml") + " or " + filepath.Join(f.home, "den.yaml") +
+		`, so it is the image ` + claudeCodeDocker + `, which has no build — declare it under templates: there, ` +
+		`or use the image directly as template: or default_template`
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
 	}
