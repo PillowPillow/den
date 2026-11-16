@@ -33,8 +33,9 @@ go test ./internal/instance/ -run TestCreatePassesNoInputForceAndSkipHostCommand
 `state/v2/` keeps the real branch, so nothing re-derives it from the name.
 
 **Config**: `den.yaml` has two kinds, one strict schema (`internal/config`): the global file in the
-den home (the only one allowed `worktrees`, `repos`, `env`, `network`, `profiles`, `default_template`) and a project file found by
-walking up from the cwd. Decoding is `KnownFields(true)` everywhere: an unknown key is a load error
+den home (the only one allowed `worktrees`, `repos`, `env`, `network`, `profiles`) and a project file found by
+walking up from the cwd; both may carry `templates` and `default_template` (a nest without `template:` takes its own file's
+`default_template`, then the global one). Decoding is `KnownFields(true)` everywhere: an unknown key is a load error
 naming the file, never a silence (a silent `network:` typo would empty an allowlist). `nest.Find`
 locates the declaring file (project, then `state/v2/nests.yaml`, then global); `nest.Resolve`
 merges global, template and nest into a `*nest.Resolved`. A nest name declared by two live files is

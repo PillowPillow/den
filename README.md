@@ -93,7 +93,7 @@ Every command takes `--den-home <dir>` (or `$DEN_HOME`) to use another directory
 There are two kinds of file, with the same name and the same strict schema:
 
 - the **global file**, `<denHome>/den.yaml`: your machine. It is the only one that may carry
-  `worktrees`, `repos`, `env`, `network`, `profiles` and `default_template`;
+  `worktrees`, `repos`, `env`, `network` and `profiles`;
 - a **project file**, `den.yaml` in a project folder: templates and nests that travel with the project.
   den finds it by walking up from the current directory. A project file carrying a global-only key
   is refused.
@@ -119,9 +119,9 @@ network:
     - api.anthropic.com
 profiles:                      # a profile is a named list of kits, see "Profiles"
   perso: [~/.den/kits/perso]
-default_template: claude-code-docker   # optional; the template of a nest that names none, see "Templates"
 
 # --- both kinds of file -----------------------------------------------------
+default_template: claude-code-docker   # optional; the template of a nest that names none, see "Templates"
 profile: perso                 # default profile of every nest of this file
 templates:                     # where a template's definition lives, see "Templates"
   node:
@@ -152,8 +152,8 @@ nests:
 ### Templates
 
 A **template** is what a nest starts from: an sbx template den built from a definition, or an
-official image. `template:` on a nest (or `default_template:` in the global file) names one, and den
-reads the value in this order:
+official image. `template:` on a nest names one; without it, `default_template:` of the nest's own file
+does, then the global file's. den reads the value in this order:
 
 1. a template declared under `templates:` in a `den.yaml`: the project file first (it masks a global
    entry of the same key), then the global file;
