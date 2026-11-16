@@ -334,13 +334,15 @@ func ensure(ctx context.Context, d Deps, o Options) (*Plan, registry.Record, err
 
 // imageHint names the key to fix when the VM failed to start from an image: a mistyped short name
 // reads as an image reference, so the user otherwise sees sbx's pull error and no hint that den
-// looked for a template first. A template's failure needs none: its name was found.
+// looked for a template first. A template's failure needs none: its name was found. It is worded
+// as a condition because the attach error it follows can also be a first session that exited
+// non-zero or a Ctrl-C, where the image started fine.
 func imageHint(p *Plan) string {
 	c := p.Resolved.Template.Choice
 	if !c.IsImage() {
 		return ""
 	}
-	return fmt.Sprintf(": no template is named %q in %s, and sbx could not start the image %s — fix %s",
+	return fmt.Sprintf(": if the VM never started, no template is named %q in %s, and sbx could not start the image %s — fix %s",
 		c.Value, strings.Join(c.Searched, " or "), c.Image, c.Origin)
 }
 

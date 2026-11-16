@@ -479,7 +479,7 @@ func TestCreateOnAnImageNamesTheKeyOnFailure(t *testing.T) {
 	_, err := Create(context.Background(), f.deps(), p)
 	c := p.Resolved.Template.Choice
 	for _, w := range []string{
-		`no template is named "claude-cod" in ` + strings.Join(c.Searched, " or ") +
+		`: if the VM never started, no template is named "claude-cod" in ` + strings.Join(c.Searched, " or ") +
 			", and sbx could not start the image docker.io/docker/sandbox-templates:claude-cod",
 		"fix " + c.Origin,
 	} {
@@ -495,7 +495,7 @@ func TestUpNamesTheKeyWhenTheAttachFailsRightAfterCreate(t *testing.T) {
 	f.fake.AttachErr = errors.New("image not found")
 	err := Up(context.Background(), f.deps(), Options{Nest: "am"}, false)
 	if err == nil || !strings.Contains(err.Error(), "image not found") ||
-		!strings.Contains(err.Error(), `no template is named "claude-cod"`) ||
+		!strings.Contains(err.Error(), `: if the VM never started, no template is named "claude-cod"`) ||
 		!strings.Contains(err.Error(), "fix "+p.Resolved.Template.Choice.Origin) {
 		t.Errorf("error %v", err)
 	}
