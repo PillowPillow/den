@@ -140,6 +140,7 @@ func TestRmForceRemovesAll(t *testing.T) {
 	api := f.committedRepo(t, "api")
 	rec := f.created(t, repos(repoEntry(api, false)))
 	writeFile(t, filepath.Join(rec.Repos[0].Mount, "notes.txt"), "work\n")
+	shared := writeFile(t, filepath.Join(f.home, "gen", ".templates", "legacy", "den-template.yaml"), "schema: 1\n")
 
 	if err := f.remove(rec.Instance, true); err != nil {
 		t.Fatal(err)
@@ -151,7 +152,7 @@ func TestRmForceRemovesAll(t *testing.T) {
 	if _, err := f.git.Run(context.Background(), api, "rev-parse", "--verify", "-q", "refs/heads/feat"); err != nil {
 		t.Errorf("rm deleted branch feat: %v", err)
 	}
-	mustExist(t, filepath.Join(f.home, "gen", ".kits", "den-claude", "spec.yaml"))
+	mustExist(t, shared)
 }
 
 func TestRmPassesSkipHostCommands(t *testing.T) {

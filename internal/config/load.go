@@ -6,9 +6,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // GlobalFile is the global den.yaml inside denHome.
@@ -38,6 +39,9 @@ func Load(path string, global bool) (*Loaded, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", abs, &FileError{Err: err})
 	}
+	if removed := removedKeys(raw); len(removed) > 0 {
+		return nil, fmt.Errorf("%s: invalid %s:\n  %s", abs, FileName, strings.Join(removed, "\n  "))
+	}
 	var f File
 	if err := DecodeYAMLStrict(abs, raw, &f); err != nil {
 		return nil, err
@@ -61,7 +65,48 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-var agentImagePattern = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
+// removedKeys reads raw leniently for the keys templates replaced, so the error names the replacement
+// instead of the strict decoder's "unknown key". YAML it cannot parse is left to the strict decoder.
+func removedKeys(raw []byte) []string {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil || len(doc.Content) == 0 {
+		return nil
+	}
+	root := doc.Content[0]
+	var out []string
+	if mappingValue(root, "bases") != nil {
+		out = append(out, "bases: removed — declare the template in a den-template.yaml and point at it with templates.<name>.dir or .repo")
+	}
+	if mappingValue(root, "agents") != nil {
+		out = append(out, "agents: removed — set default_template to an image, e.g. claude-code-docker")
+	}
+	if nests := mappingValue(root, "nests"); nests != nil && nests.Kind == yaml.MappingNode {
+		var names []string
+		for i := 0; i+1 < len(nests.Content); i += 2 {
+			if mappingValue(nests.Content[i+1], "base") != nil {
+				names = append(names, nests.Content[i].Value)
+			}
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			out = append(out, fmt.Sprintf("nests.%s.base: renamed — use nests.%s.template", n, n))
+		}
+	}
+	return out
+}
+
+// mappingValue returns the value node of key in mapping n, nil when n is not a mapping or lacks key.
+func mappingValue(n *yaml.Node, key string) *yaml.Node {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+	return nil
+}
 
 // validate returns one line per problem, so a file is fixed in one pass.
 func validate(f *File, global bool) []string {
@@ -87,18 +132,6 @@ func validate(f *File, global bool) []string {
 		}
 		if f.Profiles != nil {
 			add("profiles: %s", move)
-		}
-		if f.Agents != nil {
-			add("agents: %s", move)
-		}
-	}
-	for _, name := range sortedKeys(f.Agents) {
-		if name != "claude" {
-			add("agents.%s: unknown agent — this den knows `claude` only", name)
-			continue
-		}
-		if img := f.Agents[name].Image; !agentImagePattern.MatchString(img) {
-			add("agents.%s.image: %q must pin a digest, <ref>@sha256:<64 hex> — `docker buildx imagetools inspect <ref>` prints it", name, img)
 		}
 	}
 	for _, name := range sortedKeys(f.Profiles) {
@@ -135,27 +168,11 @@ func validate(f *File, global bool) []string {
 		}
 	}
 
-	for _, name := range sortedKeys(f.Bases) {
-		b := f.Bases[name]
-		key := "bases." + name
-		if err := ValidateName("base", name); err != nil {
-			add("%s: %v", key, err)
-		}
-		if b.Image == "" {
-			add("%s.image: required — the template tag `den build` saves", key)
-		}
-	}
-
 	for _, name := range sortedKeys(f.Nests) {
 		n := f.Nests[name]
 		key := "nests." + name
 		if err := ValidateSandboxComponent("nest", name); err != nil {
 			add("%s: %v", key, err)
-		}
-		if n.Base != "" {
-			if err := ValidateName("base", n.Base); err != nil {
-				add("%s.base: %v", key, err)
-			}
 		}
 		if n.Profile != "" {
 			if err := ValidateName("profile", n.Profile); err != nil {
@@ -259,12 +276,6 @@ func (l *Loaded) absolutize() error {
 
 	for _, list := range l.File.Profiles {
 		kits(list)
-	}
-	for name, b := range l.File.Bases {
-		kits(b.Kits)
-		paths(b.Build.Includes)
-		paths(b.Build.Steps)
-		l.File.Bases[name] = b
 	}
 	for key, e := range l.File.Templates {
 		e.Dir = abs(e.Dir)

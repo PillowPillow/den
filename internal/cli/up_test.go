@@ -27,9 +27,8 @@ func newUpFixture(t *testing.T) *upFixture {
 	t.Helper()
 	f := &upFixture{home: t.TempDir(), proj: t.TempDir(), src: t.TempDir(), prompt: &prompt.Fake{}}
 	f.fake = &sbx.Fake{Responses: map[string]sbx.Response{
-		"version":            {Output: []byte("sbx version v0.53.0 abc\n")},
-		"ls --json":          {Output: []byte(`[]`)},
-		"template ls --json": {Output: []byte(`[{"repository":"docker.io/library/b","tag":"v1"}]`)},
+		"version":   {Output: []byte("sbx version v0.53.0 abc\n")},
+		"ls --json": {Output: []byte(`[]`)},
 	}}
 	return f
 }
@@ -44,13 +43,14 @@ func writeTestFile(t *testing.T, path, body string) {
 	}
 }
 
-// project writes den.yaml with each nest name → its YAML body, indented under the name.
+// project writes den.yaml with each nest name → its YAML body, indented under the name; the nests
+// run on the official claude-code-docker image.
 func (f *upFixture) project(t *testing.T, nests ...[2]string) {
 	t.Helper()
 	var b strings.Builder
-	b.WriteString("schema: 1\nbases:\n  b: {image: \"b:v1\"}\nnests:\n")
+	b.WriteString("schema: 1\ndefault_template: claude-code-docker\nnests:\n")
 	for _, n := range nests {
-		fmt.Fprintf(&b, "  %s:\n    base: b\n", n[0])
+		fmt.Fprintf(&b, "  %s:\n", n[0])
 		for _, line := range strings.Split(strings.TrimSpace(n[1]), "\n") {
 			b.WriteString("    " + line + "\n")
 		}

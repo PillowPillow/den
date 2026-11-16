@@ -4,11 +4,12 @@ name: den-claude
 version: 1.0.0
 description: >-
   den's Claude agent: no credentials block, so sbx keeps the Authorization header and the
-  subscription OAuth token works (spike S3, option d). The base image provides Claude Code.
+  subscription OAuth token works (spike S3, option d). The image provides Claude Code.
 sandbox:
-  # sbx runs the image's ENTRYPOINT as PID 1 (the kit entrypoint only launches the agent): this one is
-  # `tini --`. docker.io/sbx/claude has ENTRYPOINT [claude], which exits and stops the VM (S6e).
-  image: docker.io/docker/sandbox-templates@sha256:4a94d9144a70df744fd9247e0c365a14cfb97024afab8db7597c8ba3e0637642
+  # den replaces this placeholder with the template's image pinned by digest, or the image the nest
+  # names. sbx runs the image's ENTRYPOINT as PID 1 (the kit entrypoint only launches the agent):
+  # docker.io/sbx/claude has ENTRYPOINT [claude], which exits and stops the VM (S6e).
+  image: set-by-den
   entrypoint: ["claude", "--dangerously-skip-permissions"]
 permissions:
   network:

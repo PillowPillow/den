@@ -25,7 +25,7 @@ func golden(t *testing.T, name string, got []byte) {
 func TestRenderPlainGolden(t *testing.T) {
 	got, err := Render(Env{
 		Name:      "am",
-		Kits:      []string{"/h/.den/gen/.kits/den-claude", "/h/.den/gen/am/network"},
+		Kits:      []string{"/h/.den/gen/am/den-claude", "/h/.den/gen/am/network"},
 		Workspace: "/h/.den/run/am",
 		Mounts:    []Mount{{Path: "/h/dev/am-backend"}},
 	})
@@ -38,7 +38,7 @@ func TestRenderPlainGolden(t *testing.T) {
 func TestRenderWorktreeGolden(t *testing.T) {
 	got, err := Render(Env{
 		Name:      "am.feat",
-		Kits:      []string{"/h/.den/gen/.kits/den-claude", "/h/.den/kits/pillow-env", "/h/.den/gen/am.feat/network"},
+		Kits:      []string{"/h/.den/gen/am.feat/den-claude", "/h/.den/kits/pillow-env", "/h/.den/gen/am.feat/network"},
 		Workspace: "/h/.den/run/am.feat",
 		Mounts: []Mount{
 			{Path: "/h/.den/wt/feat/am-backend", Target: "/h/dev/am-backend"},
@@ -85,9 +85,20 @@ func TestNetworkKitGolden(t *testing.T) {
 	golden(t, "network.golden", NetworkKit([]string{"api.github.com", "registry.npmjs.org"}))
 }
 
+const kitImage = "docker.io/docker/sandbox-templates:claude-code-docker"
+
+func kit(t *testing.T, image string) []byte {
+	t.Helper()
+	spec, err := DenClaudeKit(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec
+}
+
 func TestDenClaudeKitHasNoCredentialsBlock(t *testing.T) {
 	var m map[string]any
-	if err := yaml.Unmarshal(DenClaudeKit(), &m); err != nil {
+	if err := yaml.Unmarshal(kit(t, kitImage), &m); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := m["credentials"]; ok {
@@ -102,7 +113,7 @@ func TestDenClaudeKitHasNoSettingsFlag(t *testing.T) {
 		} `yaml:"sandbox"`
 		Setup any `yaml:"setup"`
 	}
-	if err := yaml.Unmarshal(DenClaudeKit(), &m); err != nil {
+	if err := yaml.Unmarshal(kit(t, kitImage), &m); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"claude", "--dangerously-skip-permissions"}; !reflect.DeepEqual(m.Sandbox.Entrypoint, want) {
@@ -120,50 +131,42 @@ func TestGitFile(t *testing.T) {
 }
 
 func TestDenClaudeKitHoldsExactlyOneImageLine(t *testing.T) {
-	if n := strings.Count(string(DenClaudeKit()), "\n  image: "); n != 1 {
-		t.Fatalf("embedded spec has %d `  image:` lines, want 1: WithAgentImage replaces that line", n)
+	if n := strings.Count(string(denClaudeSpec), "\n  image: "); n != 1 {
+		t.Fatalf("embedded spec has %d `  image:` lines, want 1: DenClaudeKit replaces that line", n)
 	}
 }
 
-func TestDenClaudeKitPinsAnImageWhoseEntrypointKeepsTheVMAlive(t *testing.T) {
-	var spec struct {
-		Sandbox struct {
-			Image string `yaml:"image"`
-		} `yaml:"sandbox"`
-	}
-	if err := yaml.Unmarshal(DenClaudeKit(), &spec); err != nil {
-		t.Fatal(err)
-	}
-	if strings.HasPrefix(spec.Sandbox.Image, "docker.io/sbx/claude") {
-		t.Error("docker.io/sbx/claude has ENTRYPOINT [claude]: sbx runs it as PID 1 and the VM stops within seconds (S6e)")
-	}
-	if !strings.HasPrefix(spec.Sandbox.Image, "docker.io/docker/sandbox-templates@sha256:") {
-		t.Errorf("image %q: want the tini-entrypoint sandbox-templates image pinned by digest", spec.Sandbox.Image)
-	}
-}
-
-func TestDenClaudeKitWithAgentImage(t *testing.T) {
-	if got := DenClaudeKitWithImage(""); !bytes.Equal(got, DenClaudeKit()) {
-		t.Error("an empty image must leave the embedded spec byte-identical")
-	}
-	got := string(DenClaudeKitWithImage("r.test/c@sha256:" + strings.Repeat("0", 64)))
-	if !strings.Contains(got, "\n  image: r.test/c@sha256:"+strings.Repeat("0", 64)+"\n") || strings.Contains(got, "docker.io/docker/sandbox-templates@") {
+func TestDenClaudeKitReplacesTheImage(t *testing.T) {
+	image := "r.test/c@sha256:" + strings.Repeat("0", 64)
+	got := string(kit(t, image))
+	if !strings.Contains(got, "\n  image: "+image+"\n") || strings.Count(got, "image:") != 1 {
 		t.Errorf("image not replaced:\n%s", got)
 	}
 }
 
-func TestDenClaudeKitWithAgentImageQuotesYAMLSpecials(t *testing.T) {
+func TestDenClaudeKitQuotesYAMLSpecials(t *testing.T) {
 	for _, img := range []string{"*x@sha256:" + strings.Repeat("0", 64), "!x@sha256:" + strings.Repeat("1", 64)} {
 		var spec struct {
 			Sandbox struct {
 				Image string `yaml:"image"`
 			} `yaml:"sandbox"`
 		}
-		if err := yaml.Unmarshal(DenClaudeKitWithImage(img), &spec); err != nil {
+		if err := yaml.Unmarshal(kit(t, img), &spec); err != nil {
 			t.Fatalf("%q: spec does not parse: %v", img, err)
 		}
 		if spec.Sandbox.Image != img {
 			t.Errorf("image = %q, want %q", spec.Sandbox.Image, img)
+		}
+	}
+}
+
+func TestDenClaudeKitNeedsAnImage(t *testing.T) {
+	if _, err := DenClaudeKit(""); err == nil {
+		t.Error("an empty image must be refused: den writes no image of its own (A9)")
+	}
+	for _, l := range strings.Split(string(denClaudeSpec), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "image:") && strings.Contains(l, "sha256:") {
+			t.Errorf("embedded spec pins an image: %q", l)
 		}
 	}
 }

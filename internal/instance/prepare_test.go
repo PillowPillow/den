@@ -2,14 +2,13 @@ package instance
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -20,9 +19,8 @@ import (
 	"github.com/PillowPillow/den/internal/registry"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sbxenv"
+	"github.com/PillowPillow/den/internal/template"
 	"github.com/PillowPillow/den/internal/worktree"
-
-	"gopkg.in/yaml.v3"
 )
 
 func TestMain(m *testing.M) {
@@ -31,8 +29,10 @@ func TestMain(m *testing.M) {
 }
 
 const (
-	okVersion   = "sbx version v0.53.0 abc\n"
-	okTemplates = `[{"repository":"docker.io/library/b","tag":"v1"}]`
+	okVersion      = "sbx version v0.53.0 abc\n"
+	templateDigest = "sha256:4a94d9144a70df744fd9247e0c365a14cfb97024afab8db7597c8ba3e0637642"
+	templateFrom   = "docker.io/docker/sandbox-templates:claude-code-docker"
+	templateImage  = "docker.io/docker/sandbox-templates@" + templateDigest
 )
 
 type fixture struct {
@@ -40,6 +40,8 @@ type fixture struct {
 	fake            *sbx.Fake
 	prompt          *prompt.Fake
 	git             worktree.Git
+	templates       []string // `templates:` entries project and global write
+	sbxTemplates    []string // rows `sbx template ls --json` answers
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -48,9 +50,72 @@ func newFixture(t *testing.T) *fixture {
 	f.fake = &sbx.Fake{Responses: map[string]sbx.Response{
 		"version":            {Output: []byte(okVersion)},
 		"ls --json":          {Output: []byte(`[]`)},
-		"template ls --json": {Output: []byte(okTemplates)},
+		"template ls --json": {Output: []byte(`[]`)},
 	}}
 	return f
+}
+
+// definition writes <dir>/den-template.yaml declaring name from the official image, with extra lines under it.
+func definition(t *testing.T, dir, name, extra string) string {
+	t.Helper()
+	body := "schema: 1\ntemplates:\n  " + name + ":\n    from: claude-code-docker\n"
+	for _, line := range strings.Split(strings.TrimSpace(extra), "\n") {
+		if line != "" {
+			body += "    " + line + "\n"
+		}
+	}
+	return writeFile(t, filepath.Join(dir, config.DefinitionFileName), body)
+}
+
+// built records a build of name from src and makes sbx list <name>:v2, as `den build` leaves them.
+func (f *fixture) built(t *testing.T, name string, src template.Source, commit, hash, digest string) {
+	t.Helper()
+	err := template.WriteRecord(f.home, template.Record{Template: name, Tag: name + ":v2", Source: src, Commit: commit,
+		DefinitionHash: hash, From: template.From{Ref: templateFrom, Digest: digest}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := fmt.Sprintf(`{"repository":"docker.io/library/%s","tag":"v2"}`, name)
+	if !slices.Contains(f.sbxTemplates, row) {
+		f.sbxTemplates = append(f.sbxTemplates, row)
+	}
+	f.respond("template ls --json", "["+strings.Join(f.sbxTemplates, ",")+"]")
+}
+
+// dirTemplate declares name as a dir location at dir, writes its definition and records a build of it.
+func (f *fixture) dirTemplate(t *testing.T, name, dir, extra string) {
+	t.Helper()
+	definition(t, dir, name, extra)
+	f.templates = append(f.templates, fmt.Sprintf("%s: {dir: %q}", name, dir))
+	f.built(t, name, template.Source{Kind: "dir", Dir: dir}, "", "h1", templateDigest)
+}
+
+// repoTemplate declares name as a repo location and leaves its copy as `den build` does: a clone
+// at the commit the record names.
+func (f *fixture) repoTemplate(t *testing.T, name, url string) (copyDir, commit string) {
+	t.Helper()
+	if f.git == nil {
+		f.git = worktree.NewGit()
+	}
+	copyDir = template.CopyDir(f.home, name)
+	definition(t, copyDir, name, "")
+	ctx := context.Background()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"-c", "user.email=t@example.test", "-c", "user.name=T", "add", "."},
+		{"-c", "user.email=t@example.test", "-c", "user.name=T", "commit", "-q", "-m", "definition"},
+	} {
+		if _, err := f.git.Run(ctx, copyDir, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit, err := template.Head(ctx, f.git, copyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.templates = append(f.templates, fmt.Sprintf("%s: {repo: %q}", name, url))
+	f.built(t, name, template.Source{Kind: "repo", URL: url}, commit, "h1", templateDigest)
+	return copyDir, commit
 }
 
 func (f *fixture) deps() Deps {
@@ -98,17 +163,25 @@ func repoEntry(path string, optional bool) string {
 	return fmt.Sprintf("{path: %q, optional: %t}", path, optional)
 }
 
-// denYAML declares the nests given as name → body, the body's lines indented under the name.
-func denYAML(nests map[string]string) string {
+// denYAML declares the templates entries given and the nests given as name → body, the body's lines
+// indented under the name; a nest without `template:` runs on the official claude-code-docker image.
+func denYAML(templates []string, nests map[string]string) string {
 	var b strings.Builder
-	b.WriteString("schema: 1\nbases:\n  b: {image: \"b:v1\"}\nnests:\n")
+	b.WriteString("schema: 1\ndefault_template: claude-code-docker\n")
+	if len(templates) > 0 {
+		b.WriteString("templates:\n")
+		for _, e := range templates {
+			b.WriteString("  " + e + "\n")
+		}
+	}
+	b.WriteString("nests:\n")
 	names := make([]string, 0, len(nests))
 	for n := range nests {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		fmt.Fprintf(&b, "  %s:\n    base: b\n", n)
+		fmt.Fprintf(&b, "  %s:\n", n)
 		for _, line := range strings.Split(strings.TrimSpace(nests[n]), "\n") {
 			b.WriteString("    " + line + "\n")
 		}
@@ -120,12 +193,12 @@ func repos(entries ...string) string { return "repos:\n  - " + strings.Join(entr
 
 func (f *fixture) project(t *testing.T, nests map[string]string) {
 	t.Helper()
-	writeFile(t, filepath.Join(f.proj, "den.yaml"), denYAML(nests))
+	writeFile(t, filepath.Join(f.proj, "den.yaml"), denYAML(f.templates, nests))
 }
 
 func (f *fixture) global(t *testing.T, nests map[string]string) {
 	t.Helper()
-	writeFile(t, filepath.Join(f.home, "den.yaml"), denYAML(nests))
+	writeFile(t, filepath.Join(f.home, "den.yaml"), denYAML(f.templates, nests))
 }
 
 func mustPrepare(t *testing.T, f *fixture, o Options) *Plan {
@@ -194,7 +267,8 @@ func TestPrepareRefusesAForeignSandbox(t *testing.T) {
 func TestPrepareLiveSkipsSelection(t *testing.T) {
 	f := newFixture(t)
 	api, web := f.repo(t, "api"), f.repo(t, "web")
-	f.project(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, true))})
+	f.dirTemplate(t, "legacy", filepath.Join(f.src, "tpl"), "")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, true)) + "\ntemplate: legacy"})
 	created := mustPrepare(t, f, Options{Nest: "am", Selection: nest.Selection{Without: []string{"web"}}})
 	record(t, f.home, created)
 	f.live("am")
@@ -227,20 +301,52 @@ func TestPrepareChecksSbxOnTheLivePath(t *testing.T) {
 	prepareErr(t, f, Options{Nest: "am"}, "v0.52.0", sbx.MinVersion)
 }
 
-func TestPrepareNamesDenBuildWhenTheImageIsMissing(t *testing.T) {
+func TestPrepareRefusesAMissingSbxTemplate(t *testing.T) {
 	f := newFixture(t)
-	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
-	f.respond("template ls --json", `[{"repository":"docker.io/library/other","tag":"v1"}]`)
-	prepareErr(t, f, Options{Nest: "am"}, "b:v1", "run `den build b` from "+f.proj)
+	f.dirTemplate(t, "digitaleo", filepath.Join(f.src, "tpl"), "")
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\ntemplate: digitaleo"})
+	f.respond("template ls --json", `[{"repository":"docker.io/library/other","tag":"v2"}]`)
+	prepareErr(t, f, Options{Nest: "am"}, `template "digitaleo"`, "digitaleo:v2", "run `den build digitaleo` from "+f.proj)
 }
 
-func TestPrepareNamesDenBuildAloneForAGlobalBase(t *testing.T) {
+func TestPrepareNamesDenBuildAloneForAGlobalTemplate(t *testing.T) {
 	f := newFixture(t)
-	f.global(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
-	f.respond("template ls --json", `[{"repository":"docker.io/library/other","tag":"v1"}]`)
+	f.dirTemplate(t, "digitaleo", filepath.Join(f.src, "tpl"), "")
+	f.global(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\ntemplate: digitaleo"})
+	f.respond("template ls --json", `[{"repository":"docker.io/library/other","tag":"v2"}]`)
 	_, err := Prepare(context.Background(), f.deps(), Options{Nest: "am"})
-	if err == nil || !strings.Contains(err.Error(), "run `den build b`") || strings.Contains(err.Error(), " from ") {
-		t.Errorf("error %v, want `den build b` with no folder: the global file is visible from anywhere", err)
+	if err == nil || !strings.Contains(err.Error(), "run `den build digitaleo`") || strings.Contains(err.Error(), " from ") {
+		t.Errorf("error %v, want `den build digitaleo` with no folder: the global file is visible from anywhere", err)
+	}
+}
+
+func TestPrepareRefusesACopyAtAnotherCommit(t *testing.T) {
+	f := newFixture(t)
+	copyDir, built := f.repoTemplate(t, "digitaleo", "https://example.test/acme/den-env.git")
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\ntemplate: digitaleo"})
+	mustPrepare(t, f, Options{Nest: "am"})
+
+	if _, err := f.git.Run(context.Background(), copyDir, "-c", "user.email=t@example.test", "-c", "user.name=T",
+		"commit", "-q", "--allow-empty", "-m", "moved"); err != nil {
+		t.Fatal(err)
+	}
+	prepareErr(t, f, Options{Nest: "am"}, `template "digitaleo"`, built, copyDir, "run `den build digitaleo` from "+f.proj)
+}
+
+func TestPrepareOnAnImageSkipsTheTemplateCheck(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\ntemplate: claude-code-docker"})
+	p := mustPrepare(t, f, Options{Nest: "am"})
+	if f.fake.HasCalled("template") {
+		t.Errorf("listed sbx templates for an image: %v", f.fake.Calls)
+	}
+	mustCreate(t, f, p)
+	if env := readFile(t, filepath.Join(p.RunDir, EnvFileName)); strings.Contains(env, "sandboxOptions") {
+		t.Errorf("sbxenv.yaml names an sbx template for an image:\n%s", env)
+	}
+	kit := readFile(t, filepath.Join(p.GenDir, sbxenv.AgentName, "spec.yaml"))
+	if !strings.Contains(kit, "\n  image: docker.io/docker/sandbox-templates:claude-code-docker\n") {
+		t.Errorf("den-claude kit does not run the nest's image:\n%s", kit)
 	}
 }
 
@@ -396,7 +502,7 @@ func TestPrepareNamesTheProfileOfAMissingProfileKit(t *testing.T) {
 	kit := filepath.Join(f.home, "kits", "perso")
 	global := writeFile(t, filepath.Join(f.home, "den.yaml"), fmt.Sprintf("schema: 1\nprofiles:\n  perso: [%q]\n", kit))
 	writeFile(t, filepath.Join(f.proj, "den.yaml"),
-		fmt.Sprintf("schema: 1\nprofile: perso\nbases:\n  b: {image: \"b:v1\"}\nnests:\n  am:\n    base: b\n    repos: [{path: %q}]\n", f.repo(t, "api")))
+		fmt.Sprintf("schema: 1\nprofile: perso\ndefault_template: claude-code-docker\nnests:\n  am:\n    repos: [{path: %q}]\n", f.repo(t, "api")))
 	prepareErr(t, f, Options{Nest: "am"}, filepath.Join(kit, "spec.yaml"), "`profiles.perso` in "+global)
 
 	writeFile(t, filepath.Join(kit, "spec.yaml"), "kind: mixin\n")
@@ -411,21 +517,23 @@ func TestPrepareNamesTheGlobalKeyOfAMissingRepo(t *testing.T) {
 	missing := filepath.Join(f.src, "gone")
 	global := writeFile(t, filepath.Join(f.home, "den.yaml"), fmt.Sprintf("schema: 1\nrepos: {api: %q}\n", missing))
 	writeFile(t, filepath.Join(f.proj, "den.yaml"),
-		"schema: 1\nbases:\n  b: {image: \"b:v1\"}\nnests:\n  am:\n    base: b\n    repos: [{key: api}]\n")
+		"schema: 1\ndefault_template: claude-code-docker\nnests:\n  am:\n    repos: [{key: api}]\n")
 	prepareErr(t, f, Options{Nest: "am"}, missing, "fix `repos.api` in "+global)
 }
 
-func TestPrepareNamesTheFileDeclaringTheBaseOfABrokenKit(t *testing.T) {
+func TestPrepareNamesTheDefinitionOfABrokenKit(t *testing.T) {
 	f := newFixture(t)
-	kit := filepath.Join(f.src, "kit")
-	if err := os.MkdirAll(kit, 0o755); err != nil {
+	loc := filepath.Join(f.src, "tpl")
+	if err := os.MkdirAll(filepath.Join(loc, "kits", "k"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	global := writeFile(t, filepath.Join(f.home, "den.yaml"),
-		fmt.Sprintf("schema: 1\nbases:\n  g: {image: \"b:v1\", kits: [%q]}\n", kit))
+	f.dirTemplate(t, "legacy", loc, "kits: [./kits/k]")
+	f.global(t, nil)
 	writeFile(t, filepath.Join(f.proj, "den.yaml"), fmt.Sprintf(
-		"schema: 1\nnests:\n  am:\n    base: g\n    repos: [{path: %q}]\n", f.repo(t, "api")))
-	prepareErr(t, f, Options{Nest: "am"}, filepath.Join(kit, "spec.yaml"), "fix `kits:` of base \"g\" in "+global)
+		"schema: 1\nnests:\n  am:\n    template: legacy\n    repos: [{path: %q}]\n", f.repo(t, "api")))
+	resolved := worktree.ResolvePath(loc)
+	prepareErr(t, f, Options{Nest: "am"}, filepath.Join(resolved, "kits", "k", "spec.yaml"),
+		"fix `kits:` of template \"legacy\" in "+filepath.Join(resolved, config.DefinitionFileName))
 }
 
 func kitBody(f *fixture, kit string) string {
@@ -570,8 +678,8 @@ func TestPrepareOverlaysTheProjectDenYamlAtTheRootOfARepo(t *testing.T) {
 	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(file, file))
 }
 
-// buildBase writes a global file whose base b provisions with these includes and steps.
-func buildBase(t *testing.T, f *fixture, includes, steps []string) string {
+// stepsTemplate declares legacy as a dir location inside the mounted repo api, whose build reads these includes and steps.
+func stepsTemplate(t *testing.T, f *fixture, api string, includes, steps []string) string {
 	t.Helper()
 	flow := func(paths []string) string {
 		quoted := make([]string, len(paths))
@@ -580,27 +688,41 @@ func buildBase(t *testing.T, f *fixture, includes, steps []string) string {
 		}
 		return "[" + strings.Join(quoted, ", ") + "]"
 	}
-	return writeFile(t, filepath.Join(f.home, "den.yaml"), fmt.Sprintf(
-		"schema: 1\nbases:\n  b: {image: \"b:v1\", build: {includes: %s, steps: %s}}\nnests:\n  am:\n    base: b\n    repos: [{path: %q}]\n",
-		flow(includes), flow(steps), filepath.Join(f.src, "api")))
+	loc := filepath.Join(api, "tpl")
+	f.dirTemplate(t, "legacy", loc, fmt.Sprintf("build: {includes: %s, steps: %s}", flow(includes), flow(steps)))
+	f.global(t, map[string]string{"am": repos(repoEntry(api, false)) + "\ntemplate: legacy"})
+	return loc
 }
 
 func TestPrepareOverlaysBuildStepsUnderAMountedRepo(t *testing.T) {
 	f := newFixture(t)
 	api := f.repo(t, "api")
-	include := writeFile(t, filepath.Join(api, "build", "lib.sh"), "set -e\n")
-	step := writeFile(t, filepath.Join(api, "build", "10-node.sh"), "true\n")
-	outside := writeFile(t, filepath.Join(f.home, "steps", "20-go.sh"), "true\n")
-	buildBase(t, f, []string{include}, []string{step, outside})
-	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(include, include), ro(step, step))
+	include := writeFile(t, filepath.Join(api, "tpl", "lib.sh"), "set -e\n")
+	step := writeFile(t, filepath.Join(api, "tpl", "10-node.sh"), "true\n")
+	loc := stepsTemplate(t, f, api, []string{"./lib.sh"}, []string{"./10-node.sh"})
+	defs := filepath.Join(loc, config.DefinitionFileName)
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}), ro(defs, defs),
+		ro(worktree.ResolvePath(include), include), ro(worktree.ResolvePath(step), step))
 }
 
 func TestPrepareRefusesAMissingBuildStepUnderAMountedRepo(t *testing.T) {
 	f := newFixture(t)
 	api := f.repo(t, "api")
-	step := filepath.Join(api, "build", "10-node.sh")
-	global := buildBase(t, f, nil, []string{step})
-	prepareErr(t, f, Options{Nest: "am"}, step, "fix `build.steps` of base \"b\" in "+global)
+	loc := stepsTemplate(t, f, api, nil, []string{"./10-node.sh"})
+	resolved := worktree.ResolvePath(loc)
+	prepareErr(t, f, Options{Nest: "am"}, filepath.Join(resolved, "10-node.sh"),
+		"fix `build.steps` of template \"legacy\" in "+filepath.Join(resolved, config.DefinitionFileName))
+}
+
+func TestPrepareAddsNoOverlayForADefinitionOutsideMounts(t *testing.T) {
+	f := newFixture(t)
+	f.repo(t, "api")
+	loc := filepath.Join(f.src, "tpl")
+	writeFile(t, filepath.Join(loc, "kits", "k", "spec.yaml"), "kind: mixin\n")
+	writeFile(t, filepath.Join(loc, "10-node.sh"), "true\n")
+	f.dirTemplate(t, "legacy", loc, "kits: [./kits/k]\nbuild: {steps: [./10-node.sh]}")
+	f.global(t, map[string]string{"am": repos(repoEntry(filepath.Join(f.src, "api"), false)) + "\ntemplate: legacy"})
+	wantOverlays(t, mustPrepare(t, f, Options{Nest: "am"}))
 }
 
 func TestPrepareMapsTheOverlayTargetThroughAWorktreeMount(t *testing.T) {
@@ -751,45 +873,40 @@ func TestPrepareWritesNothingButTheIndex(t *testing.T) {
 	}
 }
 
-func TestConfigHashCoversTheAgentImage(t *testing.T) {
+func TestConfigHashMovesWithTheTemplateBuild(t *testing.T) {
 	f := newFixture(t)
-	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
-	before := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash
-	writeFile(t, filepath.Join(f.home, "den.yaml"), "schema: 1\nagents:\n  claude:\n    image: r.test/c@sha256:"+strings.Repeat("ef", 32)+"\n")
-	after := mustPrepare(t, f, Options{Nest: "am"})
-	if after.Resolved.AgentImage == "" || after.ConfigHash == before {
-		t.Errorf("AgentImage %q, hash unchanged: %v", after.Resolved.AgentImage, after.ConfigHash == before)
+	loc := filepath.Join(f.src, "tpl")
+	f.dirTemplate(t, "legacy", loc, "")
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\ntemplate: legacy"})
+	created := mustPrepare(t, f, Options{Nest: "am"})
+	record(t, f.home, created)
+	f.live("am")
+	if p := mustPrepare(t, f, Options{Nest: "am"}); p.State != Live || p.ConfigHash != created.ConfigHash {
+		t.Fatalf("state %v: the same build must hash the same", p.State)
 	}
-}
 
-func TestConfigHashWithoutAgentImageIsTheHashBeforeTheField(t *testing.T) {
-	res := &nest.Resolved{Name: "am", BaseName: "b", Kits: []string{"k"}}
-	legacy := struct {
-		Base    string            `yaml:"base"`
-		Image   string            `yaml:"image"`
-		Kits    []string          `yaml:"kits"`
-		Allow   []string          `yaml:"allow"`
-		Env     map[string]string `yaml:"env"`
-		Ports   []config.Port     `yaml:"ports"`
-		Start   string            `yaml:"start"`
-		Layers  []string          `yaml:"layers"`
-		Profile string            `yaml:"profile"`
-		Repos   []string          `yaml:"repos"`
-		Branch  string            `yaml:"branch"`
-		Layout  string            `yaml:"layout"`
-		Root    string            `yaml:"root"`
-	}{Base: "b", Kits: []string{"k"}}
-	raw, err := yaml.Marshal(legacy)
-	if err != nil {
-		t.Fatal(err)
+	src := template.Source{Kind: "dir", Dir: loc}
+	f.built(t, "legacy", src, "", "h2", templateDigest)
+	rebuilt := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash
+	if rebuilt == created.ConfigHash {
+		t.Errorf("another definition_hash left the hash unchanged")
 	}
-	sum := sha256.Sum256(raw)
-	got, err := configHash(res, nil, "", "")
-	if err != nil {
-		t.Fatal(err)
+	f.built(t, "legacy", src, "", "h2", "sha256:"+strings.Repeat("0", 64))
+	if got := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash; got == rebuilt {
+		t.Errorf("another from.digest left the hash unchanged")
 	}
-	if want := hex.EncodeToString(sum[:]); got != want {
-		t.Errorf("hash %s, want the pre-agent_image hash %s: every live instance would report drift", got, want)
+
+	var stderr strings.Builder
+	d := f.deps()
+	d.Err = &stderr
+	if err := Up(context.Background(), d, Options{Nest: "am"}, false); err != nil {
+		t.Fatalf("a rebuilt template must never refuse a live instance: %v", err)
+	}
+	if want := filepath.Join(f.proj, "den.yaml") + " changed since am was created — run `den rm am` then `den up am`"; !strings.Contains(stderr.String(), want) {
+		t.Errorf("stderr %q lacks %q", stderr.String(), want)
+	}
+	if !f.fake.HasAttached("run", "--name", "am") {
+		t.Errorf("no attach: %v", f.fake.Calls)
 	}
 }
 

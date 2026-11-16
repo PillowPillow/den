@@ -2,6 +2,7 @@ package sbxenv
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -9,8 +10,21 @@ import (
 //go:embed den-claude/spec.yaml
 var denClaudeSpec []byte
 
-// DenClaudeKit is the shared agent kit; the embedded copy is the only source.
-func DenClaudeKit() []byte { return append([]byte(nil), denClaudeSpec...) }
+// DenClaudeKit is the agent kit on image: the template's image pinned by digest, or the official image
+// a nest names. The embedded spec holds a placeholder in its one `  image:` line, never an image of
+// den's own, so an empty image is refused rather than defaulted.
+func DenClaudeKit(image string) ([]byte, error) {
+	if image == "" {
+		return nil, errors.New("the den-claude kit needs an image: den sets it from the template's record or the image the nest names")
+	}
+	lines := strings.Split(string(denClaudeSpec), "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(l, "  image: ") {
+			lines[i] = "  image: " + scalar(image)
+		}
+	}
+	return []byte(strings.Join(lines, "\n")), nil
+}
 
 // NetworkKit is the per-instance mixin carrying the egress allowlist.
 func NetworkKit(allow []string) []byte {
@@ -24,19 +38,3 @@ func NetworkKit(allow []string) []byte {
 
 // GitFile is the .git file that points a worktree at its admin dir.
 func GitFile(adminDir string) []byte { return []byte("gitdir: " + adminDir + "\n") }
-
-// DenClaudeKitWithImage swaps the pinned image for another; an empty image returns the embedded spec as is.
-// The embedded spec holds exactly one `  image:` line, a test keeps it so.
-func DenClaudeKitWithImage(image string) []byte {
-	spec := DenClaudeKit()
-	if image == "" {
-		return spec
-	}
-	lines := strings.Split(string(spec), "\n")
-	for i, l := range lines {
-		if strings.HasPrefix(l, "  image: ") {
-			lines[i] = "  image: " + scalar(image)
-		}
-	}
-	return []byte(strings.Join(lines, "\n"))
-}

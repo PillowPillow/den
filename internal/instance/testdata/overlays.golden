@@ -2,7 +2,8 @@ schemaVersion: "1"
 name: am
 agent: den-claude
 kits:
-  - /denhome/gen/.kits/den-claude
+  - /denhome/gen/am/den-claude
+  - /src/api/tpl/kits/tk
   - /proj/kits/k
   - /denhome/gen/am/network
 workspace: /proj
@@ -11,11 +12,23 @@ additionalWorkspaces:
   - path: /proj/den.yaml
     target: /proj/den.yaml
     readOnly: true
+  - path: /src/api/tpl/den-template.yaml
+    target: /src/api/tpl/den-template.yaml
+    readOnly: true
+  - path: /src/api/tpl/kits/tk
+    target: /src/api/tpl/kits/tk
+    readOnly: true
   - path: /proj/kits/k
     target: /proj/kits/k
     readOnly: true
   - path: /src/api/sbx/extra.yaml
     target: /src/api/sbx/extra.yaml
     readOnly: true
+  - path: /src/api/tpl/lib.sh
+    target: /src/api/tpl/lib.sh
+    readOnly: true
+  - path: /src/api/tpl/10-node.sh
+    target: /src/api/tpl/10-node.sh
+    readOnly: true
 sandboxOptions:
-  template: b:v1
+  template: legacy:v2

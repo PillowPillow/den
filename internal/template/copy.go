@@ -16,7 +16,7 @@ import (
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
-// The leading dot keeps both out of reach of any template name, as with gen/.kits.
+// The leading dot keeps both out of reach of any template name, as with gen/.build.
 func CopyDir(denHome, name string) string {
 	return filepath.Join(denHome, "gen", ".templates", name)
 }

@@ -10,15 +10,10 @@ network:
 profiles:
   perso: [~/.den/kits/perso]
 
-bases:
-  example:
-    image: example:v2
-    build:
-      steps: []
+default_template: claude-code-docker
 
 nests:
   demo:
-    base: example
     profile: perso
     repos:
       - key: demo

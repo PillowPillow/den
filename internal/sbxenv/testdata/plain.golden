@@ -2,7 +2,7 @@ schemaVersion: "1"
 name: am
 agent: den-claude
 kits:
-  - /h/.den/gen/.kits/den-claude
+  - /h/.den/gen/am/den-claude
   - /h/.den/gen/am/network
 workspace: /h/.den/run/am
 additionalWorkspaces:

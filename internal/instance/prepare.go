@@ -20,6 +20,7 @@ import (
 	"github.com/PillowPillow/den/internal/registry"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sbxenv"
+	"github.com/PillowPillow/den/internal/template"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -109,7 +110,7 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if err := checkRepos(ctx, d.Git, res, repos, wt != nil); err != nil {
 		return nil, err
 	}
-	if err := checkImage(ctx, d.Sbx, res); err != nil {
+	if err := checkTemplate(ctx, d, res); err != nil {
 		return nil, err
 	}
 	if err := checkKits(res); err != nil {
@@ -251,19 +252,30 @@ func repoFix(res *nest.Resolved, r nest.Repo) string {
 	return fmt.Sprintf("fix `repos:` of nest %q in %s", res.Name, res.File.Path)
 }
 
-func checkImage(ctx context.Context, r sbx.Runner, res *nest.Resolved) error {
-	list, err := sbx.Templates(ctx, r)
+// checkTemplate refuses a template sbx cannot start or whose copy no longer holds the files its
+// build read; an image is sbx's to pull, so it is not checked here.
+func checkTemplate(ctx context.Context, d Deps, res *nest.Resolved) error {
+	t := res.Template
+	if t.Choice.IsImage() {
+		return nil
+	}
+	list, err := sbx.Templates(ctx, d.Sbx)
 	if err != nil {
 		return err
 	}
-	if sbx.FindTemplate(list, res.Base.Image) == nil {
-		// den build sees the project file reached from its cwd, and the global file from anywhere.
-		where := ""
-		if !res.BaseFile.Global {
-			where = " from " + res.BaseFile.Dir
+	if sbx.FindTemplate(list, t.Choice.Tag()) == nil {
+		return template.NotBuilt(t.Choice, fmt.Sprintf("is not among sbx's templates (no %s)", t.Choice.Tag()))
+	}
+	// The kits and allowlist come from the copy: at another commit than the build's, the VM would
+	// start from one definition with the network and kits of another.
+	if t.Record.Source.Kind == "repo" {
+		head, err := template.Head(ctx, d.Git, t.Root())
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("base %q: image %q is not among sbx's templates — run `den build %s`%s",
-			res.BaseName, res.Base.Image, res.BaseName, where)
+		if head != t.Record.Commit {
+			return template.NotBuilt(t.Choice, fmt.Sprintf("was built from commit %s, but its copy %s is at %s", t.Record.Commit, t.Root(), head))
+		}
 	}
 	return nil
 }
@@ -282,11 +294,11 @@ func checkKits(res *nest.Resolved) error {
 	return nil
 }
 
-// kitFix names every declaration of k: res.Kits merges the base's, the nest's and the profile's.
+// kitFix names every declaration of k: res.Kits merges the template's, the nest's and the profile's.
 func kitFix(res *nest.Resolved, k string) string {
 	var at []string
-	if slices.Contains(res.Base.Kits, k) {
-		at = append(at, fmt.Sprintf("`kits:` of base %q in %s", res.BaseName, res.BaseFile.Path))
+	if slices.Contains(res.Template.Def.Kits, k) {
+		at = append(at, fmt.Sprintf("`kits:` %s", ofTemplate(res)))
 	}
 	inProfile := slices.Contains(res.ProfileKits, k)
 	if n, ok := res.File.File.Nests[res.Name]; !ok || slices.Contains(n.Kits, k) || (len(at) == 0 && !inProfile) {
@@ -348,12 +360,16 @@ func overlays(res *nest.Resolved, mounts []rwMount, own []struct{ kind, dir stri
 		}
 		return "run den from " + filepath.Dir(worktree.ResolvePath(path))
 	}
-	protected := []read{
-		{res.File.Path, denYAML(res.File.Path, res.File.Global)},
-		{res.BaseFile.Path, denYAML(res.BaseFile.Path, res.BaseFile.Global)},
-	}
+	// The den.yaml declaring the template is res.File or the global file: Choose looks nowhere else.
+	protected := []read{{res.File.Path, denYAML(res.File.Path, res.File.Global)}}
 	if _, err := os.Stat(res.GlobalFile); err == nil {
 		protected = append(protected, read{res.GlobalFile, denYAML(res.GlobalFile, true)})
+	}
+	t := res.Template
+	if !t.Choice.IsImage() {
+		// As the choice names it, not Defs.Path: a symlink on the way is what the VM could swap.
+		protected = append(protected, read{filepath.Join(t.Root(), config.DefinitionFileName),
+			fmt.Sprintf("fix `templates.%s` in %s", t.Choice.Key, t.Choice.DeclaredIn.Path)})
 	}
 	for _, k := range res.Kits {
 		if filepath.IsAbs(k) {
@@ -366,9 +382,9 @@ func overlays(res *nest.Resolved, mounts []rwMount, own []struct{ kind, dir stri
 	for _, b := range []struct {
 		field string
 		paths []string
-	}{{"includes", res.Base.Build.Includes}, {"steps", res.Base.Build.Steps}} {
+	}{{"includes", t.Def.Build.Includes}, {"steps", t.Def.Build.Steps}} {
 		for _, f := range b.paths {
-			fix := fmt.Sprintf("fix `build.%s` of base %q in %s", b.field, res.BaseName, res.BaseFile.Path)
+			fix := fmt.Sprintf("fix `build.%s` %s", b.field, ofTemplate(res))
 			seen, err := seenThrough(f, fix, mounts)
 			if err != nil {
 				return nil, err
@@ -471,6 +487,11 @@ func relUnder(child, parent string) (string, bool) {
 	return rel, true
 }
 
+// ofTemplate names where the template's definition is written, for a remedy.
+func ofTemplate(res *nest.Resolved) string {
+	return fmt.Sprintf("of template %q in %s", res.Template.Choice.Name(), res.Template.Defs.Path)
+}
+
 // mapStart turns `start:` into a VM path. A repo mounts at its main clone
 // path, with -w too, so a worktree changes nothing here.
 func mapStart(res *nest.Resolved, repos []nest.Repo, sel nest.Selection) (string, error) {
@@ -526,26 +547,33 @@ func hashedStart(res *nest.Resolved, mapped string, mapErr error) string {
 
 // configHash covers what an instance is built from, never File nor Warnings:
 // an edit to another nest of the same den.yaml must not report drift.
+// A rebuilt template moves definition_hash or kit_image (its digest), so a Live instance reports drift.
 func configHash(res *nest.Resolved, repos []nest.Repo, start, branch string) (string, error) {
+	t := res.Template
 	in := struct {
-		Base       string            `yaml:"base"`
-		Image      string            `yaml:"image"`
-		Kits       []string          `yaml:"kits"`
-		Allow      []string          `yaml:"allow"`
-		Env        map[string]string `yaml:"env"`
-		Ports      []config.Port     `yaml:"ports"`
-		Start      string            `yaml:"start"`
-		Layers     []string          `yaml:"layers"`
-		Profile    string            `yaml:"profile"`
-		Repos      []string          `yaml:"repos"`
-		Branch     string            `yaml:"branch"`
-		Layout     string            `yaml:"layout"`
-		Root       string            `yaml:"root"`
-		AgentImage string            `yaml:"agent_image,omitempty"`
+		Template       string            `yaml:"template"`
+		Tag            string            `yaml:"tag"`
+		KitImage       string            `yaml:"kit_image"`
+		DefinitionHash string            `yaml:"definition_hash"`
+		Kits           []string          `yaml:"kits"`
+		Allow          []string          `yaml:"allow"`
+		Env            map[string]string `yaml:"env"`
+		Ports          []config.Port     `yaml:"ports"`
+		Start          string            `yaml:"start"`
+		Layers         []string          `yaml:"layers"`
+		Profile        string            `yaml:"profile"`
+		Repos          []string          `yaml:"repos"`
+		Branch         string            `yaml:"branch"`
+		Layout         string            `yaml:"layout"`
+		Root           string            `yaml:"root"`
 	}{
-		Base: res.BaseName, Image: res.Base.Image, Kits: res.Kits, Allow: res.Allow, Env: res.Env,
+		Template: t.Choice.Value, Tag: sbxTemplate(t), KitImage: t.KitImage,
+		Kits: res.Kits, Allow: res.Allow, Env: res.Env,
 		Ports: res.Ports, Start: start, Layers: res.Layers, Profile: res.Profile,
-		Branch: branch, Layout: res.Layout, Root: res.Root, AgentImage: res.AgentImage,
+		Branch: branch, Layout: res.Layout, Root: res.Root,
+	}
+	if t.Record != nil {
+		in.DefinitionHash = t.Record.DefinitionHash
 	}
 	for _, r := range repos {
 		in.Repos = append(in.Repos, r.Path)

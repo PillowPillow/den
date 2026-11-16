@@ -39,7 +39,9 @@ func DescribeSource(s Source) string {
 	return "dir " + s.Dir
 }
 
-func notBuilt(c Choice, why string) error {
+// NotBuilt refuses c with the `den build` remedy, from the project that declares it: den build sees
+// a project file only from inside that project.
+func NotBuilt(c Choice, why string) error {
 	msg := fmt.Sprintf("template %q %s — run `den build %s`", c.Name(), why, c.Name())
 	if d := c.DeclaredIn; d != nil && !d.Global {
 		msg += " from " + d.Dir
@@ -56,7 +58,7 @@ func Open(denHome string, c Choice) (*Resolved, error) {
 	name := c.Name()
 	rec, err := ReadRecord(denHome, name)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, notBuilt(c, "is not built")
+		return nil, NotBuilt(c, "is not built")
 	}
 	if err != nil {
 		return nil, err
@@ -69,7 +71,7 @@ func Open(denHome string, c Choice) (*Resolved, error) {
 	if c.Entry.Repo != "" {
 		root = CopyDir(denHome, name)
 		if _, err := os.Stat(root); err != nil {
-			return nil, notBuilt(c, fmt.Sprintf("has no local copy at %s", root))
+			return nil, NotBuilt(c, fmt.Sprintf("has no local copy at %s", root))
 		}
 	}
 	defs, err := config.LoadDefinitions(root)
@@ -78,10 +80,10 @@ func Open(denHome string, c Choice) (*Resolved, error) {
 	}
 	def, ok := defs.File.Templates[name]
 	if !ok {
-		return nil, notBuilt(c, fmt.Sprintf("is not declared in %s", filepath.Join(defs.Root, config.DefinitionFileName)))
+		return nil, NotBuilt(c, fmt.Sprintf("is not declared in %s", filepath.Join(defs.Root, config.DefinitionFileName)))
 	}
 	if rec.From.Digest == "" {
-		return nil, notBuilt(c, fmt.Sprintf("was built without a digest for its image %s", rec.From.Ref))
+		return nil, NotBuilt(c, fmt.Sprintf("was built without a digest for its image %s", rec.From.Ref))
 	}
 	return &Resolved{Choice: c, Defs: defs, Def: def, Record: &rec,
 		KitImage: sbx.ImageWithDigest(rec.From.Ref, rec.From.Digest), root: root}, nil

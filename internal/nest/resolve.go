@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/internal/template"
 )
 
 // Repo.Key is the global `repos:` key the path came from, "" for a path written in the nest.
@@ -18,14 +19,12 @@ type Repo struct {
 	AdHoc      bool // added by --repo, not declared by the nest
 }
 
-// Resolved keeps GlobalFile and BaseFile so a refusal names the file that holds the value at fault.
+// Resolved keeps GlobalFile so a refusal names the file that holds the value at fault.
 type Resolved struct {
 	Name        string
 	File        *config.Loaded
 	GlobalFile  string
-	BaseName    string
-	Base        config.Base
-	BaseFile    *config.Loaded
+	Template    *template.Resolved
 	Profile     string
 	ProfileKits []string
 	Repos       []Repo
@@ -37,7 +36,6 @@ type Resolved struct {
 	Layout      string
 	Root        string
 	Layers      []string
-	AgentImage  string
 	Warnings    []string
 }
 
@@ -154,29 +152,6 @@ func visible(project, global *config.Loaded, ix index) string {
 	return fmt.Sprintf("nests den can see: %s (from %s)%s", strings.Join(names, ", "), strings.Join(files, ", "), suffix)
 }
 
-// FindBase looks name up in the project file reached from cwd, then in the global file.
-func FindBase(denHome, cwd, name string) (config.Base, *config.Loaded, error) {
-	project, err := loadProject(denHome, cwd)
-	if err != nil {
-		return config.Base{}, nil, err
-	}
-	global, err := config.LoadGlobal(denHome)
-	if err != nil {
-		return config.Base{}, nil, err
-	}
-	var tried []string
-	for _, f := range []*config.Loaded{project, global} {
-		if f == nil {
-			continue
-		}
-		if b, ok := f.File.Bases[name]; ok {
-			return b, f, nil
-		}
-		tried = append(tried, f.Path)
-	}
-	return config.Base{}, nil, fmt.Errorf("unknown base %q; looked in %s", name, strings.Join(tried, " and "))
-}
-
 func appendUnique(dst []string, in ...string) []string {
 	for _, s := range in {
 		dup := false
@@ -205,30 +180,24 @@ func absPath(p, dir string) (string, error) {
 	return filepath.Join(dir, e), nil
 }
 
-// Resolve merges global, base and nest into what an instance prepares from.
+// Resolve merges global, template and nest into what an instance prepares from. It never builds: a
+// template without a usable build is refused by template.Open with the `den build` remedy.
 func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolved, error) {
 	n, ok := file.File.Nests[name]
 	if !ok {
 		return nil, fmt.Errorf("%s: nest %q is not declared there", file.Path, name)
 	}
-	r := &Resolved{Name: name, File: file, GlobalFile: global.Path, BaseName: n.Base, Profile: n.Profile,
-		Start: n.Start, Ports: n.Ports, Layers: n.Layers,
-		AgentImage: global.File.Agents["claude"].Image}
+	r := &Resolved{Name: name, File: file, GlobalFile: global.Path, Profile: n.Profile,
+		Start: n.Start, Ports: n.Ports, Layers: n.Layers}
 
-	base, ok := file.File.Bases[n.Base]
-	r.BaseFile = file
-	if !ok {
-		base, ok = global.File.Bases[n.Base]
-		r.BaseFile = global
+	choice, err := template.Choose(file, global, name)
+	if err != nil {
+		return nil, err
 	}
-	if !ok {
-		where := file.Path
-		if file != global {
-			where += " nor " + global.Path
-		}
-		return nil, fmt.Errorf("nest %q: base %q is declared neither in %s; add it to one of them", name, n.Base, where)
+	if r.Template, err = template.Open(denHome, choice); err != nil {
+		return nil, err
 	}
-	r.Base = base
+	def := r.Template.Def
 
 	seen := map[string]bool{}
 	for _, ref := range n.Repos {
@@ -267,8 +236,8 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 		}
 	}
 
-	r.Kits = appendUnique(appendUnique(appendUnique(nil, base.Kits...), n.Kits...), r.ProfileKits...)
-	r.Allow = appendUnique(appendUnique(appendUnique(nil, global.File.Network.Allow...), base.Network.Allow...), n.Network.Allow...)
+	r.Kits = appendUnique(appendUnique(appendUnique(nil, def.Kits...), n.Kits...), r.ProfileKits...)
+	r.Allow = appendUnique(appendUnique(appendUnique(nil, global.File.Network.Allow...), def.Network.Allow...), n.Network.Allow...)
 	r.Env = map[string]string{}
 	for k, v := range global.File.Env {
 		r.Env[k] = v

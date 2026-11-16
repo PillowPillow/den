@@ -20,11 +20,9 @@ func writeFile(t *testing.T, dir, name, body string) string {
 }
 
 const minimalNest = `schema: 1
-bases:
-  b: {image: "b:v1"}
 nests:
   am:
-    base: b
+    template: b
     profile: p
     repos: [{path: ./r}]
 `
@@ -56,36 +54,27 @@ func TestLoadRejectsGlobalKeysInAProjectFile(t *testing.T) {
 func TestLoadAbsolutizesRelativePaths(t *testing.T) {
 	dir := t.TempDir()
 	p := writeFile(t, dir, "proj/den.yaml", `schema: 1
-bases:
-  b:
-    image: "b:v1"
-    kits: ["./kits/env", "git+https://h/r#dir=k", "oci://r/k:1"]
-    build:
-      includes: [./inc.yaml]
-      steps: [./b/node.sh]
 nests:
   am:
-    base: b
+    template: b
     profile: p
     repos: [{path: ../x}]
     layers: [./l.yaml]
-    kits: ["../k"]
+    kits: ["../k", "./kits/env", "git+https://h/r#dir=k", "oci://r/k:1"]
 `)
 	l, err := Load(p, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	proj := filepath.Join(dir, "proj")
-	b, n := l.File.Bases["b"], l.File.Nests["am"]
+	n := l.File.Nests["am"]
 	checks := map[string][2]string{
 		"repo":       {n.Repos[0].Path, filepath.Join(dir, "x")},
-		"step":       {b.Build.Steps[0], filepath.Join(proj, "b/node.sh")},
-		"include":    {b.Build.Includes[0], filepath.Join(proj, "inc.yaml")},
 		"layer":      {n.Layers[0], filepath.Join(proj, "l.yaml")},
-		"kit":        {b.Kits[0], filepath.Join(proj, "kits/env")},
+		"kit":        {n.Kits[1], filepath.Join(proj, "kits/env")},
 		"upkit":      {n.Kits[0], filepath.Join(dir, "k")},
-		"git kit":    {b.Kits[1], "git+https://h/r#dir=k"},
-		"oci kit":    {b.Kits[2], "oci://r/k:1"},
+		"git kit":    {n.Kits[2], "git+https://h/r#dir=k"},
+		"oci kit":    {n.Kits[3], "oci://r/k:1"},
 		"Loaded.Dir": {l.Dir, proj},
 	}
 	for name, c := range checks {
@@ -152,15 +141,14 @@ func TestLoadAcceptsRepoKeyWithoutCheckingTheGlobalMap(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsIncompleteNestAndBase(t *testing.T) {
+func TestLoadRejectsIncompleteNest(t *testing.T) {
 	mustFail(t, "schema: 1\nnests:\n  am: {}\n", false,
 		"nests.am.repos")
-	mustFail(t, "schema: 1\nbases:\n  b: {}\n", false, "bases.b.image")
 }
 
 func TestLoadRejectsBadNamesAndLayout(t *testing.T) {
-	mustFail(t, "schema: 1\nnests:\n  a.b: {base: b, profile: p, repos: [{key: k}]}\n", false, "nests.a.b")
-	mustFail(t, "schema: 1\nbases:\n  x/y: {image: i}\n", false, "bases.x/y")
+	mustFail(t, "schema: 1\nnests:\n  a.b: {template: b, profile: p, repos: [{key: k}]}\n", false, "nests.a.b")
+	mustFail(t, "schema: 1\ntemplates:\n  x/y: {dir: /d}\n", false, "templates.x/y")
 	mustFail(t, strings.Replace(minimalNest, "profile: p", "profile: a/b", 1), false, "nests.am.profile")
 	mustFail(t, "schema: 1\nworktrees: {layout: flat}\n", true, "worktrees.layout")
 }
@@ -171,7 +159,7 @@ func TestLoadRejectsWrongSchema(t *testing.T) {
 }
 
 func TestLoadReportsEveryProblemTogether(t *testing.T) {
-	mustFail(t, "schema: 1\nbases:\n  b: {}\nnests:\n  am: {}\n", false, "bases.b.image", "nests.am.repos")
+	mustFail(t, "schema: 1\ntemplates:\n  b: {}\nnests:\n  am: {}\n", false, "templates.b: set exactly one of repo and dir", "nests.am.repos")
 }
 
 func TestLoadMakesARelativePathAbsolute(t *testing.T) {
@@ -254,31 +242,6 @@ func TestLoadAbsolutizesProfileKitsAndValidatesNames(t *testing.T) {
 	mustFail(t, "schema: 1\nprofile: a/b\n", true, "profile:")
 }
 
-const digest64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-
-func TestLoadAcceptsAnAgentImageWithDigest(t *testing.T) {
-	p := writeFile(t, t.TempDir(), "den.yaml", "schema: 1\nagents:\n  claude:\n    image: docker.io/docker/sandbox-templates@sha256:"+digest64+"\n")
-	l, err := Load(p, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := l.File.Agents["claude"].Image; got != "docker.io/docker/sandbox-templates@sha256:"+digest64 {
-		t.Errorf("image = %q", got)
-	}
-}
-
-func TestLoadRefusesAnAgentImageWithoutDigest(t *testing.T) {
-	mustFail(t, "schema: 1\nagents:\n  claude:\n    image: docker.io/docker/sandbox-templates:claude-code-docker\n", true, "agents.claude.image", "@sha256:")
-}
-
-func TestLoadRefusesAnUnknownAgent(t *testing.T) {
-	mustFail(t, "schema: 1\nagents:\n  codex:\n    image: x.io/codex@sha256:"+digest64+"\n", true, "agents.codex", "claude")
-}
-
-func TestLoadRefusesAgentsInAProjectFile(t *testing.T) {
-	mustFail(t, minimalNest+"agents:\n  claude:\n    image: x.io/c@sha256:"+digest64+"\n", false, "agents", "move it to")
-}
-
 const templatesBlock = `templates:
   x: {repo: "git@h:o/r.git", ref: main}
   y: {dir: ./tpl, name: other}
@@ -341,5 +304,29 @@ func TestLoadAcceptsANestWithoutBase(t *testing.T) {
 	}
 	if l.File.Nests["dev"].Template != "x" {
 		t.Errorf("template = %q", l.File.Nests["dev"].Template)
+	}
+}
+
+func TestLoadRefusesRemovedKeys(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "den.yaml", `schema: 1
+bases:
+  b: {image: "b:v1"}
+agents:
+  claude: {image: x}
+nests:
+  dev:
+    base: b
+    repos: [{path: ./r}]
+`)
+	_, err := Load(p, true)
+	if err == nil {
+		t.Fatal("want a refusal")
+	}
+	want := p + ": invalid den.yaml:\n" +
+		"  bases: removed — declare the template in a den-template.yaml and point at it with templates.<name>.dir or .repo\n" +
+		"  agents: removed — set default_template to an image, e.g. claude-code-docker\n" +
+		"  nests.dev.base: renamed — use nests.dev.template"
+	if err.Error() != want {
+		t.Errorf("error\n%s\nwant\n%s", err, want)
 	}
 }

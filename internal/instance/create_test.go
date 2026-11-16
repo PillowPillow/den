@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/registry"
 	"github.com/PillowPillow/den/internal/sbxenv"
@@ -107,16 +108,16 @@ func TestCreateComposesTheKitsAndWritesThem(t *testing.T) {
 	p := mustPrepare(t, f, Options{Nest: "am"})
 	mustCreate(t, f, p)
 
-	shared := filepath.Join(f.home, "gen", ".kits", sbxenv.AgentName)
-	want := "kits:\n  - " + shared + "\n  - " + filepath.Dir(kit) + "\n  - " + filepath.Join(p.GenDir, "network") + "\n"
+	claude := filepath.Join(p.GenDir, sbxenv.AgentName)
+	want := "kits:\n  - " + claude + "\n  - " + filepath.Dir(kit) + "\n  - " + filepath.Join(p.GenDir, "network") + "\n"
 	env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml"))
-	for _, w := range []string{want, "workspace: " + p.RunDir + "\n", "  - sandbox: 3000\n    host: 8080\n", "  template: b:v1\n", "name: am\n"} {
+	for _, w := range []string{want, "workspace: " + p.RunDir + "\n", "  - sandbox: 3000\n    host: 8080\n", "name: am\n"} {
 		if !strings.Contains(env, w) {
 			t.Errorf("sbxenv.yaml:\n%s\nlacks:\n%s", env, w)
 		}
 	}
-	if got := readFile(t, filepath.Join(shared, "spec.yaml")); got != string(sbxenv.DenClaudeKit()) {
-		t.Errorf("den-claude kit differs from the embedded one")
+	if want, _ := sbxenv.DenClaudeKit(templateFrom); readFile(t, filepath.Join(claude, "spec.yaml")) != string(want) {
+		t.Errorf("den-claude kit is not the embedded one on the nest's image")
 	}
 	if got := readFile(t, filepath.Join(p.GenDir, "network", "spec.yaml")); got != string(sbxenv.NetworkKit([]string{"example.test"})) {
 		t.Errorf("network kit = %q", got)
@@ -314,8 +315,8 @@ func TestCreateRefusesAnAdminDirOutsideTheCommonGitDir(t *testing.T) {
 	if _, err := registry.Read(f.home, "am.feat"); err == nil {
 		t.Errorf("a record was written before the refusal")
 	}
-	if len(f.fake.Calls) != 3 {
-		t.Errorf("sbx calls %v, want only Prepare's", f.fake.Calls)
+	if f.fake.HasCalled("--no-input", "env", "create") {
+		t.Errorf("env create ran after the refusal: %v", f.fake.Calls)
 	}
 }
 
@@ -390,50 +391,77 @@ func TestPrepareRefusesARetryWhoseWorktreeMoved(t *testing.T) {
 		worktree.Path("central", moved, "feat", api), "`den rm am.feat`")
 }
 
-func TestCreateRendersOverlaysLastAndReadOnly(t *testing.T) {
+func TestOverlaysCoverTheDefinition(t *testing.T) {
 	f := newFixture(t)
 	api := f.repo(t, "api")
+	loc := filepath.Join(api, "tpl")
+	writeFile(t, filepath.Join(loc, "kits", "tk", "spec.yaml"), "kind: mixin\n")
+	writeFile(t, filepath.Join(loc, "lib.sh"), "set -e\n")
+	step := writeFile(t, filepath.Join(loc, "10-node.sh"), "true\n")
+	f.dirTemplate(t, "legacy", loc, "kits: [./kits/tk]\nbuild: {includes: [./lib.sh], steps: [./10-node.sh]}")
 	layer := writeFile(t, filepath.Join(api, "sbx", "extra.yaml"), "env: {}\n")
 	writeFile(t, filepath.Join(f.proj, "kits", "k", "spec.yaml"), "kind: mixin\n")
 	f.project(t, map[string]string{"am": repos(repoEntry(api, false)) +
-		fmt.Sprintf("\nkits: [./kits/k]\nlayers: [%q]\nstart: .", layer)})
+		fmt.Sprintf("\ntemplate: legacy\nkits: [./kits/k]\nlayers: [%q]\nstart: .", layer)})
 	p := mustPrepare(t, f, Options{Nest: "am"})
 	mustCreate(t, f, p)
 
 	env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml"))
-	got := strings.NewReplacer(f.home, "/denhome", f.proj, "/proj", f.src, "/src").Replace(env)
+	got := strings.NewReplacer(
+		worktree.ResolvePath(f.home), "/denhome", worktree.ResolvePath(f.proj), "/proj", worktree.ResolvePath(f.src), "/src",
+		f.home, "/denhome", f.proj, "/proj", f.src, "/src").Replace(env)
 	want := readFile(t, filepath.Join("testdata", "overlays.golden"))
 	if got != want {
 		t.Errorf("sbxenv.yaml mismatch\n--- got\n%s\n--- want\n%s", got, want)
 	}
+
+	if err := os.Remove(step); err != nil {
+		t.Fatal(err)
+	}
+	prepareErr(t, f, Options{Nest: "am"}, "of template \"legacy\" in "+filepath.Join(worktree.ResolvePath(loc), config.DefinitionFileName))
 }
 
-func TestWriteDenClaudeKitUsesTheConfiguredImage(t *testing.T) {
-	home := t.TempDir()
+func TestCreateWritesAKitPerInstance(t *testing.T) {
+	f := newFixture(t)
+	f.dirTemplate(t, "legacy", filepath.Join(f.src, "tpl"), "")
+	f.project(t, map[string]string{
+		"am":  repos(repoEntry(f.repo(t, "api"), false)) + "\ntemplate: legacy",
+		"web": repos(repoEntry(f.repo(t, "site"), false)),
+	})
+	for nest, image := range map[string]string{"am": templateImage, "web": templateFrom} {
+		p := mustPrepare(t, f, Options{Nest: nest})
+		mustCreate(t, f, p)
+		kit := filepath.Join(p.GenDir, sbxenv.AgentName)
+		if got := readFile(t, filepath.Join(kit, "spec.yaml")); !strings.Contains(got, "\n  image: "+image+"\n") {
+			t.Errorf("%s: den-claude kit does not run %s:\n%s", nest, image, got)
+		}
+		if env := readFile(t, filepath.Join(p.RunDir, EnvFileName)); !strings.Contains(env, "kits:\n  - "+kit+"\n") {
+			t.Errorf("%s: sbxenv.yaml does not start from its own kit %s:\n%s", nest, kit, env)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(f.home, "gen", ".kits")); err == nil {
+		t.Errorf("gen/.kits was written: an instance kit shared by two templates would carry the image of the last create")
+	}
+}
+
+func TestWriteDenClaudeKitWritesTheImage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "den-claude")
 	image := "registry.test/claude@sha256:" + strings.Repeat("cd", 32)
-	dir, err := WriteDenClaudeKit(home, image)
-	if err != nil {
+	if err := WriteDenClaudeKit(dir, image); err != nil {
 		t.Fatal(err)
 	}
 	got := readFile(t, filepath.Join(dir, "spec.yaml"))
 	if !strings.Contains(got, "  image: "+image+"\n") || strings.Count(got, "image:") != 1 {
-		t.Errorf("kit does not carry exactly the configured image:\n%s", got)
-	}
-	if _, err := WriteDenClaudeKit(home, ""); err != nil {
-		t.Fatal(err)
-	}
-	if back := readFile(t, filepath.Join(dir, "spec.yaml")); back != string(sbxenv.DenClaudeKit()) {
-		t.Errorf("an empty image must restore the embedded pin")
+		t.Errorf("kit does not carry exactly the image:\n%s", got)
 	}
 }
 
-func TestWriteDenClaudeKitDefaultsToTheEmbeddedPin(t *testing.T) {
-	home := t.TempDir()
-	dir, err := WriteDenClaudeKit(home, "")
-	if err != nil {
-		t.Fatal(err)
+func TestWriteDenClaudeKitRefusesNoImage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "den-claude")
+	if err := WriteDenClaudeKit(dir, ""); err == nil {
+		t.Fatal("want a refusal: den has no image of its own")
 	}
-	if got := readFile(t, filepath.Join(dir, "spec.yaml")); got != string(sbxenv.DenClaudeKit()) {
-		t.Errorf("kit differs from the embedded one")
+	if _, err := os.Stat(dir); err == nil {
+		t.Errorf("%s was written without an image", dir)
 	}
 }

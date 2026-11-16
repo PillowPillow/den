@@ -1,7 +1,6 @@
 package instance
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,6 +16,7 @@ import (
 	"github.com/PillowPillow/den/internal/registry"
 	"github.com/PillowPillow/den/internal/sbx"
 	"github.com/PillowPillow/den/internal/sbxenv"
+	"github.com/PillowPillow/den/internal/template"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -80,11 +80,11 @@ func writeRecord(ctx context.Context, d Deps, p *Plan, fresh *[]worktree.Target)
 		rec.Repos = append(rec.Repos, entry)
 	}
 
-	if err := writeGenerated(d.DenHome, p, trios); err != nil {
+	if err := writeGenerated(p, trios); err != nil {
 		return registry.Record{}, err
 	}
 	envFile := filepath.Join(p.RunDir, EnvFileName)
-	env, err := sbxenv.Render(envOf(d.DenHome, p, trios))
+	env, err := sbxenv.Render(envOf(p, trios))
 	if err != nil {
 		return registry.Record{}, err
 	}
@@ -187,12 +187,14 @@ func recordedAsCreated(rec *registry.Record, repo string) bool {
 }
 
 // writeGenerated rewrites GenDir from scratch, so a repo the selection dropped leaves no stale .git file behind.
-func writeGenerated(denHome string, p *Plan, trios map[string]gitTrio) error {
-	if _, err := WriteDenClaudeKit(denHome, p.Resolved.AgentImage); err != nil {
-		return err
-	}
+func writeGenerated(p *Plan, trios map[string]gitTrio) error {
 	if err := os.RemoveAll(p.GenDir); err != nil {
 		return fmt.Errorf("clearing %s: %w", p.GenDir, err)
+	}
+	// One kit per instance (T3): a kit shared by instances on two templates would carry the image of
+	// whichever was created last, and sbx reads it again at every create.
+	if err := WriteDenClaudeKit(denClaudeKitDir(p), p.Resolved.Template.KitImage); err != nil {
+		return err
 	}
 	if err := WriteGenFile(filepath.Join(p.GenDir, "network", "spec.yaml"), sbxenv.NetworkKit(p.Resolved.Allow)); err != nil {
 		return err
@@ -207,37 +209,40 @@ func writeGenerated(denHome string, p *Plan, trios map[string]gitTrio) error {
 	return nil
 }
 
-// WriteDenClaudeKit refreshes the shared den-claude kit and returns its directory.
-// An empty image keeps the pin embedded in den.
-func WriteDenClaudeKit(denHome, image string) (string, error) {
-	dir := denClaudeKitDir(denHome)
-	kit := filepath.Join(dir, "spec.yaml")
-	want := sbxenv.DenClaudeKitWithImage(image)
-	if current, err := os.ReadFile(kit); err != nil || !bytes.Equal(current, want) {
-		if err := WriteGenFile(kit, want); err != nil {
-			return "", err
-		}
+// WriteDenClaudeKit writes <dir>/spec.yaml, the den-claude kit on image.
+func WriteDenClaudeKit(dir, image string) error {
+	spec, err := sbxenv.DenClaudeKit(image)
+	if err != nil {
+		return err
 	}
-	return dir, nil
+	return WriteGenFile(filepath.Join(dir, "spec.yaml"), spec)
 }
 
-// denClaudeKitDir starts with a dot, which no instance name can: `den rm kits` must never own it.
-func denClaudeKitDir(denHome string) string {
-	return filepath.Join(denHome, "gen", ".kits", sbxenv.AgentName)
+func denClaudeKitDir(p *Plan) string {
+	return filepath.Join(p.GenDir, sbxenv.AgentName)
+}
+
+// sbxTemplate is the sbx template the VM starts from: the template's tag, or "" for an image, which
+// the den-claude kit carries instead.
+func sbxTemplate(t *template.Resolved) string {
+	if t.Choice.IsImage() {
+		return ""
+	}
+	return t.Choice.Tag()
 }
 
 func gitFilePath(p *Plan, r nest.Repo) string {
 	return filepath.Join(p.GenDir, "git", r.Name+".git")
 }
 
-func envOf(denHome string, p *Plan, trios map[string]gitTrio) sbxenv.Env {
+func envOf(p *Plan, trios map[string]gitTrio) sbxenv.Env {
 	res := p.Resolved
 	e := sbxenv.Env{
 		Name:      p.Instance,
-		Kits:      append(append([]string{denClaudeKitDir(denHome)}, res.Kits...), filepath.Join(p.GenDir, "network")),
+		Kits:      append(append([]string{denClaudeKitDir(p)}, res.Kits...), filepath.Join(p.GenDir, "network")),
 		Workspace: p.Workspace,
 		Env:       res.Env,
-		Template:  res.Base.Image,
+		Template:  sbxTemplate(res.Template),
 	}
 	for _, r := range p.Repos {
 		t, ok := trios[r.Name]

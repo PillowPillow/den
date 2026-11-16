@@ -313,9 +313,9 @@ func runVM(ctx context.Context, d Deps, name, vm, tag string, def config.Definit
 	if err := instance.WriteGenFile(filepath.Join(gen, "network", "spec.yaml"), sbxenv.NetworkKit(def.Build.Network.Allow)); err != nil {
 		return template.From{}, err
 	}
-	// A kit of its own, not the shared gen/.kits one: each template starts from its own image (T3).
+	// A kit of its own, like each instance's: each template starts from its own image (T3).
 	claudeKit := filepath.Join(gen, "den-claude")
-	if err := instance.WriteGenFile(filepath.Join(claudeKit, "spec.yaml"), sbxenv.DenClaudeKitWithImage(st.kitImage)); err != nil {
+	if err := instance.WriteDenClaudeKit(claudeKit, st.kitImage); err != nil {
 		return template.From{}, err
 	}
 	env, err := sbxenv.Render(sbxenv.Env{

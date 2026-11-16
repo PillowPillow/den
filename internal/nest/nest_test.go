@@ -2,6 +2,7 @@ package nest
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/prompt"
+	"github.com/PillowPillow/den/internal/template"
 )
 
 func write(t *testing.T, dir, name, body string) string {
@@ -25,7 +27,7 @@ func write(t *testing.T, dir, name, body string) string {
 }
 
 func nestFile(name string) string {
-	return "schema: 1\nbases:\n  b: {image: \"b:v1\"}\nnests:\n  " + name + ":\n    base: b\n    profile: p\n    repos: [{path: ./r}]\n"
+	return "schema: 1\nnests:\n  " + name + ":\n    template: claude-code-docker\n    profile: p\n    repos: [{path: ./r}]\n"
 }
 
 func mustLoad(t *testing.T, path string, global bool) *config.Loaded {
@@ -128,17 +130,12 @@ repos:
 env: {A: g, B: g}
 network: {allow: [x.com, y.com]}
 worktrees: {layout: per-repo, root: ./trees}
-bases:
-  b:
-    image: "b:v1"
-    kits: [k1]
-    network: {allow: [y.com, z.com]}
 nests:
   api:
-    base: b
-    kits: [k2]
+    template: claude-code-docker
+    kits: [k1, k2, k1]
     env: {B: n, C: n}
-    network: {allow: [z.com, w.com]}
+    network: {allow: [y.com, z.com, w.com, z.com]}
     repos: [{path: ./app}, {key: lib, optional: true}]
 `
 
@@ -240,13 +237,14 @@ func TestResolveNormalizesTheWorktreeRoot(t *testing.T) {
 	}
 }
 
-func TestResolveNamesBothFilesForAMissingBase(t *testing.T) {
+func TestResolveNamesBothFilesWithoutATemplate(t *testing.T) {
 	home := t.TempDir()
 	g := mustLoad(t, write(t, home, "den.yaml", "schema: 1\n"), true)
 	pf := mustLoad(t, write(t, t.TempDir(), "den.yaml", nestFile("api")), false)
-	pf.File.Nests["api"] = func() config.Nest { n := pf.File.Nests["api"]; n.Base = "missing"; return n }()
+	pf.File.Nests["api"] = func() config.Nest { n := pf.File.Nests["api"]; n.Template = ""; return n }()
 	_, err := Resolve(home, g, pf, "api")
-	if err == nil || !strings.Contains(err.Error(), pf.Path) || !strings.Contains(err.Error(), g.Path) {
+	var nt *template.NoTemplateError
+	if !errors.As(err, &nt) || !strings.Contains(err.Error(), pf.Path) || !strings.Contains(err.Error(), g.Path) {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -319,23 +317,6 @@ func TestSelectInteractiveAsksForOptionalOnly(t *testing.T) {
 	}
 }
 
-func TestFindBasePrefersTheProjectFile(t *testing.T) {
-	home, proj := t.TempDir(), t.TempDir()
-	write(t, home, "den.yaml", "schema: 1\nbases:\n  b: {image: \"global:v1\"}\n  only: {image: \"g:v1\"}\n")
-	pp := write(t, proj, "den.yaml", "schema: 1\nbases:\n  b: {image: \"proj:v1\"}\n")
-	b, f, err := FindBase(home, proj, "b")
-	if err != nil || b.Image != "proj:v1" || f.Path != pp {
-		t.Fatalf("%v %v %v", b, f, err)
-	}
-	b, f, err = FindBase(home, proj, "only")
-	if err != nil || b.Image != "g:v1" || !f.Global {
-		t.Fatalf("%v %v %v", b, f, err)
-	}
-	if _, _, err = FindBase(home, proj, "none"); err == nil {
-		t.Fatal("want error")
-	}
-}
-
 func indexWithCorruptFile(t *testing.T) (home, elsewhere, good, bad string) {
 	t.Helper()
 	home, elsewhere = t.TempDir(), t.TempDir()
@@ -378,12 +359,10 @@ profile: filep
 profiles:
   filep: [./kits/f]
   nestp: [./kits/n, k1]
-bases:
-  b: {image: "b:v1", kits: [k1]}
 nests:
   api:
-    base: b
-    kits: [k2]
+    template: claude-code-docker
+    kits: [k1, k2]
     repos: [{path: ./app}]
 `
 
@@ -398,7 +377,7 @@ func TestResolveUsesTheFileProfileByDefault(t *testing.T) {
 }
 
 func TestResolveNestProfileWinsOverTheFileProfile(t *testing.T) {
-	r, err := resolveRich(t, strings.Replace(profileGlobal, "    base: b\n", "    base: b\n    profile: nestp\n", 1))
+	r, err := resolveRich(t, strings.Replace(profileGlobal, "    template: claude-code-docker\n", "    template: claude-code-docker\n    profile: nestp\n", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,8 +386,8 @@ func TestResolveNestProfileWinsOverTheFileProfile(t *testing.T) {
 	}
 }
 
-func TestResolveAppendsProfileKitsAfterBaseAndNestKits(t *testing.T) {
-	r, err := resolveRich(t, strings.Replace(profileGlobal, "    base: b\n", "    base: b\n    profile: nestp\n", 1))
+func TestResolveAppendsProfileKitsAfterNestKits(t *testing.T) {
+	r, err := resolveRich(t, strings.Replace(profileGlobal, "    template: claude-code-docker\n", "    template: claude-code-docker\n    profile: nestp\n", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +398,7 @@ func TestResolveAppendsProfileKitsAfterBaseAndNestKits(t *testing.T) {
 }
 
 func TestResolveWarnsOnAnUndefinedProfile(t *testing.T) {
-	r, err := resolveRich(t, strings.Replace(profileGlobal, "    base: b\n", "    base: b\n    profile: ghost\n", 1))
+	r, err := resolveRich(t, strings.Replace(profileGlobal, "    template: claude-code-docker\n", "    template: claude-code-docker\n    profile: ghost\n", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,5 +439,47 @@ func TestAddReposRefusesAFolderNameAlreadyMounted(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "--repo") || !strings.Contains(err.Error(), "unique") {
 			t.Fatalf("%v: error %v, want the name clash refusal", raw, err)
 		}
+	}
+}
+
+func TestResolveTakesKitsAndAllowFromTheDefinition(t *testing.T) {
+	home := t.TempDir()
+	write(t, home, "tpl/den-template.yaml", "schema: 1\ntemplates:\n  legacy:\n    from: claude-code-docker\n"+
+		"    kits: [docker.io/acme/k1:1, ./kits/k3]\n    network: {allow: [y.com, z.com]}\n    build: {network: {allow: [build.only]}}\n")
+	g := mustLoad(t, write(t, home, "den.yaml", `schema: 1
+network: {allow: [x.com, y.com]}
+profile: p
+profiles:
+  p: [docker.io/acme/k1:1, docker.io/acme/kp:1]
+templates:
+  legacy: {dir: ./tpl}
+nests:
+  api:
+    template: legacy
+    kits: [k2]
+    network: {allow: [z.com, w.com]}
+    repos: [{path: ./app}]
+`), true)
+	c, err := template.Choose(g, g, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := template.WriteRecord(home, template.Record{Template: "legacy", Tag: "legacy:v2", Source: template.SourceOf(c),
+		DefinitionHash: "h", From: template.From{Ref: "docker.io/docker/sandbox-templates:claude-code-docker", Digest: "sha256:" + strings.Repeat("4a", 32)}}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Resolve(home, g, g, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Template == nil || r.Template.Choice.Name() != "legacy" || r.Template.Record == nil {
+		t.Fatalf("template %+v", r.Template)
+	}
+	k3 := filepath.Join(r.Template.Defs.Root, "kits", "k3")
+	if want := []string{"docker.io/acme/k1:1", k3, "k2", "docker.io/acme/kp:1"}; !reflect.DeepEqual(r.Kits, want) {
+		t.Errorf("kits %v, want %v", r.Kits, want)
+	}
+	if want := []string{"x.com", "y.com", "z.com", "w.com"}; !reflect.DeepEqual(r.Allow, want) {
+		t.Errorf("allow %v, want %v", r.Allow, want)
 	}
 }
