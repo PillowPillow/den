@@ -100,7 +100,7 @@ templates:
     # name: digitaleo        # optionnel ; défaut : la clé de l'entrée
     # ref: main              # optionnel ; défaut : la branche par défaut du dépôt [choix rédacteur]
   legacy:
-    dir: ~/.den/templates/pillow
+    dir: ~/.den/templates    # le dossier porte den-template.yaml à sa racine
     name: kampn              # le lieu expose plusieurs templates
 default_template: digitaleo  # un nom de template, ou une référence d'image
 
@@ -152,8 +152,13 @@ templates:
 ```
 
 - Même contenu que le bloc `bases:` actuel, moins `image:`. Décodage strict, comme `den.yaml`.
-- Les chemins sont relatifs au fichier. Un chemin qui sort du lieu (`..`, absolu, lien symbolique vers
-  l'extérieur) est refusé : un dépôt distant ne doit pas faire lire un fichier de la machine.
+- Les chemins sont relatifs au fichier.
+- Lieu `repo:` : un chemin qui sort du lieu (`..`, absolu, `~`, lien symbolique vers l'extérieur) est
+  refusé, pour `kits`, `includes` et `steps` : un dépôt distant ne doit pas faire lire un fichier de la
+  machine. Un kit qui n'est pas un chemin (référence que sbx résout lui-même) reste accepté et passe tel
+  quel, comme aujourd'hui [code] [choix rédacteur].
+- Lieu `dir:` : le dossier appartient à l'utilisateur ; les chemins absolus et `~` restent permis, comme
+  pour une base aujourd'hui [choix rédacteur].
 - `from:` absent : le build démarre de `default_template` du fichier global s'il est une référence
   d'image, sinon de la valeur intégrée.
 - `from:` = nom d'un frère : ce frère doit être construit avant ; sinon `den build` refuse et nomme la
@@ -162,10 +167,16 @@ templates:
 
 ### 5.3 Copie locale d'un lieu `repo:`
 
-- den clone le dépôt sous `<denHome>/gen/.templates/<slug>-<8 hex du hash de l'URL>/`. Le point initial
-  suit la règle de `.kits` et `.build` : aucun nom de sandbox ne peut posséder ce dossier.
-- La copie reste à son commit tant que l'utilisateur ne lance pas la mise à jour. Les kits, l'allowlist et
-  l'image bougent donc ensemble, au même moment.
+- **Une copie par template construit**, pas par URL [choix rédacteur] :
+  `<denHome>/gen/.templates/<tag sans ':v2'>/`. Le point initial suit la règle de `.kits` et `.build` :
+  aucun nom de sandbox ne peut posséder ce dossier. Deux templates du même dépôt ont deux copies ;
+  mettre l'un à jour ne touche pas les kits ni l'allowlist de l'autre.
+- La copie est toujours au commit de la fiche (§5.5). `den build` prépare la nouvelle version dans un
+  dossier d'attente, construit depuis lui, et ne remplace la copie et la fiche qu'après un build réussi.
+  Un build raté laisse la copie, la fiche et le template sbx précédents intacts. Les kits, l'allowlist
+  et l'image bougent donc ensemble, au même moment.
+- `den up` vérifie que le commit de la copie est celui de la fiche ; sinon il refuse et donne
+  `den build <template>`.
 - den ne lit jamais la copie d'une façon qui exécute son contenu sur l'hôte : pas de hooks git
   (`core.hooksPath=/dev/null`), pas de sous-modules.
 - Un lieu `dir:` est lu en place, sans copie, comme une base aujourd'hui.
@@ -183,6 +194,8 @@ templates:
   telle qu'elle est.
 - Le build lui-même ne change pas (VM de build, étapes, `sbx template save`, suppression) [code].
 - En fin de build, den écrit la fiche du template (§5.5).
+- Image du kit `den-claude` pendant un build : la référence `from` si c'est une image ; si `from` nomme un
+  frère, l'image racine lue dans la fiche de ce frère.
 - Un template qui est une référence d'image n'a pas de build : `den build` le dit et sort en erreur.
 
 **`den up`**
@@ -202,6 +215,15 @@ templates:
 - `den exec` et `den shell` n'émettent pas d'avis (stdout et stderr de `exec` restent ceux de la
   commande) [choix rédacteur].
 
+**Image du kit `den-claude` sur un template construit** [choix rédacteur]
+
+- `den up` donne au kit l'image racine de la fiche : le digest résolu s'il a été enregistré, sinon la
+  référence. `sandboxOptions.template` porte le tag construit, comme aujourd'hui [code]. Un tag qui a
+  bougé depuis le build ne change donc pas une VM créée sur un ancien instantané.
+- [non vérifié] le moyen de lire le digest d'un tag sans docker (sbx, ou l'inspection du template de
+  build). Si aucun n'existe, la fiche garde la référence seule ; l'effet d'un tag déplacé sous un
+  instantané est alors à mesurer dans le même spike que ci-dessous.
+
 **Nest sur une référence d'image (sans build)**
 
 - Le kit `den-claude` reçoit la référence comme image ; aucun `sandboxOptions.template` n'est écrit.
@@ -210,6 +232,7 @@ templates:
   avant le plan ; si sbx refuse un tag, den résout le tag en digest au moment de `up`.
 - Une image dont l'ENTRYPOINT rend la main arrête la VM (S6e, `docker.io/sbx/claude`). den ne peut pas le
   savoir avant le démarrage : l'erreur de `den up` nomme la clé `default_template` ou `template` à corriger.
+- Les mesures précédentes (S6e comprise) sont dans `docs/superpowers/specs/2026-11-12-den-v2-spikes.md`.
 
 ### 5.5 Fiche d'un template construit
 
@@ -223,7 +246,7 @@ comme les fiches d'instance :
 | `source` | `repo` + URL + `ref`, ou `dir` + chemin absolu |
 | `commit` | commit construit (lieu `repo:`) |
 | `definitionHash` | hash de la définition construite |
-| `from` | référence demandée, et digest résolu si den a pu le lire |
+| `from` | image racine de la chaîne `from` : référence demandée, et digest résolu si den a pu le lire |
 | `builtAt` | date du build |
 
 **Collision** : deux entrées qui mènent au même tag depuis deux sources différentes (ex. `digitaleo` du
@@ -237,16 +260,21 @@ quand la source résolue diffère de celle de la fiche [choix rédacteur].
   se trouve sous un montage lecture-écriture reste couvert. `den-template.yaml` et la copie locale entrent
   dans cette liste.
 - `--skip-host-commands` sur chaque `env create` / `env rm`.
-- La fiche d'instance garde le nom du template et son tag à la place de `base` / `image` ; le schéma des
-  fiches d'instance monte d'une version, et une fiche de l'ancien schéma est refusée avec `den rm` comme
-  remède [choix rédacteur].
+- La fiche d'instance garde le nom du template et son tag à la place de `base` / `image` ; son schéma
+  passe à 2. **Le lecteur accepte encore le schéma 1** et lit `base` comme `template`, `image` comme
+  `tag` [choix rédacteur]. Raison [code] : `registry.decode` refuse tout autre schéma
+  (`internal/registry/registry.go:136`) et `checkSiblings` refuse dès qu'une fiche voisine est illisible
+  (`internal/instance/remove.go:124`) ; sans ce lecteur, une seule ancienne fiche bloquerait tous les
+  `den rm`. Une fiche de schéma 1 n'est jamais réécrite en place : `den rm` la supprime, `den up` la
+  remplace quand il recrée l'instance.
 - `configHash` : la définition résolue et la référence `from` y entrent, à la place de l'image d'agent.
 - Toute commande git passe par `cli.Deps.Git`. Les tests clonent un dépôt local par chemin : aucun socket.
 
 ## 6. Conversion (fait partie du livrable)
 
 1. `~/.den/den.yaml` : `bases.pillow` devient `~/.den/templates/den-template.yaml` (template `pillow`,
-   scripts déplacés avec lui) ; le fichier global gagne `templates.pillow.dir` et `default_template`.
+   scripts déplacés avec lui ; les kits restent sous `~/.den/kits/`, permis pour un lieu `dir:`) ; le
+   fichier global gagne `templates.pillow.dir: ~/.den/templates` et `default_template`.
 2. `den-env` (branche `den-v2`) : `den-template.yaml` à la racine, avec le template `digitaleo` repris de
    `bases.digitaleo`.
 3. Dev home Digitaleo : un `den.yaml` avec `templates.digitaleo.repo`, `default_template: digitaleo` et les
