@@ -270,9 +270,9 @@ func TestRmRefusesWithoutARecord(t *testing.T) {
 
 func TestRmRefusesARecordOfAnotherSchema(t *testing.T) {
 	f := newFixture(t)
-	path := writeFile(t, recordPath(t, f.home, "am"), "schema: 2\ninstance: am\n")
+	path := writeFile(t, recordPath(t, f.home, "am"), "schema: 3\ninstance: am\n")
 
-	wantErr(t, f.remove("am", false), path, "schema 2")
+	wantErr(t, f.remove("am", false), path, "schema 3")
 	if len(f.fake.Calls) != 0 {
 		t.Errorf("sbx calls %v, want none", f.fake.Calls)
 	}
@@ -415,6 +415,18 @@ func TestRmRefusesAWorktreeWhileARecordIsUnreadable(t *testing.T) {
 		t.Errorf("removed the VM despite the refusal: %v", f.fake.Calls)
 	}
 	mustExist(t, rec.Repos[0].Mount, recordPath(t, f.home, rec.Instance), broken)
+}
+
+func TestRemoveRefusesBesideASchemaOneRecord(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	old := writeFile(t, recordPath(t, f.home, "am"), "schema: 1\ninstance: am\n")
+
+	wantErr(t, f.remove(rec.Instance, false), "remove the VM with `sbx rm am`, then delete "+old)
+	if f.removedVM() {
+		t.Errorf("removed the VM despite the refusal: %v", f.fake.Calls)
+	}
+	mustExist(t, rec.Repos[0].Mount, recordPath(t, f.home, rec.Instance), old)
 }
 
 func TestRmWithoutAWorktreeIgnoresAnUnreadableRecord(t *testing.T) {

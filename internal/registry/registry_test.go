@@ -14,6 +14,8 @@ func sample() Record {
 	return Record{
 		Instance:   "api.feat-12",
 		Nest:       "api",
+		Template:   "claude-code-docker",
+		Tag:        "claude-code-docker:v2",
 		ConfigFile: "/p/den.yaml",
 		Project:    "/p",
 		RunDir:     "/p/.den/run/api.feat-12",
@@ -90,18 +92,44 @@ func writeRaw(t *testing.T, denHome, name, content string) string {
 
 func TestReadRefusesAnUnknownKey(t *testing.T) {
 	denHome := t.TempDir()
-	writeRaw(t, denHome, "api", "schema: 1\ninstance: api\nworktre: {}\n")
+	writeRaw(t, denHome, "api", "schema: 2\ninstance: api\nworktre: {}\n")
 	_, err := Read(denHome, "api")
 	if err == nil || !strings.Contains(err.Error(), "worktre") {
 		t.Fatalf("want an error naming the unknown key, got %v", err)
 	}
 }
 
+func TestWriteStampsSchemaTwo(t *testing.T) {
+	denHome := t.TempDir()
+	r := sample()
+	r.Schema = 7
+	if err := Write(denHome, r); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read(denHome, r.Instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Schema != 2 || Schema != 2 {
+		t.Errorf("schema %d (const %d), want 2", got.Schema, Schema)
+	}
+}
+
+func TestReadNamesTheRemedyForSchemaOne(t *testing.T) {
+	denHome := t.TempDir()
+	path := writeRaw(t, denHome, "am", "schema: 1\ninstance: am\n")
+	_, err := Read(denHome, "am")
+	want := path + ": schema 1 was written by a den before templates; this den cannot act on it — remove the VM with `sbx rm am`, then delete " + path
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v\nwant %s", err, want)
+	}
+}
+
 func TestReadRefusesAnotherSchema(t *testing.T) {
 	denHome := t.TempDir()
-	writeRaw(t, denHome, "api", "schema: 2\ninstance: api\n")
+	writeRaw(t, denHome, "api", "schema: 3\ninstance: api\n")
 	_, err := Read(denHome, "api")
-	if err == nil || !strings.Contains(err.Error(), "schema 2") {
+	if err == nil || !strings.Contains(err.Error(), "schema 3") {
 		t.Fatalf("want a schema refusal, got %v", err)
 	}
 	if errors.Is(err, fs.ErrNotExist) {
@@ -180,7 +208,7 @@ func TestDirNeverPointsAtV1State(t *testing.T) {
 
 func TestReadRefusesARecordWhoseInstanceDiffersFromItsFile(t *testing.T) {
 	denHome := t.TempDir()
-	path := writeRaw(t, denHome, "api", "schema: 1\ninstance: web\n")
+	path := writeRaw(t, denHome, "api", "schema: 2\ninstance: web\n")
 	_, err := Read(denHome, "api")
 	if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), `"web"`) {
 		t.Fatalf("want a refusal naming %s and the recorded instance, got %v", path, err)
@@ -192,7 +220,7 @@ func TestReadRefusesARecordWhoseInstanceDiffersFromItsFile(t *testing.T) {
 
 func TestListReportsARecordWhoseInstanceDiffersFromItsFileAsBroken(t *testing.T) {
 	denHome := t.TempDir()
-	path := writeRaw(t, denHome, "api", "schema: 1\ninstance: web\n")
+	path := writeRaw(t, denHome, "api", "schema: 2\ninstance: web\n")
 	got, broken, err := List(denHome)
 	if err != nil {
 		t.Fatal(err)

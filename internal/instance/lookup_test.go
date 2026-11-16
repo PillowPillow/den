@@ -47,7 +47,7 @@ func TestLookupStates(t *testing.T) {
 func TestLookupRefusesARecordFromAnotherSchema(t *testing.T) {
 	for _, listed := range []bool{false, true} {
 		f := newFixture(t)
-		path := writeFile(t, filepath.Join(registry.Dir(f.home), "am.yaml"), "schema: 2\ninstance: am\n")
+		path := writeFile(t, filepath.Join(registry.Dir(f.home), "am.yaml"), "schema: 3\ninstance: am\n")
 		if listed {
 			f.live("am")
 		}

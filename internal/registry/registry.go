@@ -22,12 +22,17 @@ import (
 
 // Schema is refused on mismatch rather than decoded optimistically: a field
 // whose meaning changed would send `den rm` at a worktree the writer never created.
-const Schema = 1
+const Schema = 2
+
+// schemaBeforeTemplates is the last schema that did not record the template.
+const schemaBeforeTemplates = 1
 
 type Record struct {
 	Schema     int       `yaml:"schema"`
 	Instance   string    `yaml:"instance"`
 	Nest       string    `yaml:"nest"`
+	Template   string    `yaml:"template"`
+	Tag        string    `yaml:"tag,omitempty"` // the sbx template tag; empty for an image
 	ConfigFile string    `yaml:"config_file"`
 	Project    string    `yaml:"project,omitempty"`
 	RunDir     string    `yaml:"run_dir"`
@@ -109,6 +114,13 @@ func decode(path string, content []byte) (Record, error) {
 	var r Record
 	if err := config.DecodeYAMLStrict(path, content, &r); err != nil {
 		return Record{}, err
+	}
+	if r.Schema == schemaBeforeTemplates {
+		// The remedy rides in the error because `den rm` of a sibling surfaces it through checkSiblings.
+		return Record{}, fmt.Errorf(
+			"%s: schema %d was written by a den before templates; this den cannot act on it — "+
+				"remove the VM with `sbx rm %s`, then delete %s",
+			path, r.Schema, strings.TrimSuffix(filepath.Base(path), ".yaml"), path)
 	}
 	if r.Schema != Schema {
 		return Record{}, fmt.Errorf(

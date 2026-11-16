@@ -1,6 +1,8 @@
-schema: 1
+schema: 2
 instance: api.feat-12
 nest: api
+template: claude-code-docker
+tag: claude-code-docker:v2
 config_file: /p/den.yaml
 project: /p
 run_dir: /p/.den/run/api.feat-12

@@ -59,6 +59,10 @@ func writeRecord(ctx context.Context, d Deps, p *Plan, fresh *[]worktree.Target)
 		Instance: p.Instance, Nest: res.Name, ConfigFile: res.File.Path,
 		RunDir: p.RunDir, GenDir: p.GenDir, ConfigHash: p.ConfigHash, Start: p.Start,
 	}
+	rec.Template = res.Template.Choice.Value
+	if !res.Template.Choice.IsImage() {
+		rec.Tag = res.Template.Choice.Tag()
+	}
 	if !res.File.Global {
 		rec.Project = res.File.Dir
 	}
