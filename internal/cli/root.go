@@ -57,7 +57,9 @@ func NewRoot(deps Deps) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE:          func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+		Version:       displayVersion(),
 	}
+	root.SetVersionTemplate("den {{.Version}}\n")
 	root.PersistentFlags().StringVar(&denHome, "den-home", "",
 		"den config directory (default: $DEN_HOME or ~/.den)")
 	if deps.Out != nil {

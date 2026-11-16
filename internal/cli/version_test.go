@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 // `task build` is "the ONLY documented way to build" precisely because a plain
 // `go build` leaves Version at "dev". But `go install …/cmd/den@v1.0.0` — the
@@ -95,5 +98,20 @@ func TestResolveVersionKeepsDevWhenLdflagsStampedNothing(t *testing.T) {
 	got := resolveVersion("", "v1.1.1-0.20260804111234-a28f04a21c08+dirty", true)
 	if got != "dev" {
 		t.Fatalf("an empty ldflags stamp must not reach the user: %q", got)
+	}
+}
+
+func TestVersionFlagsPrintWhatTheVersionCommandPrints(t *testing.T) {
+	want := "den " + displayVersion() + "\n"
+	for _, args := range [][]string{{"version"}, {"--version"}, {"-v"}} {
+		var out bytes.Buffer
+		root := NewRoot(Deps{Out: &out, Err: &out})
+		root.SetArgs(args)
+		if err := root.Execute(); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if out.String() != want {
+			t.Errorf("%v printed %q, want %q", args, out.String(), want)
+		}
 	}
 }
