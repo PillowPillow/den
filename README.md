@@ -343,7 +343,8 @@ rather than remove a VM it did not create. The VM's scratch workspace is `<denHo
 
 ### `den version`
 
-Prints the version stamped at build time. A plain `go build` answers `den dev`; use `task build`.
+Prints the version stamped at build time; `den --version` and `den -v` print the same line. A plain
+`go build` answers `den dev`; use `task build`.
 
 ## Worktrees
 
