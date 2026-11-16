@@ -5,16 +5,16 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/PillowPillow/den/internal/base"
+	"github.com/PillowPillow/den/internal/build"
 	"github.com/PillowPillow/den/internal/config"
 	"github.com/PillowPillow/den/internal/instance"
-	"github.com/PillowPillow/den/internal/nest"
 )
 
 func newBuildCmd(deps Deps, denHome *string) *cobra.Command {
-	return &cobra.Command{
-		Use:   "build <base>",
-		Short: "Build a base's image: provision a throwaway VM and save it as a template",
+	var o build.Options
+	cmd := &cobra.Command{
+		Use:   "build <template>",
+		Short: "Build a template: provision a throwaway VM, save it as an sbx template and record it",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
@@ -25,16 +25,19 @@ func newBuildCmd(deps Deps, denHome *string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("reading the current directory: %w", err)
 			}
-			b, _, err := nest.FindBase(home, cwd, args[0])
-			if err != nil {
-				return err
+			d := build.Deps{
+				Deps: instance.Deps{
+					Sbx: deps.Sbx, Git: deps.Git, Prompt: deps.Prompt, DenHome: home, Cwd: cwd,
+					Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr(),
+				},
+				IsTTY: deps.IsTTY,
 			}
-			global, err := config.LoadGlobal(home)
-			if err != nil {
-				return err
-			}
-			d := instance.Deps{Sbx: deps.Sbx, DenHome: home, Cwd: cwd, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}
-			return base.Build(cmd.Context(), d, args[0], b, global.File.Agents["claude"].Image)
+			return explainNoTemplate(cmd.Context(), deps, build.Build(cmd.Context(), d, args[0], o))
 		},
 	}
+	f := cmd.Flags()
+	f.BoolVar(&o.Pull, "pull", false, "fetch the template's repo again instead of building the local copy")
+	f.BoolVar(&o.Yes, "yes", false, "trust a repo declared in a project den.yaml without asking")
+	f.BoolVar(&o.Force, "force", false, "replace a template built from another source")
+	return cmd
 }

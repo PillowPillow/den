@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PillowPillow/den/internal/hub"
 	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/registry"
 	"github.com/PillowPillow/den/internal/sbx"
@@ -17,6 +18,7 @@ type upFixture struct {
 	home, proj, src string
 	fake            *sbx.Fake
 	prompt          *prompt.Fake
+	hub             hub.Fake
 	out, err        bytes.Buffer
 	cwd             string
 }
@@ -83,7 +85,7 @@ func (f *upFixture) up2(cmd string, args ...string) error {
 		cwd = f.cwd
 	}
 	root := NewRoot(Deps{
-		Sbx: f.fake, Prompt: f.prompt, IsTTY: func() bool { return false },
+		Sbx: f.fake, Prompt: f.prompt, Hub: f.hub, IsTTY: func() bool { return false },
 		Getwd: func() (string, error) { return cwd, nil }, Out: &f.out, Err: &f.err,
 	})
 	root.SetArgs(append([]string{"--den-home", f.home, cmd}, args...))

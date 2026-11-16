@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/PillowPillow/den/internal/hub"
 	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/prompt/huhui"
 	"github.com/PillowPillow/den/internal/sbx"
@@ -27,6 +28,7 @@ type Deps struct {
 	Sbx    sbx.Runner
 	Git    worktree.Git
 	Prompt prompt.Prompter
+	Hub    hub.Catalog
 	IsTTY  func() bool
 	Getwd  func() (string, error)
 	Out    io.Writer
@@ -39,6 +41,7 @@ func SystemDeps() Deps {
 		Sbx:    sbx.NewExec(""),
 		Git:    worktree.NewGit(),
 		Prompt: huhui.New(),
+		Hub:    hub.New(),
 		IsTTY:  func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
 		Getwd:  os.Getwd,
 		Out:    os.Stdout,

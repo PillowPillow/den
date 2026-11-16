@@ -29,7 +29,7 @@ func (r *Resolved) Root() string {
 	return r.root
 }
 
-func describeSource(s Source) string {
+func DescribeSource(s Source) string {
 	if s.Kind == "repo" {
 		if s.Ref != "" {
 			return fmt.Sprintf("repo %s at %s", s.URL, s.Ref)
@@ -63,7 +63,7 @@ func Open(denHome string, c Choice) (*Resolved, error) {
 	}
 	if built, want := rec.Source, SourceOf(c); built != want {
 		return nil, fmt.Errorf("template %q was built from %s, but %s now declares %s — run `den build %s --force` to rebuild it from there",
-			name, describeSource(built), c.Origin, describeSource(want), name)
+			name, DescribeSource(built), c.Origin, DescribeSource(want), name)
 	}
 	root := c.Entry.Dir
 	if c.Entry.Repo != "" {
