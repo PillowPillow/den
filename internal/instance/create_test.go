@@ -465,3 +465,61 @@ func TestWriteDenClaudeKitRefusesNoImage(t *testing.T) {
 		t.Errorf("%s was written without an image", dir)
 	}
 }
+
+func typoNest(t *testing.T, f *fixture) *Plan {
+	t.Helper()
+	f.project(t, map[string]string{"am": "template: claude-cod\n" + repos(repoEntry(f.repo(t, "api"), false))})
+	return mustPrepare(t, f, Options{Nest: "am"})
+}
+
+func TestCreateOnAnImageNamesTheKeyOnFailure(t *testing.T) {
+	f := newFixture(t)
+	p := typoNest(t, f)
+	f.fake.Default.Err = errors.New("pull access denied")
+	_, err := Create(context.Background(), f.deps(), p)
+	c := p.Resolved.Template.Choice
+	for _, w := range []string{
+		`no template is named "claude-cod" in ` + strings.Join(c.Searched, " or ") +
+			", and sbx could not start the image docker.io/docker/sandbox-templates:claude-cod",
+		"fix " + c.Origin,
+	} {
+		if err == nil || !strings.Contains(err.Error(), w) {
+			t.Errorf("error %v lacks %q", err, w)
+		}
+	}
+}
+
+func TestUpNamesTheKeyWhenTheAttachFailsRightAfterCreate(t *testing.T) {
+	f := newFixture(t)
+	p := typoNest(t, f)
+	f.fake.AttachErr = errors.New("image not found")
+	err := Up(context.Background(), f.deps(), Options{Nest: "am"}, false)
+	if err == nil || !strings.Contains(err.Error(), "image not found") ||
+		!strings.Contains(err.Error(), `no template is named "claude-cod"`) ||
+		!strings.Contains(err.Error(), "fix "+p.Resolved.Template.Choice.Origin) {
+		t.Errorf("error %v", err)
+	}
+}
+
+func TestUpLeavesALiveAttachErrorAlone(t *testing.T) {
+	f := newFixture(t)
+	typoNest(t, f)
+	f.live("am")
+	f.fake.AttachErr = errors.New("image not found")
+	err := Up(context.Background(), f.deps(), Options{Nest: "am"}, false)
+	if err == nil || strings.Contains(err.Error(), "no template is named") {
+		t.Errorf("error %v", err)
+	}
+}
+
+func TestCreateOnATemplateAddsNoImageHint(t *testing.T) {
+	f := newFixture(t)
+	f.dirTemplate(t, "legacy", filepath.Join(f.src, "tpl"), "")
+	f.project(t, map[string]string{"am": "template: legacy\n" + repos(repoEntry(f.repo(t, "api"), false))})
+	p := mustPrepare(t, f, Options{Nest: "am"})
+	f.fake.Default.Err = errors.New("boom")
+	_, err := Create(context.Background(), f.deps(), p)
+	if err == nil || strings.Contains(err.Error(), "no template is named") {
+		t.Errorf("error %v", err)
+	}
+}

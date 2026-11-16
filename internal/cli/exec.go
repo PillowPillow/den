@@ -48,7 +48,7 @@ func newExecCmd(deps Deps, denHome *string) *cobra.Command {
 				Sbx: deps.Sbx, Git: deps.Git, Prompt: deps.Prompt, DenHome: home, Cwd: cwd,
 				Out: cmd.ErrOrStderr(), Err: cmd.ErrOrStderr(),
 			}
-			return instance.Exec(cmd.Context(), d, o, argv)
+			return explainNoTemplate(cmd.Context(), deps, instance.Exec(cmd.Context(), d, o, argv))
 		},
 	}
 	f := cmd.Flags()

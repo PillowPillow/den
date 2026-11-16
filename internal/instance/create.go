@@ -41,8 +41,8 @@ func Create(ctx context.Context, d Deps, p *Plan) (registry.Record, error) {
 	}
 	args := append([]string{"--no-input", "env", "create", "--force", "--skip-host-commands"}, rec.EnvFiles...)
 	if err := d.Sbx.Stream(ctx, d.Err, args...); err != nil {
-		return rec, fmt.Errorf("creating %s: %w — fix the cause, then run `%s` again, or `den rm %s`",
-			p.Instance, err, upCommand(p), p.Instance)
+		return rec, fmt.Errorf("creating %s: %w%s — fix the cause, then run `%s` again, or `den rm %s`",
+			p.Instance, err, imageHint(p), upCommand(p), p.Instance)
 	}
 	// The VM exists: a failed listing must not cost the user the attach.
 	if err := d.Sbx.Stream(ctx, d.Out, "--no-input", "ports", p.Instance); err != nil {
@@ -328,6 +328,18 @@ func ensure(ctx context.Context, d Deps, o Options) (*Plan, registry.Record, err
 	return p, rec, nil
 }
 
+// imageHint names the key to fix when the VM failed to start from an image: a mistyped short name
+// reads as an image reference, so the user otherwise sees sbx's pull error and no hint that den
+// looked for a template first. A template's failure needs none: its name was found.
+func imageHint(p *Plan) string {
+	c := p.Resolved.Template.Choice
+	if !c.IsImage() {
+		return ""
+	}
+	return fmt.Sprintf(": no template is named %q in %s, and sbx could not start the image %s — fix %s",
+		c.Value, strings.Join(c.Searched, " or "), c.Image, c.Origin)
+}
+
 // Up creates the instance unless its VM runs, then attaches unless detach.
 func Up(ctx context.Context, d Deps, o Options, detach bool) error {
 	p, rec, err := ensure(ctx, d, o)
@@ -338,9 +350,14 @@ func Up(ctx context.Context, d Deps, o Options, detach bool) error {
 		fmt.Fprintln(d.Err, n)
 	}
 	if detach {
-		return startDetached(ctx, d, p, rec.Instance)
+		err = startDetached(ctx, d, p, rec.Instance)
+	} else {
+		err = Attach(ctx, d, rec, p.Workdir)
 	}
-	return Attach(ctx, d, rec, p.Workdir)
+	if err != nil && p.State != Live {
+		return fmt.Errorf("%w%s", err, imageHint(p))
+	}
+	return err
 }
 
 // startDetached leaves the VM running whether ensure created it, found it

@@ -446,3 +446,23 @@ func TestUpRefusesAMissingRepoFolderBeforeAnySideEffect(t *testing.T) {
 		t.Errorf("created despite the refusal: %v", f.fake.Calls)
 	}
 }
+
+func TestUpExplainsAMissingTemplate(t *testing.T) {
+	for _, cmd := range []string{"up", "exec"} {
+		f := newUpFixture(t)
+		f.hub = hub.Fake{Names: []string{"claude-code-docker", "shell"}}
+		writeTestFile(t, filepath.Join(f.proj, "den.yaml"), "schema: 1\nnests:\n  am:\n    repos: [{path: "+f.dir(t, "api")+"}]\n")
+		args := []string{"am"}
+		if cmd == "exec" {
+			args = append(args, "--", "true")
+		}
+		err := f.up2(cmd, args...)
+		if err == nil || !strings.Contains(err.Error(), "has no template") ||
+			!strings.Contains(err.Error(), "\nofficial images: claude-code-docker, shell") {
+			t.Errorf("%s: err = %v", cmd, err)
+		}
+		if f.hasEnvCreate() {
+			t.Errorf("%s: env create after the refusal", cmd)
+		}
+	}
+}
