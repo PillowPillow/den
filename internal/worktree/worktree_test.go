@@ -2636,3 +2636,19 @@ func TestRemoveAcceptsADetachedHeadABranchContains(t *testing.T) {
 		t.Fatalf("a detached HEAD on a commit main contains loses nothing: %v", err)
 	}
 }
+
+func TestNeutralEnvironmentDisablesPrompts(t *testing.T) {
+	t.Setenv("GIT_TERMINAL_PROMPT", "1")
+	n := 0
+	for _, v := range neutralEnvironment() {
+		if strings.HasPrefix(v, "GIT_TERMINAL_PROMPT=") {
+			n++
+			if v != "GIT_TERMINAL_PROMPT=0" {
+				t.Errorf("got %q", v)
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("GIT_TERMINAL_PROMPT appears %d times, want 1", n)
+	}
+}

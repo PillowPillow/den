@@ -276,3 +276,31 @@ func TestTemplatesIgnoreTheUpdateBannerAfterTheJSON(t *testing.T) {
 		t.Fatalf("got %d templates, want 2: %+v", len(list), list)
 	}
 }
+
+func TestTemplatesReadsTheDigest(t *testing.T) {
+	const digest = "sha256:4a94d9144a70df744fd9247e0c365a14cfb97024afab8db7597c8ba3e0637642"
+	f := &Fake{Responses: map[string]Response{
+		"template ls --json": {Output: []byte(`[{"repository":"docker.io/docker/sandbox-templates","tag":"claude-code-docker","digest":"` + digest + `"}]`)},
+	}}
+	list, err := Templates(context.Background(), f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := FindTemplate(list, "docker.io/docker/sandbox-templates:claude-code-docker")
+	if found == nil || found.Digest != digest {
+		t.Errorf("found = %+v, want digest %s", found, digest)
+	}
+}
+
+func TestImageWithDigest(t *testing.T) {
+	const d = "sha256:4a94d9144a70df744fd9247e0c365a14cfb97024afab8db7597c8ba3e0637642"
+	cases := map[string]string{
+		"docker.io/docker/sandbox-templates:claude-code-docker": "docker.io/docker/sandbox-templates@" + d,
+		"devx:v1": "docker.io/library/devx@" + d,
+	}
+	for ref, want := range cases {
+		if got := ImageWithDigest(ref, d); got != want {
+			t.Errorf("ImageWithDigest(%q) = %q, want %q", ref, got, want)
+		}
+	}
+}

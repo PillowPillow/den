@@ -8,9 +8,10 @@ import (
 // Template is one image `sbx template ls --json` reports.
 //
 // Schema recorded 2026-07-31 against sbx v0.35.0 (spec §14.0), bare array
-// since v0.48.0 (spec §14.4):
+// since v0.48.0 (spec §14.4), `digest` added by v0.53.0 (measured 2026-11-16,
+// S8a):
 //
-//	[{"id","repository","tag","flavor","created_at","size"}]
+//	[{"id","repository","tag","digest","flavor","created_at","size"}]
 //
 // This surface is what makes `den build` honest. Issue #8 was blocked on it:
 // "build the ancestors only if their image is missing" rested on no attested
@@ -32,6 +33,9 @@ type Template struct {
 	Tag        string `json:"tag"`
 	ID         string `json:"id"`
 	Flavor     string `json:"flavor"`
+	// Digest is the manifest digest of the image behind Repository:Tag
+	// (`sha256:<64 hex>`). Empty when sbx does not report one.
+	Digest string `json:"digest"`
 }
 
 // Ref renders the template as the one string a stack's `image:` would carry.
@@ -187,13 +191,13 @@ func NormalizeImageRef(ref string) (repository, tag string) {
 // IsDigestRef reports whether a reference pins an image by DIGEST
 // (`devx@sha256:e3b0c442…`) rather than by tag.
 //
-// It exists because den cannot arbitrate such a reference AT ALL, and admitting
-// that is the whole point: `sbx template ls --json` reports `repository` and
-// `tag` and no digest whatsoever (schema surveyed 2026-07-31, spec §14.0), so
-// no inventory entry can ever confirm or deny a digest pin. NormalizeImageRef
-// therefore leaves it un-matchable, and the callers that must act on the fact
+// It exists because den cannot arbitrate such a reference: NormalizeImageRef
+// leaves it un-matchable, since an inventory entry is matched on repository
+// and tag and never on a digest pin, and the callers that must act on the fact
 // ask HERE rather than re-deriving it from an empty tag — which a mistyped
-// `devx:` also produces, for an entirely different reason.
+// `devx:` also produces, for an entirely different reason. (sbx v0.53.0 does
+// report a `digest` per template, S8a, but the pin is still not looked up by
+// it.)
 //
 // The two callers read the same fact and answer differently, on purpose:
 //
@@ -216,6 +220,13 @@ func IsDigestRef(ref string) bool { return strings.Contains(ref, "@") }
 func isRegistry(component string) bool {
 	return component == "localhost" ||
 		strings.ContainsAny(component, ".:")
+}
+
+// ImageWithDigest renders the reference that pins ref's repository to digest,
+// the form a kit's `image:` takes when the tag must not move under it.
+func ImageWithDigest(ref, digest string) string {
+	repository, _ := NormalizeImageRef(ref)
+	return repository + "@" + digest
 }
 
 // FindTemplate returns the template matching this image reference, or nil.

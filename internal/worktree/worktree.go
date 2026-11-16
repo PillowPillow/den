@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Git is access to the git CLI, injected to stay substitutable.
@@ -78,12 +79,13 @@ func neutralEnvironment() []string {
 	clean := make([]string, 0, len(raw))
 	for _, v := range raw {
 		name, _, _ := strings.Cut(v, "=")
-		if slices.Contains(RedirectingVars, name) {
+		if slices.Contains(RedirectingVars, name) || name == "GIT_TERMINAL_PROMPT" {
 			continue
 		}
 		clean = append(clean, v)
 	}
-	return clean
+	// A credential prompt would hold den on a terminal nobody is reading.
+	return append(clean, "GIT_TERMINAL_PROMPT=0")
 }
 
 func (g gitExec) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
@@ -94,6 +96,9 @@ func (gitExec) RunWithInput(ctx context.Context, dir string, input []byte, args 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = neutralEnvironment()
+	// A killed git leaves its ssh child holding the output pipes; without a
+	// bound, Wait would block on them past the context's deadline.
+	cmd.WaitDelay = time.Second
 	// Stdin left nil (hence /dev/null) when there is nothing to write: a
 	// subcommand reading standard input would otherwise block forever.
 	if input != nil {
