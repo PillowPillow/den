@@ -15,10 +15,10 @@ type StepScript struct {
 	Body string
 }
 
-// Provisioning is the TEXT of one base's build files, read on the HOST.
+// Provisioning is the TEXT of one template's build files, read on the HOST.
 //
 // Read as a whole, before anything is created: a build that discovers a
-// missing step after four minutes of base image has spent that time to reach a
+// missing step after four minutes of image provisioning has spent that time to reach a
 // refusal den could have made instantly. Nothing is read twice — den needs the
 // text anyway to compose the payloads.
 type Provisioning struct {
@@ -56,7 +56,7 @@ func (p Provisioning) Payload(i int) string {
 	return p.Includes + "\n" + p.Steps[i].Body
 }
 
-// ReadProvisioning reads a base's includes and steps, in declaration order.
+// ReadProvisioning reads a template's includes and steps, in declaration order.
 func ReadProvisioning(includes, steps []string) (Provisioning, error) {
 	var joined strings.Builder
 	for _, path := range includes {

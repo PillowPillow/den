@@ -33,34 +33,33 @@ go test ./internal/instance/ -run TestCreatePassesNoInputForceAndSkipHostCommand
 `state/v2/` keeps the real branch, so nothing re-derives it from the name.
 
 **Config**: `den.yaml` has two kinds, one strict schema (`internal/config`): the global file in the
-den home (the only one allowed `worktrees`, `repos`, `env`, `network`) and a project file found by
+den home (the only one allowed `worktrees`, `repos`, `env`, `network`, `profiles`, `default_template`) and a project file found by
 walking up from the cwd. Decoding is `KnownFields(true)` everywhere: an unknown key is a load error
 naming the file, never a silence (a silent `network:` typo would empty an allowlist). `nest.Find`
 locates the declaring file (project, then `state/v2/nests.yaml`, then global); `nest.Resolve`
-merges global, base and nest into a `*nest.Resolved`. A nest name declared by two live files is
-refused. A **profile** is a named kit list (`profiles:`, global file only) that `nest.Resolve` appends to
-`Kits` after the base's and the nest's; an undefined one is a warning, not a refusal.
+merges global, template and nest into a `*nest.Resolved`. A nest name declared by two live files is
+refused. A **template** is a nest's starting point: a value is a declared `templates.<key>` (project masks global; `repo`/`dir` locates a folder with a `den-template.yaml`, parsed by `config.LoadDefinitions`, paths confined to it) or an official image (a short name completes to `docker.io/docker/sandbox-templates:<name>`). No default exists in code: with none, den refuses and lists Docker Hub's images (`internal/hub`). The `bases` and `agents` keys and `nests.<n>.base` are refused with their replacement named. A **profile** is a named kit list (`profiles:`, global file only) that `nest.Resolve` appends to
+`Kits` after the template's and the nest's; an undefined one is a warning, not a refusal.
 
 **Layout on disk** (all under the den home, none of it read by v1, see the coexistence note below):
 `den.yaml`, `run/<instance>/` (global nests; project nests use
 `<project>/.den/run/<instance>/`), `gen/<instance>/` (egress kit, worktree `.git` files),
-`gen/.kits/den-claude/` (the shared agent kit), `gen/.build/<base>/` (build files), `build/<base>/`
+`gen/.templates/<name>/` (a repo template's copy; `.staging-<name>/` is a build's clone), `gen/.build/<name>/` (build files), `build/<name>/`
 (the build VM's scratch workspace), `wt/` (default worktree root) and `state/v2/` (the registry).
-The leading dot on `.kits` and `.build` is deliberate: no sandbox name can start with one, so
+The leading dot on `.templates` and `.build` is deliberate: no sandbox name can start with one, so
 `den rm <name>` can never own them.
 
 **Everything runs through `sbx env`.** `internal/sbxenv` renders `sbxenv.yaml` (pure, deterministic)
 plus the two kits den generates: `den-claude` (embedded, `kind: sandbox`, image pinned to the
-`docker.io/docker/sandbox-templates:claude-code-docker` index digest (its ENTRYPOINT is `tini`: sbx runs
-the image ENTRYPOINT as PID 1, and `docker.io/sbx/claude`'s `claude` exits and stops the VM, S6e) unless the global `agents.claude.image` (digest required, hashed into `configHash`) replaces it, no `credentials` block so the subscription OAuth token keeps
-working) and a per-instance network mixin carrying the egress allowlist. `internal/instance`
+image from the template record (`<repository>@<digest>`) or from the image reference, never from code (the image's ENTRYPOINT must keep the VM alive: sbx runs it as PID 1, and `docker.io/sbx/claude`'s `claude` exits and stops the VM, S6e), no `credentials` block so the subscription OAuth token keeps
+working) and a per-instance network mixin carrying the egress allowlist; each instance (`<gen dir>/den-claude/`) and each build (`gen/.build/<name>/den-claude/`) has its own den-claude kit, so a rebuild of one template never rewrites another instance's. `internal/instance`
 (`Prepare` then `Create`/`Attach`/`Exec`/`Remove`) is the orchestration: `Prepare` makes every
 refusal decidable from config, flags, registry and `sbx ls` *before the first side effect*;
 `Create` writes worktrees, generated files and the record, then calls
 `sbx --no-input env create --force --skip-host-commands`. **No `env create` or `env rm` may lack
 `--skip-host-commands`**: it keeps a `lifecycle:` command or a command-backed MCP server that a VM
 could have written from ever running on the host. Likewise every file den or sbx reads for the
-instance (its `den.yaml` files, local kits, layers, the base's `build.includes`/`build.steps`) that
+instance (its `den.yaml` files, local kits, layers, the template's `build.includes`/`build.steps`) that
 lies under a read-write mount (lexical or symlink-resolved) is mounted read-only over it at the path
 the VM sees (`Plan.Overlays`, appended after every other mount), since sbx acts on layers at every
 create and rm and a kit carries the egress allowlist and credentials. One whose written path crosses
@@ -68,7 +67,7 @@ a symlink below the mount root is refused instead: sbx cannot overlay a symlink'
 Accepted residual: the VM can still create a *new* file beside them, and the overlay holds only inside
 the instance that reads the file: any other VM mounting the same folder read-write (another nest sharing
 the repo, or a v1 VM) can still write it.
-`den up` attaches Claude (`sbx run --name <i> --workdir <start>`); `den shell` is the way to `bash -l`.
+`den build <template> [--pull] [--yes] [--force]` (`internal/build`) clones (`gen/.templates/.staging-<name>/`, then `gen/.templates/<name>/`) or reads the location, provisions a VM, saves the sbx template `<name>:v2` and writes `state/v2/templates/<name>.yaml` (the root image digest is required); URLs the user trusted live in `state/v2/template-sources.yaml`. `den up` never clones or builds: a missing template refuses with the `den build` remedy, and `den up` alone prints stderr notices (newer remote commit, `dir` drift; 3 s bound, silent on error). A template that is only a `from:` sibling is built automatically when missing but can only be rebuilt once declared under `templates:`. Instance records are schema 2 (`template`, `tag`); a schema-1 record is refused with `sbx rm <instance>` then delete the file. `den up` attaches Claude (`sbx run --name <i> --workdir <start>`); `den shell` is the way to `bash -l`.
 
 **What den created is recorded, not re-derived.** `internal/registry` writes
 `<denHome>/state/v2/instances/<instance>.yaml` (schema-stamped, atomic, refused when its `instance`
@@ -86,7 +85,7 @@ files, or a detached HEAD holding commits no ref contains, unless `--force`. A f
 back the worktrees that call made, without force.
 
 **Every system access is injected through `cli.Deps`** (`internal/cli/root.go`): one `sbx.Runner`
-shared by all commands, plus `Git`, `Prompt`, `IsTTY`, `Getwd`, `Out`, `Err`. Hard-wiring any of them
+shared by all commands, plus `Git`, `Hub` (`hub.Catalog`, Docker Hub's official images), `Prompt`, `IsTTY`, `Getwd`, `Out`, `Err`. Hard-wiring any of them
 breaks the suite's hermeticity. Read helpers (`sbx.Ls`, `Templates`, `Version`) keep sbx's plain
 argv; `env create`, `env rm`, `rm`, `exec` and `ports` get `--no-input`; `den build`'s `stop` and
 `template save` do not, nor do interactive attaches.
@@ -119,7 +118,7 @@ argv; `env create`, `env rm`, `rm`, `exec` and `ports` get `--no-input`; `den bu
 
 ## Stale artifacts — don't trust these
 
-- The V2 decisions are in `docs/superpowers/plans/2026-11-12-den-v2-0.md` (P1 to P11) and the
+- The V2 decisions are in `docs/superpowers/plans/2026-11-12-den-v2-0.md` (P1 to P11), the templates design `2026-11-16-den-templates-design.md`, plan `2026-11-16-den-templates.md` and validation `2026-11-16-den-templates-validation.md` and the
   scope in `docs/superpowers/specs/2026-11-12-den-v2-scope-design.md`; the sbx measurements are in
   `2026-11-12-den-v2-spikes.md`. Everything else under `docs/superpowers/` (the v1 spec
   `2026-07-27-den-cli-design.md` included) and everything under `.superpowers/sdd/` is historical

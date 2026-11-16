@@ -151,8 +151,8 @@ func ValidateCreatableSandboxName(name string) error {
 	}
 	if len(name) > MaxNameLength {
 		// Without a separator the whole name is one component: a nest, or
-		// `den build`'s <base>-build.
-		remedy := fmt.Sprintf("shorten the name %q (the nest name, or the base name for `den build`)", nest)
+		// `den build`'s <name>-build.
+		remedy := fmt.Sprintf("shorten the name %q (the nest name, or the template name for `den build`)", nest)
 		if branch != "" {
 			remedy = fmt.Sprintf("the nest name %q is %d characters and the branch name flattens to %d (%q); "+
 				"shorten the nest name or the branch name", nest, len(nest), len(branch), branch)

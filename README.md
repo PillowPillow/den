@@ -82,7 +82,7 @@ cp examples/den-home/den.yaml ~/.den/den.yaml      # then edit the repo paths
 mkdir -p ~/.den/kits/perso                         # your profile kit, see "Profiles"
 printf 'schemaVersion: "2"\nkind: mixin\nname: perso\nversion: 1.0.0\n' > ~/.den/kits/perso/spec.yaml
 
-den build example     # once: provision the base image and save it as the sbx template `example:v2`
+den build example     # once: read the template `example`, provision it and save it as the sbx template `example:v2`
 den up demo           # create the instance `demo` if needed, then run Claude in it
 ```
 
@@ -93,8 +93,8 @@ Every command takes `--den-home <dir>` (or `$DEN_HOME`) to use another directory
 There are two kinds of file, with the same name and the same strict schema:
 
 - the **global file**, `<denHome>/den.yaml`: your machine. It is the only one that may carry
-  `worktrees`, `repos`, `env`, `network`, `profiles` and `agents`;
-- a **project file**, `den.yaml` in a project folder: bases and nests that travel with the project.
+  `worktrees`, `repos`, `env`, `network`, `profiles` and `default_template`;
+- a **project file**, `den.yaml` in a project folder: templates and nests that travel with the project.
   den finds it by walking up from the current directory. A project file carrying a global-only key
   is refused.
 
@@ -119,36 +119,28 @@ network:
     - api.anthropic.com
 profiles:                      # a profile is a named list of kits, see "Profiles"
   perso: [~/.den/kits/perso]
-agents:                        # optional; `claude` is the only key
-  claude:
-    image: docker.io/docker/sandbox-templates@sha256:<64 hex>   # must pin a digest; default: the pin embedded in den
+default_template: claude-code-docker   # optional; the template of a nest that names none, see "Templates"
 
 # --- both kinds of file -----------------------------------------------------
 profile: perso                 # default profile of every nest of this file
-bases:
+templates:                     # where a template's definition lives, see "Templates"
   node:
-    image: node:v2             # required: the sbx template `den build node` saves and a nest starts from
-    from: ""                   # template the build VM starts from; empty = the pinned den-claude image
-    kits: []                   # default kits of every nest on this base
-    network:
-      allow: []                # default egress of every nest on this base
-    build:
-      includes: [lib/common.sh]   # shell prepended to every step
-      steps: [steps/10-node.sh]   # one script per `sbx exec`, in order
-      network:
-        allow: [registry.npmjs.org]   # egress of the build VM only
+    repo: git@example.com:team/den-templates.git   # exactly one of repo and dir
+    # dir: ~/src/den-templates                      # a local folder holding a den-template.yaml
+    name: node                 # optional; the name inside den-template.yaml, default the key
+    ref: main                  # optional, repo only; branch or tag, default the remote's HEAD
 
 nests:
   api:
-    base: node                 # required; looked up in the nest's own file, then in the global file
+    template: node             # a declared template or an official image; default `default_template`
     profile: perso             # optional; wins over the file's `profile`
     repos:                     # required, at least one
       - key: api               # a key of the global `repos`
       - path: ~/src/api-docs   # or a host path; exactly one of key and path
         optional: true         # dropped with --without, kept alone with --only, asked with -i
-    kits: []                   # added after the base's kits
+    kits: []                   # added after the template's kits
     network:
-      allow: []                # added after the global and the base's
+      allow: []                # added after the global and the template's
     env: {}                    # overrides the global env, key by key
     ports:
       - {name: web, sandbox: 3000, host: 0}   # host 0 = an ephemeral host port
@@ -157,37 +149,86 @@ nests:
     layers: []                 # extra sbxenv.yaml files, see "Layers"
 ```
 
-### Bases
+### Templates
 
-A base is an image recipe. `den build <base>` produces the sbx template named by `image`; a nest
-refuses to start, naming `den build <base>`, while that template does not exist. Image tags
-should end in `:v2` (see [Coexistence](#coexistence-with-v1)).
+A **template** is what a nest starts from: an sbx template den built from a definition, or an
+official image. `template:` on a nest (or `default_template:` in the global file) names one, and den
+reads the value in this order:
 
-`from` names the template the build VM starts from. Left empty, the build starts from the
-`docker.io/docker/sandbox-templates:claude-code-docker` image that den pins by digest, so every
-`den build` starts from the same Claude Code. `agents.claude.image` in the global file replaces that
-pin (a digest is required: a tag or an image without `@sha256:<64 hex>` is a load error).
+1. a template declared under `templates:` in a `den.yaml`: the project file first (it masks a global
+   entry of the same key), then the global file;
+2. otherwise an **official image**: a short name with no `/` (`claude-code-docker`) is completed to
+   `docker.io/docker/sandbox-templates:<name>`; a value with a `/` is a full address used as written
+   (`ubuntu:22.04` is refused: write the full address).
 
-The image must keep the VM alive: sbx runs the image's own `ENTRYPOINT` as the VM's first process,
-with its keep-alive command as arguments, and the kit's `entrypoint` only launches Claude when you
-attach. The `claude-code-docker` images use `tini --`. `docker.io/sbx/claude` uses `claude`, which
-exits within seconds and stops the VM, so every `den build` step and every `den exec` dies with
-status 137: do not use it. Check an image with
+den's code names no default template and no default image. When no value exists anywhere (no
+`template:` on the nest, no `default_template:`), `den up` refuses, names the key to set and lists
+the official images it reads from Docker Hub.
+
+`templates.<key>` locates a **location**, a folder that carries a **definition** file:
+
+| Key | Meaning |
+|---|---|
+| `repo` | a git URL; den clones it on `den build` |
+| `dir` | a local folder, used in place |
+| `name` | the template's name inside the definition; default the key |
+| `ref` | branch or tag of `repo`; default the remote's HEAD |
+
+Exactly one of `repo` and `dir`. A `repo` URL declared in a project file asks for confirmation the
+first time (`--yes` skips it); den remembers the answer in `<denHome>/state/v2/template-sources.yaml`.
+A URL declared in the global file needs none.
+
+The **definition** is `den-template.yaml` at the root of the location (see
+[`examples/den-template/den-template.yaml`](examples/den-template/den-template.yaml)):
+
+```yaml
+schema: 1                      # required, must be 1
+templates:
+  node:
+    from: claude-code-docker   # a sibling template of this file, an image, or empty
+    kits: [./kits/ssh-known-hosts]
+    network:
+      allow: [github.com]      # egress of every nest on this template
+    build:
+      includes: [lib/common.sh]    # shell prepended to every step
+      steps: [steps/10-node.sh]    # one script per `sbx exec`, in order
+      network:
+        allow: [registry.npmjs.org]   # egress of the build VM only
+```
+
+- **Paths** are relative to the definition file and confined to the location: `..`, an absolute
+  path, `~` and a symlink that leaves the location are load errors. A kit entry whose first `/`
+  component is a registry host (it contains `.` or `:`, or is `localhost`) is a reference sbx
+  resolves itself; write Docker Hub kits as `docker.io/acme/kit:1`.
+- **`from`** is a sibling template's name, an image (same rules as a nest's value), or empty. Empty
+  means the global `default_template`, which must then be an image. The definition is decoded strictly.
+- A template that is only the `from:` of a sibling, and is not declared under `templates:` in a
+  `den.yaml`, is built automatically when it is missing but cannot be updated on its own. Declare
+  it under `templates:` to rebuild it with `den build <name> [--pull]`.
+
+`den build <template>` builds the sbx template `<name>:v2`. `den up` never clones and never
+builds: while the template is missing it refuses and names `den build <template>`. Once built,
+`den up` prints a notice on stderr (never from `exec` or `shell`, within 3 seconds, silent when
+the remote does not answer) when the repo has a newer commit (`den build <template> --pull`) or the
+`dir` definition changed since the build (`den build <template>`).
+
+The image the VM runs must keep the VM alive: sbx runs the image's own `ENTRYPOINT` as the VM's
+first process, and the kit's `entrypoint` only launches Claude when you attach. The
+`claude-code-docker` images use `tini --`. `docker.io/sbx/claude` uses `claude`, which exits within
+seconds and stops the VM, so every `den build` step and every `den exec` dies with status 137: do
+not use it. Check an image with
 `docker image inspect --format '{{json .Config.Entrypoint}}' <image>`.
 
-To move to a newer Claude image: run
-`docker buildx imagetools inspect docker.io/docker/sandbox-templates:claude-code-docker`, copy the
-index digest into `agents.claude.image` as `docker.io/docker/sandbox-templates@sha256:<digest>`, then
-`den build <base>` for each base. An instance that already exists keeps its old image; `den up` on
-it warns that the config changed (the image is part of the config hash), and `den rm` then `den up`
-recreates it on the new one. A build step that runs `claude update` also moves a base to a newer
-Claude Code, without changing the image.
+den records the digest of the root image when it builds, and the den-claude kit of every instance
+of the template is pinned to `<repository>@<digest>`. An instance that already exists keeps its old
+image; after a rebuild, `den up` on it warns that the config changed, and `den rm` then `den up`
+recreates it on the new one.
 
-A kit is a directory holding `spec.yaml` (a path starting with `./`, `../`, `/` or `~`, checked
-before any side effect) or a reference sbx resolves itself, passed through verbatim.
+A kit is a directory holding `spec.yaml` (a path starting with `./`, `../`, `/` or `~` in a
+`den.yaml`, checked before any side effect) or a reference sbx resolves itself, passed through verbatim.
 
-`kits` and `network.allow` on a base are defaults that every nest on it receives before its own.
-`build.network.allow` applies to the build VM only.
+The removed `bases` and `agents` keys and `nests.<n>.base` are load errors that name their
+replacement (`templates:` with a definition file, `nests.<n>.template`).
 
 ### Nests
 
@@ -197,7 +238,7 @@ before any side effect) or a reference sbx resolves itself, passed through verba
   once den has seen it.
 - **Repos.** Each repo is mounted in the VM at the same path it has on the host. Two repos with the
   same folder name are refused.
-- **Merge order.** Egress is global, then base, then nest. Kits are base, then nest, then the profile's. Env is global,
+- **Merge order.** Egress is global, then template, then nest. Kits are template, then nest, then the profile's. Env is global,
   then nest (the nest wins).
 - **Start.** `start` is `<repo>[/<sub folder>]` (the repo's folder name), or `.` for the project
   folder (project files only). Empty means the first repo. `--workdir <vm path>` overrides it for
@@ -246,7 +287,7 @@ version: 1.0.0
   files/home/.zshrc
 ```
 
-Profile kits come after the base's and the nest's kits. A profile the machine does not define is
+Profile kits come after the template's and the nest's kits. A profile the machine does not define is
 skipped with a warning, never refused. Files under `files/home` are copied verbatim into
 `/home/agent` when the VM is created, so recreate the instance after an edit. Skills travel
 through `sbx skills import` or `files/home/.claude/skills/`. Ship `settings.json` from one profile
@@ -281,7 +322,7 @@ name is the VM's name and the handle of every other command.
 
 Every refusal den can decide from the config, the flags, its records and `sbx ls` comes before the
 first file, worktree or sbx call that changes state: unknown nest, missing repo,
-missing image (`den build`), a missing local kit or layer, a missing `build.includes` or
+missing template (`den build`), no template named anywhere, a missing local kit or layer, a missing `build.includes` or
 `build.steps` file under a mounted folder, a file den reads through a symlink inside a mounted
 folder, `-i` without a terminal, an sbx older than v0.53.0.
 
@@ -334,13 +375,23 @@ unreadable, any den-created worktree at all.
 `den rm` removes the VM through `sbx env rm` only when every file the create read still has the
 hash den recorded; otherwise, since a VM may have rewritten it, through `sbx rm --force`.
 
-### `den build <base>`
+### `den build <template> [--pull] [--yes] [--force]`
 
-Provisions a throwaway VM named `<base>-build` on `from` (or the pinned den-claude image), runs each
-`build.steps` script in it through `bash -lc` (with `build.includes` prepended to each), stops it,
-saves it as the template `image`, and removes the VM. Scripts are read before anything is created,
-so a missing one refuses instantly. A leftover `<base>-build` sandbox makes `den build` refuse
-rather than remove a VM it did not create. The VM's scratch workspace is `<denHome>/build/<base>/`.
+Builds the template named by a `den.yaml` (or a `from:` sibling of one). den opens the location
+(a `repo` is cloned into `<denHome>/gen/.templates/.staging-<name>/` on the first build and on every
+`--pull`, then swapped in; a `dir` is used in place), reads the definition, then provisions a
+throwaway VM named `<name>-build` on `from`, reads the digest of the root image, runs each
+`build.steps` script through `bash -lc` (with `build.includes` prepended), stops the VM, saves it as
+the sbx template `<name>:v2`, writes the record and removes the VM. Scripts are read before anything
+is created, so a missing one refuses instantly; a failed build deletes the staging copy and moves
+nothing. A leftover `<name>-build` sandbox makes `den build` refuse rather than remove a VM it did
+not create. The VM's scratch workspace is `<denHome>/build/<name>/`.
+
+| Flag | Effect |
+|---|---|
+| `--pull` | clone the `repo` again instead of building the local copy |
+| `--yes` | trust a `repo` declared in a project `den.yaml` without asking |
+| `--force` | replace a template built from another source |
 
 ### `den version`
 
@@ -375,7 +426,7 @@ sbx acts on a layer at the next `create` and `rm`, so a layer the VM could rewri
 VM host-side actions. A layer may still live in a folder the VM can write (the workspace, a repo or
 its worktree): den then mounts it read-only over that folder, at the path where the VM sees it. The
 same goes for every other file den or sbx reads for the instance: the `den.yaml` files the nest
-resolves from, its local kits, and its base's `build.includes` and `build.steps`. den checks both
+resolves from, its local kits, and its template's `build.includes` and `build.steps`. den checks both
 the written and the symlink-resolved paths, and refuses a file whose written path goes through a
 symlink inside a mounted folder (the VM could replace that link): reference its real path instead. The read-only overlay holds only inside the instance that reads the
 file: any other VM that mounts the same folder read-write (another nest sharing the repo, or a v1 VM)
@@ -391,15 +442,18 @@ command or command-backed MCP server in a layer ever runs on the host.
 | Path | Content | Owner |
 |---|---|---|
 | `<denHome>/den.yaml` | global config | you |
-| `<project>/den.yaml` | project bases and nests | you |
+| `<project>/den.yaml` | project templates and nests | you |
 | `<project>/.den/run/<instance>/` or `<denHome>/run/<instance>/` | the generated `sbxenv.yaml` (the VM's workspace) | den |
-| `<denHome>/gen/<instance>/` | generated egress kit and worktree `.git` files | den |
-| `<denHome>/gen/.kits/den-claude/` | the shared den-claude agent kit | den |
-| `<denHome>/gen/.build/<base>/` | generated files of a build | den |
-| `<denHome>/build/<base>/` | the build VM's scratch workspace | den |
+| `<denHome>/gen/<instance>/` | generated egress kit, den-claude kit (`den-claude/`) and worktree `.git` files | den |
+| `<denHome>/gen/.templates/<name>/` | the copy of a `repo` template's location | den |
+| `<denHome>/gen/.templates/.staging-<name>/` | the clone of a build in progress | den |
+| `<denHome>/gen/.build/<name>/` | generated files of a build, den-claude kit included (`den-claude/`) | den |
+| `<denHome>/build/<name>/` | the build VM's scratch workspace | den |
 | `<denHome>/wt/` | default worktree root | den |
 | `<denHome>/state/v2/instances/<instance>.yaml` | the record `ls`, `shell` and `rm` replay | den |
 | `<denHome>/state/v2/nests.yaml` | which file declares which nest | den |
+| `<denHome>/state/v2/templates/<name>.yaml` | the template record: source, commit, definition hash, root image digest | den |
+| `<denHome>/state/v2/template-sources.yaml` | the git URLs you trusted | den |
 
 den writes the files under a run dir and never reads them back: what it mounted is what the record
 says, not what a VM may have edited since.
@@ -407,8 +461,8 @@ says, not what a VM may have edited since.
 ## Coexistence with v1
 
 V2 uses only paths v1 never reads or writes: `den.yaml`, `run/`, `gen/`, `build/`,
-`state/v2/` and `wt/`. v1 keeps `config.yaml`, `stacks/`, `nests/`, `state/sandboxes/`,
-`worktrees/`, `trash/` and the `:v1` image tags. V2 base images use `:v2` tags (`node:v2`), so
+`state/v2/` and `wt/`. An instance record written by an earlier V2 build (schema 1) is refused: `sbx rm <instance>`, then delete the record file. v1 keeps `config.yaml`, `stacks/`, `nests/`, `state/sandboxes/`,
+`worktrees/`, `trash/` and the `:v1` image tags. V2 templates use `:v2` tags (`node:v2`), so
 `den build` never overwrites a v1 template.
 
 V2 does not list, adopt or remove a v1 sandbox, and refuses (naming `sbx rm`) to create an instance
@@ -417,5 +471,5 @@ whose name a v1 VM already holds. The v1 binary and the V2 one are different bui
 
 ## Design
 
-The V2 decisions are in `docs/superpowers/plans/2026-11-12-den-v2-0.md`; the v1 spec,
+The V2 decisions are in `docs/superpowers/plans/2026-11-12-den-v2-0.md`; templates are in `docs/superpowers/specs/2026-11-16-den-templates-design.md` and `docs/superpowers/plans/2026-11-16-den-templates.md`. The v1 spec,
 `docs/superpowers/specs/2026-07-27-den-cli-design.md`, is historical.

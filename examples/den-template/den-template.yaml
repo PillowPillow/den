@@ -1,0 +1,16 @@
+schema: 1
+
+templates:
+  node:
+    from: claude-code-docker
+    kits:
+      - ./kits/ssh-known-hosts
+    network:
+      allow:
+        - github.com
+    build:
+      steps:
+        - steps/10-node.sh
+      network:
+        allow:
+          - registry.npmjs.org
