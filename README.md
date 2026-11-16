@@ -205,7 +205,7 @@ templates:
 - A sibling a template starts `from:` is built with it: `den build <child>` first builds the sibling
   when it is missing or stale, that is when a `dir` sibling's definition changed, or when a `repo`
   sibling was built from another commit than the child's. `--pull` re-clones both; a child kept at
-  an older commit than its sibling is refused with `den build <child> --pull`. A sibling's files
+  another commit than its sibling is refused with `den build <child> --pull`. A sibling's files
   count in its child's definition hash. `--force` on the child never reaches the sibling: a sibling
   built from another source is refused with `den build <sibling> --force`, which needs the sibling
   declared under `templates:`.
