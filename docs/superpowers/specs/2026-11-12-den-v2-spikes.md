@@ -249,3 +249,32 @@ Constat de la tâche 14 : avec `from:` vide, chaque step de `den build` meurt en
 
 Décision : `den-claude` épingle ce dernier digest. Une image de `agents.claude.image` doit avoir un `ENTRYPOINT` qui
 garde la VM en vie.
+
+## S8 — digest d'un tag et arrêt d'une VM créée sans `run --detach` (16 nov. 2026, sbx v0.53.0 `2c62838`)
+
+Mesures demandées par `2026-11-16-den-templates-design.md` §5.4, avant le plan des templates. VM jetables
+`den-probe-tag` et `den-probe-tpl`, créées par `sbx --no-input env create --force --skip-host-commands` et
+supprimées par `sbx --no-input env rm --force --skip-host-commands`. L'instance `am` n'a pas été touchée.
+
+### S8a — lire le digest d'un tag sans docker : **`sbx template ls --json`, champ `digest`**
+
+- `sbx template ls --json` porte un champ `digest` par image du magasin local de sbx (absent du relevé v0.35.0
+  cité dans `internal/sbx/template.go`) [mesuré].
+- `docker.io/docker/sandbox-templates:claude-code-docker` → `sha256:4a94d9144a70df744fd9247e0c365a14cfb97024afab8db7597c8ba3e0637642`.
+  C'est le digest d'index (multi-arch) : la même valeur que le `digest` de premier niveau de
+  `https://hub.docker.com/v2/repositories/docker/sandbox-templates/tags/claude-code-docker`, et l'épingle actuelle
+  de `den-claude`. Les digests par architecture (amd64 `d3c58ddb…`, arm64 `a0353c46…`) sont autres [mesuré].
+- Une VM de build tire son image avant de démarrer : après un build, den lit le digest sans réseau.
+- Décision de l'utilisateur (16 nov. 2026) : la fiche d'un template construit sur un tag enregistre toujours ce
+  digest ; `den build` échoue s'il ne peut pas le lire. Le repli « référence seule » de §5.4 disparaît.
+
+### S8b — arrêt sans `sbx run --detach` : **commun au tag et au template**
+
+| VM | Source | Créée | Dernier `running` | Premier `stopped` |
+|---|---|---|---|---|
+| `den-probe-tag` | kit `kind: sandbox`, image `…:claude-code-docker`, pas de `sandboxOptions.template` | 12:02:54 | 12:03:20 | 12:03:30 |
+| `den-probe-tpl` | kit `den-claude` (digest épinglé), `sandboxOptions.template: pillow:v2` | 12:03:02 | 12:03:30 | 12:03:40 |
+
+Relevé `sbx ls --json` toutes les 10 s. Les deux VM s'arrêtent 26 à 38 s après leur création [mesuré]. L'arrêt
+n'est donc pas propre au tag. `den up` attache (`sbx run --name`) ou appelle `startDetached`
+(`sbx run --detach`) ; aucun code nouveau n'en découle.
