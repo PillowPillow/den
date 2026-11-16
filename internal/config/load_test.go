@@ -154,7 +154,7 @@ func TestLoadAcceptsRepoKeyWithoutCheckingTheGlobalMap(t *testing.T) {
 
 func TestLoadRejectsIncompleteNestAndBase(t *testing.T) {
 	mustFail(t, "schema: 1\nnests:\n  am: {}\n", false,
-		"nests.am.base", "nests.am.repos")
+		"nests.am.repos")
 	mustFail(t, "schema: 1\nbases:\n  b: {}\n", false, "bases.b.image")
 }
 
@@ -171,7 +171,7 @@ func TestLoadRejectsWrongSchema(t *testing.T) {
 }
 
 func TestLoadReportsEveryProblemTogether(t *testing.T) {
-	mustFail(t, "schema: 1\nbases:\n  b: {}\nnests:\n  am: {}\n", false, "bases.b.image", "nests.am.base")
+	mustFail(t, "schema: 1\nbases:\n  b: {}\nnests:\n  am: {}\n", false, "bases.b.image", "nests.am.repos")
 }
 
 func TestLoadMakesARelativePathAbsolute(t *testing.T) {
@@ -277,4 +277,69 @@ func TestLoadRefusesAnUnknownAgent(t *testing.T) {
 
 func TestLoadRefusesAgentsInAProjectFile(t *testing.T) {
 	mustFail(t, minimalNest+"agents:\n  claude:\n    image: x.io/c@sha256:"+digest64+"\n", false, "agents", "move it to")
+}
+
+const templatesBlock = `templates:
+  x: {repo: "git@h:o/r.git", ref: main}
+  y: {dir: ./tpl, name: other}
+default_template: x
+`
+
+func TestLoadAcceptsTemplatesInBothFiles(t *testing.T) {
+	for _, global := range []bool{true, false} {
+		p := writeFile(t, t.TempDir(), "den.yaml", "schema: 1\n"+templatesBlock)
+		l, err := Load(p, global)
+		if err != nil {
+			t.Fatalf("global=%v: %v", global, err)
+		}
+		if l.File.DefaultTemplate != "x" || l.File.Templates["x"].Ref != "main" {
+			t.Errorf("global=%v: templates not decoded: %+v", global, l.File)
+		}
+		if got := l.File.Templates["y"].TemplateName("y"); got != "other" {
+			t.Errorf("TemplateName = %q, want other", got)
+		}
+		if got := l.File.Templates["x"].TemplateName("x"); got != "x" {
+			t.Errorf("TemplateName = %q, want x", got)
+		}
+	}
+}
+
+func TestLoadRefusesATemplateEntryWithoutOneLocation(t *testing.T) {
+	mustFail(t, "schema: 1\ntemplates:\n  x: {repo: r, dir: /d}\n", true, "templates.x: set exactly one of repo and dir")
+	mustFail(t, "schema: 1\ntemplates:\n  x: {}\n", true, "templates.x: set exactly one of repo and dir")
+}
+
+func TestLoadRefusesRefOnADir(t *testing.T) {
+	mustFail(t, "schema: 1\ntemplates:\n  x: {dir: /d, ref: main}\n", true, "templates.x.ref: only a repo has a ref")
+}
+
+func TestLoadRefusesARepoStartingWithADash(t *testing.T) {
+	mustFail(t, "schema: 1\ntemplates:\n  x: {repo: --upload-pack=x}\n", true, `templates.x.repo: must not start with "-"`)
+}
+
+func TestLoadAnchorsATemplateDir(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	dir := t.TempDir()
+	p := writeFile(t, dir, "p/den.yaml", "schema: 1\ntemplates:\n  a: {dir: ./tpl}\n  b: {dir: \"~/t\"}\n")
+	l, err := Load(p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := l.File.Templates["a"].Dir, filepath.Join(dir, "p", "tpl"); got != want {
+		t.Errorf("a.Dir = %q, want %q", got, want)
+	}
+	if got := l.File.Templates["b"].Dir; got != "/home/u/t" {
+		t.Errorf("b.Dir = %q, want /home/u/t", got)
+	}
+}
+
+func TestLoadAcceptsANestWithoutBase(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "den.yaml", "schema: 1\nnests:\n  dev:\n    template: x\n    repos: [{path: ./r}]\n")
+	l, err := Load(p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.File.Nests["dev"].Template != "x" {
+		t.Errorf("template = %q", l.File.Nests["dev"].Template)
+	}
 }

@@ -113,6 +113,28 @@ func validate(f *File, global bool) []string {
 	}
 	validateWorktrees("worktrees", f.Worktrees, add)
 
+	for _, key := range sortedKeys(f.Templates) {
+		e := f.Templates[key]
+		tk := "templates." + key
+		if err := ValidateName("template", key); err != nil {
+			add("%s: %v", tk, err)
+		}
+		if e.Name != "" {
+			if err := ValidateName("template", e.Name); err != nil {
+				add("%s.name: %v", tk, err)
+			}
+		}
+		if (e.Repo == "") == (e.Dir == "") {
+			add("%s: set exactly one of repo and dir", tk)
+		}
+		if e.Dir != "" && e.Ref != "" {
+			add("%s.ref: only a repo has a ref", tk)
+		}
+		if strings.HasPrefix(e.Repo, "-") {
+			add(`%s.repo: must not start with "-"`, tk)
+		}
+	}
+
 	for _, name := range sortedKeys(f.Bases) {
 		b := f.Bases[name]
 		key := "bases." + name
@@ -130,10 +152,10 @@ func validate(f *File, global bool) []string {
 		if err := ValidateSandboxComponent("nest", name); err != nil {
 			add("%s: %v", key, err)
 		}
-		if n.Base == "" {
-			add("%s.base: required", key)
-		} else if err := ValidateName("base", n.Base); err != nil {
-			add("%s.base: %v", key, err)
+		if n.Base != "" {
+			if err := ValidateName("base", n.Base); err != nil {
+				add("%s.base: %v", key, err)
+			}
 		}
 		if n.Profile != "" {
 			if err := ValidateName("profile", n.Profile); err != nil {
@@ -243,6 +265,10 @@ func (l *Loaded) absolutize() error {
 		paths(b.Build.Includes)
 		paths(b.Build.Steps)
 		l.File.Bases[name] = b
+	}
+	for key, e := range l.File.Templates {
+		e.Dir = abs(e.Dir)
+		l.File.Templates[key] = e
 	}
 	for name, n := range l.File.Nests {
 		kits(n.Kits)

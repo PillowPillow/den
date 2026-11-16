@@ -19,6 +19,25 @@ type File struct {
 	Profile   string              `yaml:"profile"`
 	Bases     map[string]Base     `yaml:"bases"`
 	Nests     map[string]Nest     `yaml:"nests"`
+
+	Templates       map[string]TemplateEntry `yaml:"templates"`
+	DefaultTemplate string                   `yaml:"default_template"`
+}
+
+// TemplateEntry locates one template's source: a git Repo (at Ref) or a local Dir, exactly one.
+type TemplateEntry struct {
+	Repo string `yaml:"repo"`
+	Dir  string `yaml:"dir"`
+	Name string `yaml:"name"`
+	Ref  string `yaml:"ref"`
+}
+
+// TemplateName is the name the entry answers to: Name, or the key it is declared under.
+func (e TemplateEntry) TemplateName(key string) string {
+	if e.Name != "" {
+		return e.Name
+	}
+	return key
 }
 
 // Agent overrides what den ships for one agent; Image replaces the digest-pinned image of the den-claude kit.
@@ -51,6 +70,7 @@ type Build struct {
 
 type Nest struct {
 	Base      string            `yaml:"base"`
+	Template  string            `yaml:"template"`
 	Profile   string            `yaml:"profile"`
 	Repos     []RepoRef         `yaml:"repos"`
 	Kits      []string          `yaml:"kits"`
