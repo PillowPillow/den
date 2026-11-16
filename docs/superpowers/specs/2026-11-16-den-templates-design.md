@@ -3,12 +3,15 @@
 *den · branche `v2` · 16 nov. 2026 · sbx v0.53.0 `2c62838`*
 
 Ce document fixe la conception du remplacement de `bases:` par `templates:`. Il prolonge
-`2026-11-12-den-v2-scope-design.md` ; en cas d'écart sur ce sujet, ce document gagne.
+`2026-11-12-den-v2-scope-design.md` ; en cas d'écart sur ce sujet, ce document gagne. Il est aligné sur
+la fiche de validation `2026-11-16-den-templates-validation.md` (39 lignes approuvées) ; en cas d'écart,
+la fiche gagne.
 
 Marquage : **[décidé]** = choisi par l'utilisateur pendant la session du 16 nov. 2026 ;
 **[choix rédacteur]** = choisi par le rédacteur, à corriger à la relecture ; **[code]** = lu dans le
 code de la branche `v2` (commit `1491a23`) ; **[aide]** = sortie `--help` de sbx v0.53.0 ;
-**[non vérifié]** = hypothèse à prouver par une mesure.
+**[non vérifié]** = hypothèse à prouver par une mesure ; **[mesuré]** = observé le 16 nov. 2026 sur sbx
+v0.53.0 ; **[validé]** = tranché par l'utilisateur sur la fiche de validation.
 
 ## 1. Intention
 
@@ -73,9 +76,9 @@ du code [décidé].
 - **lieu** : un dépôt git (`repo:`) ou un dossier (`dir:`) qui porte un `den-template.yaml` à sa racine.
 - **définition** : l'entrée d'un template dans `den-template.yaml` (image de départ, kits, allowlist,
   build).
-- **référence d'image** : une valeur qui contient `/` ou `:` (ex.
-  `docker.io/docker/sandbox-templates:claude-code-docker`). Toute autre valeur est un nom de template
-  [choix rédacteur].
+- **image officielle** : une image publiée par sbx. Elle s'écrit par son adresse complète (ex.
+  `docker.io/docker/sandbox-templates:claude-code-docker`) ou par son **nom court**, le tag seul (ex.
+  `claude-code-docker`), que den complète avec `docker.io/docker/sandbox-templates:` [validé].
 
 ## 4. Approches considérées
 
@@ -116,19 +119,28 @@ nests:
 - `name:` est une clé séparée, pas un suffixe `LIEU:NOM` : une adresse git contient déjà `:` [décidé].
 - `dir:` relatif s'ancre au dossier du fichier qui le déclare ; `~` est développé (règle actuelle des
   chemins) [choix rédacteur].
-- `nests.<n>.template` et `default_template` acceptent un nom ou une référence d'image [choix rédacteur
-  pour `nests.<n>.template` ; décidé pour `default_template`].
+- `nests.<n>.template` et `default_template` acceptent un nom de template ou une image officielle
+  [validé].
 - Les clés `bases:`, `nests.<n>.base` et `agents:` disparaissent. Le décodage strict les refuse ; le
   message nomme le fichier et la clé de remplacement [choix rédacteur].
 
 **Résolution** [choix rédacteur] :
 
 1. Template d'un nest : `nests.<n>.template`, sinon `default_template` du fichier qui déclare le nest,
-   sinon `default_template` du fichier global, sinon la valeur intégrée à den.
-2. Un nom se cherche dans `templates:` du fichier qui déclare le nest, puis du fichier global. Le projet
-   masque le global. Un nom introuvable est un refus qui nomme les deux fichiers.
-3. La valeur intégrée à den est le **tag** `docker.io/docker/sandbox-templates:claude-code-docker`, pas un
-   digest. Elle ne sert que si aucun fichier ne fixe `default_template`.
+   sinon `default_template` du fichier global.
+2. **Aucune valeur n'est écrite dans le code de den** [validé]. Si rien ne fixe le template, den refuse et
+   affiche les images officielles disponibles : il interroge Docker Hub
+   (`https://hub.docker.com/v2/repositories/docker/sandbox-templates/tags`, sans authentification
+   [mesuré] : 226 tags) et affiche les noms courts, sans les variantes datées (`-0.11.0`) ni nocturnes
+   (`-nightly`). Hors ligne ou en cas d'erreur, il affiche seulement l'adresse de la page des tags. La
+   requête passe par une dépendance injectée dans `cli.Deps`, pour que les tests n'ouvrent aucun socket.
+3. Lecture d'une valeur (`default_template` ou `nests.<n>.template`) [validé] : den cherche d'abord un
+   template déclaré de ce nom, dans `templates:` du fichier qui déclare le nest, puis du fichier global ;
+   le projet masque le global. S'il n'en trouve pas, il traite la valeur comme une image officielle
+   (adresse complète telle quelle, sinon nom court complété). Pas de règle de forme sur `/` ou `:`.
+4. Conséquence : une faute de frappe dans un nom de template fait chercher une image de ce nom. Quand sbx
+   ne trouve pas l'image, l'erreur de den dit qu'aucun template ni aucune image ne porte ce nom, et nomme
+   les fichiers lus.
 
 ### 5.2 `den-template.yaml` (racine du lieu) [décidé pour l'existence et le rôle ; contenu : choix rédacteur]
 
@@ -157,12 +169,13 @@ templates:
   refusé, pour `kits`, `includes` et `steps` : un dépôt distant ne doit pas faire lire un fichier de la
   machine. Un kit qui n'est pas un chemin (référence que sbx résout lui-même) reste accepté et passe tel
   quel, comme aujourd'hui [code] [choix rédacteur].
-- Lieu `dir:` : le dossier appartient à l'utilisateur ; les chemins absolus et `~` restent permis, comme
-  pour une base aujourd'hui [choix rédacteur].
-- `from:` absent : le build démarre de `default_template` du fichier global s'il est une référence
-  d'image, sinon de la valeur intégrée.
-- `from:` = nom d'un frère : ce frère doit être construit avant ; sinon `den build` refuse et nomme la
-  commande à lancer. Pas de build en cascade automatique.
+- Lieu `dir:` : **la même règle stricte** [validé]. Aucun chemin ne sort du dossier.
+- `from:` absent : le build démarre de `default_template` du fichier global s'il désigne une image
+  officielle ; s'il est absent ou nomme un template, `den build` refuse et demande une image de départ
+  [validé].
+- `from:` = nom d'un frère : si ce frère n'est pas construit, `den build` le construit d'abord,
+  automatiquement, et annonce chaque build avant de le lancer [validé]. Un cycle entre frères est une
+  erreur de chargement.
 - Le tag du template sbx construit n'est plus déclaré : den le dérive, `<nom dans den-template.yaml>:v2`.
 
 ### 5.3 Copie locale d'un lieu `repo:`
@@ -227,9 +240,14 @@ templates:
 **Nest sur une référence d'image (sans build)**
 
 - Le kit `den-claude` reçoit la référence comme image ; aucun `sandboxOptions.template` n'est écrit.
-- [non vérifié] sbx crée bien une VM depuis un kit `kind: sandbox` dont l'image est un tag non présent
-  localement (pull implicite), et l'ENTRYPOINT de l'image garde la VM en vie (contrainte S6e). À mesurer
-  avant le plan ; si sbx refuse un tag, den résout le tag en digest au moment de `up`.
+- [mesuré] avec `docker.io/docker/sandbox-templates:claude-code-docker` : `sbx --no-input env create
+  --force --skip-host-commands` crée la VM depuis un kit `kind: sandbox` dont l'image est ce tag, sans
+  `sandboxOptions.template` ; sbx télécharge lui-même les couches manquantes ; le PID 1 est `tini`. Après
+  `sbx run --detach --name <instance>` (l'appel de `startDetached`), la VM tourne encore 4 minutes plus
+  tard et `sbx exec` répond. Sans cet appel, la VM créée s'arrête en moins de 100 s ; non comparé à une
+  VM créée depuis un template, donc pas attribué au tag.
+- [non vérifié] les autres images officielles (`claude-code`, `claude-code-minimal`, `shell`, …) : ni le
+  maintien en vie, ni la présence de Claude Code.
 - Une image dont l'ENTRYPOINT rend la main arrête la VM (S6e, `docker.io/sbx/claude`). den ne peut pas le
   savoir avant le démarrage : l'erreur de `den up` nomme la clé `default_template` ou `template` à corriger.
 - Les mesures précédentes (S6e comprise) sont dans `docs/superpowers/specs/2026-11-12-den-v2-spikes.md`.
@@ -261,20 +279,22 @@ quand la source résolue diffère de celle de la fiche [choix rédacteur].
   dans cette liste.
 - `--skip-host-commands` sur chaque `env create` / `env rm`.
 - La fiche d'instance garde le nom du template et son tag à la place de `base` / `image` ; son schéma
-  passe à 2. **Le lecteur accepte encore le schéma 1** et lit `base` comme `template`, `image` comme
-  `tag` [choix rédacteur]. Raison [code] : `registry.decode` refuse tout autre schéma
-  (`internal/registry/registry.go:136`) et `checkSiblings` refuse dès qu'une fiche voisine est illisible
-  (`internal/instance/remove.go:124`) ; sans ce lecteur, une seule ancienne fiche bloquerait tous les
-  `den rm`. Une fiche de schéma 1 n'est jamais réécrite en place : `den rm` la supprime, `den up` la
-  remplace quand il recrée l'instance.
+  passe à 2. **Le nouveau den ne lit pas le schéma 1** [validé] : l'utilisateur supprime toutes ses
+  instances avec le den actuel avant d'installer le nouveau. Conséquence [code] : `registry.decode`
+  refuse tout autre schéma (`internal/registry/registry.go:136`) et `checkSiblings` refuse dès qu'une
+  fiche voisine est illisible (`internal/instance/remove.go:124`), donc une instance oubliée bloque
+  `den rm` ; le message nomme le fichier de la fiche à supprimer à la main.
 - `configHash` : la définition résolue et la référence `from` y entrent, à la place de l'image d'agent.
 - Toute commande git passe par `cli.Deps.Git`. Les tests clonent un dépôt local par chemin : aucun socket.
 
 ## 6. Conversion (fait partie du livrable)
 
+0. Avant d'installer le nouveau den : `den rm` de chaque instance avec le den actuel. Le 16 nov. 2026,
+   `sbx ls` montre une instance, `am` (arrêtée).
 1. `~/.den/den.yaml` : `bases.pillow` devient `~/.den/templates/den-template.yaml` (template `pillow`,
-   scripts déplacés avec lui ; les kits restent sous `~/.den/kits/`, permis pour un lieu `dir:`) ; le
-   fichier global gagne `templates.pillow.dir: ~/.den/templates` et `default_template`.
+   scripts et kits `pillow-env` et `ssh-known-hosts` déplacés dans ce dossier, puisqu'aucun chemin ne sort
+   du lieu) ; le fichier global gagne `templates.pillow.dir: ~/.den/templates` et `default_template`. Les
+   kits de profil (`~/.den/kits/perso`) ne sont pas concernés : `profiles:` reste dans `den.yaml`.
 2. `den-env` (branche `den-v2`) : `den-template.yaml` à la racine, avec le template `digitaleo` repris de
    `bases.digitaleo`.
 3. Dev home Digitaleo : un `den.yaml` avec `templates.digitaleo.repo`, `default_template: digitaleo` et les
@@ -288,4 +308,5 @@ quand la source résolue diffère de celle de la fiche [choix rédacteur].
 - Le découpage en paquets (où vit la résolution des lieux, où vit la fiche).
 - Le format exact du slug de la copie locale et le calcul du hash de définition.
 - Les textes d'erreur, dans la convention du dépôt : nommer le fichier à corriger et le remède.
-- L'ordre des tâches, sous une contrainte : la mesure [non vérifié] de §5.4 vient en premier.
+- L'ordre des tâches, sous une contrainte : la mesure encore [non vérifié] de §5.4 (lecture du digest
+  d'un tag) vient en premier.
