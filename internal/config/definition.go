@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,10 @@ func LoadDefinitions(root string) (*LoadedDefinitions, error) {
 				problems = append(problems, fmt.Sprintf("%s.kits[%d]: %v", field, i, err))
 				continue
 			}
+			if err := l.confineKitLinks(p); err != nil {
+				problems = append(problems, fmt.Sprintf("%s.kits[%d]: %v", field, i, err))
+				continue
+			}
 			d.Kits[i] = p
 		}
 		for i, s := range d.Build.Includes {
@@ -134,6 +139,41 @@ func (l *LoadedDefinitions) confine(p string) (string, error) {
 		return "", fmt.Errorf("%q leaves %s through a symlink — a location may only cite its own files", p, l.Root)
 	}
 	return full, nil
+}
+
+// confineKitLinks refuses a link inside a kit that resolves outside Root: sbx reads a kit's files on
+// the host, so a link a cloned repository planted there could hand the VM ~/.ssh. A link that stays
+// under Root is kept, and a directory it points to is checked in turn.
+func (l *LoadedDefinitions) confineKitLinks(kit string) error {
+	start, err := filepath.EvalSymlinks(kit)
+	if err != nil {
+		// a missing kit is reported by the command that reads it
+		return nil
+	}
+	seen := map[string]bool{}
+	var walk func(dir string) error
+	walk = func(dir string) error {
+		if seen[dir] {
+			return nil
+		}
+		seen[dir] = true
+		return filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
+			if err != nil || e.Type()&fs.ModeSymlink == 0 {
+				return err
+			}
+			resolved := resolveExisting(p, 0)
+			if !pathUnder(resolved, l.Root) {
+				rel, _ := filepath.Rel(l.Root, p)
+				target, _ := os.Readlink(p)
+				return fmt.Errorf("link %s -> %s leaves %s — a kit may only link to files of its location", rel, target, l.Root)
+			}
+			if st, err := os.Stat(resolved); err == nil && st.IsDir() {
+				return walk(resolved)
+			}
+			return nil
+		})
+	}
+	return walk(start)
 }
 
 // isKitReference mirrors sbx.isRegistry (config cannot import sbx; keep the two in sync): a kit whose

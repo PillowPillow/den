@@ -188,3 +188,55 @@ func TestExampleDenTemplateIsValid(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadDefinitionsRefusesAKitLinkThatLeavesTheRoot(t *testing.T) {
+	cases := map[string]struct {
+		link, target string
+	}{
+		"relative":           {"kits/k/files/home/x", "../../../../../secret"},
+		"absolute":           {"kits/k/files/home/x", "/etc/passwd"},
+		"dangling":           {"kits/k/files/home/x", "../../../../../gone/key"},
+		"through a dir link": {"elsewhere/x", "../../secret"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := writeDefinitions(t, "schema: 1\ntemplates:\n  t:\n    kits: [docker.io/a/b:1, kits/k]\n")
+			for _, dir := range []string{"kits/k/files/home", "elsewhere"} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink("../../../elsewhere", filepath.Join(root, "kits/k/files/via")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(c.target, filepath.Join(root, c.link)); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadDefinitions(root)
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			for _, w := range []string{DefinitionFileName, "templates.t.kits[1]", filepath.FromSlash(c.link), "leaves"} {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q lacks %q", err, w)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadDefinitionsAcceptsAKitLinkInsideTheRoot(t *testing.T) {
+	root := writeDefinitions(t, "schema: 1\ntemplates:\n  t:\n    kits: [kits/k]\n")
+	if err := os.MkdirAll(filepath.Join(root, "kits/k/files"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "shared.sh"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../../shared.sh", filepath.Join(root, "kits/k/files/shared.sh")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDefinitions(root); err != nil {
+		t.Fatal(err)
+	}
+}
