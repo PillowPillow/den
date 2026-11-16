@@ -89,30 +89,7 @@ func Write(denHome string, r Record) error {
 	if err != nil {
 		return fmt.Errorf("rendering the record of %s: %w", r.Instance, err)
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating %s: %w", dir, err)
-	}
-	tmp, err := os.CreateTemp(dir, ".record-*.tmp")
-	if err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	if _, err := tmp.Write(content); err != nil {
-		tmp.Close()
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	return nil
+	return config.WriteFileAtomic(path, content)
 }
 
 // Read wraps fs.ErrNotExist through config.FileError, so "no record" can be told from "unreadable record".

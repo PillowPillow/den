@@ -17,10 +17,12 @@ import (
 type spyGit struct {
 	inner worktree.Git
 	calls [][]string
+	dirs  []string
 }
 
 func (s *spyGit) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	s.calls = append(s.calls, args)
+	s.dirs = append(s.dirs, dir)
 	return s.inner.Run(ctx, dir, args...)
 }
 
@@ -29,14 +31,14 @@ func (s *spyGit) RunWithInput(ctx context.Context, dir string, in []byte, args .
 	return s.inner.RunWithInput(ctx, dir, in, args...)
 }
 
-type fakeGit func(ctx context.Context, args []string) ([]byte, error)
+type fakeGit func(ctx context.Context, dir string, args []string) ([]byte, error)
 
-func (f fakeGit) Run(ctx context.Context, _ string, args ...string) ([]byte, error) {
-	return f(ctx, args)
+func (f fakeGit) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return f(ctx, dir, args)
 }
 
-func (f fakeGit) RunWithInput(ctx context.Context, _ string, _ []byte, args ...string) ([]byte, error) {
-	return f(ctx, args)
+func (f fakeGit) RunWithInput(ctx context.Context, dir string, _ []byte, args ...string) ([]byte, error) {
+	return f(ctx, dir, args)
 }
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -67,13 +69,16 @@ func TestCloneDisablesHooksAndSubmodules(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"-c", "core.hooksPath=/dev/null", "clone", "--no-recurse-submodules", "--single-branch"}
+		want := []string{"-c", "core.hooksPath=/dev/null", "-c", "protocol.ext.allow=never", "clone", "--no-recurse-submodules", "--single-branch"}
 		if ref != "" {
 			want = append(want, "--branch", ref)
 		}
 		want = append(want, "--", src, dest)
 		if !slices.Equal(spy.calls[0], want) {
 			t.Fatalf("ref %q: argv %v, want %v", ref, spy.calls[0], want)
+		}
+		if spy.dirs[0] != "/" {
+			t.Fatalf("ref %q: ran in %q, want /", ref, spy.dirs[0])
 		}
 		if commit != head {
 			t.Fatalf("ref %q: commit %s, want %s", ref, commit, head)
@@ -83,19 +88,26 @@ func TestCloneDisablesHooksAndSubmodules(t *testing.T) {
 
 func TestRemoteHeadIsBatchModeAndBounded(t *testing.T) {
 	var argv []string
-	spy := fakeGit(func(_ context.Context, args []string) ([]byte, error) {
-		argv = args
-		return []byte("aaaa\tHEAD\n"), nil
+	var dir string
+	spy := fakeGit(func(_ context.Context, d string, args []string) ([]byte, error) {
+		argv, dir = args, d
+		return []byte("aaaa\tHEAD\naaaa\trefs/heads/v1\n"), nil
 	})
 	if _, err := RemoteHead(context.Background(), spy, "u", ""); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"-c", "core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=3", "ls-remote", "--", "u", "HEAD"}
-	if !slices.Equal(argv, want) {
-		t.Fatalf("argv %v, want %v", argv, want)
+	want := []string{"-c", "core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=3", "-c", "protocol.ext.allow=never", "ls-remote", "--", "u", "HEAD"}
+	if !slices.Equal(argv, want) || dir != "/" {
+		t.Fatalf("argv %v in %q, want %v in /", argv, dir, want)
+	}
+	if _, err := RemoteHead(context.Background(), spy, "u", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := argv[len(argv)-2:]; !slices.Equal(got, []string{"v1", "v1^{}"}) {
+		t.Fatalf("patterns %v", got)
 	}
 
-	blocked := fakeGit(func(ctx context.Context, _ []string) ([]byte, error) {
+	blocked := fakeGit(func(ctx context.Context, _ string, _ []string) ([]byte, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
@@ -111,7 +123,7 @@ func TestRemoteHeadIsBatchModeAndBounded(t *testing.T) {
 func TestRemoteHeadPeelsAnnotatedTags(t *testing.T) {
 	a, b, c, d, e := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40), strings.Repeat("d", 40), strings.Repeat("e", 40)
 	out := func(s string) fakeGit {
-		return func(context.Context, []string) ([]byte, error) { return []byte(s), nil }
+		return func(context.Context, string, []string) ([]byte, error) { return []byte(s), nil }
 	}
 	got, err := RemoteHead(context.Background(), out(a+"\trefs/tags/v1\n"+b+"\trefs/tags/v1^{}\n"+c+"\trefs/heads/x/v1\n"), "u", "v1")
 	if err != nil || got != b {
@@ -120,6 +132,10 @@ func TestRemoteHeadPeelsAnnotatedTags(t *testing.T) {
 	got, err = RemoteHead(context.Background(), out(c+"\trefs/heads/x/main\n"+d+"\trefs/heads/main\n"), "u", "main")
 	if err != nil || got != d {
 		t.Fatalf("branch: %q, %v", got, err)
+	}
+	got, err = RemoteHead(context.Background(), out(a+"\trefs/tags/dup\n"+b+"\trefs/tags/dup^{}\n"+d+"\trefs/heads/dup\n"), "u", "dup")
+	if err != nil || got != d {
+		t.Fatalf("branch beats tag: %q, %v", got, err)
 	}
 	got, err = RemoteHead(context.Background(), out(a+"\trefs/tags/v2\n"), "u", "v2")
 	if err != nil || got != a {
@@ -190,5 +206,86 @@ templates:
 	write("den-template.yaml", string(raw)+"  extra:\n    from: base\n")
 	if hash() == base {
 		t.Fatal("den-template.yaml did not move the hash")
+	}
+}
+
+func commitIn(t *testing.T, dir, file string) {
+	t.Helper()
+	os.WriteFile(filepath.Join(dir, file), []byte(file), 0o644)
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-q", "-m", file)
+}
+
+func TestRemoteHeadMatchesCloneForRealRefs(t *testing.T) {
+	src := t.TempDir()
+	git(t, src, "init", "-q", "-b", "main")
+	commitIn(t, src, "a")
+	git(t, src, "tag", "-a", "-m", "v1", "v1")
+	git(t, src, "branch", "x/v1")
+	commitIn(t, src, "b")
+	git(t, src, "tag", "-a", "-m", "dup", "dup")
+	git(t, src, "branch", "dup")
+	commitIn(t, src, "c")
+	g := worktree.NewGit()
+	for _, ref := range []string{"", "main", "v1", "dup"} {
+		remote, err := RemoteHead(context.Background(), g, src, ref)
+		if err != nil {
+			t.Fatalf("%q: %v", ref, err)
+		}
+		cloned, err := Clone(context.Background(), g, src, ref, filepath.Join(t.TempDir(), "d"))
+		if err != nil {
+			t.Fatalf("%q: %v", ref, err)
+		}
+		if remote != cloned {
+			t.Fatalf("ref %q: RemoteHead %s, Clone %s", ref, remote, cloned)
+		}
+	}
+}
+
+func TestGitIgnoresTheWorkingDirectoryConfig(t *testing.T) {
+	src := t.TempDir()
+	git(t, src, "init", "-q", "-b", "main")
+	commitIn(t, src, "a")
+	head := git(t, src, "rev-parse", "HEAD")
+	cwd := t.TempDir()
+	git(t, cwd, "init", "-q")
+	git(t, cwd, "config", "url./nonexistent/.insteadOf", src)
+	old, _ := os.Getwd()
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(old) })
+	g := worktree.NewGit()
+	got, err := RemoteHead(context.Background(), g, src, "")
+	if err != nil || got != head {
+		t.Fatalf("RemoteHead: %q, %v", got, err)
+	}
+	if _, err := Clone(context.Background(), g, src, "", filepath.Join(t.TempDir(), "d")); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+}
+
+func TestDefinitionHashFollowsAnInRootKitSymlink(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "real"), 0o755)
+	os.WriteFile(filepath.Join(root, "real", "spec.yaml"), []byte("one"), 0o644)
+	os.Symlink("real", filepath.Join(root, "kit"))
+	os.Symlink("spec.yaml", filepath.Join(root, "real", "alias"))
+	os.WriteFile(filepath.Join(root, "den-template.yaml"), []byte("schema: 1\ntemplates:\n  web:\n    from: base\n    kits: [kit]\n"), 0o644)
+	hash := func() string {
+		d, err := config.LoadDefinitions(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := DefinitionHash(d, "web")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	base := hash()
+	os.WriteFile(filepath.Join(root, "real", "spec.yaml"), []byte("two"), 0o644)
+	if hash() == base {
+		t.Fatal("a file under the symlinked kit did not move the hash")
 	}
 }

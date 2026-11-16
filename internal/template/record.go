@@ -60,12 +60,7 @@ func recordPath(denHome, name string) string {
 	return filepath.Join(stateDir(denHome), "templates", name+".yaml")
 }
 
-func validName(name string) error {
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
-		return fmt.Errorf("template name %q cannot name a file under the den home", name)
-	}
-	return nil
-}
+func validName(name string) error { return config.ValidateName("template", name) }
 
 // ReadRecord wraps fs.ErrNotExist through config.FileError, so "no record" can be told from "unreadable record".
 func ReadRecord(denHome, name string) (Record, error) {
@@ -105,34 +100,7 @@ func WriteRecord(denHome string, r Record) error {
 	if err != nil {
 		return fmt.Errorf("rendering the record of template %s: %w", r.Template, err)
 	}
-	return writeAtomic(recordPath(denHome, r.Template), content)
-}
-
-func writeAtomic(path string, content []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating %s: %w", dir, err)
-	}
-	tmp, err := os.CreateTemp(dir, ".record-*.tmp")
-	if err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	if _, err := tmp.Write(content); err != nil {
-		tmp.Close()
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	return nil
+	return config.WriteFileAtomic(recordPath(denHome, r.Template), content)
 }
 
 type trustedFile struct {
@@ -186,5 +154,5 @@ func Trust(denHome, url string) error {
 	if err != nil {
 		return fmt.Errorf("rendering %s: %w", trustedPath(denHome), err)
 	}
-	return writeAtomic(trustedPath(denHome), content)
+	return config.WriteFileAtomic(trustedPath(denHome), content)
 }

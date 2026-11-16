@@ -28,12 +28,12 @@ func StagingDir(denHome, name string) string {
 // Clone takes a fresh clone, never a fetch into a live copy. Hooks and submodules stay off: the
 // repository is not trusted to run anything on the host.
 func Clone(ctx context.Context, g worktree.Git, url, ref, dest string) (string, error) {
-	args := []string{"-c", "core.hooksPath=/dev/null", "clone", "--no-recurse-submodules", "--single-branch"}
+	args := []string{"-c", "core.hooksPath=/dev/null", "-c", "protocol.ext.allow=never", "clone", "--no-recurse-submodules", "--single-branch"}
 	if ref != "" {
 		args = append(args, "--branch", ref)
 	}
 	args = append(args, "--", url, dest)
-	if _, err := g.Run(ctx, "", args...); err != nil {
+	if _, err := g.Run(ctx, gitDir, args...); err != nil {
 		return "", fmt.Errorf("cloning %s: %w", url, err)
 	}
 	return Head(ctx, g, dest)
@@ -47,6 +47,10 @@ func Head(ctx context.Context, g worktree.Git, dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// gitDir is where url-level git commands run: a git launched in den's cwd would read that
+// repository's .git/config, which a VM can write (insteadOf and protocol.ext.allow turn a URL into a host command).
+const gitDir = "/"
+
 const remoteHeadTimeout = 3 * time.Second
 
 // RemoteHead answers without a prompt and within remoteHeadTimeout: `den up` calls it on every start.
@@ -57,9 +61,15 @@ func RemoteHead(ctx context.Context, g worktree.Git, url, ref string) (string, e
 	if pattern == "" {
 		pattern = "HEAD"
 	}
-	out, err := g.Run(ctx, "",
+	args := []string{
 		"-c", "core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=3",
-		"ls-remote", "--", url, pattern)
+		"-c", "protocol.ext.allow=never",
+		"ls-remote", "--", url, pattern}
+	if ref != "" {
+		// git lists the peeled commit of an annotated tag only when asked for it by name
+		args = append(args, ref+"^{}")
+	}
+	out, err := g.Run(ctx, gitDir, args...)
 	if err != nil {
 		return "", fmt.Errorf("asking %s for %s: %w", url, pattern, err)
 	}
@@ -74,8 +84,8 @@ func RemoteHead(ctx context.Context, g worktree.Git, url, ref string) (string, e
 	// refs/heads/x/main: only the exact name is the commit a clone checks out.
 	candidates := []string{"HEAD"}
 	if ref != "" {
-		// the peeled line is the commit; the bare tag line is the tag object
-		candidates = []string{"refs/tags/" + ref + "^{}", "refs/heads/" + ref, "refs/tags/" + ref}
+		// clone --branch prefers a branch over a same-named tag; a peeled line is the commit, the bare tag line the tag object
+		candidates = []string{"refs/heads/" + ref, "refs/tags/" + ref + "^{}", "refs/tags/" + ref}
 	}
 	for _, c := range candidates {
 		if sha, ok := lines[c]; ok {
@@ -116,9 +126,31 @@ func DefinitionHash(d *config.LoadedDefinitions, name string) (string, error) {
 	cited = append(cited, def.Build.Includes...)
 	cited = append(cited, def.Build.Steps...)
 	for _, root := range cited {
-		err := filepath.WalkDir(root, func(p string, e fs.DirEntry, err error) error {
+		// WalkDir does not follow a symlinked root; LoadDefinitions accepts one that stays under Root.
+		citedRel, err := filepath.Rel(d.Root, root)
+		if err != nil {
+			return "", fmt.Errorf("hashing %s cited by template %q in %s: %w", root, name, d.Path, err)
+		}
+		real, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return "", fmt.Errorf("hashing %s cited by template %q in %s: %w", root, name, d.Path, err)
+		}
+		err = filepath.WalkDir(real, func(p string, e fs.DirEntry, err error) error {
 			if err != nil {
 				return err
+			}
+			rel, err := filepath.Rel(real, p)
+			if err != nil {
+				return err
+			}
+			label := filepath.ToSlash(filepath.Join(citedRel, rel))
+			if e.Type()&fs.ModeSymlink != 0 {
+				target, err := os.Readlink(p)
+				if err != nil {
+					return err
+				}
+				add("link:"+label, []byte(target))
+				return nil
 			}
 			if e.IsDir() {
 				return nil
@@ -127,11 +159,7 @@ func DefinitionHash(d *config.LoadedDefinitions, name string) (string, error) {
 			if err != nil {
 				return err
 			}
-			rel, err := filepath.Rel(d.Root, p)
-			if err != nil {
-				return err
-			}
-			add(filepath.ToSlash(rel), content)
+			add(label, content)
 			return nil
 		})
 		if err != nil {
