@@ -21,10 +21,13 @@ type Repo struct {
 
 // Resolved keeps GlobalFile so a refusal names the file that holds the value at fault.
 type Resolved struct {
-	Name        string
-	File        *config.Loaded
-	GlobalFile  string
-	Template    *template.Resolved
+	Name       string
+	File       *config.Loaded
+	GlobalFile string
+	Template   *template.Resolved
+	// TemplateErr is why template.Open refused the choice; Template then holds the Choice only. The
+	// caller decides: a Live instance attaches with a warning, any other refuses.
+	TemplateErr error
 	Profile     string
 	ProfileKits []string
 	Repos       []Repo
@@ -181,7 +184,7 @@ func absPath(p, dir string) (string, error) {
 }
 
 // Resolve merges global, template and nest into what an instance prepares from. It never builds: a
-// template without a usable build is refused by template.Open with the `den build` remedy.
+// template without a usable build is left in TemplateErr, with template.Open's `den build` remedy.
 func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolved, error) {
 	n, ok := file.File.Nests[name]
 	if !ok {
@@ -194,8 +197,8 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 	if err != nil {
 		return nil, err
 	}
-	if r.Template, err = template.Open(denHome, choice); err != nil {
-		return nil, err
+	if r.Template, r.TemplateErr = template.Open(denHome, choice); r.TemplateErr != nil {
+		r.Template = &template.Resolved{Choice: choice}
 	}
 	def := r.Template.Def
 

@@ -81,6 +81,14 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 		return nil, fmt.Errorf("a sandbox named %q exists but den V2 did not create it — remove it with "+
 			"`sbx rm %s` (or v1's `den rm %s`), then retry", instance, instance, instance)
 	}
+	// Only once the state is known: a running VM never depends on a template build, so a Live
+	// instance attaches with the remedy as a warning (beside the drift warning its hash triggers).
+	if res.TemplateErr != nil {
+		if state != Live {
+			return nil, res.TemplateErr
+		}
+		res.Warnings = append(res.Warnings, res.TemplateErr.Error())
+	}
 
 	p := &Plan{
 		Instance: instance, Resolved: res, Worktree: wt, State: state, Record: rec,

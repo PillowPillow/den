@@ -948,3 +948,44 @@ func TestPrepareRefusesAKitThatIsAMountedFolder(t *testing.T) {
 	prepareErr(t, f, Options{Nest: "am"}, api+" is the mounted folder "+api+" itself", "put it in a sub folder, or outside every mounted folder",
 		"fix `kits:` of nest \"am\" in "+filepath.Join(f.home, "den.yaml"))
 }
+
+// livePointedAtAnUnbuiltTemplate leaves am Live on legacy, then points its nest at other, declared but never built.
+func livePointedAtAnUnbuiltTemplate(t *testing.T) (*fixture, string) {
+	t.Helper()
+	f := newFixture(t)
+	f.dirTemplate(t, "legacy", filepath.Join(f.src, "tpl"), "")
+	api := f.repo(t, "api")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false)) + "\ntemplate: legacy"})
+	record(t, f.home, mustPrepare(t, f, Options{Nest: "am"}))
+	f.live("am")
+	f.templates = append(f.templates, fmt.Sprintf("other: {dir: %q}", filepath.Join(f.src, "other")))
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false)) + "\ntemplate: other"})
+	return f, "template \"other\" is not built — run `den build other` from " + f.proj
+}
+
+func TestUpOnALiveInstanceWarnsAboutAnUnbuiltTemplate(t *testing.T) {
+	f, notBuilt := livePointedAtAnUnbuiltTemplate(t)
+	var stderr strings.Builder
+	d := f.deps()
+	d.Err = &stderr
+	if err := Up(context.Background(), d, Options{Nest: "am"}, false); err != nil {
+		t.Fatalf("a live instance must attach whatever its config became: %v", err)
+	}
+	for _, want := range []string{"warning: " + notBuilt, "changed since am was created"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr %q lacks %q", stderr.String(), want)
+		}
+	}
+	if !f.fake.HasAttached("run", "--name", "am") {
+		t.Errorf("no attach: %v", f.fake.Calls)
+	}
+}
+
+func TestPrepareRefusesAnUnbuiltTemplateWhenNotLive(t *testing.T) {
+	f, notBuilt := livePointedAtAnUnbuiltTemplate(t)
+	f.respond("ls --json", `[]`)
+	prepareErr(t, f, Options{Nest: "am"}, notBuilt)
+	if f.fake.HasCalled("--no-input", "env", "create") {
+		t.Errorf("env create ran: %v", f.fake.Calls)
+	}
+}
