@@ -261,7 +261,7 @@ func startOf(ctx context.Context, d Deps, global *config.Loaded, c template.Choi
 		}
 		// Building on a sibling of another commit would record a definition hash over files the image was not built from.
 		if template.SourceOf(c).Kind == "repo" && rec.Commit != commit {
-			return start{}, fmt.Errorf("template %q was built from commit %s, but template %q builds from its copy at %s — "+
+			return start{}, fmt.Errorf("template %q was built from commit %s, but template %q builds from commit %s — "+
 				"run `den build %s --pull` to build both from one commit", def.From, rec.Commit, name, commit, c.Value)
 		}
 		// The kit image is pinned by digest: never render "<repository>@" from an empty one.
