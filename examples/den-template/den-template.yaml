@@ -1,16 +1,10 @@
 schema: 1
 
 templates:
-  node:
+  example:
     from: claude-code-docker
     kits:
-      - ./kits/ssh-known-hosts
-    network:
-      allow:
-        - github.com
+      - ./kits/example-kit
     build:
       steps:
-        - steps/10-node.sh
-      network:
-        allow:
-          - registry.npmjs.org
+        - steps/10-marker.sh

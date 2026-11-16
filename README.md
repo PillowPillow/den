@@ -186,7 +186,7 @@ schema: 1                      # required, must be 1
 templates:
   node:
     from: claude-code-docker   # a sibling template of this file, an image, or empty
-    kits: [./kits/ssh-known-hosts]
+    kits: [./kits/example-kit]
     network:
       allow: [github.com]      # egress of every nest on this template
     build:

@@ -170,3 +170,21 @@ func TestLoadDefinitionsAcceptsAMissingTailUnderTheRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestExampleDenTemplateIsValid(t *testing.T) {
+	l, err := LoadDefinitions(filepath.Join("..", "..", "examples", "den-template"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := l.File.Templates["example"]
+	for _, p := range append(append([]string{}, d.Kits...), d.Build.Steps...) {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("cited path is missing: %v", err)
+		}
+	}
+	for _, k := range d.Kits {
+		if _, err := os.Stat(filepath.Join(k, "spec.yaml")); err != nil {
+			t.Errorf("kit without spec.yaml: %v", err)
+		}
+	}
+}

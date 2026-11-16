@@ -1,0 +1,6 @@
+schemaVersion: "2"
+kind: mixin
+name: example-kit
+version: 1.0.0
+description: >-
+  A minimal local kit: it adds no files and no permissions, and shows where a template's kits live.

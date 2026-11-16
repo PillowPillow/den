@@ -103,7 +103,7 @@ argv; `env create`, `env rm`, `rm`, `exec` and `ports` get `--no-input`; `den bu
   `GIT_DIR`/`GIT_WORK_TREE`. `internal/worktree/hermeticity_test.go` fails when a package that runs
   git lacks it.
 - `sbx.Fake` lives in `internal/sbx/fake.go` — a production file on purpose, since `cli`, `instance`
-  and `base` all need it. Don't move it into `_test.go`.
+  and `build` all need it. Don't move it into `_test.go`.
 - Goldens live in `internal/*/testdata/*.golden` and are compared by hand; **there is no `-update`
   flag**, edit them manually.
 
