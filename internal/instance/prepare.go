@@ -17,7 +17,9 @@ import (
 
 	"github.com/PillowPillow/den/v2/internal/config"
 	"github.com/PillowPillow/den/v2/internal/nest"
+	"github.com/PillowPillow/den/v2/internal/origin"
 	"github.com/PillowPillow/den/v2/internal/registry"
+	scanrepos "github.com/PillowPillow/den/v2/internal/repos"
 	"github.com/PillowPillow/den/v2/internal/sbx"
 	"github.com/PillowPillow/den/v2/internal/sbxenv"
 	"github.com/PillowPillow/den/v2/internal/template"
@@ -119,7 +121,12 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 			return nil, err
 		}
 	}
-	if err := checkRepos(ctx, d.Git, res, repos, wt != nil); err != nil {
+	if wt != nil && res.Layout == "central" {
+		if err := checkWorktreeFolders(res, repos, wt); err != nil {
+			return nil, err
+		}
+	}
+	if err := checkRepos(ctx, d.Git, d.DenHome, res, repos, wt != nil); err != nil {
 		return nil, err
 	}
 	if err := checkTemplate(ctx, d, res); err != nil {
@@ -231,14 +238,14 @@ func runDir(denHome string, res *nest.Resolved, instance string) string {
 	return filepath.Join(res.File.Dir, ".den", "run", instance)
 }
 
-func checkRepos(ctx context.Context, g worktree.Git, res *nest.Resolved, repos []nest.Repo, withWorktree bool) error {
+func checkRepos(ctx context.Context, g worktree.Git, denHome string, res *nest.Resolved, repos []nest.Repo, withWorktree bool) error {
 	for _, r := range repos {
 		st, err := os.Stat(r.Path)
 		if err != nil {
-			return fmt.Errorf("nest %q: repo %s: %v — %s", res.Name, r.Path, &config.FileError{Err: err}, repoFix(res, r))
+			return fmt.Errorf("nest %q: repo %s: %v — %s", res.Name, r.Path, &config.FileError{Err: err}, repoFix(denHome, res, r))
 		}
 		if !st.IsDir() {
-			return fmt.Errorf("nest %q: repo %s is not a directory — %s", res.Name, r.Path, repoFix(res, r))
+			return fmt.Errorf("nest %q: repo %s is not a directory — %s", res.Name, r.Path, repoFix(denHome, res, r))
 		}
 		if !withWorktree {
 			continue
@@ -248,18 +255,38 @@ func checkRepos(ctx context.Context, g worktree.Git, res *nest.Resolved, repos [
 		out, err := g.Run(ctx, r.Path, "rev-parse", "--show-toplevel")
 		if err != nil || worktree.ResolvePath(strings.TrimSpace(string(out))) != worktree.ResolvePath(r.Path) {
 			return fmt.Errorf("nest %q: repo %s is not the root of a git repository, and -w makes a worktree of every repo — "+
-				"drop -w, or %s", res.Name, r.Path, repoFix(res, r))
+				"drop -w, or %s", res.Name, r.Path, repoFix(denHome, res, r))
 		}
 	}
 	return nil
 }
 
-func repoFix(res *nest.Resolved, r nest.Repo) string {
+// checkWorktreeFolders refuses what worktree.Path would collapse: central puts every worktree at
+// <root>/<branch>/<folder name>, so two repos sharing a folder name would land on one path.
+func checkWorktreeFolders(res *nest.Resolved, repos []nest.Repo, wt *worktree.Name) error {
+	seen := map[string]nest.Repo{}
+	for _, r := range repos {
+		folder := filepath.Base(r.Path)
+		if first, ok := seen[folder]; ok {
+			return fmt.Errorf("repos %s and %s share the folder name %q, and -w puts both at %s — "+
+				"set worktrees.layout: per-repo, or drop one", first.Name, r.Name, folder, worktree.Path(res.Layout, res.Root, wt.Dir, r.Path))
+		}
+		seen[folder] = r
+	}
+	return nil
+}
+
+func repoFix(denHome string, res *nest.Resolved, r nest.Repo) string {
 	if r.AdHoc {
 		return "fix or drop `--repo " + r.Path + "`"
 	}
+	if r.FromTable {
+		id, _ := origin.Identity(r.Origin)
+		return fmt.Sprintf("run `den scan <the folder that holds the clone>`: %s maps %s to a folder that is gone",
+			scanrepos.TablePath(denHome), id)
+	}
 	if r.Key != "" {
-		return fmt.Sprintf("fix `repos.%s` in %s", r.Key, res.GlobalFile)
+		return fmt.Sprintf("fix `repos.%s` in %s", r.Key, r.DeclaredIn)
 	}
 	return fmt.Sprintf("fix `repos:` of nest %q in %s", res.Name, res.File.Path)
 }

@@ -59,7 +59,7 @@ func TestKeyResolvesThroughTheTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Repo{{Name: "api", Path: "/c/api", Key: "api", Origin: "git@gitlab.com:dig/api.git", DeclaredIn: p.Path}}
+	want := []Repo{{Name: "api", Path: "/c/api", Key: "api", Origin: "git@gitlab.com:dig/api.git", DeclaredIn: p.Path, FromTable: true}}
 	if !reflect.DeepEqual(r.Repos, want) {
 		t.Fatalf("repos %+v, want %+v", r.Repos, want)
 	}

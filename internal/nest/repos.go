@@ -135,7 +135,7 @@ func (k *keyResolver) resolve(ref config.RepoRef) (Repo, bool, error) {
 			}
 			return Repo{}, false, nil
 		}
-		repo.Path, repo.DeclaredIn = filepath.Clean(e.Path), declaredIn
+		repo.Path, repo.DeclaredIn, repo.FromTable = filepath.Clean(e.Path), declaredIn, true
 	}
 	return repo, true, nil
 }
