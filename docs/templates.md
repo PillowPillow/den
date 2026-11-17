@@ -17,6 +17,7 @@ The words nest, instance and kit are defined in the [README](../README.md#words-
 - [`den build`](#den-build)
 - [After a rebuild](#after-a-rebuild)
 - [The image must keep the VM alive](#the-image-must-keep-the-vm-alive)
+- [The image must provide `jq`](#the-image-must-provide-jq)
 
 ## Choosing a template for a nest
 
@@ -208,3 +209,15 @@ image into Docker first):
 docker pull <image>
 docker image inspect --format '{{json .Config.Entrypoint}}' <image>
 ```
+
+## The image must provide `jq`
+
+At every VM start, den's `den-claude` kit runs `jq` in the VM. It merges two keys into Claude's own
+files, so Claude opens at its prompt with no first-run screen:
+
+- `hasCompletedOnboarding: true` in `~/.claude.json` removes the theme wizard;
+- `skipDangerousModePermissionPrompt: true` in `~/.claude/settings.json` removes the bypass-mode warning.
+
+`docker.io/docker/sandbox-templates:claude-code-docker` ships `jq`. In an image without it, the
+startup step fails with `den-claude: the image has no jq`; install `jq` in your template. What sbx
+does with the VM after that failure is unverified.

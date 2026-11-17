@@ -16,3 +16,30 @@ permissions:
     allow:
       # With its port: a bare host opens every port of that host to the VM.
       - api.anthropic.com:443
+environment:
+  variables:
+    # Claude Code's own switch, undocumented: every folder counts as trusted, so no trust dialog and a
+    # project's .claude/settings*.json (hooks, permissions) loads without asking. The VM is the
+    # boundary. A trust entry in ~/.claude.json would not do: Claude stops its walk up at the git root.
+    CLAUDE_CODE_SANDBOXED: "1"
+setup:
+  # The theme wizard reads hasCompletedOnboarding in ~/.claude.json, which the image ships with its own
+  # keys (autoUpdates, installMethod); the bypass-mode warning reads only settings files, never an
+  # environment variable. Merge each key into the file, never overwrite it. Runs after the profile kits'
+  # files/home/ copy, at every start. No jq is a loud failure, not a silent skip.
+  startup:
+    - command:
+        - sh
+        - -c
+        - |
+          set -eu
+          umask 077
+          command -v jq >/dev/null 2>&1 || { echo "den-claude: the image has no jq; den needs it to pre-accept Claude's first-run screens: add jq to the template" >&2; exit 1; }
+          h="${HOME:-/home/agent}"
+          merge() {
+            mkdir -p "$(dirname "$1")"
+            { if [ -s "$1" ]; then cat "$1"; else echo '{}'; fi; } | jq "$2" > "$1.den-tmp"
+            mv "$1.den-tmp" "$1"
+          }
+          merge "$h/.claude.json" '.hasCompletedOnboarding = true'
+          merge "$h/.claude/settings.json" '.skipDangerousModePermissionPrompt = true'

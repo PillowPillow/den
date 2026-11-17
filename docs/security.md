@@ -25,6 +25,10 @@ file it decides to, without asking. Anything that can steer Claude can steer tho
 prompt, a file in a repo, a web page, a package it installs. Assume that whatever is in the VM can be
 read, changed or sent to a host the VM may reach.
 
+den also sets `CLAUDE_CODE_SANDBOXED=1`, an undocumented Claude Code switch: every folder counts as
+trusted, so Claude never shows its trust dialog and loads a repo's `.claude/settings.json` and
+`.claude/settings.local.json` without asking: their hooks, permissions and extra directories included.
+
 The VM sees only what sbx gives it: the folders den mounts, the network its policy allows, your SSH
 agent, the environment variables of the nest (`env:`), and the sbx integrations that are on.
 `sbx settings ls` lists the integrations; for example `browser.enabled` (on by default) lets a

@@ -16,6 +16,9 @@ Claude Code only.
 Read this before you install. Details: [docs/security.md](docs/security.md).
 
 - Claude runs with `--dangerously-skip-permissions`: it runs commands without asking.
+- Claude trusts every folder of the VM (`CLAUDE_CODE_SANDBOXED=1`): it loads a repo's
+  `.claude/settings.json` and `.claude/settings.local.json` (hooks, permissions, directories) without
+  the trust dialog.
 - Your repos are mounted **read-write**, `.git` included. A VM can change hooks, scripts and config
   that your Mac runs later.
 - The VM reaches only the hosts its network policy allows: the **global sbx policy**, shared by every
@@ -209,6 +212,7 @@ Every option: [docs/commands.md](docs/commands.md).
 | Claude in the VM says `Not logged in · Please run /login` | no token stored: see [Log Claude in](#log-claude-in) |
 | `nest "<nest>" has no template` | add `default_template: claude-code-docker` to `~/.den/den.yaml` |
 | a host is unreachable from the VM | `sbx policy check network <host>:<port> --sandbox <instance>`, then add the host to the nest's `network.allow` ([docs/den-yaml.md](docs/den-yaml.md#network)) |
+| `den-claude: the image has no jq` | the template's image lacks `jq`: see [docs/templates.md](docs/templates.md#the-image-must-provide-jq) |
 | every `den exec` or build step dies with status 137 | the image's entrypoint (its first process) exits: see [docs/templates.md](docs/templates.md#the-image-must-keep-the-vm-alive) |
 | `a sandbox named "<name>" exists but den V2 did not create it` | an sbx VM with that name exists (a v1 VM, say): save its work, then `sbx rm <name>` |
 | `Permission denied (publickey)` in the VM | your key is not loaded in the SSH agent: see [docs/ssh.md](docs/ssh.md#troubleshooting) |

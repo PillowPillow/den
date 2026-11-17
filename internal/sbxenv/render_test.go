@@ -122,21 +122,68 @@ func TestDenClaudeKitAllowsOnlyHTTPSToAnthropic(t *testing.T) {
 	}
 }
 
-func TestDenClaudeKitHasNoSettingsFlag(t *testing.T) {
-	var m struct {
-		Sandbox struct {
-			Entrypoint []string `yaml:"entrypoint"`
-		} `yaml:"sandbox"`
-		Setup any `yaml:"setup"`
-	}
+type denClaudeSpecShape struct {
+	Sandbox struct {
+		Entrypoint []string `yaml:"entrypoint"`
+	} `yaml:"sandbox"`
+	Environment struct {
+		Variables map[string]string `yaml:"variables"`
+	} `yaml:"environment"`
+	Setup struct {
+		Install []any `yaml:"install"`
+		Files   []any `yaml:"files"`
+		Startup []struct {
+			Command []string `yaml:"command"`
+		} `yaml:"startup"`
+	} `yaml:"setup"`
+}
+
+func decodeDenClaude(t *testing.T) denClaudeSpecShape {
+	t.Helper()
+	var m denClaudeSpecShape
 	if err := yaml.Unmarshal(kit(t, kitImage), &m); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"claude", "--dangerously-skip-permissions"}; !reflect.DeepEqual(m.Sandbox.Entrypoint, want) {
-		t.Errorf("entrypoint %v, want %v", m.Sandbox.Entrypoint, want)
+	return m
+}
+
+func TestDenClaudeKitHasNoSettingsFlag(t *testing.T) {
+	if got, want := decodeDenClaude(t).Sandbox.Entrypoint, []string{"claude", "--dangerously-skip-permissions"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("entrypoint %q, want %q", got, want)
 	}
-	if m.Setup != nil {
-		t.Errorf("den-claude declares setup %v, want none", m.Setup)
+}
+
+func TestDenClaudeKitMarksClaudeSandboxedSoNoFolderAsksForTrust(t *testing.T) {
+	if got := decodeDenClaude(t).Environment.Variables; !reflect.DeepEqual(got, map[string]string{"CLAUDE_CODE_SANDBOXED": "1"}) {
+		t.Errorf("environment variables %v, want only CLAUDE_CODE_SANDBOXED=1", got)
+	}
+}
+
+func TestDenClaudeKitStartupMergesOnboardingAndBypassConsent(t *testing.T) {
+	m := decodeDenClaude(t)
+	if len(m.Setup.Install) != 0 || len(m.Setup.Files) != 0 {
+		t.Errorf("den-claude declares install %v or files %v, want only a startup step", m.Setup.Install, m.Setup.Files)
+	}
+	if len(m.Setup.Startup) != 1 {
+		t.Fatalf("startup has %d steps, want 1", len(m.Setup.Startup))
+	}
+	cmd := m.Setup.Startup[0].Command
+	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-c" {
+		t.Fatalf("startup command %q, want sh -c <script>", cmd)
+	}
+	script := cmd[2]
+	for _, frag := range []string{
+		"command -v jq",
+		"umask 077",
+		`merge "$h/.claude.json" '.hasCompletedOnboarding = true'`,
+		`merge "$h/.claude/settings.json" '.skipDangerousModePermissionPrompt = true'`,
+	} {
+		if !strings.Contains(script, frag) {
+			t.Errorf("startup script lacks %q:\n%s", frag, script)
+		}
+	}
+	if strings.Contains(script, "projects") {
+		t.Errorf("startup script writes a trust entry; CLAUDE_CODE_SANDBOXED owns trust:\n%s", script)
 	}
 }
 

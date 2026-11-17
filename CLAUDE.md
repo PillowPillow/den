@@ -53,7 +53,7 @@ The leading dot on `.templates` and `.build` is deliberate: no sandbox name can 
 **Everything runs through `sbx env`.** `internal/sbxenv` renders `sbxenv.yaml` (pure, deterministic)
 plus the two kits den generates: `den-claude` (embedded, `kind: sandbox`, image pinned to the
 image from the template record (`<repository>@<digest>`) or from the image reference, never from code (the image's ENTRYPOINT must keep the VM alive: sbx runs it as PID 1, and `docker.io/sbx/claude`'s `claude` exits and stops the VM, S6e), no `credentials` block so the subscription OAuth token keeps
-working) and a per-instance network mixin carrying the egress allowlist; each instance (`<gen dir>/den-claude/`) and each build (`gen/.build/<name>/den-claude/`) has its own den-claude kit, so a rebuild of one template never rewrites another instance's. `internal/instance`
+working, `CLAUDE_CODE_SANDBOXED=1` so no folder asks for trust, and one `setup.startup` `jq` step that merges `hasCompletedOnboarding` into `~/.claude.json` and `skipDangerousModePermissionPrompt` into `~/.claude/settings.json`, so the image must ship `jq`) and a per-instance network mixin carrying the egress allowlist; each instance (`<gen dir>/den-claude/`) and each build (`gen/.build/<name>/den-claude/`) has its own den-claude kit, so a rebuild of one template never rewrites another instance's. `internal/instance`
 (`Prepare` then `Create`/`Attach`/`Exec`/`Remove`) is the orchestration: `Prepare` makes every
 refusal decidable from config, flags, registry and `sbx ls` *before the first side effect*;
 `Create` writes worktrees, generated files and the record, then calls
