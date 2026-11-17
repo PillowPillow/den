@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/config"
+	"github.com/PillowPillow/den/v2/internal/sbx"
 )
 
 // Resolved is a Choice `den up` can run: for a template, the record of its build and the definition

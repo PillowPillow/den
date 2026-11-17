@@ -1,6 +1,6 @@
 # goreleaser is the release twin of `task build`: both exist to keep one promise,
 # a shipped binary names the code it runs. The ldflags below MUST target the same
-# symbol as the Taskfile (github.com/PillowPillow/den/internal/cli.Version) and
+# symbol as the Taskfile (github.com/PillowPillow/den/v2/internal/cli.Version) and
 # use {{ .Tag }} — not {{ .Version }} — because `git describe` (the Taskfile
 # path) answers `v1.0.0` with the leading v, and two install paths answering
 # `v1.0.0` vs `1.0.0` for the same commit would look like two different builds
@@ -42,7 +42,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X github.com/PillowPillow/den/internal/cli.Version={{ .Tag }}
+      - -s -w -X github.com/PillowPillow/den/v2/internal/cli.Version={{ .Tag }}
 
 archives:
   - formats: [tar.gz]

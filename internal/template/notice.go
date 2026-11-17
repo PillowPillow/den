@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/PillowPillow/den/internal/worktree"
+	"github.com/PillowPillow/den/v2/internal/worktree"
 )
 
 func short(commit string) string {

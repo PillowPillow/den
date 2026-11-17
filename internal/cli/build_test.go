@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/hub"
-	"github.com/PillowPillow/den/internal/sbx"
-	"github.com/PillowPillow/den/internal/template"
+	"github.com/PillowPillow/den/v2/internal/hub"
+	"github.com/PillowPillow/den/v2/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/template"
 )
 
 const testDigest = "sha256:4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a"

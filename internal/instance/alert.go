@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PillowPillow/den/internal/sbx"
-	"github.com/PillowPillow/den/internal/sshagent"
+	"github.com/PillowPillow/den/v2/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/sshagent"
 )
 
 // alertTimeout bounds every read behind the alerts: they inform, so a slow sbx daemon or SSH

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/sbx"
 )
 
 // cmd/den/main.go cannot be tested through os.Exit, so the DECISION it applies

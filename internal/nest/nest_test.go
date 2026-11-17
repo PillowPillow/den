@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/prompt"
-	"github.com/PillowPillow/den/internal/template"
+	"github.com/PillowPillow/den/v2/internal/config"
+	"github.com/PillowPillow/den/v2/internal/prompt"
+	"github.com/PillowPillow/den/v2/internal/template"
 )
 
 func write(t *testing.T, dir, name, body string) string {

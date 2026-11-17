@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/PillowPillow/den/internal/prompt"
+	"github.com/PillowPillow/den/v2/internal/prompt"
 )
 
 type Selection struct {

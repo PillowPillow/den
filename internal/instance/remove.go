@@ -10,9 +10,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/PillowPillow/den/internal/registry"
-	"github.com/PillowPillow/den/internal/sbx"
-	"github.com/PillowPillow/den/internal/worktree"
+	"github.com/PillowPillow/den/v2/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/worktree"
 )
 
 // Remove deletes an instance den created: refusals first, then the VM, then the

@@ -1,4 +1,4 @@
-module github.com/PillowPillow/den
+module github.com/PillowPillow/den/v2
 
 go 1.26
 

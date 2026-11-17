@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/hub"
-	"github.com/PillowPillow/den/internal/prompt"
-	"github.com/PillowPillow/den/internal/registry"
-	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/hub"
+	"github.com/PillowPillow/den/v2/internal/prompt"
+	"github.com/PillowPillow/den/v2/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/sbx"
 )
 
 type upFixture struct {

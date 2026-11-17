@@ -9,12 +9,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/PillowPillow/den/internal/hub"
-	"github.com/PillowPillow/den/internal/prompt"
-	"github.com/PillowPillow/den/internal/prompt/huhui"
-	"github.com/PillowPillow/den/internal/sbx"
-	"github.com/PillowPillow/den/internal/sshagent"
-	"github.com/PillowPillow/den/internal/worktree"
+	"github.com/PillowPillow/den/v2/internal/hub"
+	"github.com/PillowPillow/den/v2/internal/prompt"
+	"github.com/PillowPillow/den/v2/internal/prompt/huhui"
+	"github.com/PillowPillow/den/v2/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/sshagent"
+	"github.com/PillowPillow/den/v2/internal/worktree"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )

@@ -29,7 +29,7 @@ tasks:
       VERSION:
         sh: git describe --tags --always --dirty 2>/dev/null || echo dev
     cmds:
-      - go build -ldflags "-X github.com/PillowPillow/den/internal/cli.Version={{.VERSION}}" -o den ./cmd/den
+      - go build -ldflags "-X github.com/PillowPillow/den/v2/internal/cli.Version={{.VERSION}}" -o den ./cmd/den
 
   test:
     desc: Run the suite with the build cache defeated

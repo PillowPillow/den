@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/v2/internal/config"
 )
 
 // NameSeparator separates the nest from the worktree in a sandbox name.

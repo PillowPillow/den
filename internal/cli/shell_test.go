@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/registry"
 )
 
 func (f *upFixture) shellRecord(t *testing.T, instance, repo, start string) {

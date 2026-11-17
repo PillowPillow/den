@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/PillowPillow/den/internal/prompt"
+	"github.com/PillowPillow/den/v2/internal/prompt"
 	"github.com/charmbracelet/huh"
 	"golang.org/x/term"
 )

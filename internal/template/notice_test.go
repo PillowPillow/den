@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/v2/internal/config"
 )
 
 func lsRemote(out string, err error) (fakeGit, *int) {

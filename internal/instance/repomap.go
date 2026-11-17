@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/PillowPillow/den/internal/registry"
-	"github.com/PillowPillow/den/internal/sbxenv"
+	"github.com/PillowPillow/den/v2/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/sbxenv"
 )
 
 // repoMapOf derives the instance's repo map from the plan and its record, never from a scan: it is

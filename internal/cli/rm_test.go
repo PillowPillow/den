@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/registry"
 )
 
 // mountedAm records am as a project instance on one repo den mounted in place, so rm never runs git.

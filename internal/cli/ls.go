@@ -8,9 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/registry"
-	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/config"
+	"github.com/PillowPillow/den/v2/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/sbx"
 )
 
 func newLsCmd(deps Deps, denHome *string) *cobra.Command {

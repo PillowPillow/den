@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`den` is a Go CLI that drives `sbx` microVM sandboxes (V2, branch `v2`): it resolves a **nest**
+`den` is a Go CLI that drives `sbx` microVM sandboxes (V2, module `github.com/PillowPillow/den/v2`): it resolves a **nest**
 from a `den.yaml`, generates the `sbxenv.yaml` files `sbx env create` reads, runs Claude Code in the
 VM through a `den-claude` agent kit, and records what it created so `den rm` can undo exactly that.
 Seven commands: `up`, `exec`, `shell`, `ls`, `rm`, `build`, `version`. `~/.den/` is the single

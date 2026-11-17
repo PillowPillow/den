@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/registry"
 )
 
 func TestLookupStates(t *testing.T) {

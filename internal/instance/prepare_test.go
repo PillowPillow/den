@@ -14,14 +14,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/nest"
-	"github.com/PillowPillow/den/internal/prompt"
-	"github.com/PillowPillow/den/internal/registry"
-	"github.com/PillowPillow/den/internal/sbx"
-	"github.com/PillowPillow/den/internal/sbxenv"
-	"github.com/PillowPillow/den/internal/template"
-	"github.com/PillowPillow/den/internal/worktree"
+	"github.com/PillowPillow/den/v2/internal/config"
+	"github.com/PillowPillow/den/v2/internal/nest"
+	"github.com/PillowPillow/den/v2/internal/prompt"
+	"github.com/PillowPillow/den/v2/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/sbxenv"
+	"github.com/PillowPillow/den/v2/internal/template"
+	"github.com/PillowPillow/den/v2/internal/worktree"
 )
 
 func TestMain(m *testing.M) {

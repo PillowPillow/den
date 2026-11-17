@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/sbx"
 )
 
 func TestVersionPrintsTheStampedVersion(t *testing.T) {

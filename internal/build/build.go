@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/instance"
-	"github.com/PillowPillow/den/internal/prompt"
-	"github.com/PillowPillow/den/internal/sbx"
-	"github.com/PillowPillow/den/internal/sbxenv"
-	"github.com/PillowPillow/den/internal/template"
+	"github.com/PillowPillow/den/v2/internal/config"
+	"github.com/PillowPillow/den/v2/internal/instance"
+	"github.com/PillowPillow/den/v2/internal/prompt"
+	"github.com/PillowPillow/den/v2/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/sbxenv"
+	"github.com/PillowPillow/den/v2/internal/template"
 )
 
 // Deps adds to instance.Deps the one access only a build needs: whether a human can answer.

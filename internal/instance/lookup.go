@@ -5,8 +5,8 @@ import (
 	"errors"
 	"io/fs"
 
-	"github.com/PillowPillow/den/internal/registry"
-	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/sbx"
 )
 
 // State is what den V2 knows of an instance: its record, and whether sbx lists its VM.

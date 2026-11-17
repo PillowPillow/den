@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/registry"
 )
 
 func (f *upFixture) ls() error { return f.up2("ls") }

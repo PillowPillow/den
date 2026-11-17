@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/v2/internal/config"
 	"gopkg.in/yaml.v3"
 )
 

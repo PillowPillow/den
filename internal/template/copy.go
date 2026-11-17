@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/worktree"
+	"github.com/PillowPillow/den/v2/internal/config"
+	"github.com/PillowPillow/den/v2/internal/worktree"
 )
 
 // The leading dot keeps both out of reach of any template name, as with gen/.build.
