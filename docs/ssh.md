@@ -47,9 +47,12 @@ the command (measured with sbx v0.53.0). den therefore cannot give a nest its ow
 ## Check
 
 ```bash
-ssh-add -l                       # on your Mac: lists the loaded keys
-sbx exec <instance> ssh-add -l   # in the VM: must list the same keys
+ssh-add -l
+sbx exec <instance> ssh-add -l
 ```
+
+- `ssh-add -l`: On your Mac: lists the loaded keys.
+- `sbx exec <instance> ssh-add -l`: In the VM: must list the same keys.
 
 `The agent has no identities.` means the agent is empty. A key you add appears in a running VM at
 once; you do not need to remove and create the instance again.
@@ -59,9 +62,12 @@ once; you do not need to remove and create the instance again.
 Load only the keys your VMs may use, for example the key of the git server your nests push to:
 
 ```bash
-ssh-add ~/.ssh/<key>             # until you log out or remove it
-ssh-add -t 8h ~/.ssh/<key>       # removed from the agent after 8 hours
+ssh-add ~/.ssh/<key>
+ssh-add -t 8h ~/.ssh/<key>
 ```
+
+- `ssh-add ~/.ssh/<key>`: Until you log out or remove it.
+- `ssh-add -t 8h ~/.ssh/<key>`: Removed from the agent after 8 hours.
 
 To load it in every session, put the `ssh-add` line in `~/.zshrc`. Adding a key that is already
 loaded is harmless.
@@ -74,9 +80,12 @@ with `ssh-add ~/.ssh/<key>`.
 **Remove keys:**
 
 ```bash
-ssh-add -d ~/.ssh/<key>          # one key
-ssh-add -D                       # every key
+ssh-add -d ~/.ssh/<key>
+ssh-add -D
 ```
+
+- `ssh-add -d ~/.ssh/<key>`: One key.
+- `ssh-add -D`: Every key.
 
 ### Option: load every key
 
@@ -127,8 +136,10 @@ nest**:
 Check what a VM can reach:
 
 ```bash
-sbx policy check network git.example.com:22 --sandbox <instance>   # Allowed or Denied
+sbx policy check network git.example.com:22 --sandbox <instance>
 ```
+
+- `sbx policy check network git.example.com:22 --sandbox <instance>`: Allowed or Denied.
 
 To block a host for one instance: `sbx policy deny network <host> --sandbox <instance>`.
 

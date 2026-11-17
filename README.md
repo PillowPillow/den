@@ -1,597 +1,240 @@
 # den
 
-den drives [`sbx`](https://docs.docker.com/ai/sandboxes/) microVMs: one command creates (or
-re-attaches to) a sandbox that holds your repos, runs Claude Code with your profile kits, and keeps the
-egress allowlist, kits and ports you declared once in a `den.yaml`.
+den runs Claude Code on your repos inside a Docker Sandboxes ([`sbx`](https://docs.docker.com/ai/sandboxes/))
+microVM. You declare a set of repos once in a `den.yaml`; `den up <name>` creates the VM, mounts the
+repos at their usual paths, and attaches Claude. `den rm` removes exactly what den created.
 
-den does not replace sbx. It writes the `sbxenv.yaml` files sbx reads, calls `sbx env create` and
-`sbx run`, and remembers what it created so `den rm` can undo exactly that.
+**Status: pre-release V2 (the second version of den, a rewrite of v1), macOS only, tested with sbx
+v0.53.0.** den drives the experimental `sbx env` commands, which may change. Linux is not supported
+yet.
 
-**This is den V2.** It needs `sbx` v0.53.0 or later and a signed-in sbx (`sbx login`). V2 and the
-v1 CLI can share `~/.den` until you cut over — see [Coexistence with v1](#coexistence-with-v1).
+den is not a sandbox of its own: sbx is the boundary, and den adds no isolation beyond it. den runs
+Claude Code only.
 
-## Installation
+## Security summary
 
-Homebrew (macOS):
+Read this before you install. Details: [docs/security.md](docs/security.md).
+
+- Claude runs with `--dangerously-skip-permissions`: it runs commands without asking.
+- Your repos are mounted **read-write**, `.git` included. A VM can change hooks, scripts and config
+  that your Mac runs later.
+- The VM reaches only the hosts its network policy allows: the **global sbx policy**, shared by every
+  VM, plus the hosts of the instance (from your `den.yaml`, the template and the kits). den adds
+  hosts; it never removes one.
+- sbx's `balanced` policy allows common development hosts, GitHub and GitLab over HTTPS and SSH on
+  port 443 included.
+- The VM has no SSH key, but it can ask your **SSH agent** to sign with every key loaded in it. All
+  VMs share the same agent. See [docs/ssh.md](docs/ssh.md).
+- The Claude token stays on your Mac: sbx injects it into requests to `api.anthropic.com` only.
+- den tells sbx to skip the commands an `sbxenv.yaml` can run on your Mac at create time
+  (`lifecycle:` commands, command-backed MCP servers), and mounts the config files it reads read-only
+  inside the VM. A layer you add can still run a command on your Mac (command-based secrets).
+- A project `den.yaml` from someone else decides what a VM mounts and reaches: read it before you
+  run `den up` on it. Run `den` from outside your repos, where a VM cannot have written a `den.yaml`.
+
+## Prerequisites
+
+| Need | Install | Check |
+|---|---|---|
+| macOS 14 (Sonoma) or later, Apple silicon (sbx requires both) | | `sw_vers -productVersion` and `uname -m` (`arm64`) |
+| sbx v0.53.0 or later | `brew install docker/tap/sbx` | `sbx version` |
+| sbx signed in (Docker account) | `sbx login` | `sbx ls` prints a table, not an error |
+| sbx global network policy | `sbx policy init balanced` (once) | `sbx policy ls` lists `local-policy` |
+| Claude Code on your Mac, for the token | [Claude Code setup](https://code.claude.com/docs/en/setup) | `claude --version` |
+| Go 1.26 or later | `brew install go` | `go version` |
+| go-task | `brew install go-task/tap/go-task` | `task --version` |
+| git | `xcode-select --install` | `git --version` |
+
+`sbx policy init` is a one-time setup that picks a preset, a starting rule set for every VM. If
+`sbx policy ls` already lists `local-policy`, check the preset: `sbx policy check network
+example.com:443` must answer `Denied`. `Allowed` means `allow-all`, and then no den setting restricts
+the network ([docs/security.md](docs/security.md#what-the-vm-can-reach)).
+
+## Log Claude in
+
+Claude in the VM needs credentials. Store them once in sbx; every VM then uses them.
+
+**Recommended, with a Claude subscription (Pro, Max, Team, Enterprise):** create a long-lived token
+and store it as an sbx secret for `api.anthropic.com`.
+
+1. Run `claude setup-token` on your Mac and copy the token it prints.
+2. Store it without leaving it in your shell history. The first line waits: paste the token (it is
+   not shown), then press Enter.
+
+   ```bash
+   read -rs TOKEN
+   printf '%s' "$TOKEN" | sbx secret set-custom --host api.anthropic.com --env CLAUDE_CODE_OAUTH_TOKEN --value-stdin
+   unset TOKEN
+   ```
+
+3. Check: `sbx secret ls` lists a custom secret for `api.anthropic.com`.
+
+sbx gives the VM a placeholder in `CLAUDE_CODE_OAUTH_TOKEN` and replaces it with the token only in
+requests to `api.anthropic.com`. The token never enters the VM.
+
+**Last resort: `/login` in the VM.** Without a stored token, Claude asks you to log in when it
+starts. That login lives in the VM only: you log in again every time the instance is created again.
+Unverified: whether the `balanced` policy allows every host the `/login` flow uses.
+
+## Install
+
+Build V2 from the `v2` branch. Homebrew, `install.sh` and `go install …@latest` install **v1**, a
+different program that also answers `den`.
 
 ```bash
-brew install --cask PillowPillow/tap/den
-```
-
-Or with a Go toolchain, from anywhere:
-
-```bash
-go install github.com/PillowPillow/den/cmd/den@latest
-```
-
-No Homebrew (Linux distros, WSL, macOS without brew):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | sh
-```
-
-The script detects OS and architecture, verifies the release checksum (and
-refuses to install without verification), and installs to `~/.local/bin`.
-Pin a version or change the destination by placing the assignment on `sh`
-(each pipeline command gets its own environment, so a prefix on `curl` never
-reaches the script):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | DEN_VERSION=v1.0.1 sh
-curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | DEN_INSTALL_DIR=~/bin sh
-```
-
-Prebuilt archives also sit on the
-[releases page](https://github.com/PillowPillow/den/releases) if you'd rather
-not pipe a script into your shell.
-
-From a checkout — the build runs through [go-task](https://taskfile.dev), so it comes first:
-
-```bash
-brew install go-task/tap/go-task   # or, with a Go toolchain already there:
-go install github.com/go-task/task/v3/cmd/task@latest
-
+git clone https://github.com/PillowPillow/den.git
+cd den
+git checkout v2
 task build
+mkdir -p ~/.local/bin
+ln -sf "$PWD/den" ~/.local/bin/den
 ```
 
-Every path stamps the version into the binary, so `den version` names the code it runs — the
-release tag (`v1.0.0`) via Homebrew, `go install …/cmd/den@v1.0.0` and releases (including
-`install.sh`), and where you stand relative to it (`v1.0.0-3-gabc1234-dirty`) via `task build`.
-Building from a checkout without the runner — a plain `go build`, or a `go install ./cmd/den` —
-is what names nothing: it answers `dev`, the documented tell that the build skipped `task`.
-
-## Updating
-
-| Installed with | Update with |
-|---|---|
-| Homebrew | `brew upgrade --cask den` |
-| `go install` | `go install github.com/PillowPillow/den/cmd/den@latest` |
-| `install.sh`, or a release archive | re-run the same `curl ... \| sh`, which updates in place |
-| `task build` from a checkout | `git pull && task build` |
-
-V2 has no `den update`. Until V2 is released, build it from the `v2` branch with `task build`; the
-published releases are still v1.
-
-## Quick start
-
-The repository ships a den home you can copy and edit: [`examples/den-home/den.yaml`](examples/den-home/den.yaml).
+`task build` writes the binary `./den`; the link puts it on your `PATH` as `den`. Make sure
+`~/.local/bin` is on your `PATH`: if `command -v den` prints nothing, add
+`export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` and open a new terminal. Then check:
 
 ```bash
-mkdir -p ~/.den
-cp examples/den-home/den.yaml ~/.den/den.yaml      # then edit the repo paths
-mkdir -p ~/.den/kits/perso                         # your profile kit, see "Profiles"
-printf 'schemaVersion: "2"\nkind: mixin\nname: perso\nversion: 1.0.0\n' > ~/.den/kits/perso/spec.yaml
-
-den build example     # once: read the template `example`, provision it and save it as the sbx template `example:v2`
-den up demo           # create the instance `demo` if needed, then run Claude in it
+command -v den
+den --help
 ```
 
-Every command takes `--den-home <dir>` (or `$DEN_HOME`) to use another directory than `~/.den`.
+`command -v den` must print `~/.local/bin/den` (expanded). `den --help` must list `build`, `exec`,
+`ls`, `rm`, `shell`, `up` and `version` (plus `completion` and `help`). If it lists `doctor` or
+`init`, your `PATH` finds v1 first. `den version` prints a version such as `v1.13.1-94-g3468e6f`:
+V2 is built on top of the last v1 tag, so trust `den --help`, not the number. To update, run
+`git pull` and `task build` in the clone.
 
-Using `ssh` or `git` over SSH inside the VM? Load your key into your SSH agent first: see [SSH](#ssh).
+## Words den uses
 
-## The `den.yaml` reference
-
-There are two kinds of file, with the same name and the same strict schema:
-
-- the **global file**, `<denHome>/den.yaml`: your machine. It is the only one that may carry
-  `worktrees`, `repos`, `env`, `network` and `profiles`;
-- a **project file**, `den.yaml` in a project folder: templates and nests that travel with the project.
-  den finds it by walking up from the current directory. A project file carrying a global-only key
-  is refused.
-
-Decoding is strict: an unknown key, a wrong `schema`, or a missing required field is a load error
-that names the file and every problem, so a typo never silently empties an allowlist. Relative
-paths in a file are relative to that file's folder; `~` is expanded.
-
-```yaml
-schema: 1                      # required, must be 1
-
-# --- global file only -------------------------------------------------------
-worktrees:
-  layout: central              # central (default) | per-repo
-  root: ~/.den/wt              # default <denHome>/wt; used by `central`
-repos:                         # keys a nest can refer to
-  api: ~/src/api
-  web: ~/src/web
-env:                           # reaches every instance
-  TZ: Europe/Paris
-network:
-  allow:                       # egress for every instance
-    - api.anthropic.com
-profiles:                      # a profile is a named list of kits, see "Profiles"
-  perso: [~/.den/kits/perso]
-
-# --- both kinds of file -----------------------------------------------------
-default_template: claude-code-docker   # optional; the template of a nest that names none, see "Templates"
-profile: perso                 # default profile of every nest of this file
-templates:                     # where a template's definition lives, see "Templates"
-  node:
-    repo: git@example.com:team/den-templates.git   # exactly one of repo and dir
-    # dir: ~/src/den-templates                      # a local folder holding a den-template.yaml
-    name: node                 # optional; the name inside den-template.yaml, default the key
-    ref: main                  # optional, repo only; branch or tag, default the remote's HEAD
-
-nests:
-  api:
-    template: node             # a declared template or an official image; default `default_template`
-    profile: perso             # optional; wins over the file's `profile`
-    repos:                     # required, at least one
-      - key: api               # a key of the global `repos`
-      - path: ~/src/api-docs   # or a host path; exactly one of key and path
-        optional: true         # dropped with --without, kept alone with --only, asked with -i
-    kits: []                   # added after the template's kits
-    network:
-      allow: []                # added after the global and the template's
-    env: {}                    # overrides the global env, key by key
-    ports:
-      - {name: web, sandbox: 3000, host: 0}   # host 0 = an ephemeral host port
-    start: api                 # where Claude starts, see below
-    worktrees: {layout: central, root: ~/wt}  # overrides the global setting for this nest
-    layers: []                 # extra sbxenv.yaml files, see "Layers"
-```
-
-### Templates
-
-A **template** is what a nest starts from: an sbx template den built from a definition, or an
-official image. `template:` on a nest names one; without it, `default_template:` of the nest's own file
-does, then the global file's. den reads the value in this order:
-
-1. a template declared under `templates:` in a `den.yaml`: the project file first (it masks a global
-   entry of the same key), then the global file;
-2. otherwise an **official image**: a short name with no `/` (`claude-code-docker`) is completed to
-   `docker.io/docker/sandbox-templates:<name>`; a value with a `/` is a full address used as written
-   (`ubuntu:22.04` is refused: write the full address).
-
-den's code names no default template and no default image. When no value exists anywhere (no
-`template:` on the nest, no `default_template:`), `den up` refuses, names the key to set and lists
-the official images it reads from Docker Hub.
-
-`templates.<key>` locates a **location**, a folder that carries a **definition** file:
-
-| Key | Meaning |
+| Word | Meaning |
 |---|---|
-| `repo` | a git URL; den clones it on `den build` |
-| `dir` | a local folder, used in place |
-| `name` | the template's name inside the definition; default the key |
-| `ref` | branch or tag of `repo`; default the remote's HEAD |
+| **den home** | the folder that holds den's config and state: `~/.den` (`--den-home` or `$DEN_HOME` to change it) |
+| **nest** | a named set of repos and settings, declared in a `den.yaml` |
+| **instance** | the sbx VM den creates from a nest, named `<nest>` (or `<nest>.<branch>` with `-w`) |
+| **template** | the image a VM starts from: an official Docker sandbox image, or one you build with `den build` |
+| **kit** | an sbx package of files, network rules and settings added to a VM |
+| **profile** | a list of kits that brings your own Claude configuration into a VM |
 
-Exactly one of `repo` and `dir`. A `repo` URL declared in a project file asks for confirmation the
-first time (`--yes` skips it); den remembers the answer in `<denHome>/state/v2/template-sources.yaml`.
-A URL declared in the global file needs none.
+## First run
 
-The **definition** is `den-template.yaml` at the root of the location (see
-[`examples/den-template/den-template.yaml`](examples/den-template/den-template.yaml)):
+1. Create `~/.den/den.yaml` from the shipped example:
 
-```yaml
-schema: 1                      # required, must be 1
-templates:
-  node:
-    from: claude-code-docker   # a sibling template of this file, an image, or empty
-    kits: [./kits/example-kit]
-    network:
-      allow: [github.com]      # egress of every nest on this template
-    build:
-      includes: [lib/common.sh]    # shell prepended to every step
-      steps: [steps/10-node.sh]    # one script per `sbx exec`, in order
-      network:
-        allow: [registry.npmjs.org]   # egress of the build VM only
-```
+   ```bash
+   mkdir -p ~/.den
+   cp examples/den-home/den.yaml ~/.den/den.yaml
+   ```
 
-- **Paths** are relative to the definition file and confined to the location: `..`, an absolute
-  path, `~` and a symlink that leaves the location are load errors. A kit entry whose first `/`
-  component is a registry host (it contains `.` or `:`, or is `localhost`) is a reference sbx
-  resolves itself; write Docker Hub kits as `docker.io/acme/kit:1`.
-- **`from`** is a sibling template's name, an image (same rules as a nest's value), or empty. Empty
-  means the global `default_template`, which must then be an image. The definition is decoded strictly.
-- A sibling a template starts `from:` is built with it: `den build <child>` first builds the sibling
-  when it is missing or stale, that is when a `dir` sibling's definition changed, or when a `repo`
-  sibling was built from another commit than the child's. `--pull` re-clones both; a child kept at
-  another commit than its sibling is refused with `den build <child> --pull`. A sibling's files
-  count in its child's definition hash. `--force` on the child never reaches the sibling: a sibling
-  built from another source is refused with `den build <sibling> --force`, which needs the sibling
-  declared under `templates:`.
+   It declares one nest, `demo`, on the official image `claude-code-docker`:
 
-`den build <template>` builds the sbx template `<name>:v2`. `den up` never clones and never
-builds: while the template is missing it refuses and names `den build <template>`. Once built,
-`den up` prints a notice on stderr (never from `exec` or `shell`, within 3 seconds, silent when
-the remote does not answer) when the repo has a newer commit (`den build <template> --pull`) or the
-`dir` definition changed since the build (`den build <template>`).
+   ```yaml
+   schema: 1
 
-The image the VM runs must keep the VM alive: sbx runs the image's own `ENTRYPOINT` as the VM's
-first process, and the kit's `entrypoint` only launches Claude when you attach. The
-`claude-code-docker` images use `tini --`. `docker.io/sbx/claude` uses `claude`, which exits within
-seconds and stops the VM, so every `den build` step and every `den exec` dies with status 137: do
-not use it. Check an image with
-`docker image inspect --format '{{json .Config.Entrypoint}}' <image>`.
+   default_template: claude-code-docker
 
-den records the digest of the root image when it builds, and the den-claude kit of every instance
-of the template is pinned to `<repository>@<digest>`. An instance that already exists keeps its old
-image; after a rebuild, `den up` on it warns that the config changed, and `den rm` then `den up`
-recreates it on the new one.
+   nests:
+     demo:
+       repos:
+         - path: ~/src/demo   # any git repository on your machine
+   ```
 
-A kit is a directory holding `spec.yaml` (a path starting with `./`, `../`, `/` or `~` in a
-`den.yaml`, checked before any side effect) or a reference sbx resolves itself, passed through verbatim.
+2. Replace `~/src/demo` with the path of a repository of yours.
+3. Run:
 
-The removed `bases` and `agents` keys and `nests.<n>.base` are load errors that name their
-replacement (`templates:` with a definition file, `nests.<n>.template`).
+   ```bash
+   den up demo
+   ```
 
-### Nests
+   The first run pulls the image, which can take a few minutes. den creates the instance `demo` and
+   attaches Claude, in your repo. The repo is at the **same absolute path** in the VM as on your Mac,
+   and Claude's edits land directly in your files.
+4. Quit Claude. The instance stays; `den up demo` attaches again.
+5. Look around and clean up:
 
-- **Name.** A nest name becomes the first part of the sandbox name, so it must be a legal sandbox
-  name component. Two files declaring the same nest name are refused; den remembers which file owns
-  a name in `<denHome>/state/v2/nests.yaml`, so a project nest keeps working from any directory
-  once den has seen it.
-- **Repos.** Each repo is mounted in the VM at the same path it has on the host. Two repos with the
-  same folder name are refused.
-- **Repo map.** At each create, den writes the instance's repo map into the VM: the mounted repos
-  (with their branch under `-w`), the nest's optional repos left out, and the other keys of the
-  global `repos:`. The agent loads it from `~/.claude/rules/den-instance.md` in every session;
-  scripts read the same map as JSON from `$DEN_REPOS` (`/home/agent/.den/repos.json`). The map
-  never changes for the life of the VM, like its mounts: to add a repo, run `den rm <instance>`
-  then `den up <nest> --repo <path>`. `DEN_REPOS` is den's: an `env:` that sets it is refused.
-- **Merge order.** Egress is global, then template, then nest. Kits are template, then nest, then the profile's. Env is global,
-  then nest (the nest wins).
-- **Start.** `start` is `<repo>[/<sub folder>]` (the repo's folder name), or `.` for the project
-  folder (project files only). Empty means the first repo. `--workdir <vm path>` overrides it for
-  one command.
-- **Workspace.** The VM's primary workspace is a per-instance *run dir*:
-  `<project>/.den/run/<instance>/` for a project nest (den adds `.den/.gitignore`), or
-  `<denHome>/run/<instance>/` for a global nest. It holds only the generated `sbxenv.yaml`. The run
-  dir is den's and disposable: `den rm` deletes it without checking it for changes, so keep
-  nothing there. With `start: .`, the workspace is the project folder instead, which is the only
-  way a VM reaches your project's `den.yaml` and scripts; den then mounts every file it reads from
-  that folder (the `den.yaml`, a local kit, a layer) read-only, so the VM reads them but cannot
-  rewrite them (see [Layers](#layers)).
-- **Ports.** Published through the sandbox at create time. den prints sbx's port table after each
-  create; run `sbx ports <instance>` to see it again.
-- **Worktrees.** See [Worktrees](#worktrees).
+   ```bash
+   den shell demo
+   den ls
+   den rm demo
+   ```
 
-## Profiles
+   `den shell demo` opens a bash shell in the VM. `den ls` lists the instances den created.
+   `den rm demo` removes the VM and what den created for it; your repo stays.
 
-A profile is a named list of kits, defined only in the global file and named by a top-level
-`profile:` (the default of every nest of that file) or by a nest's own `profile:` (which wins):
+## Next steps
 
-```yaml
-# ~/.den/den.yaml
-profiles:
-  perso: [~/.den/kits/perso]
-profile: perso
-```
-
-A profile kit is an ordinary local kit (`kind: mixin`) that carries your Claude configuration as
-files copied into the VM's home. Its `spec.yaml` is required, and the smallest one is:
-
-```yaml
-schemaVersion: "2"
-kind: mixin
-name: perso
-version: 1.0.0
-```
-
-```
-~/.den/kits/perso/
-  spec.yaml                      # the spec above
-  files/home/.claude/CLAUDE.md
-  files/home/.claude/settings.json
-  files/home/.claude/output-styles/
-  files/home/.claude/agents/
-  files/home/.zshrc
-```
-
-Profile kits come after the template's and the nest's kits. A profile the machine does not define is
-skipped with a warning, never refused. Files under `files/home` are copied verbatim into
-`/home/agent` when the VM is created, so recreate the instance after an edit. Skills travel
-through `sbx skills import` or `files/home/.claude/skills/`. Ship `settings.json` from one profile
-kit per VM: which kit wins on a collision is unverified. A `settings.json` that sets the
-permission mode (the Claude Code settings key `"permissions": {"defaultMode": "bypassPermissions"}`,
-from the Claude Code settings schema) makes a `claude` typed inside `den shell` behave like the
-attached one; den's own launch already passes `--dangerously-skip-permissions`.
+- **Work on a branch without touching your checkout:** `den up demo -w feature/x` runs on a git
+  worktree (a second checkout of the same repo, on another branch). See [docs/commands.md](docs/commands.md#worktrees).
+- **Open a host to a nest:** `network.allow` on the nest. See
+  [docs/den-yaml.md](docs/den-yaml.md#network).
+- **Reach a server in the VM from your Mac:** `ports:` on the nest. See
+  [docs/den-yaml.md](docs/den-yaml.md#ports).
+- **Bring your Claude configuration** (`CLAUDE.md`, settings, skills): a profile. See
+  [docs/den-yaml.md](docs/den-yaml.md#profiles).
+- **Mount several repos, some optional:** see [docs/den-yaml.md](docs/den-yaml.md#repos).
+- **Install your tools once for every VM:** build a template. See
+  [docs/templates.md](docs/templates.md#build-your-own-template).
+- **Share nests with a team:** a project `den.yaml`. See
+  [docs/den-yaml.md](docs/den-yaml.md#project-file).
+- **Use git over SSH in the VM:** see [docs/ssh.md](docs/ssh.md).
+- **Set sbx fields den does not model** (secrets, MCP servers, memory): layers, extra
+  `sbxenv.yaml` files that sbx merges after den's. See
+  [docs/security.md](docs/security.md#layers).
 
 ## Commands
 
-All commands accept `--den-home <dir>`. den passes sbx's global `--no-input` to `env create`,
-`env rm`, `rm`, `exec` and `ports`. `den build`'s `stop` and `template save` do not get it, nor do
-the interactive attaches (`sbx run` for `den up`, `sbx exec -it` for `den shell`).
-
-### `den up <nest> [flags]`
-
-Creates the instance if it does not exist, then attaches Claude to it (`sbx run`, starting in the
-`start` folder). Without a nest name it lists the nests it can see.
-
-| Flag | Effect |
+| Command | What it does |
 |---|---|
-| `-w, --worktree <branch>` | run on a git worktree of every repo, on that branch |
-| `--only a,b` / `--without a,b` | keep only / drop these optional repos |
-| `-i, --interactive` | pick the optional repos from a checklist (needs a terminal) |
-| `--repo <path>` | also mount this folder (repeatable, in the order typed); the instance keeps it until `den rm` |
-| `--workdir <vm path>` | start Claude in this folder instead of `start`, this time only (the instance keeps `start`) |
-| `--detach` | create or start the instance, leave its VM running, and do not attach |
+| `den up <nest> [-w <branch>]` | create the instance if needed, then attach Claude |
+| `den exec <nest> -- <cmd>` | create the instance if needed, run one command, return its exit code |
+| `den shell [<instance>]` | open `bash -l` in an instance |
+| `den ls` | list the instances den created and the state of their VM |
+| `den rm <instance> [--force]` | remove an instance: its VM, the worktrees den made, its files |
+| `den build <template>` | build a template |
+| `den version` | print den's version |
 
-The instance is named `<nest>`, or `<nest>.<branch>` with `-w`; slashes in the branch are
-flattened (`feature/123` becomes `demo.feature-123`) while git keeps the branch as typed. That
-name is the VM's name and the handle of every other command.
+Every option: [docs/commands.md](docs/commands.md).
 
-Every refusal den can decide from the config, the flags, its records and `sbx ls` comes before the
-first file, worktree or sbx call that changes state: unknown nest, missing repo,
-missing template (`den build`), no template named anywhere, a missing local kit or layer, a missing `build.includes` or
-`build.steps` file under a mounted folder, a file den reads through a symlink inside a mounted
-folder, `-i` without a terminal, an sbx older than v0.53.0.
+## Troubleshooting
 
-On an instance that already exists den attaches and changes nothing. If the nest's config changed
-since the instance was created, it warns and tells you to `den rm` then `den up`; a selection flag
-(`--only`, `--without`, `-i`) on a running instance is ignored with a warning for the same reason.
-If a sandbox of that name exists but den V2 has no record of it (a v1 VM, say), den refuses and
-names `sbx rm <name>`; it never adopts what it did not create.
-
-### `den exec <nest> [flags] -- <cmd> [args...]`
-
-Same creation as `den up`, then runs one command in the start folder and returns its exit code.
-The `--` is mandatory. It never asks (`-i` is refused) and writes its own messages to stderr, so
-stdout carries only the command's output.
-
-```bash
-den exec demo -- git status
-den exec demo -w feature/123 -- bash -lc 'echo ok'
-```
-
-### `den shell [<instance>] [--workdir <vm path>]`
-
-Opens `bash -l` in an instance. Without a name, den picks the instance whose repos contain the
-current directory, then the only running one, and otherwise lists the candidates.
-
-### `den ls`
-
-Lists the instances V2 recorded and the state of their VM (`missing` when the VM is gone):
-
-```
-INSTANCE  NEST  BRANCH   STATUS   PROJECT
-demo      demo           running  /path/to/project
-```
-
-An unreadable record is reported on stderr, never hidden.
-
-### `den rm <instance> [--force]`
-
-Removes an instance den created: its VM, the worktrees den made, the run dir and generated files,
-then the record, in that order. It acts only on an instance with a readable V2 record, and only on
-worktrees the record marks as den-created; a repo den found in place is never touched.
-
-There is no trash. `den rm` therefore refuses, before removing anything (the VM included), a
-worktree with modified, untracked or ignored files, and a detached HEAD that holds commits no
-branch, remote branch or tag contains. The refusal names them and `--force`, which discards them.
-It also refuses to remove a worktree another instance mounts (two nests sharing a repo and a `-w`
-branch share it; remove the other instance first), and, while a record under `state/v2/` is
-unreadable, any den-created worktree at all.
-
-`den rm` removes the VM through `sbx env rm` only when every file the create read still has the
-hash den recorded; otherwise, since a VM may have rewritten it, through `sbx rm --force`.
-
-### `den build <template> [--pull] [--yes] [--force]`
-
-Builds the template named by a `den.yaml` (or a `from:` sibling of one). den opens the location
-(a `repo` is cloned into `<denHome>/gen/.templates/.staging-<name>/` on the first build and on every
-`--pull`, then swapped in; a `dir` is used in place), reads the definition, then provisions a
-throwaway VM named `<name>-build` on `from`, reads the digest of the root image, runs each
-`build.steps` script through `bash -lc` (with `build.includes` prepended), stops the VM, saves it as
-the sbx template `<name>:v2`, writes the record and removes the VM. Scripts are read before anything
-is created, so a missing one refuses instantly; a failed build deletes the staging copy and moves
-nothing. A leftover `<name>-build` sandbox makes `den build` refuse rather than remove a VM it did
-not create. The VM's scratch workspace is `<denHome>/build/<name>/`.
-
-| Flag | Effect |
+| Symptom | Fix |
 |---|---|
-| `--pull` | clone the `repo` again instead of building the local copy |
-| `--yes` | trust a `repo` declared in a project `den.yaml` without asking |
-| `--force` | replace a template built from another source |
+| den answers with commands such as `doctor`, or messages that this README does not describe | your `PATH` finds den v1: see [Install](#install) |
+| `den up`, `den ls` or another command fails with an sbx error about signing in | sbx is not signed in: `sbx login` |
+| `sbx <version> is older than v0.53.0` | upgrade sbx: `brew upgrade docker/tap/sbx` |
+| Claude in the VM says `Not logged in · Please run /login` | no token stored: see [Log Claude in](#log-claude-in) |
+| `nest "<nest>" has no template` | add `default_template: claude-code-docker` to `~/.den/den.yaml` |
+| a host is unreachable from the VM | `sbx policy check network <host>:<port> --sandbox <instance>`, then add the host to the nest's `network.allow` ([docs/den-yaml.md](docs/den-yaml.md#network)) |
+| every `den exec` or build step dies with status 137 | the image's entrypoint (its first process) exits: see [docs/templates.md](docs/templates.md#the-image-must-keep-the-vm-alive) |
+| `a sandbox named "<name>" exists but den V2 did not create it` | an sbx VM with that name exists (a v1 VM, say): save its work, then `sbx rm <name>` |
+| `Permission denied (publickey)` in the VM | your key is not loaded in the SSH agent: see [docs/ssh.md](docs/ssh.md#troubleshooting) |
+| `den up` warns that a file changed since the instance was created | the instance keeps its old config: `den rm <instance>`, then `den up` again |
+| `repo … is not the root of a git repository, and -w makes a worktree of every repo` | drop `-w`, or point the repo at the root of its git repository ([docs/commands.md](docs/commands.md#worktrees)) |
 
-### `den version`
+## Uninstall
 
-Prints the version stamped at build time; `den --version` and `den -v` print the same line. A plain
-`go build` answers `den dev`; use `task build`.
+**Warning: deleting `~/.den` also deletes den v1's data, if you use v1.**
 
-## Worktrees
+1. Remove every instance: run `den ls`, then `den rm <instance>` for each one.
+2. Remove the images: `sbx template ls`, then `sbx template rm <repository>:<tag>` for each template
+   you built (tag `v2`) and each official image den pulled
+   (`docker.io/docker/sandbox-templates:claude-code-docker`).
+3. Remove the Claude token: `sbx secret ls` shows its placeholder; run
+   `sbx secret rm --placeholder <placeholder>`.
+4. Remove the network rules you added by hand: `sbx policy ls --wide`, then
+   `sbx policy rm network --id <rule id>`.
+5. Remove the den home: `rm -rf ~/.den`. Remove the `.den/` folder of each project that has a
+   `den.yaml`, and of each repo you used with the `per-repo` worktree layout.
+6. Remove the binary: `rm ~/.local/bin/den`, delete the clone, and remove the `PATH` line you added
+   to `~/.zshrc`.
 
-`-w <branch>` makes a git worktree of every selected repo on that branch (creating the branch when
-it does not exist) and mounts it in the VM at the repo's usual path, so paths inside the VM do not
-change. With `layout: central` the worktrees live under `<root>/<flattened branch>/<repo>`; with
-`per-repo`, under `<repo>/.den/<flattened branch>`.
+## Documentation
 
-den locks each worktree it creates (`git worktree lock`), mounts the repo's common git dir at
-`/den-git/<repo>`, and mounts a read-only `.git` file that points at it. A second
-`den up demo -w feature/123` attaches to the same instance. Repos must be the root of a git
-repository for `-w`.
-
-## SSH
-
-**The VM has no SSH keys. It borrows your SSH agent.** Your `~/.ssh` stays on the host: inside the
-VM, `~` is `/home/agent` and holds no key and no `~/.ssh/config`. sbx connects the VM to the agent of
-your host (`SSH_AUTH_SOCK`) through `/run/ssh-agent.sock`. When `ssh` runs in the VM, the host agent
-signs. The VM never sees the private key, so a prompt or a dependency in the VM cannot copy it.
-
-**All running VMs share one agent.** The sbx daemon forwards a single host agent to every sandbox.
-An `sbx` (or `den`) call made with another `SSH_AUTH_SOCK` can switch that agent for every VM, and
-the switch outlives the call (measured with sbx v0.53.0). den therefore cannot give a nest its own
-keys: whatever the agent holds, every VM can sign with.
-
-```
-host                                          VM
-~/.ssh/id_ed25519 (file)                      /home/agent/.ssh   (no key)
-      | ssh-add
-      v
-ssh-agent (key in memory)  <----------------  /run/ssh-agent.sock  <--  ssh, git
-```
-
-**A key file on disk is not in the agent.** On the host, `ssh` reads `~/.ssh` directly, so it works
-with an empty agent. In the VM, the agent is the only way in. An empty agent gives
-`Permission denied (publickey)` in the VM even when `ssh` works on the host.
-
-### Check
-
-```bash
-ssh-add -l                       # on the host: must list your key
-sbx exec <instance> ssh-add -l   # in the VM: must list the same key
-```
-
-`The agent has no identities.` means the agent is empty. A key you add appears in a running VM at
-once: no recreate is needed.
-
-### The protection is the network, not the agent
-
-Every VM can ask the agent to sign with **every** key it holds: the agent is shared, and sbx cannot
-hide a key from one VM. den accepts this and puts the protection elsewhere: **a VM can only use a key
-toward the servers its network policy lets it reach.** sbx enforces that policy on every port, SSH
-included. A nest that declares no Digitaleo host cannot open a connection to one, so the Digitaleo
-key is useless there, even though the VM can see it.
-
-This holds only if each running VM gets **only the network access of its own nest**:
-
-- Declare SSH hosts in the nest (or its template), with the port: `"*.s1.digitaleo.net:22"`.
-  `*.` matches one label: `*.digitaleo.com` covers `gitlab.digitaleo.com`, not `a.b.digitaleo.com`.
-- `network.allow` in the global `den.yaml` reaches **every** nest. Keep only what every nest may
-  use there.
-- The global sbx policy (`local-policy`, applies to all sandboxes) must hold no host that belongs
-  to one nest. A rule added there by hand (`sbx policy allow network <host>`) opens that host to
-  every VM, den's or not. List the hand-added rules with `sbx policy ls --wide`; sbx's own carry an
-  id starting with `default-`.
-
-Check what a VM can reach:
-
-```bash
-sbx policy check network gitlab.digitaleo.com:22 --sandbox <instance>   # Allowed or Denied
-```
-
-Accepted residual risks:
-
-- A VM can use every loaded key toward every host its nest allows. Two nests that both reach
-  `github.com:22` both reach your GitHub account.
-- A VM can ask the agent for signatures it cannot use directly. Relaying them through another
-  allowed host is a sophisticated attack; den does not defend against it.
-
-### Load your keys
-
-This line loads every private key in `~/.ssh`. It finds them by content, so a key without a `.pub`
-file is not skipped:
-
-```bash
-ssh-add $(grep -l 'PRIVATE KEY' ~/.ssh/* 2>/dev/null)
-```
-
-Put it in your shell profile (`~/.zshrc`, `~/.bashrc`) to load the keys in every session. Adding a
-key already loaded is harmless.
-
-**Keys with a passphrase, macOS:** load each one once with
-`ssh-add --apple-use-keychain ~/.ssh/<your key>`, which saves the passphrase in the Keychain. Then
-`ssh-add --apple-load-keychain` in `~/.zshrc` reloads them without asking. It reloads only those
-keys: a key without a passphrase has nothing in the Keychain, so the line above is still needed.
-
-**Linux:** make sure an agent runs first. `ssh-add -l` must not answer
-`Could not open a connection to your authentication agent`. Your desktop session usually starts
-one; otherwise run `eval "$(ssh-agent -s)"` in your shell profile.
-
-Do not copy `UseKeychain` into a Linux `~/.ssh/config`: it is macOS only, and Linux `ssh` stops
-with `Bad configuration option: usekeychain`.
-
-### More than five keys
-
-`ssh` in the VM offers the agent's keys one by one, and a server closes the connection after a few
-failures (`Too many authentication failures`, 6 tries by default). With many keys loaded, name the
-key in the VM: copy its **public** key (`<key>.pub`, never the private one) into the VM and run
-`ssh -o IdentitiesOnly=yes -i <key>.pub ...`; the agent still signs.
-
-### Remove a key
-
-```bash
-ssh-add -d ~/.ssh/<your key>   # one key
-ssh-add -D                     # every key
-```
-
-### What the VM does not get
-
-Your `~/.ssh/config` stays on the host, so `Host` aliases, `User`, `Port` and `ProxyJump` do not
-apply in the VM. Give them on the command line (`ssh -J jump user@host`) or in the tool's own
-config.
-
-## Layers
-
-`layers:` lists extra `sbxenv.yaml` files stacked after the one den generates. This is how a nest
-reaches sbx fields den does not model (`secrets:`, `mcp:`, `sandboxOptions.memory`, ...). den never
-parses them; sbx merges them.
-
-```yaml
-nests:
-  api:
-    layers: [~/.den/layers/api-secrets.yaml]
-```
-
-sbx acts on a layer at the next `create` and `rm`, so a layer the VM could rewrite would hand the
-VM host-side actions. A layer may still live in a folder the VM can write (the workspace, a repo or
-its worktree): den then mounts it read-only over that folder, at the path where the VM sees it. The
-same goes for every other file den or sbx reads for the instance: the `den.yaml` files the nest
-resolves from, its local kits, and its template's `build.includes` and `build.steps`. den checks both
-the written and the symlink-resolved paths, and refuses a file whose written path goes through a
-symlink inside a mounted folder (the VM could replace that link): reference its real path instead. The read-only overlay holds only inside the instance that reads the
-file: any other VM that mounts the same folder read-write (another nest sharing the repo, or a v1 VM)
-can still write it.
-The host enforces the read-only mount even against root in the VM. What the VM can still do is
-create a *new* file beside them, a `den.yaml` in a sub folder for one, which den would read if you
-ran it from there. Independently, den passes
-`--force --skip-host-commands` to every `sbx env create` and `sbx env rm`, so no `lifecycle:`
-command or command-backed MCP server in a layer ever runs on the host.
-
-## Where things live
-
-| Path | Content | Owner |
-|---|---|---|
-| `<denHome>/den.yaml` | global config | you |
-| `<project>/den.yaml` | project templates and nests | you |
-| `<project>/.den/run/<instance>/` or `<denHome>/run/<instance>/` | the generated `sbxenv.yaml` (the VM's workspace) | den |
-| `<denHome>/gen/<instance>/` | generated egress kit, den-claude kit (`den-claude/`, with the repo map under `files/home/`) and worktree `.git` files | den |
-| `<denHome>/gen/.templates/<name>/` | the copy of a `repo` template's location | den |
-| `<denHome>/gen/.templates/.staging-<name>/` | the clone of a build in progress | den |
-| `<denHome>/gen/.build/<name>/` | generated files of a build, den-claude kit included (`den-claude/`) | den |
-| `<denHome>/build/<name>/` | the build VM's scratch workspace | den |
-| `<denHome>/wt/` | default worktree root | den |
-| `<denHome>/state/v2/instances/<instance>.yaml` | the record `ls`, `shell` and `rm` replay | den |
-| `<denHome>/state/v2/nests.yaml` | which file declares which nest | den |
-| `<denHome>/state/v2/templates/<name>.yaml` | the template record: source, commit, definition hash, root image digest | den |
-| `<denHome>/state/v2/template-sources.yaml` | the git URLs you trusted | den |
-
-den writes the files under a run dir and never reads them back: what it mounted is what the record
-says, not what a VM may have edited since.
-
-## Coexistence with v1
-
-V2 uses only paths v1 never reads or writes: `den.yaml`, `run/`, `gen/`, `build/`,
-`state/v2/` and `wt/`. An instance record written by an earlier V2 build (schema 1) is refused: `sbx rm <instance>`, then delete the record file. v1 keeps `config.yaml`, `stacks/`, `nests/`, `state/sandboxes/`,
-`worktrees/`, `trash/` and the `:v1` image tags. V2 templates use `:v2` tags (`node:v2`), so
-`den build` never overwrites a v1 template.
-
-V2 does not list, adopt or remove a v1 sandbox, and refuses (naming `sbx rm`) to create an instance
-whose name a v1 VM already holds. The v1 binary and the V2 one are different builds of the same
-`den` command; keep the one you are not using under another name until you cut over.
-
-## Design
-
-The V2 decisions are in `docs/superpowers/plans/2026-11-12-den-v2-0.md`; templates are in `docs/superpowers/specs/2026-11-16-den-templates-design.md` and `docs/superpowers/plans/2026-11-16-den-templates.md`. The v1 spec,
-`docs/superpowers/specs/2026-07-27-den-cli-design.md`, is historical.
+| Page | Content |
+|---|---|
+| [docs/den-yaml.md](docs/den-yaml.md) | every `den.yaml` key: nests, repos, network, ports, profiles |
+| [docs/commands.md](docs/commands.md) | every command and option, worktrees |
+| [docs/templates.md](docs/templates.md) | official images, building your own template |
+| [docs/security.md](docs/security.md) | what a VM can do, what den protects, layers |
+| [docs/ssh.md](docs/ssh.md) | SSH and git over SSH in the VM |
+| [docs/files.md](docs/files.md) | what den writes on disk |
+| [docs/migrating-from-v1.md](docs/migrating-from-v1.md) | moving from den v1 |

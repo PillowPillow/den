@@ -69,9 +69,15 @@ port.
 **Check what an instance reaches:**
 
 ```bash
-sbx policy check network git.example.com:22 --sandbox <instance>   # Allowed or Denied
-sbx policy ls <instance>                                           # a summary of its policies
+sbx policy check network git.example.com:22 --sandbox <instance>
+sbx policy ls <instance>
 ```
+
+- `sbx policy check network git.example.com:22 --sandbox <instance>`: Allowed or Denied.
+- `sbx policy ls <instance>`: A summary of its policies.
+
+**Which preset is active.** `sbx policy check network example.com:443` answers `Denied` with
+`balanced` or `deny-all`, and `Allowed` with `allow-all` (or a rule that allows every host).
 
 **Tighten it:**
 

@@ -47,6 +47,11 @@ nests:
       allow: [registry.npmjs.org]
 ```
 
+**Read a project file before you run it.** A cloned `den.yaml` decides what a VM mounts, which
+kits it gets and which hosts it reaches, and its `layers:` can run a command on your Mac (see
+[security.md](security.md#layers)). den asks before it clones a template URL from a project file,
+but not before it uses the file's nests.
+
 A nest without `template:` takes `default_template:` of its own file, then the global file's.
 den writes `<project>/.den/.gitignore` so that its run dirs (see [Workspace](#workspace)) stay out of
 git.
@@ -213,10 +218,14 @@ both:
 Check what an instance can reach:
 
 ```bash
-sbx policy check network api.example.com:443 --sandbox <instance>   # Allowed or Denied
-sbx policy ls <instance>                                            # a summary of its policies
-sbx policy ls --wide                                                # every rule, with its id
+sbx policy check network api.example.com:443 --sandbox <instance>
+sbx policy ls <instance>
+sbx policy ls --wide
 ```
+
+- `sbx policy check network api.example.com:443 --sandbox <instance>`: Allowed or Denied.
+- `sbx policy ls <instance>`: A summary of its policies.
+- `sbx policy ls --wide`: Every rule, with its id.
 
 Rules that sbx created carry an id that starts with `default-`. Any other `local-policy` rule was
 added by hand and opens that host to every VM. See [security.md](security.md#what-the-vm-can-reach).
