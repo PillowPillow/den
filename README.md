@@ -88,6 +88,8 @@ den up demo           # create the instance `demo` if needed, then run Claude in
 
 Every command takes `--den-home <dir>` (or `$DEN_HOME`) to use another directory than `~/.den`.
 
+Using `ssh` or `git` over SSH inside the VM? Load your key into your SSH agent first: see [SSH](#ssh).
+
 ## The `den.yaml` reference
 
 There are two kinds of file, with the same name and the same strict schema:
@@ -419,6 +421,116 @@ den locks each worktree it creates (`git worktree lock`), mounts the repo's comm
 `/den-git/<repo>`, and mounts a read-only `.git` file that points at it. A second
 `den up demo -w feature/123` attaches to the same instance. Repos must be the root of a git
 repository for `-w`.
+
+## SSH
+
+**The VM has no SSH keys. It borrows your SSH agent.** Your `~/.ssh` stays on the host: inside the
+VM, `~` is `/home/agent` and holds no key and no `~/.ssh/config`. sbx connects the VM to the agent of
+your host (`SSH_AUTH_SOCK`) through `/run/ssh-agent.sock`. When `ssh` runs in the VM, the host agent
+signs. The VM never sees the private key, so a prompt or a dependency in the VM cannot copy it.
+
+**All running VMs share one agent.** The sbx daemon forwards a single host agent to every sandbox.
+An `sbx` (or `den`) call made with another `SSH_AUTH_SOCK` can switch that agent for every VM, and
+the switch outlives the call (measured with sbx v0.53.0). den therefore cannot give a nest its own
+keys: whatever the agent holds, every VM can sign with.
+
+```
+host                                          VM
+~/.ssh/id_ed25519 (file)                      /home/agent/.ssh   (no key)
+      | ssh-add
+      v
+ssh-agent (key in memory)  <----------------  /run/ssh-agent.sock  <--  ssh, git
+```
+
+**A key file on disk is not in the agent.** On the host, `ssh` reads `~/.ssh` directly, so it works
+with an empty agent. In the VM, the agent is the only way in. An empty agent gives
+`Permission denied (publickey)` in the VM even when `ssh` works on the host.
+
+### Check
+
+```bash
+ssh-add -l                       # on the host: must list your key
+sbx exec <instance> ssh-add -l   # in the VM: must list the same key
+```
+
+`The agent has no identities.` means the agent is empty. A key you add appears in a running VM at
+once: no recreate is needed.
+
+### The protection is the network, not the agent
+
+Every VM can ask the agent to sign with **every** key it holds: the agent is shared, and sbx cannot
+hide a key from one VM. den accepts this and puts the protection elsewhere: **a VM can only use a key
+toward the servers its network policy lets it reach.** sbx enforces that policy on every port, SSH
+included. A nest that declares no Digitaleo host cannot open a connection to one, so the Digitaleo
+key is useless there, even though the VM can see it.
+
+This holds only if each running VM gets **only the network access of its own nest**:
+
+- Declare SSH hosts in the nest (or its template), with the port: `"*.s1.digitaleo.net:22"`.
+  `*.` matches one label: `*.digitaleo.com` covers `gitlab.digitaleo.com`, not `a.b.digitaleo.com`.
+- `network.allow` in the global `den.yaml` reaches **every** nest. Keep only what every nest may
+  use there.
+- The global sbx policy (`local-policy`, applies to all sandboxes) must hold no host that belongs
+  to one nest. A rule added there by hand (`sbx policy allow network <host>`) opens that host to
+  every VM, den's or not. List the hand-added rules with `sbx policy ls --wide`; sbx's own carry an
+  id starting with `default-`.
+
+Check what a VM can reach:
+
+```bash
+sbx policy check network gitlab.digitaleo.com:22 --sandbox <instance>   # Allowed or Denied
+```
+
+Accepted residual risks:
+
+- A VM can use every loaded key toward every host its nest allows. Two nests that both reach
+  `github.com:22` both reach your GitHub account.
+- A VM can ask the agent for signatures it cannot use directly. Relaying them through another
+  allowed host is a sophisticated attack; den does not defend against it.
+
+### Load your keys
+
+This line loads every private key in `~/.ssh`. It finds them by content, so a key without a `.pub`
+file is not skipped:
+
+```bash
+ssh-add $(grep -l 'PRIVATE KEY' ~/.ssh/* 2>/dev/null)
+```
+
+Put it in your shell profile (`~/.zshrc`, `~/.bashrc`) to load the keys in every session. Adding a
+key already loaded is harmless.
+
+**Keys with a passphrase, macOS:** load each one once with
+`ssh-add --apple-use-keychain ~/.ssh/<your key>`, which saves the passphrase in the Keychain. Then
+`ssh-add --apple-load-keychain` in `~/.zshrc` reloads them without asking. It reloads only those
+keys: a key without a passphrase has nothing in the Keychain, so the line above is still needed.
+
+**Linux:** make sure an agent runs first. `ssh-add -l` must not answer
+`Could not open a connection to your authentication agent`. Your desktop session usually starts
+one; otherwise run `eval "$(ssh-agent -s)"` in your shell profile.
+
+Do not copy `UseKeychain` into a Linux `~/.ssh/config`: it is macOS only, and Linux `ssh` stops
+with `Bad configuration option: usekeychain`.
+
+### More than five keys
+
+`ssh` in the VM offers the agent's keys one by one, and a server closes the connection after a few
+failures (`Too many authentication failures`, 6 tries by default). With many keys loaded, name the
+key in the VM: copy its **public** key (`<key>.pub`, never the private one) into the VM and run
+`ssh -o IdentitiesOnly=yes -i <key>.pub ...`; the agent still signs.
+
+### Remove a key
+
+```bash
+ssh-add -d ~/.ssh/<your key>   # one key
+ssh-add -D                     # every key
+```
+
+### What the VM does not get
+
+Your `~/.ssh/config` stays on the host, so `Host` aliases, `User`, `Port` and `ProxyJump` do not
+apply in the VM. Give them on the command line (`ssh -J jump user@host`) or in the tool's own
+config.
 
 ## Layers
 
