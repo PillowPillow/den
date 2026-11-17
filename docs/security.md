@@ -60,7 +60,7 @@ The VM reaches only the hosts its network policy allows. The policy has two part
    the global policy.
 2. **The instance's rules**: the `network.allow` hosts of the global `den.yaml`, the template and the
    nest, plus the hosts that each kit of the instance allows (the `den-claude` kit allows
-   `api.anthropic.com`; a kit from a template or a profile can add more). See
+   `api.anthropic.com:443`; a kit from a template or a profile can add more). See
    [den-yaml.md](den-yaml.md#network).
 
 den adds hosts; it never removes a host the global policy allows. A host without a port allows every

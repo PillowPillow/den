@@ -49,18 +49,18 @@ type Runner interface {
 //
 // ENVIRONMENT: cmd.Env is left nil in Run, Stream and Attach alike, and that's
 // a decision, not an oversight. nil ⇒ the process inherits den's environment,
-// which is the ONLY support for `ssh.mode: agent-forward` — the config
-// default (internal/config/config.go), which adds neither an argv argument to
-// `sbx create` nor a mixin entry, and relies entirely on SSH_AUTH_SOCK
-// reaching the sbx process.
+// SSH_AUTH_SOCK included: den has no SSH setting of its own, and sbx forwards
+// the host agent of the calling process to the VMs (setting
+// ssh.agentForwardingEnabled, socket ssh.agentSocketPath or the caller's
+// SSH_AUTH_SOCK when empty).
 //
 // Setting cmd.Env here, for any reason, would cut off SSH access for EVERY
 // sandbox. TestExec{Run,Stream,Attach}TransmitsDenEnvironment are what forbid
 // it.
 //
-// What's proven stops at the process boundary: whether sbx then propagates
-// this socket INTO the microVM isn't verifiable without sbx, and remains a
-// spec assumption.
+// Measured with sbx v0.53.0: one agent serves every running VM, and a call
+// made with another SSH_AUTH_SOCK switches it for all of them, after the call
+// too (docs/ssh.md).
 type Exec struct {
 	Bin string
 	// DrainDelay bounds how long pipes are given to finish draining, once the

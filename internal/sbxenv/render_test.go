@@ -106,6 +106,22 @@ func TestDenClaudeKitHasNoCredentialsBlock(t *testing.T) {
 	}
 }
 
+func TestDenClaudeKitAllowsOnlyHTTPSToAnthropic(t *testing.T) {
+	var m struct {
+		Permissions struct {
+			Network struct {
+				Allow []string `yaml:"allow"`
+			} `yaml:"network"`
+		} `yaml:"permissions"`
+	}
+	if err := yaml.Unmarshal(kit(t, kitImage), &m); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"api.anthropic.com:443"}; !reflect.DeepEqual(m.Permissions.Network.Allow, want) {
+		t.Errorf("network allow %v, want %v", m.Permissions.Network.Allow, want)
+	}
+}
+
 func TestDenClaudeKitHasNoSettingsFlag(t *testing.T) {
 	var m struct {
 		Sandbox struct {

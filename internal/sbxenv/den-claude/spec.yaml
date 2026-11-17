@@ -14,4 +14,5 @@ sandbox:
 permissions:
   network:
     allow:
-      - api.anthropic.com
+      # With its port: a bare host opens every port of that host to the VM.
+      - api.anthropic.com:443
