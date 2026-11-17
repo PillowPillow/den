@@ -206,8 +206,8 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 	def := r.Template.Def
 
 	r.MachineRepos = map[string]string{}
-	for key, raw := range global.File.Repos {
-		if path, err := absPath(raw, global.Dir); err == nil {
+	for key, decl := range global.File.Repos {
+		if path, err := absPath(decl.Path, global.Dir); err == nil {
 			r.MachineRepos[key] = path
 		}
 	}
@@ -216,7 +216,7 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 	for _, ref := range n.Repos {
 		path := ref.Path
 		if ref.Key != "" {
-			raw, ok := global.File.Repos[ref.Key]
+			decl, ok := global.File.Repos[ref.Key]
 			if !ok {
 				if ref.Optional {
 					r.Warnings = append(r.Warnings, fmt.Sprintf("optional repo key %q is not in repos: of %s; dropped", ref.Key, global.Path))
@@ -225,7 +225,7 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 				return nil, fmt.Errorf("nest %q: repo key %q is not in repos: of %s; add it there", name, ref.Key, global.Path)
 			}
 			var err error
-			if path, err = absPath(raw, global.Dir); err != nil {
+			if path, err = absPath(decl.Path, global.Dir); err != nil {
 				return nil, fmt.Errorf("%s: repos.%s: %w", global.Path, ref.Key, err)
 			}
 		}

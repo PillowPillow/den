@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/PillowPillow/den/v2/internal/origin"
 	"gopkg.in/yaml.v3"
 )
 
@@ -121,9 +122,6 @@ func validate(f *File, global bool) []string {
 		if f.Worktrees != nil {
 			add("worktrees: %s", move)
 		}
-		if f.Repos != nil {
-			add("repos: %s", move)
-		}
 		if f.Env != nil {
 			add("env: %s", move)
 		}
@@ -133,6 +131,9 @@ func validate(f *File, global bool) []string {
 		if f.Profiles != nil {
 			add("profiles: %s", move)
 		}
+	}
+	for _, key := range sortedKeys(f.Repos) {
+		validateRepo(key, f.Repos[key], global, add)
 	}
 	for _, name := range sortedKeys(f.Profiles) {
 		if err := ValidateName("profile", name); err != nil {
@@ -210,6 +211,42 @@ func validate(f *File, global bool) []string {
 	return out
 }
 
+// ValidateRepoKey refuses a repos: key that is not one folder name: it names a clone and ends up
+// in a path and in the VM's repo map.
+func ValidateRepoKey(key string) error {
+	switch {
+	case key == "":
+		return errors.New("a repo key is empty")
+	case strings.ContainsAny(key, `/\`):
+		return fmt.Errorf("repo key %q cannot contain a path separator", key)
+	case key == "." || key == "..":
+		return fmt.Errorf("repo key %q is reserved", key)
+	case strings.HasPrefix(key, "."):
+		return fmt.Errorf("repo key %q cannot start with a dot", key)
+	}
+	return nil
+}
+
+// validateRepo: the global file maps a key to a folder of this machine (origin is optional there);
+// a project file travels between machines, so it carries either an origin or a project-relative path.
+func validateRepo(key string, d RepoDecl, global bool, add func(string, ...any)) {
+	rk := "repos." + key
+	if err := ValidateRepoKey(key); err != nil {
+		add("%s: %v", rk, err)
+	}
+	if d.Origin != "" {
+		if _, err := origin.Identity(d.Origin); err != nil {
+			add("%s.origin: %v", rk, err)
+		}
+	}
+	switch {
+	case global && d.Path == "":
+		add("%s: set `path` (the global den.yaml maps a key to a folder on this machine; `origin` is optional)", rk)
+	case !global && (d.Origin == "") == (d.Path == ""):
+		add("%s: set exactly one of `origin` and `path`", rk)
+	}
+}
+
 func validateWorktrees(key string, w *Worktrees, add func(string, ...any)) {
 	if w == nil {
 		return
@@ -276,6 +313,10 @@ func (l *Loaded) absolutize() error {
 
 	for _, list := range l.File.Profiles {
 		kits(list)
+	}
+	for key, d := range l.File.Repos {
+		d.Path = abs(d.Path)
+		l.File.Repos[key] = d
 	}
 	for key, e := range l.File.Templates {
 		e.Dir = abs(e.Dir)
