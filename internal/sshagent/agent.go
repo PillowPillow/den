@@ -40,8 +40,8 @@ func Check(ctx context.Context, socket string) State {
 	return Unknown
 }
 
-// stateOf maps the exit status of `ssh-add -l` (man ssh-add, EXIT STATUS): 1 when the agent
-// holds no key, 2 when ssh-add cannot contact an agent.
+// stateOf maps the exit status of `ssh-add -l` (man ssh-add, EXIT STATUS): 1 when the listing
+// fails, which an agent with no key causes, 2 when ssh-add cannot contact an agent.
 func stateOf(code int) State {
 	switch code {
 	case 0:

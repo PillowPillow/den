@@ -20,7 +20,7 @@ type Rule struct {
 	Resources    []string `json:"resources"`
 }
 
-// PolicyRules lists every active policy rule.
+// PolicyRules lists every policy rule, whatever its Status.
 func PolicyRules(ctx context.Context, r Runner) ([]Rule, error) {
 	out, err := r.Run(ctx, "policy", "ls", "--json")
 	if err != nil {
