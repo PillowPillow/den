@@ -118,11 +118,12 @@ V2 is built on top of the last v1 tag, so trust `den --help`, not the number. To
 
 ## First run
 
-1. Create `~/.den/den.yaml` from the shipped example:
+1. Create `~/.den/den.yaml` from the example shipped in your clone (replace `<den clone>` with its
+   path):
 
    ```bash
    mkdir -p ~/.den
-   cp examples/den-home/den.yaml ~/.den/den.yaml
+   cp <den clone>/examples/den-home/den.yaml ~/.den/den.yaml
    ```
 
    It declares one nest, `demo`, on the official image `claude-code-docker`:

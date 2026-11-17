@@ -223,9 +223,9 @@ sbx policy ls <instance>
 sbx policy ls --wide
 ```
 
-- `sbx policy check network api.example.com:443 --sandbox <instance>`: Allowed or Denied.
-- `sbx policy ls <instance>`: A summary of its policies.
-- `sbx policy ls --wide`: Every rule, with its id.
+- `sbx policy check network api.example.com:443 --sandbox <instance>` answers `Allowed` or `Denied`.
+- `sbx policy ls <instance>` prints a summary of its policies.
+- `sbx policy ls --wide` lists every rule, with its id.
 
 Rules that sbx created carry an id that starts with `default-`. Any other `local-policy` rule was
 added by hand and opens that host to every VM. See [security.md](security.md#what-the-vm-can-reach).

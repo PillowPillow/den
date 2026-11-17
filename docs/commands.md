@@ -73,7 +73,7 @@ den exec demo -w feature/123 -- bash -lc 'npm test'
 den exec demo -- cat package.json > package.copy.json
 ```
 
-- `den exec demo -- cat package.json > package.copy.json`: The file holds only the command's output.
+- `den exec demo -- cat package.json > package.copy.json` writes a file that holds only the command's output.
 
 When den itself fails (a refusal, an sbx error), the exit code is 1, the same as a command that
 exits 1: read stderr to tell them apart.
@@ -160,8 +160,8 @@ den up demo -w feature/123
 den up demo
 ```
 
-- `den up demo -w feature/123`: Instance demo.feature-123.
-- `den up demo`: Instance demo, on the repos as they are.
+- `den up demo -w feature/123` runs the instance `demo.feature-123`.
+- `den up demo` runs the instance `demo`, on the repos as they are.
 
 The two instances run side by side. A second `den up demo -w feature/123` attaches to the same
 instance. In the instance name, every character other than a letter, a digit or `-` becomes `-`. Two
