@@ -1,6 +1,7 @@
 # den V2 — clés de repo portées par leur origine, `den scan`
 
-Date : 2026-11-17. Branche : `v2`. Taille : projet. Statut : en relecture.
+Date : 2026-11-17. Branche : `v2`. Taille : projet. Statut : approuvé le 2026-11-17 (fiche
+`2026-11-17-den-scan-repos-validation.md`, 35 lignes acceptées ; la fiche gagne sur ce document).
 Remplace la décision D1 de `2026-11-17-den-repo-map-design.md` (« la seule correspondance clé → chemin est
 `repos:` du global, écrit à la main ») et son non-but « découvrir des repos automatiquement ».
 
@@ -131,7 +132,13 @@ Portée : le fichier qui déclare le nest et le global.
 2. **Chemin.** Le `path` du global gagne s'il existe : c'est le chemin de la clé sur ce poste, et le remède
    aux alias et aux doublons mal tranchés. Sinon le `path` du projet. Sinon l'identité de l'`origin`
    cherchée dans la table d'état.
-3. **Absente.** Toutes les clés sans chemin du nest sont réunies dans un seul refus (G3), chacune avec
+3. **Vérification du chemin global.** Le projet donne une `origin` à la clé et le global lui donne un `path`
+   sans `origin` : den up refuse si aucun remote de ce dossier (lu comme au §6.5, étape 2) n'a la même
+   identité, en nommant les deux fichiers. Sans cette vérification, un projet d'équipe qui réutilise un nom
+   de clé que l'utilisateur emploie pour un autre repo monterait ce repo sans erreur. Un global qui porte
+   `path` **et** `origin` de même identité n'est pas vérifié : c'est l'utilisateur qui l'affirme, et c'est le
+   remède d'un alias SSH, dont le remote ne donne pas la bonne identité.
+4. **Absente.** Toutes les clés sans chemin du nest sont réunies dans un seul refus (G3), chacune avec
    `git clone <origine>`, puis « déjà cloné : `den scan <dossier où vivent vos clones>` ». Une clé
    `optional` absente reste un avertissement.
 
