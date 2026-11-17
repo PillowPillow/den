@@ -37,6 +37,8 @@ image a VM starts from. A **record** is the file in which den notes what it crea
 - Your repos appear at their host paths.
 - den writes the repo map to `~/.claude/rules/den-instance.md` (in the image's home, `/home/agent` on
   `claude-code-docker`) and `/home/agent/.den/repos.json` (see [den-yaml.md](den-yaml.md#repo-map)).
+- den merges the kits' `~/.den/claude-settings.d/*.json` files into `~/.claude/settings.json` at
+  every start (see [templates.md](templates.md#default-claude-settings-from-a-kit)).
 
 ## Rules
 
