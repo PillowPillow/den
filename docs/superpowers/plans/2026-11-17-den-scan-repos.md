@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go, cobra, gopkg.in/yaml.v3, `prompt.Prompter`.
 
-**Spec:** `docs/superpowers/specs/2026-11-17-den-scan-repos-design.md` (§ cités ci-dessous).
+**Spec:** `docs/superpowers/specs/2026-11-17-den-scan-repos-design.md` (§ cités ci-dessous), validée par `docs/superpowers/specs/2026-11-17-den-scan-repos-validation.md` ; la fiche gagne sur la spec.
 
 ## Global Constraints
 
@@ -70,9 +70,9 @@ et `TestIdentityRefuses` : `"/abs/path"`, `"../rel"`, `"file:///x/y"`, `""`, `"h
 
 **Interfaces:**
 - Consumes: `origin.Identity`.
-- Produces: `type Remote struct{ Name, Identity string }` ; `func Remotes(cloneDir string) ([]Remote, error)` — lit `<cloneDir>/.git/config`, renvoie un `Remote` par `[remote "<name>"] url = …` reconnu, dans l'ordre du fichier ; URL non reconnue ignorée ; erreur seulement si le fichier est illisible.
+- Produces: `type Remote struct{ Name, Identity string }` ; `func Remotes(cloneDir string) ([]Remote, error)` — lit `<cloneDir>/.git/config`, renvoie un `Remote` par `[remote "<name>"] url = …` reconnu, dans l'ordre du fichier ; URL non reconnue ignorée ; erreur seulement si le fichier est illisible. `func Valid(path, identity string) bool` — le dossier existe et un de ses remotes porte l'identité (utilisé par `nest.Resolve` en Task 5 et par le plan de scan en Task 8).
 
-- [ ] **Step 1: Tests.** `TestRemotesReadsEveryRemote` : un `.git/config` avec `[core]`, `[remote "origin"] url = git@gitlab.com:me/api.git`, `[remote "upstream"]\n\turl = https://gitlab.com/dig/api` → `[{origin gitlab.com/me/api} {upstream gitlab.com/dig/api}]`. `TestRemotesIgnoresInsteadOfAndInclude` : `[url "git@gitlab.com:"] insteadOf = gl:`, `[include] path = x`, `[remote "origin"] url = gl:dig/api` → `[{origin gl/dig/api}]` (forme scp brute, aucune réécriture). `TestRemotesSkipsUnrecognized` : `url = /local/path` → vide. Commentaires `#`/`;`, valeurs entre guillemets, espaces autour de `=`.
+- [ ] **Step 1: Tests.** `TestRemotesReadsEveryRemote` : un `.git/config` avec `[core]`, `[remote "origin"] url = git@gitlab.com:me/api.git`, `[remote "upstream"]\n\turl = https://gitlab.com/dig/api` → `[{origin gitlab.com/me/api} {upstream gitlab.com/dig/api}]`. `TestRemotesIgnoresInsteadOfAndInclude` : `[url "git@gitlab.com:"] insteadOf = gl:`, `[include] path = x`, `[remote "origin"] url = gl:dig/api` → `[{origin gl/dig/api}]` (forme scp brute, aucune réécriture). `TestRemotesSkipsUnrecognized` : `url = /local/path` → vide. Commentaires `#`/`;`, valeurs entre guillemets, espaces autour de `=`. `TestValid` : vrai pour un remote `upstream` de l'identité ; faux pour un dossier absent, sans `.git/config`, ou sans remote de l'identité.
 - [ ] **Step 2: `go test ./internal/repos/ -count=1`** — FAIL.
 - [ ] **Step 3: Implémenter** un lecteur ligne à ligne minimal (sections `[remote "x"]`, clés insensibles à la casse `url`). Pas d'appel à git (C2) ; commentaire d'une ligne au site : le fichier est réinscriptible par une VM et `git remote get-url` appliquerait `insteadOf`.
 - [ ] **Step 4: PASS.**
@@ -136,7 +136,7 @@ et `TestIdentityRefuses` : `"/abs/path"`, `"../rel"`, `"file:///x/y"`, `""`, `"h
 - Test: `internal/nest/repos_test.go`, tests existants de `MachineRepos` adaptés
 
 **Interfaces:**
-- Consumes: `config.RepoDecl`, `origin.Identity`, `repos.ReadTable`.
+- Consumes: `config.RepoDecl`, `origin.Identity`, `repos.ReadTable`, `repos.Valid`.
 - Produces:
   - `Repo` gagne `Origin string` (URL telle que déclarée) et `DeclaredIn string` (fichier qui déclare la clé, `""` pour un `path:` du nest).
   - `type MachineRepo struct{ Name, Path string }` ; `Resolved.MachineRepos []MachineRepo` — clés du global résolues (triées par clé, nommées par la clé), puis entrées de la table dont le chemin n'est pas déjà listé (triées par chemin, nommées `filepath.Base`) ; un chemin listé une fois ; un chemin absent du disque (`os.Stat` échoue) omis.
@@ -152,6 +152,7 @@ already cloned? run `den scan <folder that holds your clones>`
 Règles (§6.3), portée = fichier du nest + global :
 1. Conflit : les deux côtés portent une `origin` d'identités différentes, ou un `path` différent → erreur `repo key %q: %s says %s, %s says %s — one key names one repo; rename one`.
 2. Chemin : `path` du global, sinon `path` du projet, sinon `Repos[Identity(origin)]` de la table.
+2b. Vérification (fiche, ligne B22) : `origin` côté projet et `path` sans `origin` côté global → `repos.Valid(path, identity)` faux refuse : `repo key %q: %s gives origin %s, but %s (set in %s) has no remote with that identity — fix one of the two, or add origin: to the key in %s`. Un global avec `path` et `origin` de même identité n'est pas vérifié.
 3. Clé déclarée nulle part : erreur actuelle (« not in repos: of … ; add it there ») en nommant les deux fichiers.
 4. Sans chemin : toutes les clés non optionnelles réunies dans un seul `*MissingReposError` ; une optionnelle → avertissement actuel.
 5. `Repo.Name` = la clé pour une entrée `key:` ; `filepath.Base` pour un `path:` du nest. Le contrôle d'unicité existant (`seen`) reste sur `Name`.
@@ -159,6 +160,8 @@ Règles (§6.3), portée = fichier du nest + global :
 - [ ] **Step 1: Tests** (`internal/nest/repos_test.go`, DEN_HOME temporaire, table écrite par `repos.WriteTable`) :
   - `TestKeyResolvesThroughTheTable` : projet `api: {origin: git@gitlab.com:dig/api.git}`, table `gitlab.com/dig/api → /c/api` → `Repo{Name:"api", Path:"/c/api", Key:"api"}`.
   - `TestGlobalPathWinsOverTheTable`.
+  - `TestGlobalPathMustHoldTheProjectOrigin` : projet `api: {origin: git@gitlab.com:dig/api.git}`, global `api: /c/other` dont le `.git/config` a `origin = git@gitlab.com:me/other.git` → refus qui nomme les deux fichiers ; même cas avec un remote `gitlab.com/dig/api` → accepté.
+  - `TestGlobalPathWithOriginIsTrusted` : global `api: {path: /c/alias, origin: git@gitlab.com:dig/api.git}`, remote `git@gitlab-perso:dig/api.git` → accepté sans vérification.
   - `TestScalarGlobalKeyResolvesAsToday` (Review Focus 3).
   - `TestConflictingOriginsRefuse`, `TestConflictingPathsRefuse`, `TestSameOriginBothSidesIsNoConflict` (`git@…` d'un côté, `https://…` de l'autre).
   - `TestMissingKeysAreListedTogether` : deux clés sans chemin → un `*MissingReposError` à deux entrées, texte contenant les deux `git clone`.
@@ -220,7 +223,6 @@ Règles (§6.5.1) : un dossier contenant un **dossier** `.git` est un clone, on 
   - `type Change struct{ Identity, Path, Old string }` — `Old` vide pour un ajout.
   - `type Duplicate struct{ Identity, Chosen string; Others []string }`
   - `type Plan struct{ Adds, Replaces []Change; Duplicates []Duplicate; Stale []string }` — tranches triées par identité.
-  - `func Valid(path, identity string) bool` — le dossier existe et un de ses remotes porte l'identité.
   - `func BuildPlan(clones []Clone, t Table, valid func(path, identity string) bool) Plan`
   - `func (t *Table) Apply(changes ...Change)`
 
