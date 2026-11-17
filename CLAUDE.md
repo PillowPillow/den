@@ -57,7 +57,10 @@ working) and a per-instance network mixin carrying the egress allowlist; each in
 (`Prepare` then `Create`/`Attach`/`Exec`/`Remove`) is the orchestration: `Prepare` makes every
 refusal decidable from config, flags, registry and `sbx ls` *before the first side effect*;
 `Create` writes worktrees, generated files and the record, then calls
-`sbx --no-input env create --force --skip-host-commands`. **No `env create` or `env rm` may lack
+`sbx --no-input env create --force --skip-host-commands`. Among the generated files is the instance's
+repo map (`repoMapOf`, rendered by `sbxenv.RenderRepoMap*`), written under the den-claude kit's
+`files/home/` so sbx copies it to `~/.claude/rules/den-instance.md` and `~/.den/repos.json` in the VM,
+never under a mount; `envOf` exports `DEN_REPOS` on a copy of `Resolved.Env`, which feeds `configHash`. **No `env create` or `env rm` may lack
 `--skip-host-commands`**: it keeps a `lifecycle:` command or a command-backed MCP server that a VM
 could have written from ever running on the host. Likewise every file den or sbx reads for the
 instance (its `den.yaml` files, local kits, layers, the template's `build.includes`/`build.steps`) that

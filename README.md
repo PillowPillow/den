@@ -242,6 +242,12 @@ replacement (`templates:` with a definition file, `nests.<n>.template`).
   once den has seen it.
 - **Repos.** Each repo is mounted in the VM at the same path it has on the host. Two repos with the
   same folder name are refused.
+- **Repo map.** At each create, den writes the instance's repo map into the VM: the mounted repos
+  (with their branch under `-w`), the nest's optional repos left out, and the other keys of the
+  global `repos:`. The agent loads it from `~/.claude/rules/den-instance.md` in every session;
+  scripts read the same map as JSON from `$DEN_REPOS` (`/home/agent/.den/repos.json`). The map
+  never changes for the life of the VM, like its mounts: to add a repo, run `den rm <instance>`
+  then `den up <nest> --repo <path>`. `DEN_REPOS` is den's: an `env:` that sets it is refused.
 - **Merge order.** Egress is global, then template, then nest. Kits are template, then nest, then the profile's. Env is global,
   then nest (the nest wins).
 - **Start.** `start` is `<repo>[/<sub folder>]` (the repo's folder name), or `.` for the project
@@ -448,7 +454,7 @@ command or command-backed MCP server in a layer ever runs on the host.
 | `<denHome>/den.yaml` | global config | you |
 | `<project>/den.yaml` | project templates and nests | you |
 | `<project>/.den/run/<instance>/` or `<denHome>/run/<instance>/` | the generated `sbxenv.yaml` (the VM's workspace) | den |
-| `<denHome>/gen/<instance>/` | generated egress kit, den-claude kit (`den-claude/`) and worktree `.git` files | den |
+| `<denHome>/gen/<instance>/` | generated egress kit, den-claude kit (`den-claude/`, with the repo map under `files/home/`) and worktree `.git` files | den |
 | `<denHome>/gen/.templates/<name>/` | the copy of a `repo` template's location | den |
 | `<denHome>/gen/.templates/.staging-<name>/` | the clone of a build in progress | den |
 | `<denHome>/gen/.build/<name>/` | generated files of a build, den-claude kit included (`den-claude/`) | den |
