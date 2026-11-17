@@ -51,8 +51,9 @@ file or the command that fixes it.
 - `warning: the global sbx rule <id> opens <host> to every VM` for each rule of the global sbx
   policy that sbx did not create, and `allows every host` for a rule that allows every host (as
   the `allow-all` preset does). See [security.md](security.md#what-the-vm-can-reach).
-- `note: your SSH agent holds no key` or `note: no SSH agent answers at <socket>`, when sbx
-  forwards the SSH agent to the VM and the VM cannot use it. See [ssh.md](ssh.md#check).
+- `note: the SSH agent at <socket> holds no key`, `note: no SSH agent answers at <socket>` or
+  `note: SSH_AUTH_SOCK is not set`, when sbx forwards the SSH agent to the VM and the VM may not
+  be able to use it. See [ssh.md](ssh.md#check).
 
 den prints them only when it creates the VM, never when it attaches to an existing one. den waits
 at most 3 seconds for these checks in total; a check that fails or does not finish in time prints

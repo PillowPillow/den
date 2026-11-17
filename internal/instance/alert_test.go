@@ -79,15 +79,19 @@ func upDetached(t *testing.T, f *fixture, probe sshagent.Probe) string {
 	return stderr.String()
 }
 
+// agentAt fakes a probe that resolves an empty socket to /env/agent.sock, as SSH_AUTH_SOCK would.
 func agentAt(t *testing.T, state sshagent.State, sockets *[]string) sshagent.Probe {
-	return func(ctx context.Context, socket string) sshagent.State {
+	return func(ctx context.Context, socket string) sshagent.Result {
 		if _, ok := ctx.Deadline(); !ok {
 			t.Error("the agent probe runs without a deadline")
 		}
 		if sockets != nil {
 			*sockets = append(*sockets, socket)
 		}
-		return state
+		if socket == "" {
+			socket = "/env/agent.sock"
+		}
+		return sshagent.Result{State: state, Socket: socket}
 	}
 }
 
@@ -99,7 +103,7 @@ func TestUpPrintsTheAlertsWhenItCreatesTheVM(t *testing.T) {
 	stderr := upDetached(t, f, agentAt(t, sshagent.Empty, nil))
 	for _, want := range []string{
 		"warning: the global sbx rule a1 opens *.example.com (every port) to every VM",
-		"note: your SSH agent holds no key, so ssh and git over SSH fail in am — see docs/ssh.md\n",
+		"note: the SSH agent at /env/agent.sock holds no key, so ssh and git over SSH may fail in am — see https://github.com/PillowPillow/den/blob/v2/docs/ssh.md\n",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr %q lacks %q", stderr, want)
@@ -116,17 +120,27 @@ func TestUpNamesTheSocketNoAgentAnswersAt(t *testing.T) {
 	if !reflect.DeepEqual(sockets, []string{"/run/agent.sock"}) {
 		t.Errorf("probed %q, want the socket of ssh.agentSocketPath", sockets)
 	}
-	if want := "note: no SSH agent answers at /run/agent.sock, so ssh and git over SSH fail in am — see docs/ssh.md\n"; !strings.Contains(stderr, want) {
+	if want := "note: no SSH agent answers at /run/agent.sock, so ssh and git over SSH may fail in am — see https://github.com/PillowPillow/den/blob/v2/docs/ssh.md\n"; !strings.Contains(stderr, want) {
 		t.Errorf("stderr %q lacks %q", stderr, want)
 	}
 }
 
-func TestUpNamesSSHAuthSockWhenNoAgentAnswers(t *testing.T) {
+func TestUpNamesTheSocketOfSSHAuthSockWhenNoAgentAnswers(t *testing.T) {
 	f := newFixture(t)
 	imageNest(t, f)
 	f.respond("settings ls --json", forwardingOn)
 	stderr := upDetached(t, f, agentAt(t, sshagent.NoAgent, nil))
-	if want := "note: no SSH agent answers at $SSH_AUTH_SOCK, so ssh and git over SSH fail in am — see docs/ssh.md\n"; !strings.Contains(stderr, want) {
+	if want := "note: no SSH agent answers at /env/agent.sock, so ssh and git over SSH may fail in am — see https://github.com/PillowPillow/den/blob/v2/docs/ssh.md\n"; !strings.Contains(stderr, want) {
+		t.Errorf("stderr %q lacks %q", stderr, want)
+	}
+}
+
+func TestUpSaysWhenSSHAuthSockIsNotSet(t *testing.T) {
+	f := newFixture(t)
+	imageNest(t, f)
+	f.respond("settings ls --json", forwardingOn)
+	stderr := upDetached(t, f, agentAt(t, sshagent.Unset, nil))
+	if want := "note: SSH_AUTH_SOCK is not set, so ssh and git over SSH may fail in am — see https://github.com/PillowPillow/den/blob/v2/docs/ssh.md\n"; !strings.Contains(stderr, want) {
 		t.Errorf("stderr %q lacks %q", stderr, want)
 	}
 }

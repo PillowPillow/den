@@ -15,29 +15,39 @@ const (
 	Keys    State = iota // the agent holds at least one key
 	Empty                // the agent answers and holds no key
 	NoAgent              // no agent answers at the socket
+	Unset                // no socket given and SSH_AUTH_SOCK is empty
 	Unknown              // ssh-add is missing, timed out or answered something else
 )
 
-// Probe answers the State of the agent at socket, or at the caller's SSH_AUTH_SOCK when socket
-// is empty.
-type Probe func(ctx context.Context, socket string) State
+// Result is the State of the agent at Socket, the socket the probe checked.
+type Result struct {
+	State  State
+	Socket string
+}
+
+// Probe checks the agent at socket, or at the caller's SSH_AUTH_SOCK when socket is empty.
+type Probe func(ctx context.Context, socket string) Result
 
 // Check runs `ssh-add -l` and reads only its exit status. Its output names each key, and the
 // comment of a key often holds an email address: den never reads it.
-func Check(ctx context.Context, socket string) State {
-	cmd := exec.CommandContext(ctx, "ssh-add", "-l")
-	if socket != "" {
-		cmd.Env = append(os.Environ(), "SSH_AUTH_SOCK="+socket)
+func Check(ctx context.Context, socket string) Result {
+	if socket == "" {
+		socket = os.Getenv("SSH_AUTH_SOCK")
 	}
+	if socket == "" {
+		return Result{State: Unset}
+	}
+	cmd := exec.CommandContext(ctx, "ssh-add", "-l")
+	cmd.Env = append(os.Environ(), "SSH_AUTH_SOCK="+socket)
 	err := cmd.Run()
 	if err == nil {
-		return Keys
+		return Result{Keys, socket}
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
-		return stateOf(exit.ExitCode())
+		return Result{stateOf(exit.ExitCode()), socket}
 	}
-	return Unknown
+	return Result{Unknown, socket}
 }
 
 // stateOf maps the exit status of `ssh-add -l` (man ssh-add, EXIT STATUS): 1 when the listing

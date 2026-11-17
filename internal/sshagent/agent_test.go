@@ -9,3 +9,10 @@ func TestStateOfReadsTheExitStatusOfSshAddL(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckReportsAnUnsetSSHAuthSock(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	if got, want := Check(t.Context(), ""), (Result{State: Unset}); got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}

@@ -77,9 +77,14 @@ func allowsEveryHost(resources []string) bool {
 	return false
 }
 
-// sshNote says when the VM gets no usable SSH agent while sbx forwards one. sbx forwards the
+// sshDoc explains what the VM gets from the SSH agent. A URL, not a path: the binary runs
+// outside the den repository.
+const sshDoc = "https://github.com/PillowPillow/den/blob/v2/docs/ssh.md"
+
+// sshNote says when the VM may get no usable SSH agent while sbx forwards one. sbx forwards the
 // agent at ssh.agentSocketPath, or else the SSH_AUTH_SOCK of the process that calls it: den's.
-// It is a note, not a warning: an empty agent is the safe state (docs/ssh.md).
+// "May": sbx can keep serving the agent an earlier sbx call forwarded (internal/sbx/runner.go).
+// It is a note, not a warning: an empty agent is the safe state.
 func sshNote(ctx context.Context, r sbx.Runner, probe sshagent.Probe, w io.Writer, instance string) {
 	if probe == nil {
 		return
@@ -88,14 +93,17 @@ func sshNote(ctx context.Context, r sbx.Runner, probe sshagent.Probe, w io.Write
 	if err != nil || !fwd.Enabled {
 		return
 	}
-	where := fwd.Socket
-	if where == "" {
-		where = "$SSH_AUTH_SOCK"
-	}
-	switch probe(ctx, fwd.Socket) {
+	res := probe(ctx, fwd.Socket)
+	var why string
+	switch res.State {
 	case sshagent.Empty:
-		fmt.Fprintf(w, "note: your SSH agent holds no key, so ssh and git over SSH fail in %s — see docs/ssh.md\n", instance)
+		why = "the SSH agent at " + res.Socket + " holds no key"
 	case sshagent.NoAgent:
-		fmt.Fprintf(w, "note: no SSH agent answers at %s, so ssh and git over SSH fail in %s — see docs/ssh.md\n", where, instance)
+		why = "no SSH agent answers at " + res.Socket
+	case sshagent.Unset:
+		why = "SSH_AUTH_SOCK is not set"
+	default:
+		return
 	}
+	fmt.Fprintf(w, "note: %s, so ssh and git over SSH may fail in %s — see %s\n", why, instance, sshDoc)
 }

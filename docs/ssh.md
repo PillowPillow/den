@@ -59,9 +59,11 @@ once; you do not need to remove and create the instance again.
 
 When `den up` creates a VM, it checks the agent that sbx forwards: the socket of
 `ssh.agentSocketPath`, or else the `SSH_AUTH_SOCK` of the shell you run `den` from. It prints
-`note: your SSH agent holds no key` or `note: no SSH agent answers at <socket>` when the VM cannot
-use it. It is a note, not an error: an empty agent is the safe state, and a nest that does not use
-SSH needs no key. With `ssh.agentForwardingEnabled false`, den checks nothing.
+`note: the SSH agent at <socket> holds no key`, `note: no SSH agent answers at <socket>` or
+`note: SSH_AUTH_SOCK is not set` when the VM may not be able to use it. "May": sbx can keep
+serving the agent of an earlier `sbx` or `den` call (see [How SSH works in the VM](#how-ssh-works-in-the-vm)).
+It is a note, not an error: an empty agent is the safe state, and a nest that does not use SSH
+needs no key. With `ssh.agentForwardingEnabled false`, den checks nothing.
 
 ## Load a key
 
