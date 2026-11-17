@@ -22,18 +22,21 @@ type MappedRepo struct {
 	Key      string `json:"key,omitempty"`
 	Path     string `json:"path"`
 	Optional bool   `json:"optional,omitempty"`
-	Branch   string `json:"branch,omitempty"` // worktree only; "detached HEAD" when detached
+	Branch   string `json:"branch,omitempty"` // worktree only
 }
 
 // RepoMap is what one instance can reach: its mounts, the nest's optional repos left out at
 // create, and the machine's other `repos:` keys, so the agent can name the exact remedy.
 type RepoMap struct {
-	Schema         int          `json:"schema"`
-	Instance       string       `json:"instance"`
-	Nest           string       `json:"nest"`
-	ConfigFile     string       `json:"config_file"`
-	Template       string       `json:"template"`
-	Start          string       `json:"start"`
+	Schema     int    `json:"schema"`
+	Instance   string `json:"instance"`
+	Nest       string `json:"nest"`
+	ConfigFile string `json:"config_file"`
+	Template   string `json:"template"`
+	Start      string `json:"start"`
+	// WorktreeBranch is the -w branch the instance was created with: the remedy must recreate
+	// that instance, not the nest's plain one.
+	WorktreeBranch string       `json:"worktree_branch,omitempty"`
 	Mounted        []MappedRepo `json:"mounted"`
 	NestNotMounted []MappedRepo `json:"nest_not_mounted"`
 	Machine        []MappedRepo `json:"machine"`
@@ -64,7 +67,11 @@ func RenderRepoMapMarkdown(m RepoMap) []byte {
 	section(&b, "Mounted repos", "", m.Mounted)
 	section(&b, "Repos of the nest not mounted", "host path ", m.NestNotMounted)
 	section(&b, "Other repos of this machine", "host path ", m.Machine)
-	fmt.Fprintf(&b, "\nA repo missing from \"Mounted repos\" is not available in this VM. Say so, and ask the human to add it: `den rm %s`, then `den up %s --repo <host path>`, or add the repo to the nest. Do not look for it elsewhere and do not clone it.\n", m.Instance, m.Nest)
+	up := "den up " + m.Nest
+	if m.WorktreeBranch != "" {
+		up += " -w " + m.WorktreeBranch
+	}
+	fmt.Fprintf(&b, "\nA repo missing from \"Mounted repos\" is not available in this VM. Say so, and ask the human to add it: `den rm %s`, then `%s --repo <host path>`, or add the repo to the nest. Do not look for it elsewhere and do not clone it.\n", m.Instance, up)
 	fmt.Fprintf(&b, "\nThe same data as JSON is in the file named by the environment variable `%s`.\n", RepoMapEnv)
 	return b.Bytes()
 }

@@ -16,7 +16,15 @@ func repoMapOf(p *Plan, rec registry.Record) sbxenv.RepoMap {
 		Schema: 1, Instance: p.Instance, Nest: rec.Nest, ConfigFile: rec.ConfigFile,
 		Template: rec.Template, Start: rec.Start,
 	}
+	if p.Worktree != nil {
+		m.WorktreeBranch = p.Worktree.Branch
+	}
+	// With `start: .` the project folder is mounted as the workspace: a `repos:` key naming it
+	// must not be offered as a repo this VM lacks.
 	listed := map[string]bool{}
+	if p.Resolved.Start == "." {
+		listed[p.Workspace] = true
+	}
 	for _, r := range p.Repos {
 		e := sbxenv.MappedRepo{Name: r.Name, Key: r.Key, Path: r.Path, Optional: r.Optional}
 		if p.Worktree != nil {
@@ -45,7 +53,7 @@ func repoMapOf(p *Plan, rec registry.Record) sbxenv.RepoMap {
 }
 
 // writeRepoMap writes both forms of the map under kitDir's files/home/, which sbx copies into the
-// agent's home at create; nothing lands under a mount, so no other VM and not the host can read it.
+// agent's home at create; nothing lands under a mount, so no other VM can rewrite it.
 func writeRepoMap(kitDir string, m sbxenv.RepoMap) error {
 	js, err := sbxenv.RenderRepoMapJSON(m)
 	if err != nil {

@@ -72,9 +72,26 @@ func TestCreateWritesTheRepoMap(t *testing.T) {
 func TestCreateRepoMapShowsTheWorktreeBranch(t *testing.T) {
 	f, _ := mapFixture(t)
 	rec := mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am", Branch: "feature/x"}))
-	for _, r := range readRepoMap(t, rec).Mounted {
+	m := readRepoMap(t, rec)
+	if m.WorktreeBranch != "feature/x" {
+		t.Errorf("worktree branch %q, want feature/x", m.WorktreeBranch)
+	}
+	for _, r := range m.Mounted {
 		if r.Branch != "feature/x" {
 			t.Errorf("mounted %+v, want branch feature/x", r)
+		}
+	}
+}
+
+func TestCreateRepoMapDoesNotCallTheStartDotFolderUnavailable(t *testing.T) {
+	f, _ := mapFixture(t)
+	g := filepath.Join(f.home, "den.yaml")
+	writeFile(t, g, readFile(t, g)+"  home: "+f.proj+"\n")
+	f.project(t, map[string]string{"am": "repos: [{key: a}]\nstart: ."})
+	m := readRepoMap(t, mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am"})))
+	for _, r := range m.Machine {
+		if r.Name == "home" {
+			t.Errorf("the start folder %s is listed as another repo of the machine: %+v", f.proj, m.Machine)
 		}
 	}
 }

@@ -62,3 +62,11 @@ func TestRenderRepoMapMarkdownIsAgentNeutral(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderRepoMapRemedyKeepsTheWorktreeBranch(t *testing.T) {
+	m := sampleRepoMap()
+	m.Instance, m.WorktreeBranch = "oauth.feature-x", "feature/x"
+	if md := string(RenderRepoMapMarkdown(m)); !strings.Contains(md, "`den rm oauth.feature-x`, then `den up oauth -w feature/x --repo <host path>`") {
+		t.Errorf("remedy loses the worktree branch:\n%s", md)
+	}
+}
