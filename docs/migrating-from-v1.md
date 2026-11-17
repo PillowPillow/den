@@ -1,10 +1,25 @@
 # Migrating from den v1
 
-den V2 is a rewrite. It drives `sbx env` (sbx v0.53.0 or later) and shares no config format with v1.
-The two can run on the same machine, with the same `~/.den`, until you switch.
+den V2 (v2.0.0 and later) is a rewrite. It drives `sbx env` (sbx v0.53.0 or later) and shares no
+config format with v1. V2 never reads v1's config, and it cannot list or remove the sandboxes v1
+created.
 
 In V2, a **nest** is a named set of repos declared in a `den.yaml`, and an **instance** is the sbx VM
 den creates from it. See the [README](../README.md#words-den-uses).
+
+## Before you upgrade
+
+**Warning: upgrading replaces the v1 binary, and only v1 removes v1's sandboxes and worktrees.**
+After the upgrade, a v1 worktree stays registered in git: `den up -w <branch>` cannot check out a
+branch that worktree holds. Migrate first, then upgrade.
+
+Each install method moves you to V2 on its next update:
+
+| You installed v1 with | It moves to V2 when you run |
+|---|---|
+| Homebrew | `brew upgrade` or `brew upgrade --cask den` |
+| `install.sh` | `install.sh` again. `den update` refuses to cross to V2 from v1.14.0 on, and v1.13.1 or older crosses without asking |
+| `go install github.com/PillowPillow/den/cmd/den@latest` | never: that path stays on v1. Install `github.com/PillowPillow/den/v2/cmd/den@latest` |
 
 ## Which binary you run
 
@@ -16,10 +31,18 @@ den --help
 ```
 
 V2 lists exactly `build`, `exec`, `ls`, `rm`, `shell`, `up` and `version` (plus cobra's `completion`
-and `help`). A list with `doctor`, `init` or `update` is v1. Homebrew, `install.sh` and
-`go install github.com/PillowPillow/den/cmd/den@latest` install v1; V2 is built from the `v2` branch
-with `task build` (see the [README](../README.md#install)). Keep the binary you are not using under
-another name until you switch.
+and `help`), and `den version` prints `den v2.…`. A list with `doctor`, `init` or `update` is v1.
+
+**You upgraded before you migrated.** Install v1 again beside V2, in its own directory, and call it
+by its full path:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | DEN_VERSION=v1.14.0 DEN_INSTALL_DIR=~/.den-v1/bin sh
+~/.den-v1/bin/den ls
+```
+
+The install script warns that `~/.den-v1/bin` is not in your `PATH`. Ignore the warning: keep that
+directory out of your `PATH`, so `den` stays V2. Delete `~/.den-v1` when the migration is done.
 
 ## What each version owns
 
@@ -42,14 +65,24 @@ V2 never reads or writes a v1 path in `~/.den`. Two overlaps remain:
 V2 does not list, adopt or remove a v1 sandbox. When V2 would create an instance whose name a v1 VM
 already holds, it refuses and names `sbx rm <name>`.
 
-1. Commit and push any work that lives only in the v1 VM or in its worktrees.
-2. Remove the v1 sandbox with the v1 binary (`den rm`). v1 moves its worktrees to its trash; a
-   branch still checked out in a v1 worktree cannot be checked out by `den up -w <branch>` until that
-   worktree is gone (`git worktree list` shows it).
-3. Declare the nest in `~/.den/den.yaml` ([den-yaml.md](den-yaml.md)), with a template: an
+**Warning: `den rm` deletes the VM's own files (its home directory, the Docker volumes inside it).
+Push any work that lives only there first.**
+
+With the v1 binary:
+
+1. Run `den ls` and note each sandbox, its nest and its published ports (`sbx ports <sandbox>`).
+2. Commit and push any work that lives only in a v1 VM or in its worktrees.
+3. Run `den rm <sandbox>` for each one. v1 moves its worktrees to its trash.
+4. Check that `git worktree list`, in each repo, no longer shows a worktree under `~/.den/worktrees/`
+   (or `<repo>/.den/` with the `per-repo` layout).
+
+Then upgrade (see [Before you upgrade](#before-you-upgrade)), and with the V2 binary:
+
+5. Declare the nest in `~/.den/den.yaml` ([den-yaml.md](den-yaml.md)), with a template: an
    official image such as `claude-code-docker` needs nothing more; a template of your own needs
    `den build <template>` first ([templates.md](templates.md)).
-4. Run `den up <nest>` with the V2 binary.
+6. Run `den up <nest>`.
+7. When every nest works, delete the v1 files in `~/.den` (the "v1 only" column above).
 
 An instance record written by an early V2 build (schema 1) is refused: run `sbx rm <instance>`, then
 delete the record file the error names.
@@ -63,6 +96,7 @@ delete the record file the error names.
 | `den up`, `den run` | `den up`, `den exec` |
 | `den nest ls`, `den nest show` | `den up` without a name lists the nests |
 | `den ports` | `ports:` on a nest, then `sbx ports <instance>` |
-| `den doctor`, `den init`, `den update` | none; build V2 from the `v2` branch with `task build` |
+| `den doctor`, `den init` | none |
+| `den update` | the command of your install method, see the [README](../README.md#install) |
 | the worktree trash | none: `den rm` refuses to drop unsaved work, see [commands.md](commands.md#den-rm) |
 | the SSH-agent key mount | sbx forwards your SSH agent, see [ssh.md](ssh.md) |

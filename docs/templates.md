@@ -56,8 +56,9 @@ examples/den-template/
   steps/10-marker.sh           # a provisioning script, run once at build time
 ```
 
-1. Declare it in your global file, `~/.den/den.yaml` (it starts with `schema: 1`). Replace
-   `<den clone>` with the absolute path of your clone of this repository:
+1. Clone this repository (`git clone https://github.com/PillowPillow/den.git`). Declare the
+   template in your global file, `~/.den/den.yaml` (it starts with `schema: 1`). Replace
+   `<den clone>` with the absolute path of your clone:
 
    ```yaml
    templates:

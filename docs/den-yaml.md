@@ -48,7 +48,7 @@ nests:
 ```
 
 **Read a project file before you run it.** A cloned `den.yaml` decides what a VM mounts, which
-kits it gets and which hosts it reaches, and its `layers:` can run a command on your Mac (see
+kits it gets and which hosts it reaches, and its `layers:` can run a command on your host (see
 [security.md](security.md#layers)). den asks before it clones a template URL from a project file,
 but not before it uses the file's nests.
 
@@ -220,7 +220,7 @@ ports:
   - {name: web, sandbox: 3000, host: 0}
 ```
 
-`sandbox` is the port a server listens on inside the VM. `host` is the port on your Mac; `0` lets
+`sandbox` is the port a server listens on inside the VM. `host` is the port on your host; `0` lets
 sbx pick a free one. `name` is a label for you. Ports are published when the instance is created;
 den prints sbx's port table after each create. Run `sbx ports <instance>` to see it again. Two
 entries with the same `sandbox` port are refused.
