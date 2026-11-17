@@ -483,3 +483,21 @@ nests:
 		t.Errorf("allow %v, want %v", r.Allow, want)
 	}
 }
+
+func TestResolveExposesEveryMachineRepo(t *testing.T) {
+	home := t.TempDir()
+	p := write(t, home, "den.yaml", "schema: 1\nrepos:\n  a: ~/a\n  b: rel/b\nnests:\n  api:\n    template: claude-code-docker\n    repos: [{key: a}]\n")
+	g := mustLoad(t, p, true)
+	r, err := Resolve(home, g, g, "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"a": filepath.Join(userHome, "a"), "b": filepath.Join(home, "rel", "b")}
+	if !reflect.DeepEqual(r.MachineRepos, want) {
+		t.Fatalf("machine repos %v, want %v", r.MachineRepos, want)
+	}
+}

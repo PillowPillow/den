@@ -31,15 +31,18 @@ type Resolved struct {
 	Profile     string
 	ProfileKits []string
 	Repos       []Repo
-	Kits        []string
-	Allow       []string
-	Env         map[string]string
-	Ports       []config.Port
-	Start       string
-	Layout      string
-	Root        string
-	Layers      []string
-	Warnings    []string
+	// MachineRepos is every key of the global `repos:` with its absolute path, for the instance's
+	// repo map. A key whose path does not resolve is left out: only the nest's own keys may refuse.
+	MachineRepos map[string]string
+	Kits         []string
+	Allow        []string
+	Env          map[string]string
+	Ports        []config.Port
+	Start        string
+	Layout       string
+	Root         string
+	Layers       []string
+	Warnings     []string
 }
 
 func sortedNames[V any](m map[string]V) []string {
@@ -201,6 +204,13 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 		r.Template = &template.Resolved{Choice: choice}
 	}
 	def := r.Template.Def
+
+	r.MachineRepos = map[string]string{}
+	for key, raw := range global.File.Repos {
+		if path, err := absPath(raw, global.Dir); err == nil {
+			r.MachineRepos[key] = path
+		}
+	}
 
 	seen := map[string]bool{}
 	for _, ref := range n.Repos {
