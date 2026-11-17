@@ -38,7 +38,9 @@ setup:
           h="${HOME:-/home/agent}"
           merge() {
             mkdir -p "$(dirname "$1")"
-            { if [ -s "$1" ]; then cat "$1"; else echo '{}'; fi; } | jq "$2" > "$1.den-tmp"
+            # A whitespace-only file counts as missing: jq would print nothing and empty the file.
+            { if grep -q '[^[:space:]]' "$1" 2>/dev/null; then cat "$1"; else echo '{}'; fi; } | jq "$2" > "$1.den-tmp" ||
+              { rm -f "$1.den-tmp"; echo "den-claude: $1 is not a JSON object: fix it, then start the VM again" >&2; exit 1; }
             mv "$1.den-tmp" "$1"
           }
           merge "$h/.claude.json" '.hasCompletedOnboarding = true'
