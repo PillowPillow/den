@@ -27,6 +27,10 @@ setup:
   # keys (autoUpdates, installMethod); the bypass-mode warning reads only settings files, never an
   # environment variable. Merge each key into the file, never overwrite it. Runs after the profile kits'
   # files/home/ copy, at every start. No jq is a loud failure, not a silent skip.
+  # A kit ships settings defaults as ~/.den/claude-settings.d/*.json, never as settings.json itself: two
+  # kits shipping the same file means the later one replaces it whole, and a template's defaults would
+  # vanish under a personal kit. Fragments merge in name order, a later one wins, and a key already in
+  # settings.json keeps its value.
   startup:
     - command:
         - sh
@@ -37,11 +41,22 @@ setup:
           command -v jq >/dev/null 2>&1 || { echo "den-claude: the image has no jq; den needs it to pre-accept Claude's first-run screens: add jq to the template" >&2; exit 1; }
           h="${HOME:-/home/agent}"
           merge() {
-            mkdir -p "$(dirname "$1")"
+            file="$1"
+            shift
+            mkdir -p "$(dirname "$file")"
             # A whitespace-only file counts as missing: jq would print nothing and empty the file.
-            { if grep -q '[^[:space:]]' "$1" 2>/dev/null; then cat "$1"; else echo '{}'; fi; } | jq "$2" > "$1.den-tmp" ||
-              { rm -f "$1.den-tmp"; echo "den-claude: $1 is not a JSON object: fix it, then start the VM again" >&2; exit 1; }
-            mv "$1.den-tmp" "$1"
+            { if grep -q '[^[:space:]]' "$file" 2>/dev/null; then cat "$file"; else echo '{}'; fi; } | jq "$@" > "$file.den-tmp" ||
+              { rm -f "$file.den-tmp"; echo "den-claude: $file is not a JSON object: fix it, then start the VM again" >&2; exit 1; }
+            mv "$file.den-tmp" "$file"
           }
           merge "$h/.claude.json" '.hasCompletedOnboarding = true'
           merge "$h/.claude/settings.json" '.skipDangerousModePermissionPrompt = true'
+          set -- "$h/.den/claude-settings.d"/*.json
+          if [ -e "$1" ]; then
+            for f; do
+              jq -e 'type == "object"' "$f" >/dev/null 2>&1 ||
+                { echo "den-claude: $f is not a JSON object: fix the kit that ships it, then start the VM again" >&2; exit 1; }
+            done
+            defaults=$(jq -s 'reduce .[] as $x ({}; . * $x)' "$@")
+            merge "$h/.claude/settings.json" --argjson defaults "$defaults" '$defaults * .'
+          fi

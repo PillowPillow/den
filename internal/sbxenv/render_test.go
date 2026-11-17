@@ -187,6 +187,25 @@ func TestDenClaudeKitStartupMergesOnboardingAndBypassConsent(t *testing.T) {
 	}
 }
 
+func TestDenClaudeKitStartupMergesSettingsDefaultsUnderSettings(t *testing.T) {
+	m := decodeDenClaude(t)
+	if len(m.Setup.Startup) != 1 || len(m.Setup.Startup[0].Command) != 3 {
+		t.Fatalf("startup %v, want one sh -c <script> step", m.Setup.Startup)
+	}
+	script := m.Setup.Startup[0].Command[2]
+	for _, frag := range []string{
+		`set -- "$h/.den/claude-settings.d"/*.json`,
+		`jq -e 'type == "object"' "$f"`,
+		"is not a JSON object: fix the kit that ships it",
+		`jq -s 'reduce .[] as $x ({}; . * $x)' "$@"`,
+		`merge "$h/.claude/settings.json" --argjson defaults "$defaults" '$defaults * .'`,
+	} {
+		if !strings.Contains(script, frag) {
+			t.Errorf("startup script lacks %q:\n%s", frag, script)
+		}
+	}
+}
+
 func TestDenClaudeBuildKitIsTheInstanceKitWithoutSetup(t *testing.T) {
 	build, err := DenClaudeBuildKit(kitImage)
 	if err != nil {

@@ -53,7 +53,7 @@ The leading dot on `.templates` and `.build` is deliberate: no sandbox name can 
 **Everything runs through `sbx env`.** `internal/sbxenv` renders `sbxenv.yaml` (pure, deterministic)
 plus the two kits den generates: `den-claude` (embedded, `kind: sandbox`, image pinned to the
 image from the template record (`<repository>@<digest>`) or from the image reference, never from code (the image's ENTRYPOINT must keep the VM alive: sbx runs it as PID 1, and `docker.io/sbx/claude`'s `claude` exits and stops the VM, S6e), no `credentials` block so the subscription OAuth token keeps
-working, `CLAUDE_CODE_SANDBOXED=1` so no folder asks for trust, and one `setup.startup` `jq` step that merges `hasCompletedOnboarding` into `~/.claude.json` and `skipDangerousModePermissionPrompt` into `~/.claude/settings.json`, so the image must ship `jq`; the build VM's variant, `sbxenv.DenClaudeBuildKit`, drops that `setup:` block) and a per-instance network mixin carrying the egress allowlist; each instance (`<gen dir>/den-claude/`) and each build (`gen/.build/<name>/den-claude/`) has its own den-claude kit, so a rebuild of one template never rewrites another instance's. `internal/instance`
+working, `CLAUDE_CODE_SANDBOXED=1` so no folder asks for trust, and one `setup.startup` `jq` step that merges `hasCompletedOnboarding` into `~/.claude.json`, `skipDangerousModePermissionPrompt` into `~/.claude/settings.json`, then the kits' `~/.den/claude-settings.d/*.json` defaults under `~/.claude/settings.json` (name order, a later file wins, an existing key keeps its value), so the image must ship `jq`; the build VM's variant, `sbxenv.DenClaudeBuildKit`, drops that `setup:` block) and a per-instance network mixin carrying the egress allowlist; each instance (`<gen dir>/den-claude/`) and each build (`gen/.build/<name>/den-claude/`) has its own den-claude kit, so a rebuild of one template never rewrites another instance's. `internal/instance`
 (`Prepare` then `Create`/`Attach`/`Exec`/`Remove`) is the orchestration: `Prepare` makes every
 refusal decidable from config, flags, registry and `sbx ls` *before the first side effect*;
 `Create` writes worktrees, generated files and the record, then calls
@@ -122,7 +122,7 @@ argv; `env create`, `env rm`, `rm`, `exec` and `ports` get `--no-input`; `den bu
 
 ## Stale artifacts — don't trust these
 
-- The V2 decisions are in `docs/superpowers/plans/2026-11-12-den-v2-0.md` (P1 to P11), the templates design `2026-11-16-den-templates-design.md`, plan `2026-11-16-den-templates.md` and validation `2026-11-16-den-templates-validation.md` and the
+- The V2 decisions are in `docs/superpowers/plans/2026-11-12-den-v2-0.md` (P1 to P11), the templates design `2026-11-16-den-templates-design.md`, plan `2026-11-16-den-templates.md` and validation `2026-11-16-den-templates-validation.md`, the kit settings defaults design `2026-11-17-claude-settings-defaults-design.md` and validation `2026-11-17-claude-settings-defaults-validation.md`, and the
   scope in `docs/superpowers/specs/2026-11-12-den-v2-scope-design.md`; the sbx measurements are in
   `2026-11-12-den-v2-spikes.md`. Everything else under `docs/superpowers/` (the v1 spec
   `2026-07-27-den-cli-design.md` included) and everything under `.superpowers/sdd/` is historical

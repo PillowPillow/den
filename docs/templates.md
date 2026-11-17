@@ -18,6 +18,7 @@ The words nest, instance and kit are defined in the [README](../README.md#words-
 - [After a rebuild](#after-a-rebuild)
 - [The image must keep the VM alive](#the-image-must-keep-the-vm-alive)
 - [The image must provide `jq`](#the-image-must-provide-jq)
+- [Default Claude settings from a kit](#default-claude-settings-from-a-kit)
 
 ## Choosing a template for a nest
 
@@ -219,7 +220,40 @@ files, so Claude opens at its prompt with no first-run screen:
 - `hasCompletedOnboarding: true` in `~/.claude.json` removes the theme wizard;
 - `skipDangerousModePermissionPrompt: true` in `~/.claude/settings.json` removes the bypass-mode warning.
 
+The same step also merges the settings defaults that kits ship (see
+[Default Claude settings from a kit](#default-claude-settings-from-a-kit)).
+
 `docker.io/docker/sandbox-templates:claude-code-docker` ships `jq`. In an image without it, the
 startup step fails with `den-claude: the image has no jq`; install `jq` in your template's build
 steps. The `den build` VM does not run this step, so a `from:` image without `jq` still builds. What
 sbx does with the VM after that failure is unverified.
+
+## Default Claude settings from a kit
+
+A kit can give every VM default values for Claude's `~/.claude/settings.json` without shipping that
+file. Put one JSON object per file under `files/home/.den/claude-settings.d/` in the kit, for example
+`files/home/.den/claude-settings.d/50-team.json`:
+
+```json
+{
+  "statusLine": { "type": "command", "command": "my-tool statusline" }
+}
+```
+
+At every VM start, after sbx copies the files of all kits, den merges these files into
+`~/.claude/settings.json`:
+
+- den reads the files in name order, and a later file wins over an earlier one. Start each name with
+  a number (`10-…`, `50-…`) to set the order.
+- A key already in `~/.claude/settings.json` keeps its value. A default fills only the keys that are
+  missing. A personal kit that ships its own `~/.claude/settings.json` therefore overrides the
+  defaults key by key, and keeps the defaults it does not set.
+- Objects merge key by key, at every depth. An array or a single value replaces the default whole.
+- A key you delete in the VM comes back at the next start. To turn a default off, give the key
+  another value in your own settings.
+- A file that is not a JSON object stops the start with
+  `den-claude: <file> is not a JSON object: fix the kit that ships it`.
+
+Do not ship `files/home/.claude/settings.json` from a template kit for this: a later kit that ships
+the same file replaces it whole (unverified), so the template's values would not survive a personal kit.
+The `den build` VM does not merge these files.
