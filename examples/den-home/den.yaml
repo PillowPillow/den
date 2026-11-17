@@ -1,24 +1,8 @@
 schema: 1
 
-repos:
-  demo: ~/src/demo
-
-network:
-  allow:
-    - api.anthropic.com
-
-profiles:
-  perso: [~/.den/kits/perso]
-
 default_template: claude-code-docker
 
 nests:
   demo:
-    profile: perso
     repos:
-      - key: demo
-      - path: ~/src/demo-docs
-        optional: true
-    ports:
-      - {name: web, sandbox: 3000, host: 0}
-    start: demo
+      - path: ~/src/demo   # any git repository on your machine
