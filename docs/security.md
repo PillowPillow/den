@@ -33,18 +33,18 @@ The VM sees only what sbx gives it: the folders den mounts, the network its poli
 agent, the environment variables of the nest (`env:`), and the sbx integrations that are on.
 `sbx settings ls` lists the integrations; for example `browser.enabled` (on by default) lets a
 process in the VM open a URL in your host browser. Turn one off with
-`sbx settings set <key> false`. Ports you publish (`ports:`) expose a server of the VM on your Mac.
+`sbx settings set <key> false`. Ports you publish (`ports:`) expose a server of the VM on your host.
 
 ## What the VM can write
 
-**Every repo of the nest is mounted read-write.** A VM can therefore change any file that your Mac
+**Every repo of the nest is mounted read-write.** A VM can therefore change any file that your host
 later runs or trusts:
 
-- `.git/hooks` and `.git/config`: git on your Mac runs those hooks the next time you commit there.
+- `.git/hooks` and `.git/config`: git on your host runs those hooks the next time you commit there.
   With `-w` the worktree's own `.git` file is read-only, but the repo's git directory is mounted
   read-write at `/den-git/<repo>` so that Claude can commit: `-w` does not remove this risk.
 - any script you run on the host: `package.json` scripts, a `Taskfile.yml` or `Makefile`, `.envrc`,
-  `.claude/settings.json` hooks and `CLAUDE.md` read by a Claude Code on your Mac.
+  `.claude/settings.json` hooks and `CLAUDE.md` read by a Claude Code on your host.
 
 This is an accepted risk. After a session you do not trust, review the diff of the repo **and** its
 `.git/hooks` and `.git/config` before you run anything there.
@@ -104,7 +104,7 @@ where a VM can use a signature. Turn forwarding off for every VM with
 ## Secrets
 
 The recommended way to log Claude in stores a token with `sbx secret set-custom` (see the
-[README](../README.md#log-claude-in)). sbx keeps the token on your Mac and puts a placeholder in the
+[README](../README.md#log-claude-in)). sbx keeps the token on your host and puts a placeholder in the
 VM; the sbx proxy replaces the placeholder in requests to `api.anthropic.com`. The token never
 enters the VM, but the VM can use it toward `api.anthropic.com` for as long as it runs. Any value in
 `env:` does enter the VM.
@@ -112,8 +112,8 @@ enters the VM, but the VM can use it toward `api.anthropic.com` for as long as i
 ## What den protects
 
 - **No lifecycle command from a VM.** den passes `--skip-host-commands` to every `sbx env create` and
-  `sbx env rm`. A `lifecycle:` command never runs on your Mac, and a command-backed MCP server (an
-  MCP server that sbx would start as a command on your Mac) is disabled. This does **not** cover
+  `sbx env rm`. A `lifecycle:` command never runs on your host, and a command-backed MCP server (an
+  MCP server that sbx would start as a command on your host) is disabled. This does **not** cover
   command-based secrets: see [Layers](#layers).
 - **Read-only config inside the VM.** Some files decide what the next create gives a VM: the
   `den.yaml` files (den reads them), the local kits and the [layers](#layers) (sbx reads them at each
@@ -141,7 +141,7 @@ nests:
 ```
 
 **A layer has full power over the VM.** It can add mounts, make a protected file writable again,
-and declare command-based secrets, which sbx runs **on your Mac** at create time even with
+and declare command-based secrets, which sbx runs **on your host** at create time even with
 `--skip-host-commands`. Treat a layer like a script you run: write it yourself, keep it outside your
 repos (`~/.den/layers/`), and keep any helper it runs outside every folder a VM can write. A layer
 inside a mounted folder is mounted read-only, like the files above. The schema of `sbxenv.yaml` is
@@ -156,7 +156,7 @@ you build it, as you would read a script before you run it. See [templates.md](t
 
 ## Accepted residual risks
 
-- A VM changes files in every repo it mounts, `.git` included, that your Mac later runs. See
+- A VM changes files in every repo it mounts, `.git` included, that your host later runs. See
   [What the VM can write](#what-the-vm-can-write).
 - The read-only mount holds only inside the instance that reads the file. Any other VM that mounts
   the same folder read-write (another nest that shares the repo, or an sbx VM den did not create)

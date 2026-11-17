@@ -4,7 +4,7 @@
 stopped VM once it starts again. Load only the keys your VMs may use, and give each nest only the
 network access it needs.
 
-On this page, the **SSH agent** is the `ssh-agent` program on your Mac that holds your keys in
+On this page, the **SSH agent** is the `ssh-agent` program on your host that holds your keys in
 memory. A **nest** is what you declare in a `den.yaml`; an **instance** is the VM den creates from
 it (see the [README](../README.md#words-den-uses)).
 
@@ -20,24 +20,24 @@ it (see the [README](../README.md#words-den-uses)).
 
 ## How SSH works in the VM
 
-**The VM has no SSH keys. It borrows your SSH agent.** Your `~/.ssh` stays on your Mac: in the VM,
+**The VM has no SSH keys. It borrows your SSH agent.** Your `~/.ssh` stays on your host: in the VM,
 `~` is `/home/agent` and holds no key, no `~/.ssh/config` and no `known_hosts`. sbx connects the VM
-to the SSH agent of your Mac (`SSH_AUTH_SOCK`) through a socket in the VM. When `ssh` or `git` runs
-in the VM, the agent on your Mac signs. The VM never sees a private key, so nothing in the VM can
+to the SSH agent of your host (`SSH_AUTH_SOCK`) through a socket in the VM. When `ssh` or `git` runs
+in the VM, the agent on your host signs. The VM never sees a private key, so nothing in the VM can
 copy one.
 
 ```
-Mac                                           VM
+Host                                          VM
 ~/.ssh/id_ed25519 (file)                      /home/agent/.ssh   (no key)
       | ssh-add
       v
 ssh-agent (key in memory)  <----------------  agent socket  <--  ssh, git
 ```
 
-**A key file is not a loaded key.** On your Mac, `ssh` reads `~/.ssh` directly, so it works with an
+**A key file is not a loaded key.** On your host, `ssh` reads `~/.ssh` directly, so it works with an
 empty agent. In the VM, the agent is the only source of keys. An empty agent gives
-`Permission denied (publickey)` in the VM even when `ssh` works on your Mac. The reverse also
-happens: with `AddKeysToAgent yes` in your `~/.ssh/config`, every key `ssh` uses on your Mac is added
+`Permission denied (publickey)` in the VM even when `ssh` works on your host. The reverse also
+happens: with `AddKeysToAgent yes` in your `~/.ssh/config`, every key `ssh` uses on your host is added
 to the agent, and so reaches the VMs, without any `ssh-add`.
 
 **All VMs share one agent.** The sbx daemon forwards one agent to every VM. An `sbx` or `den`
@@ -51,7 +51,7 @@ ssh-add -l
 sbx exec <instance> ssh-add -l
 ```
 
-- `ssh-add -l`, on your Mac, lists the loaded keys.
+- `ssh-add -l`, on your host, lists the loaded keys.
 - `sbx exec <instance> ssh-add -l`, in the VM, must list the same keys.
 
 `The agent has no identities.` means the agent is empty. A key you add appears in a running VM at
@@ -80,7 +80,7 @@ ssh-add -t 8h ~/.ssh/<key>
 To load it in every session, put the `ssh-add` line in `~/.zshrc`. Adding a key that is already
 loaded is harmless.
 
-**A key with a passphrase:** run `ssh-add --apple-use-keychain ~/.ssh/<key>` once; it saves the
+**A key with a passphrase, on macOS:** run `ssh-add --apple-use-keychain ~/.ssh/<key>` once; it saves the
 passphrase in the macOS Keychain. Then `ssh-add --apple-load-keychain` in `~/.zshrc` reloads the
 keys saved that way without asking. A key without a passphrase has nothing in the Keychain: load it
 with `ssh-add ~/.ssh/<key>`.
@@ -162,13 +162,13 @@ To block a host for one instance: `sbx policy deny network <host> --sandbox <ins
 ## Limit what a VM can do with a key
 
 These options act on the key in the SSH agent, so they apply to every VM and to your own `ssh` on the
-Mac. None of them is set up by den.
+host. None of them is set up by den.
 
 | Option | Effect | Cost |
 |---|---|---|
 | Load fewer keys, `ssh-add -t <time>` | a key not loaded cannot be used | load the key before you need it |
-| `ssh-add -h <host> ~/.ssh/<key>` | the agent signs a login with that key only toward `<host>` (destination constraint, see `man ssh-add`) | `<host>`'s host key must be in your Mac's `~/.ssh/known_hosts`; other uses of the key are refused |
-| `ssh-add -c ~/.ssh/<key>` | the agent asks you to confirm each signature on your Mac | needs an `ssh-askpass` program, which macOS does not ship (unverified: without it, every signature may be refused); a prompt for every `git fetch` of every VM |
+| `ssh-add -h <host> ~/.ssh/<key>` | the agent signs a login with that key only toward `<host>` (destination constraint, see `man ssh-add`) | `<host>`'s host key must be in your host's `~/.ssh/known_hosts`; other uses of the key are refused |
+| `ssh-add -c ~/.ssh/<key>` | the agent asks you to confirm each signature on your host | needs an `ssh-askpass` program, which macOS does not ship (unverified: without it, every signature may be refused); a prompt for every `git fetch` of every VM |
 | `ssh.agentForwardingEnabled false` | no VM gets the agent | no SSH in any VM, see below |
 
 `sbx settings ls` also shows `ssh.agentSocketPath`, a fixed host agent socket for every VM. Running a
@@ -198,7 +198,7 @@ The agent still signs.
 
 ## What the VM does not get
 
-Your `~/.ssh/config` and `~/.ssh/known_hosts` stay on your Mac.
+Your `~/.ssh/config` and `~/.ssh/known_hosts` stay on your host.
 
 - `Host` aliases, `User`, `Port` and `ProxyJump` do not apply in the VM. Give them on the command line
   (`ssh -J jump user@host`) or in the tool's own config.
@@ -214,11 +214,11 @@ Your `~/.ssh/config` and `~/.ssh/known_hosts` stay on your Mac.
 
 | Symptom in the VM | Cause | Fix |
 |---|---|---|
-| `The agent has no identities.` | no key loaded on your Mac | `ssh-add ~/.ssh/<key>` on your Mac |
-| `Permission denied (publickey)`, but `ssh` works on your Mac | the key your Mac uses is a file, not loaded in the agent; often a key with no `.pub`, or one named only in `~/.ssh/config` | `ssh-add ~/.ssh/<that key>`, then `sbx exec <instance> ssh-add -l` |
+| `The agent has no identities.` | no key loaded on your host | `ssh-add ~/.ssh/<key>` on your host |
+| `Permission denied (publickey)`, but `ssh` works on your host | the key your host uses is a file, not loaded in the agent; often a key with no `.pub`, or one named only in `~/.ssh/config` | `ssh-add ~/.ssh/<that key>`, then `sbx exec <instance> ssh-add -l` |
 | `Permission denied (publickey)`, key loaded | wrong user (git servers want `git@`), or the server does not accept that key | use `git@<host>`; check the key is registered on the server |
 | `Host key verification failed.` | the VM has no `known_hosts` entry for the host | see [What the VM does not get](#what-the-vm-does-not-get) |
 | `Too many authentication failures` | many keys loaded, the server stops before the right one | [Many keys](#many-keys) |
 | the connection fails or times out | the nest's network policy does not allow the host and port | `sbx policy check network <host>:22 --sandbox <instance>`, then add `<host>:22` to the nest |
 | `Could not resolve hostname <alias>` | a `Host` alias from your `~/.ssh/config` | use the real host name |
-| `Could not open a connection to your authentication agent` | agent forwarding is off, or no agent runs on your Mac | `sbx settings ls`, and `ssh-add -l` on your Mac |
+| `Could not open a connection to your authentication agent` | agent forwarding is off, or no agent runs on your host | `sbx settings ls`, and `ssh-add -l` on your host |

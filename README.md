@@ -4,9 +4,10 @@ den runs Claude Code on your repos inside a Docker Sandboxes ([`sbx`](https://do
 microVM. You declare a set of repos once in a `den.yaml`; `den up <name>` creates the VM, mounts the
 repos at their usual paths, and attaches Claude. `den rm` removes exactly what den created.
 
-**Status: pre-release V2 (the second version of den, a rewrite of v1), macOS only, tested with sbx
-v0.53.0.** den drives the experimental `sbx env` commands, which may change. Linux is not supported
-yet.
+**Status: V2 (the second version of den, a rewrite of v1), for macOS and Linux, tested with sbx
+v0.53.0.** den drives the experimental `sbx env` commands, which may change. den runs wherever sbx
+runs; its day-to-day use so far is on macOS. Coming from v1: read
+[docs/migrating-from-v1.md](docs/migrating-from-v1.md) **before** you upgrade.
 
 den is not a sandbox of its own: sbx is the boundary, and den adds no isolation beyond it. den runs
 Claude Code only.
@@ -20,7 +21,7 @@ Read this before you install. Details: [docs/security.md](docs/security.md).
   `.claude/settings.json` and `.claude/settings.local.json` (hooks, permissions, directories) without
   the trust dialog.
 - Your repos are mounted **read-write**, `.git` included. A VM can change hooks, scripts and config
-  that your Mac runs later.
+  that your host runs later.
 - The VM reaches only the hosts its network policy allows: the **global sbx policy**, shared by every
   VM, plus the hosts of the instance (from your `den.yaml`, the template and the kits). den adds
   hosts; it never removes one.
@@ -28,26 +29,30 @@ Read this before you install. Details: [docs/security.md](docs/security.md).
   port 443 included.
 - The VM has no SSH key, but it can ask your **SSH agent** to sign with every key loaded in it. All
   VMs share the same agent. See [docs/ssh.md](docs/ssh.md).
-- The Claude token stays on your Mac: sbx injects it into requests to `api.anthropic.com` only.
-- den tells sbx to skip the commands an `sbxenv.yaml` can run on your Mac at create time
+- The Claude token stays on your host: sbx injects it into requests to `api.anthropic.com` only.
+- den tells sbx to skip the commands an `sbxenv.yaml` can run on your host at create time
   (`lifecycle:` commands, command-backed MCP servers), and mounts the config files it reads read-only
-  inside the VM. A layer you add can still run a command on your Mac (command-based secrets).
+  inside the VM. A layer you add can still run a command on your host (command-based secrets).
 - A project `den.yaml` from someone else decides what a VM mounts and reaches: read it before you
   run `den up` on it. Run `den` from outside your repos, where a VM cannot have written a `den.yaml`.
 
 ## Prerequisites
 
+Your **host** is the machine you run den on. It must be one that sbx supports
+([sbx requirements](https://docs.docker.com/ai/sandboxes/install/)):
+
+- **macOS** 14 (Sonoma) or later, Apple silicon. Check: `sw_vers -productVersion` and `uname -m`
+  (`arm64`).
+- **Linux**: Ubuntu 24.04 or later, amd64 or arm64, with KVM turned on and your user in the `kvm`
+  group. Check: `lsmod | grep kvm` and `id -nG` (lists `kvm`).
+
 | Need | Install | Check |
 |---|---|---|
-| macOS 14 (Sonoma) or later, Apple silicon (sbx requires both) | | `sw_vers -productVersion` and `uname -m` (`arm64`) |
-| Homebrew, to install the tools below | [brew.sh](https://brew.sh) | `brew --version` |
-| sbx v0.53.0 or later | `brew install docker/tap/sbx` | `sbx version` |
+| sbx v0.53.0 or later | macOS: `brew install docker/tap/sbx`; Ubuntu: see the [sbx install page](https://docs.docker.com/ai/sandboxes/install/) | `sbx version` |
 | sbx signed in (Docker account) | `sbx login` | `sbx ls` prints a table, not an error |
 | sbx global network policy | `sbx policy init balanced` (once) | `sbx policy ls` lists `local-policy` |
-| Claude Code on your Mac, for the token | [Claude Code setup](https://code.claude.com/docs/en/setup) | `claude --version` |
-| Go 1.26 or later | `brew install go` | `go version` |
-| go-task | `brew install go-task/tap/go-task` | `task --version` |
-| git | `xcode-select --install` | `git --version` |
+| Claude Code on your host, for the token | [Claude Code setup](https://code.claude.com/docs/en/setup) | `claude --version` |
+| git | macOS: `xcode-select --install`; Ubuntu: `sudo apt install git` | `git --version` |
 
 `sbx policy init` is a one-time setup that picks a preset, a starting rule set for every VM. If
 `sbx policy ls` already lists `local-policy`, check the preset: `sbx policy check network
@@ -61,7 +66,7 @@ Claude in the VM needs credentials. Store them once in sbx; every VM then uses t
 **Recommended, with a Claude subscription (Pro, Max, Team, Enterprise):** create a long-lived token
 and store it as an sbx secret for `api.anthropic.com`.
 
-1. Run `claude setup-token` on your Mac and copy the token it prints.
+1. Run `claude setup-token` on your host and copy the token it prints.
 2. Store it without leaving it in your shell history. The first line waits: paste the token (it is
    not shown), then press Enter.
 
@@ -82,35 +87,58 @@ Unverified: whether the `balanced` policy allows every host the `/login` flow us
 
 ## Install
 
-Build V2 from the `v2` branch. Homebrew, `install.sh` and `go install …@latest` install **v1**, a
-different program that also answers `den`.
+**Warning: if you use den v1, read [docs/migrating-from-v1.md](docs/migrating-from-v1.md) first.**
+Installing V2 replaces the v1 binary, and only v1 can remove the sandboxes v1 created.
+
+Pick one method.
+
+**Homebrew** (macOS, or Linux with Homebrew):
+
+```bash
+brew install --cask PillowPillow/tap/den
+```
+
+**Install script** (no Homebrew). It verifies the release checksum, refuses to install without that
+check, and installs to `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | sh
+```
+
+Put a setting on `sh`, not on `curl`: `… | DEN_VERSION=v2.0.0 sh` pins a version,
+`… | DEN_INSTALL_DIR=~/bin sh` changes the destination.
+
+**Go toolchain** (Go 1.26 or later). The path ends in `/v2`:
+
+```bash
+go install github.com/PillowPillow/den/v2/cmd/den@latest
+```
+
+The path without `/v2` installs v1.
+
+**From source** (Go 1.26 or later and [go-task](https://taskfile.dev)):
 
 ```bash
 git clone https://github.com/PillowPillow/den.git
 cd den
-git checkout v2
 task build
 mkdir -p ~/.local/bin
 ln -sf "$PWD/den" ~/.local/bin/den
 ```
 
-`task build` writes the binary `./den`; the link puts it on your `PATH` as `den`. Make sure
-`~/.local/bin` is on your `PATH`: if `command -v den` prints nothing, add
-`export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` and open a new terminal. Then check:
+Then check:
 
 ```bash
 command -v den
 den --help
 ```
 
-`command -v den` must print `~/.local/bin/den` (expanded). `den --help` must list `build`, `exec`,
-`ls`, `rm`, `shell`, `up` and `version` (plus `completion` and `help`). If it lists `doctor` or
-`init`, your `PATH` finds den v1 first (for example `/opt/homebrew/bin/den` from Homebrew). Either
-remove v1 (`brew uninstall --cask den`), or put `~/.local/bin` first: add
-`export PATH="$HOME/.local/bin:$PATH"` as the last `PATH` line of `~/.zshrc` and open a new
-terminal. `den version` prints a line such as `den v1.13.1-94-g3468e6f`:
-V2 is built on top of the last v1 tag, so trust `den --help`, not the number. To update, run
-`git pull` and `task build` in the clone.
+`den --help` must list `build`, `exec`, `ls`, `rm`, `shell`, `up` and `version` (plus `completion`
+and `help`). If it lists `doctor` or `init`, your `PATH` finds den v1 first: remove that binary, or
+put the directory of the V2 binary first in your `PATH`. `den version` prints `den v2.…`.
+
+To update, run the command you installed with again: `brew upgrade --cask den`, the install script,
+`go install …@latest`, or `git pull` and `task build` in the clone.
 
 ## Words den uses
 
@@ -125,12 +153,11 @@ V2 is built on top of the last v1 tag, so trust `den --help`, not the number. To
 
 ## First run
 
-1. Create `~/.den/den.yaml` from the example shipped in your clone (replace `<den clone>` with its
-   path):
+1. Create `~/.den/den.yaml` from the example in this repository:
 
    ```bash
    mkdir -p ~/.den
-   cp <den clone>/examples/den-home/den.yaml ~/.den/den.yaml
+   curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/examples/den-home/den.yaml -o ~/.den/den.yaml
    ```
 
    It declares one nest, `demo`, on the official image `claude-code-docker`:
@@ -154,7 +181,7 @@ V2 is built on top of the last v1 tag, so trust `den --help`, not the number. To
    ```
 
    The first run pulls the image, which can take a few minutes. den creates the instance `demo` and
-   attaches Claude, in your repo. The repo is at the **same absolute path** in the VM as on your Mac,
+   attaches Claude, in your repo. The repo is at the **same absolute path** in the VM as on your host,
    and Claude's edits land directly in your files.
 4. Quit Claude. The instance stays; `den up demo` attaches again.
 5. Look around and clean up:
@@ -174,7 +201,7 @@ V2 is built on top of the last v1 tag, so trust `den --help`, not the number. To
   worktree (a second checkout of the same repo, on another branch). See [docs/commands.md](docs/commands.md#worktrees).
 - **Open a host to a nest:** `network.allow` on the nest. See
   [docs/den-yaml.md](docs/den-yaml.md#network).
-- **Reach a server in the VM from your Mac:** `ports:` on the nest. See
+- **Reach a server in the VM from your host:** `ports:` on the nest. See
   [docs/den-yaml.md](docs/den-yaml.md#ports).
 - **Bring your Claude configuration** (`CLAUDE.md`, settings, skills): a profile. See
   [docs/den-yaml.md](docs/den-yaml.md#profiles).
@@ -206,9 +233,10 @@ Every option: [docs/commands.md](docs/commands.md).
 
 | Symptom | Fix |
 |---|---|
-| den answers with commands such as `doctor`, or messages that this README does not describe | your `PATH` finds den v1: remove it or put `~/.local/bin` first, see [Install](#install) |
+| den answers with commands such as `doctor`, or messages that this README does not describe | your `PATH` finds den v1: remove it or put the V2 binary's directory first, see [Install](#install) |
+| `go install github.com/PillowPillow/den/cmd/den@latest` installs v1 | that path is v1's: use `github.com/PillowPillow/den/v2/cmd/den@latest` |
 | `den up`, `den ls` or another command fails with an sbx error about signing in | sbx is not signed in: `sbx login` |
-| `sbx <version> is older than v0.53.0` | upgrade sbx: `brew upgrade docker/tap/sbx` |
+| `sbx <version> is older than v0.53.0` | upgrade sbx: `brew upgrade docker/tap/sbx` on macOS, `sudo apt install --only-upgrade docker-sbx` on Ubuntu |
 | Claude in the VM says `Not logged in · Please run /login` | no token stored: see [Log Claude in](#log-claude-in) |
 | `nest "<nest>" has no template` | add `default_template: claude-code-docker` to `~/.den/den.yaml` |
 | a host is unreachable from the VM | `sbx policy check network <host>:<port> --sandbox <instance>`, then add the host to the nest's `network.allow` ([docs/den-yaml.md](docs/den-yaml.md#network)) |
@@ -233,8 +261,9 @@ Every option: [docs/commands.md](docs/commands.md).
    `sbx policy rm network --id <rule id>`.
 5. Remove the den home: `rm -rf ~/.den`. Remove the `.den/` folder of each project that has a
    `den.yaml`, and of each repo you used with the `per-repo` worktree layout.
-6. Remove the binary: `rm ~/.local/bin/den`, delete the clone, and remove the `PATH` line you added
-   to `~/.zshrc`.
+6. Remove the binary the way you installed it: `brew uninstall --cask den`; or `rm ~/.local/bin/den`
+   (install script, or the link to a clone, then delete the clone); or `rm "$(go env GOPATH)/bin/den"`
+   (`go install`). Remove any `PATH` line you added to your shell's rc file.
 
 ## Documentation
 
