@@ -79,8 +79,11 @@ func upDetached(t *testing.T, f *fixture, probe sshagent.Probe) string {
 	return stderr.String()
 }
 
-func agentAt(state sshagent.State, sockets *[]string) sshagent.Probe {
-	return func(_ context.Context, socket string) sshagent.State {
+func agentAt(t *testing.T, state sshagent.State, sockets *[]string) sshagent.Probe {
+	return func(ctx context.Context, socket string) sshagent.State {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("the agent probe runs without a deadline")
+		}
 		if sockets != nil {
 			*sockets = append(*sockets, socket)
 		}
@@ -93,7 +96,7 @@ func TestUpPrintsTheAlertsWhenItCreatesTheVM(t *testing.T) {
 	imageNest(t, f)
 	f.respond("policy ls --json", handRuleJSON)
 	f.respond("settings ls --json", forwardingOn)
-	stderr := upDetached(t, f, agentAt(sshagent.Empty, nil))
+	stderr := upDetached(t, f, agentAt(t, sshagent.Empty, nil))
 	for _, want := range []string{
 		"warning: the global sbx rule a1 opens *.example.com (every port) to every VM",
 		"note: your SSH agent holds no key, so ssh and git over SSH fail in am — see docs/ssh.md\n",
@@ -109,7 +112,7 @@ func TestUpNamesTheSocketNoAgentAnswersAt(t *testing.T) {
 	imageNest(t, f)
 	f.respond("settings ls --json", `[{"key":"ssh.agentForwardingEnabled","value":true},{"key":"ssh.agentSocketPath","value":"/run/agent.sock"}]`)
 	var sockets []string
-	stderr := upDetached(t, f, agentAt(sshagent.NoAgent, &sockets))
+	stderr := upDetached(t, f, agentAt(t, sshagent.NoAgent, &sockets))
 	if !reflect.DeepEqual(sockets, []string{"/run/agent.sock"}) {
 		t.Errorf("probed %q, want the socket of ssh.agentSocketPath", sockets)
 	}
@@ -122,7 +125,7 @@ func TestUpNamesSSHAuthSockWhenNoAgentAnswers(t *testing.T) {
 	f := newFixture(t)
 	imageNest(t, f)
 	f.respond("settings ls --json", forwardingOn)
-	stderr := upDetached(t, f, agentAt(sshagent.NoAgent, nil))
+	stderr := upDetached(t, f, agentAt(t, sshagent.NoAgent, nil))
 	if want := "note: no SSH agent answers at $SSH_AUTH_SOCK, so ssh and git over SSH fail in am — see docs/ssh.md\n"; !strings.Contains(stderr, want) {
 		t.Errorf("stderr %q lacks %q", stderr, want)
 	}
@@ -132,7 +135,7 @@ func TestUpSaysNothingOfAnAgentThatHoldsAKey(t *testing.T) {
 	f := newFixture(t)
 	imageNest(t, f)
 	f.respond("settings ls --json", forwardingOn)
-	if stderr := upDetached(t, f, agentAt(sshagent.Keys, nil)); strings.Contains(stderr, "SSH") {
+	if stderr := upDetached(t, f, agentAt(t, sshagent.Keys, nil)); strings.Contains(stderr, "SSH") {
 		t.Errorf("stderr %q", stderr)
 	}
 }
@@ -142,7 +145,7 @@ func TestUpSkipsTheAgentWhenForwardingIsOff(t *testing.T) {
 	imageNest(t, f)
 	f.respond("settings ls --json", `[{"key":"ssh.agentForwardingEnabled","value":false},{"key":"ssh.agentSocketPath","value":""}]`)
 	var sockets []string
-	if stderr := upDetached(t, f, agentAt(sshagent.Empty, &sockets)); strings.Contains(stderr, "SSH") || len(sockets) != 0 {
+	if stderr := upDetached(t, f, agentAt(t, sshagent.Empty, &sockets)); strings.Contains(stderr, "SSH") || len(sockets) != 0 {
 		t.Errorf("stderr %q, probed %q", stderr, sockets)
 	}
 }
@@ -153,7 +156,7 @@ func TestUpStaysSilentWhenSbxCannotAnswer(t *testing.T) {
 	f.fake.Responses["policy ls --json"] = sbx.Response{Err: errors.New("daemon down")}
 	f.fake.Responses["settings ls --json"] = sbx.Response{Err: errors.New("daemon down")}
 	var sockets []string
-	if stderr := upDetached(t, f, agentAt(sshagent.Empty, &sockets)); stderr != "" || len(sockets) != 0 {
+	if stderr := upDetached(t, f, agentAt(t, sshagent.Empty, &sockets)); stderr != "" || len(sockets) != 0 {
 		t.Errorf("stderr %q, probed %q", stderr, sockets)
 	}
 }
@@ -166,7 +169,7 @@ func TestUpOnALiveInstancePrintsNoAlert(t *testing.T) {
 	f.respond("policy ls --json", handRuleJSON)
 	f.respond("settings ls --json", forwardingOn)
 	f.fake.Calls = nil
-	if stderr := upDetached(t, f, agentAt(sshagent.Empty, nil)); stderr != "" {
+	if stderr := upDetached(t, f, agentAt(t, sshagent.Empty, nil)); stderr != "" {
 		t.Errorf("stderr %q", stderr)
 	}
 	if f.fake.HasCalled("policy", "ls", "--json") || f.fake.HasCalled("settings", "ls", "--json") {

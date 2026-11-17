@@ -54,8 +54,9 @@ file or the command that fixes it.
 - `note: your SSH agent holds no key` or `note: no SSH agent answers at <socket>`, when sbx
   forwards the SSH agent to the VM and the VM cannot use it. See [ssh.md](ssh.md#check).
 
-den prints them only when it creates the VM, never when it attaches to an existing one. If sbx or
-the SSH agent does not answer within 3 seconds, den prints nothing.
+den prints them only when it creates the VM, never when it attaches to an existing one. den waits
+at most 3 seconds for these checks in total; a check that fails or does not finish in time prints
+nothing.
 
 **On an instance that already exists**, den attaches and changes nothing. If the nest's config
 changed since the instance was created, den warns and tells you to run `den rm <instance>` then
