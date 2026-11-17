@@ -128,7 +128,9 @@ anything. Any other value is a kit reference that den passes to sbx as written (
 
 The nest name becomes the first part of the VM name: letters, digits and `-`, starting with a
 letter or a digit, no `.`. The instance is named `<nest>`, or `<nest>.<branch>` with `-w <branch>`,
-where `/` in the branch becomes `-` (`feature/123` gives `api.feature-123`).
+where every character of the branch other than a letter, a digit or `-` becomes `-` (`feature/123`
+gives `api.feature-123`). sbx adds limits of its own on the full name (length, reserved names);
+den reports them when it checks the name.
 
 ### Repos
 
@@ -152,8 +154,8 @@ for `~/src/api-docs`). Pick per run; `--only` and `--without` take a comma-separ
 
 The non-optional repos are always mounted. A missing optional folder is refused like any repo:
 leave it out with `--without`. An optional `key:` that your global `repos:` does not define is
-skipped with a warning. The selection is fixed when the instance is created; on a running
-instance a selection flag is ignored with a warning.
+skipped with a warning. The selection is fixed when the instance is created; on an existing
+instance, running or stopped, a selection flag is ignored with a warning.
 
 `--repo <path>` mounts one more folder that the nest does not declare. The VM keeps it for its
 whole life.
@@ -196,17 +198,10 @@ there. With `start: .` the project folder is the workspace instead, mounted read
 
 ## Network
 
-The VM reaches only the hosts its network policy allows. That policy has two parts, and sbx applies
-both:
-
-1. **The global sbx policy** (`local-policy`). It applies to **every** sbx VM on the machine, den's
-   or not. `sbx policy init balanced` creates it with sbx's default list of common development
-   hosts. A rule you add by hand (`sbx policy allow network <host>`) also goes there.
-2. **The instance's own rules.** den gives each instance a kit that allows the hosts of
-   `network.allow` from the global file, the template and the nest. The `den-claude` kit adds
-   `api.anthropic.com`.
-
-`network.allow` **adds** hosts: it cannot remove a host that the global sbx policy allows.
+`network.allow` lists hosts the instance may reach, on top of the global sbx policy that every VM
+shares and the hosts its kits allow. It **adds** hosts: it cannot remove a host that the global sbx
+policy allows. The whole policy model, and how to check and tighten it, is in
+[security.md](security.md#what-the-vm-can-reach).
 
 - Put a host in the nest that needs it. A host in the global file's `network.allow` reaches every
   nest.
@@ -215,20 +210,8 @@ both:
 - `*.example.com` matches one label: `git.example.com`, not `a.b.example.com`. `**.example.com`
   matches any number of labels.
 
-Check what an instance can reach:
-
-```bash
-sbx policy check network api.example.com:443 --sandbox <instance>
-sbx policy ls <instance>
-sbx policy ls --wide
-```
-
-- `sbx policy check network api.example.com:443 --sandbox <instance>` answers `Allowed` or `Denied`.
-- `sbx policy ls <instance>` prints a summary of its policies.
-- `sbx policy ls --wide` lists every rule, with its id.
-
-Rules that sbx created carry an id that starts with `default-`. Any other `local-policy` rule was
-added by hand and opens that host to every VM. See [security.md](security.md#what-the-vm-can-reach).
+Check that an instance reaches a host: `sbx policy check network api.example.com:443 --sandbox
+<instance>` answers `Allowed` or `Denied`.
 
 ## Ports
 

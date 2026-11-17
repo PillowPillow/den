@@ -64,8 +64,8 @@ den exec <nest> [-w <branch>] [--only a,b | --without a,b] [--repo <path>]... [-
 
 Creates the instance like `den up` if needed, then runs one command in the start folder and returns
 its exit code. The `--` is required. `den exec` never asks a question (`-i` is refused). It writes
-its own messages to stderr, so stdout carries only the command's output. Your stdin is passed to the
-command; no terminal is allocated.
+its own messages to stderr, so stdout carries only the command's output. No terminal is allocated.
+Unverified: whether your stdin reaches the command.
 
 ```bash
 den exec demo -- git status

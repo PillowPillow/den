@@ -116,7 +116,7 @@ enters the VM, but the VM can use it toward `api.anthropic.com` for as long as i
   over that folder, at the path the VM sees. The host enforces this even against root in the VM.
   den refuses a file whose path goes through a symlink inside a mounted folder (the VM could replace
   the link): write its real path.
-- **Records, not guesses.** den records what it created before it creates it, and `den rm` removes
+- **Records, not guesses.** den writes its record before it creates the VM, and `den rm` removes
   only that. It never adopts or removes a VM it did not create. If the generated `sbxenv.yaml` or a
   layer changed since the create, `den rm` removes the VM with `sbx rm --force` instead of
   `sbx env rm`, so sbx does not act on a file the VM may have rewritten.

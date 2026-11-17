@@ -160,7 +160,7 @@ Mac. None of them is set up by den.
 |---|---|---|
 | Load fewer keys, `ssh-add -t <time>` | a key not loaded cannot be used | load the key before you need it |
 | `ssh-add -h <host> ~/.ssh/<key>` | the agent signs a login with that key only toward `<host>` (destination constraint, see `man ssh-add`) | `<host>`'s host key must be in your Mac's `~/.ssh/known_hosts`; other uses of the key are refused |
-| `ssh-add -c ~/.ssh/<key>` | the agent asks you to confirm each signature on your Mac | a prompt for every `git fetch` of every VM |
+| `ssh-add -c ~/.ssh/<key>` | the agent asks you to confirm each signature on your Mac | needs an `ssh-askpass` program, which macOS does not ship (unverified: without it, every signature may be refused); a prompt for every `git fetch` of every VM |
 | `ssh.agentForwardingEnabled false` | no VM gets the agent | no SSH in any VM, see below |
 
 `sbx settings ls` also shows `ssh.agentSocketPath`, a fixed host agent socket for every VM. Running a

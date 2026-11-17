@@ -37,6 +37,7 @@ Read this before you install. Details: [docs/security.md](docs/security.md).
 | Need | Install | Check |
 |---|---|---|
 | macOS 14 (Sonoma) or later, Apple silicon (sbx requires both) | | `sw_vers -productVersion` and `uname -m` (`arm64`) |
+| Homebrew, to install the tools below | [brew.sh](https://brew.sh) | `brew --version` |
 | sbx v0.53.0 or later | `brew install docker/tap/sbx` | `sbx version` |
 | sbx signed in (Docker account) | `sbx login` | `sbx ls` prints a table, not an error |
 | sbx global network policy | `sbx policy init balanced` (once) | `sbx policy ls` lists `local-policy` |
@@ -101,7 +102,10 @@ den --help
 
 `command -v den` must print `~/.local/bin/den` (expanded). `den --help` must list `build`, `exec`,
 `ls`, `rm`, `shell`, `up` and `version` (plus `completion` and `help`). If it lists `doctor` or
-`init`, your `PATH` finds v1 first. `den version` prints a version such as `v1.13.1-94-g3468e6f`:
+`init`, your `PATH` finds den v1 first (for example `/opt/homebrew/bin/den` from Homebrew). Either
+remove v1 (`brew uninstall --cask den`), or put `~/.local/bin` first: add
+`export PATH="$HOME/.local/bin:$PATH"` as the last `PATH` line of `~/.zshrc` and open a new
+terminal. `den version` prints a line such as `den v1.13.1-94-g3468e6f`:
 V2 is built on top of the last v1 tag, so trust `den --help`, not the number. To update, run
 `git pull` and `task build` in the clone.
 
@@ -199,7 +203,7 @@ Every option: [docs/commands.md](docs/commands.md).
 
 | Symptom | Fix |
 |---|---|
-| den answers with commands such as `doctor`, or messages that this README does not describe | your `PATH` finds den v1: see [Install](#install) |
+| den answers with commands such as `doctor`, or messages that this README does not describe | your `PATH` finds den v1: remove it or put `~/.local/bin` first, see [Install](#install) |
 | `den up`, `den ls` or another command fails with an sbx error about signing in | sbx is not signed in: `sbx login` |
 | `sbx <version> is older than v0.53.0` | upgrade sbx: `brew upgrade docker/tap/sbx` |
 | Claude in the VM says `Not logged in · Please run /login` | no token stored: see [Log Claude in](#log-claude-in) |
