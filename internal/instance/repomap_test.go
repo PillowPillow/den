@@ -132,3 +132,11 @@ func TestEnvOfExportsDenReposWithoutMutatingResolved(t *testing.T) {
 		t.Errorf("envOf wrote DEN_REPOS into Resolved.Env, which feeds configHash: %v", p.Resolved.Env)
 	}
 }
+
+func TestRepoMapListsTableEntries(t *testing.T) {
+	p := &Plan{Instance: "am", Resolved: &nest.Resolved{MachineRepos: []nest.MachineRepo{{Name: "js.box", Path: "/c/js.box"}}}}
+	m := repoMapOf(p, registry.Record{})
+	if want := []sbxenv.MappedRepo{{Name: "js.box", Path: "/c/js.box"}}; !reflect.DeepEqual(m.Machine, want) {
+		t.Errorf("machine %+v, want %+v", m.Machine, want)
+	}
+}

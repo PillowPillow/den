@@ -22,6 +22,7 @@ type Repo struct {
 	Origin     string
 	DeclaredIn string
 	AdHoc      bool // added by --repo, not declared by the nest
+	FromTable  bool // Path came from `den scan`'s table, not from a den.yaml
 }
 
 // Resolved keeps GlobalFile so a refusal names the file that holds the value at fault.

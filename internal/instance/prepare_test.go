@@ -18,6 +18,7 @@ import (
 	"github.com/PillowPillow/den/v2/internal/nest"
 	"github.com/PillowPillow/den/v2/internal/prompt"
 	"github.com/PillowPillow/den/v2/internal/registry"
+	scanrepos "github.com/PillowPillow/den/v2/internal/repos"
 	"github.com/PillowPillow/den/v2/internal/sbx"
 	"github.com/PillowPillow/den/v2/internal/sbxenv"
 	"github.com/PillowPillow/den/v2/internal/template"
@@ -1078,5 +1079,59 @@ func TestPrepareAttachesLiveDespiteDenReposInEnv(t *testing.T) {
 	f.live("am")
 	if p := mustPrepare(t, f, Options{Nest: "am"}); p.State != Live {
 		t.Fatalf("state %v, want Live", p.State)
+	}
+}
+
+func TestRepoFixNamesTheDeclaringFile(t *testing.T) {
+	f := newFixture(t)
+	missing := filepath.Join(f.src, "gone")
+	project := writeFile(t, filepath.Join(f.proj, "den.yaml"),
+		fmt.Sprintf("schema: 1\ndefault_template: claude-code-docker\nrepos:\n  api: %q\nnests:\n  am:\n    repos: [{key: api}]\n", missing))
+	prepareErr(t, f, Options{Nest: "am"}, missing, "fix `repos.api` in "+project)
+}
+
+func TestRepoFixNamesDenScanForATableClone(t *testing.T) {
+	f := newFixture(t)
+	missing := filepath.Join(f.src, "gone")
+	writeFile(t, filepath.Join(f.proj, "den.yaml"),
+		"schema: 1\ndefault_template: claude-code-docker\nrepos:\n  api: {origin: \"git@gitlab.com:dig/api.git\"}\nnests:\n  am:\n    repos: [{key: api}]\n")
+	if err := scanrepos.WriteTable(f.home, scanrepos.Table{Repos: map[string]scanrepos.Entry{"gitlab.com/dig/api": {Path: missing}}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Prepare(context.Background(), f.deps(), Options{Nest: "am"})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	for _, w := range []string{missing, "den scan", scanrepos.TablePath(f.home), "gitlab.com/dig/api"} {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("error %q lacks %q", err, w)
+		}
+	}
+	if strings.Contains(err.Error(), "git@gitlab.com") {
+		t.Errorf("error %q prints the raw origin", err)
+	}
+}
+
+func TestWorktreeRefusesTwoReposWithTheSameFolderName(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.repo(t, filepath.Join("a", "api")), f.repo(t, filepath.Join("b", "api"))
+	writeFile(t, filepath.Join(f.home, "den.yaml"), fmt.Sprintf("schema: 1\nrepos:\n  front-api: %q\n  back-api: %q\n", a, b))
+	f.project(t, map[string]string{"am": "repos: [{key: front-api}, {key: back-api}]"})
+	prepareErr(t, f, Options{Nest: "am", Branch: "feat"},
+		`repos front-api and back-api share the folder name "api", and -w puts both at `+filepath.Join(f.home, "wt", "feat", "api")+
+			` — set worktrees.layout: per-repo, or drop one`)
+	mustPrepare(t, f, Options{Nest: "am"})
+}
+
+func TestRecreateKeepsTheWorktreeOfARenamedKey(t *testing.T) {
+	f := newFixture(t)
+	dir := f.repo(t, "go.dgdev")
+	res := &nest.Resolved{Layout: "central", Root: filepath.Join(f.home, "wt"), File: &config.Loaded{}}
+	rec := &registry.Record{Instance: "am.feat", Repos: []registry.Repo{{
+		Name: "go.dgdev", Repo: dir, Mount: filepath.Join(res.Root, "feat", "go.dgdev"), Worktree: true,
+	}}}
+	repos := []nest.Repo{{Name: "go-dgdev", Key: "go-dgdev", Path: dir}}
+	if err := checkRecordedWorktrees(rec, res, repos, &worktree.Name{Dir: "feat", Branch: "feat"}); err != nil {
+		t.Fatal(err)
 	}
 }
