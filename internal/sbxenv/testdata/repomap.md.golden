@@ -1,0 +1,25 @@
+# den instance oauth
+
+den wrote this file when it created this VM. It lists the repos this VM can reach.
+
+- Nest: `oauth`, declared in /p/dev-home/den.yaml
+- Template: `digitaleo`
+- Start folder: /p/dev-home
+
+## Mounted repos
+
+- oauth.messengeo.net — /p/oauth.messengeo.net
+- libeo — /p/libeo (optional) (worktree, branch feature/x)
+- public.mcp — /p/public.mcp (key js.public-mcp)
+
+## Repos of the nest not mounted
+
+- js.box — host path /p/js.box (optional)
+
+## Other repos of this machine
+
+- php.flow — host path /p/php.flow
+
+A repo missing from "Mounted repos" is not available in this VM. Say so, and ask the human to add it: `den rm oauth`, then `den up oauth --repo <host path>`, or add the repo to the nest. Do not look for it elsewhere and do not clone it.
+
+The same data as JSON is in the file named by the environment variable `DEN_REPOS`.

@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "instance": "oauth",
+  "nest": "oauth",
+  "config_file": "/p/dev-home/den.yaml",
+  "template": "digitaleo",
+  "start": "/p/dev-home",
+  "mounted": [
+    {
+      "name": "oauth.messengeo.net",
+      "key": "oauth.messengeo.net",
+      "path": "/p/oauth.messengeo.net"
+    },
+    {
+      "name": "libeo",
+      "key": "libeo",
+      "path": "/p/libeo",
+      "optional": true,
+      "branch": "feature/x"
+    },
+    {
+      "name": "public.mcp",
+      "key": "js.public-mcp",
+      "path": "/p/public.mcp"
+    }
+  ],
+  "nest_not_mounted": [
+    {
+      "name": "js.box",
+      "key": "js.box",
+      "path": "/p/js.box",
+      "optional": true
+    }
+  ],
+  "machine": [
+    {
+      "name": "php.flow",
+      "path": "/p/php.flow"
+    }
+  ]
+}
