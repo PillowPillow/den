@@ -21,6 +21,7 @@ type upFixture struct {
 	hub             hub.Fake
 	out, err        bytes.Buffer
 	cwd             string
+	tty             bool
 }
 
 func newUpFixture(t *testing.T) *upFixture {
@@ -85,7 +86,7 @@ func (f *upFixture) up2(cmd string, args ...string) error {
 		cwd = f.cwd
 	}
 	root := NewRoot(Deps{
-		Sbx: f.fake, Prompt: f.prompt, Hub: f.hub, IsTTY: func() bool { return false },
+		Sbx: f.fake, Prompt: f.prompt, Hub: f.hub, IsTTY: func() bool { return f.tty },
 		Getwd: func() (string, error) { return cwd, nil }, Out: &f.out, Err: &f.err,
 	})
 	root.SetArgs(append([]string{"--den-home", f.home, cmd}, args...))
