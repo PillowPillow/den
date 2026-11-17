@@ -118,7 +118,7 @@ func AddRepos(r *Resolved, picked []Repo, raw []string, cwd string) ([]Repo, err
 			}
 			if have.Name == repo.Name {
 				return nil, fmt.Errorf("--repo %s: a repo named %q is already mounted from %s; "+
-					"the /den-git/<name> mount and `start:` need unique folder names", typed, repo.Name, have.Path)
+					"the /den-git/<name> mount and `start:` need unique names", typed, repo.Name, have.Path)
 			}
 		}
 		if !mounted {

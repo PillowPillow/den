@@ -486,17 +486,19 @@ nests:
 
 func TestResolveExposesEveryMachineRepo(t *testing.T) {
 	home := t.TempDir()
-	p := write(t, home, "den.yaml", "schema: 1\nrepos:\n  a: ~/a\n  b: rel/b\nnests:\n  api:\n    template: claude-code-docker\n    repos: [{key: a}]\n")
+	abs := filepath.Join(t.TempDir(), "a")
+	for _, d := range []string{abs, filepath.Join(home, "rel", "b")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := write(t, home, "den.yaml", "schema: 1\nrepos:\n  b: rel/b\n  a: "+abs+"\nnests:\n  api:\n    template: claude-code-docker\n    repos: [{key: a}]\n")
 	g := mustLoad(t, p, true)
 	r, err := Resolve(home, g, g, "api")
 	if err != nil {
 		t.Fatal(err)
 	}
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]string{"a": filepath.Join(userHome, "a"), "b": filepath.Join(home, "rel", "b")}
+	want := []MachineRepo{{Name: "a", Path: abs}, {Name: "b", Path: filepath.Join(home, "rel", "b")}}
 	if !reflect.DeepEqual(r.MachineRepos, want) {
 		t.Fatalf("machine repos %v, want %v", r.MachineRepos, want)
 	}

@@ -2,7 +2,6 @@ package instance
 
 import (
 	"path/filepath"
-	"sort"
 
 	"github.com/PillowPillow/den/v2/internal/registry"
 	"github.com/PillowPillow/den/v2/internal/sbxenv"
@@ -39,14 +38,9 @@ func repoMapOf(p *Plan, rec registry.Record) sbxenv.RepoMap {
 			listed[r.Path] = true
 		}
 	}
-	keys := make([]string, 0, len(p.Resolved.MachineRepos))
-	for k := range p.Resolved.MachineRepos {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		if path := p.Resolved.MachineRepos[k]; !listed[path] {
-			m.Machine = append(m.Machine, sbxenv.MappedRepo{Name: k, Path: path})
+	for _, r := range p.Resolved.MachineRepos {
+		if !listed[r.Path] {
+			m.Machine = append(m.Machine, sbxenv.MappedRepo{Name: r.Name, Path: r.Path})
 		}
 	}
 	return m

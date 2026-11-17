@@ -8,14 +8,19 @@ import (
 	"strings"
 
 	"github.com/PillowPillow/den/v2/internal/config"
+	"github.com/PillowPillow/den/v2/internal/repos"
 	"github.com/PillowPillow/den/v2/internal/template"
 )
 
-// Repo.Key is the global `repos:` key the path came from, "" for a path written in the nest.
+// Repo.Key is the `repos:` key the path came from, "" for a path written in the nest; the key is
+// then the repo's Name. Origin is the key's origin as declared; DeclaredIn is the file whose entry
+// gave the path (the file holding the origin when the path came from `den scan`'s table).
 type Repo struct {
 	Name, Path string
 	Optional   bool
 	Key        string
+	Origin     string
+	DeclaredIn string
 	AdHoc      bool // added by --repo, not declared by the nest
 }
 
@@ -31,9 +36,10 @@ type Resolved struct {
 	Profile     string
 	ProfileKits []string
 	Repos       []Repo
-	// MachineRepos is every key of the global `repos:` with its absolute path, for the instance's
-	// repo map. A key whose path does not resolve is left out: only the nest's own keys may refuse.
-	MachineRepos map[string]string
+	// MachineRepos is every key of the global `repos:`, then every clone of `den scan`'s table, for
+	// the instance's repo map, each path once. A path that does not resolve or no longer exists is
+	// left out: only the nest's own keys may refuse.
+	MachineRepos []MachineRepo
 	Kits         []string
 	Allow        []string
 	Env          map[string]string
@@ -205,36 +211,46 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 	}
 	def := r.Template.Def
 
-	r.MachineRepos = map[string]string{}
-	for key, decl := range global.File.Repos {
-		if path, err := absPath(decl.Path, global.Dir); err == nil {
-			r.MachineRepos[key] = path
-		}
+	table, err := repos.ReadTable(denHome)
+	if err != nil {
+		return nil, err
 	}
+	r.MachineRepos = machineRepos(global, table)
 
+	keys := &keyResolver{nest: name, file: file, global: global, table: table}
 	seen := map[string]bool{}
+	// Two keys on one folder would give sbx the same host folder as two mounts.
+	byPath := map[string]string{}
 	for _, ref := range n.Repos {
-		path := ref.Path
+		repo := Repo{Name: filepath.Base(ref.Path), Path: ref.Path, Optional: ref.Optional}
 		if ref.Key != "" {
-			decl, ok := global.File.Repos[ref.Key]
-			if !ok {
-				if ref.Optional {
-					r.Warnings = append(r.Warnings, fmt.Sprintf("optional repo key %q is not in repos: of %s; dropped", ref.Key, global.Path))
-					continue
-				}
-				return nil, fmt.Errorf("nest %q: repo key %q is not in repos: of %s; add it there", name, ref.Key, global.Path)
+			var ok bool
+			if repo, ok, err = keys.resolve(ref); err != nil {
+				return nil, err
 			}
-			var err error
-			if path, err = absPath(decl.Path, global.Dir); err != nil {
-				return nil, fmt.Errorf("%s: repos.%s: %w", global.Path, ref.Key, err)
+			if !ok {
+				continue
 			}
 		}
-		repo := Repo{Name: filepath.Base(path), Path: path, Optional: ref.Optional, Key: ref.Key}
 		if seen[repo.Name] {
 			return nil, fmt.Errorf("nest %q in %s: two repos are named %q; the /den-git/<name> mount and `start:` need unique names", name, file.Path, repo.Name)
 		}
 		seen[repo.Name] = true
+		entry := "path: " + repo.Path
+		if repo.Key != "" {
+			entry = fmt.Sprintf("key %q", repo.Key)
+		}
+		clean := filepath.Clean(repo.Path)
+		if first, ok := byPath[clean]; ok {
+			return nil, fmt.Errorf("nest %q in %s: repos %s and %s are both the folder %s; a folder is mounted once — drop one of the two",
+				name, file.Path, first, entry, clean)
+		}
+		byPath[clean] = entry
 		r.Repos = append(r.Repos, repo)
+	}
+	r.Warnings = append(r.Warnings, keys.warnings...)
+	if len(keys.missing) > 0 {
+		return nil, &MissingReposError{Nest: name, Missing: keys.missing}
 	}
 
 	if r.Profile == "" {
