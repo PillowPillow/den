@@ -30,5 +30,7 @@ additionalWorkspaces:
   - path: /src/api/tpl/10-node.sh
     target: /src/api/tpl/10-node.sh
     readOnly: true
+env:
+  DEN_REPOS: /home/agent/.den/repos.json
 sandboxOptions:
   template: legacy:v2

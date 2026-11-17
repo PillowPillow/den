@@ -84,7 +84,7 @@ func writeRecord(ctx context.Context, d Deps, p *Plan, fresh *[]worktree.Target)
 		rec.Repos = append(rec.Repos, entry)
 	}
 
-	if err := writeGenerated(p, trios); err != nil {
+	if err := writeGenerated(p, trios, repoMapOf(p, rec)); err != nil {
 		return registry.Record{}, err
 	}
 	envFile := filepath.Join(p.RunDir, EnvFileName)
@@ -191,13 +191,16 @@ func recordedAsCreated(rec *registry.Record, repo string) bool {
 }
 
 // writeGenerated rewrites GenDir from scratch, so a repo the selection dropped leaves no stale .git file behind.
-func writeGenerated(p *Plan, trios map[string]gitTrio) error {
+func writeGenerated(p *Plan, trios map[string]gitTrio, repoMap sbxenv.RepoMap) error {
 	if err := os.RemoveAll(p.GenDir); err != nil {
 		return fmt.Errorf("clearing %s: %w", p.GenDir, err)
 	}
 	// One kit per instance (T3): a kit shared by instances on two templates would carry the image of
 	// whichever was created last, and sbx reads it again at every create.
 	if err := WriteDenClaudeKit(denClaudeKitDir(p), p.Resolved.Template.KitImage); err != nil {
+		return err
+	}
+	if err := writeRepoMap(denClaudeKitDir(p), repoMap); err != nil {
 		return err
 	}
 	if err := WriteGenFile(filepath.Join(p.GenDir, "network", "spec.yaml"), sbxenv.NetworkKit(p.Resolved.Allow)); err != nil {
@@ -241,11 +244,17 @@ func gitFilePath(p *Plan, r nest.Repo) string {
 
 func envOf(p *Plan, trios map[string]gitTrio) sbxenv.Env {
 	res := p.Resolved
+	// A copy: res.Env feeds configHash, and a DEN_REPOS in it would report drift on every attach.
+	env := make(map[string]string, len(res.Env)+1)
+	for k, v := range res.Env {
+		env[k] = v
+	}
+	env[sbxenv.RepoMapEnv] = sbxenv.RepoMapVMPath
 	e := sbxenv.Env{
 		Name:      p.Instance,
 		Kits:      append(append([]string{denClaudeKitDir(p)}, res.Kits...), filepath.Join(p.GenDir, "network")),
 		Workspace: p.Workspace,
-		Env:       res.Env,
+		Env:       env,
 		Template:  sbxTemplate(res.Template),
 	}
 	for _, r := range p.Repos {
