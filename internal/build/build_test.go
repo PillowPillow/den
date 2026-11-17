@@ -16,6 +16,7 @@ import (
 	"github.com/PillowPillow/den/internal/instance"
 	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/sbxenv"
 	"github.com/PillowPillow/den/internal/template"
 	"github.com/PillowPillow/den/internal/worktree"
 )
@@ -794,6 +795,9 @@ func TestBuildCallSequence(t *testing.T) {
 	}
 	if !strings.Contains(string(kit), "  image: "+claudeCodeDocker+"\n") {
 		t.Errorf("den-claude kit does not carry %s:\n%s", claudeCodeDocker, kit)
+	}
+	if want, _ := sbxenv.DenClaudeBuildKit(claudeCodeDocker); string(kit) != string(want) {
+		t.Errorf("build VM's den-claude kit is not the build variant:\n%s", kit)
 	}
 }
 

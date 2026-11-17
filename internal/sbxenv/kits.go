@@ -26,6 +26,34 @@ func DenClaudeKit(image string) ([]byte, error) {
 	return []byte(strings.Join(lines, "\n")), nil
 }
 
+// DenClaudeBuildKit is DenClaudeKit without its setup block. The build VM never attaches Claude, and
+// the block's jq would refuse a template whose own build steps are what install jq.
+func DenClaudeBuildKit(image string) ([]byte, error) {
+	spec, err := DenClaudeKit(image)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(spec), "\n")
+	out := make([]string, 0, len(lines))
+	inSetup, found := false, false
+	for _, l := range lines {
+		if l == "setup:" {
+			inSetup, found = true, true
+			continue
+		}
+		if inSetup && l != "" && l[0] != ' ' && l[0] != '#' {
+			inSetup = false
+		}
+		if !inSetup {
+			out = append(out, l)
+		}
+	}
+	if !found {
+		return nil, errors.New("the embedded den-claude spec has no top-level `setup:` line to drop")
+	}
+	return []byte(strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n"), nil
+}
+
 // NetworkKit is the per-instance mixin carrying the egress allowlist.
 func NetworkKit(allow []string) []byte {
 	var b strings.Builder

@@ -219,5 +219,6 @@ files, so Claude opens at its prompt with no first-run screen:
 - `skipDangerousModePermissionPrompt: true` in `~/.claude/settings.json` removes the bypass-mode warning.
 
 `docker.io/docker/sandbox-templates:claude-code-docker` ships `jq`. In an image without it, the
-startup step fails with `den-claude: the image has no jq`; install `jq` in your template. What sbx
-does with the VM after that failure is unverified.
+startup step fails with `den-claude: the image has no jq`; install `jq` in your template's build
+steps. The `den build` VM does not run this step, so a `from:` image without `jq` still builds. What
+sbx does with the VM after that failure is unverified.

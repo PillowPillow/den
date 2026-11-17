@@ -370,7 +370,11 @@ func runVM(ctx context.Context, d Deps, name, vm, tag string, def config.Definit
 	}
 	// A kit of its own, like each instance's: each template starts from its own image (T3).
 	claudeKit := filepath.Join(gen, "den-claude")
-	if err := instance.WriteDenClaudeKit(claudeKit, st.kitImage); err != nil {
+	claudeSpec, err := sbxenv.DenClaudeBuildKit(st.kitImage)
+	if err != nil {
+		return template.From{}, err
+	}
+	if err := instance.WriteGenFile(filepath.Join(claudeKit, "spec.yaml"), claudeSpec); err != nil {
 		return template.From{}, err
 	}
 	env, err := sbxenv.Render(sbxenv.Env{

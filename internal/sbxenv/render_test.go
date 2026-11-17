@@ -187,6 +187,36 @@ func TestDenClaudeKitStartupMergesOnboardingAndBypassConsent(t *testing.T) {
 	}
 }
 
+func TestDenClaudeBuildKitIsTheInstanceKitWithoutSetup(t *testing.T) {
+	build, err := DenClaudeBuildKit(kitImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want map[string]any
+	if err := yaml.Unmarshal(build, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(kit(t, kitImage), &want); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := want["setup"]; !ok {
+		t.Fatal("the instance kit has no setup block to drop")
+	}
+	delete(want, "setup")
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("build kit %v, want the instance kit without setup %v", got, want)
+	}
+	if !strings.HasSuffix(string(build), "\"1\"\n") || strings.HasSuffix(string(build), "\n\n") {
+		t.Errorf("build kit must end with its last line and one newline:\n%q", build[len(build)-20:])
+	}
+}
+
+func TestDenClaudeBuildKitNeedsAnImage(t *testing.T) {
+	if _, err := DenClaudeBuildKit(""); err == nil {
+		t.Error("an empty image must be refused")
+	}
+}
+
 func TestGitFile(t *testing.T) {
 	if got := string(GitFile("/x/.git/worktrees/w")); got != "gitdir: /x/.git/worktrees/w\n" {
 		t.Errorf("got %q", got)
