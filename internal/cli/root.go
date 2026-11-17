@@ -13,6 +13,7 @@ import (
 	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/prompt/huhui"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -29,6 +30,7 @@ type Deps struct {
 	Git    worktree.Git
 	Prompt prompt.Prompter
 	Hub    hub.Catalog
+	Agent  sshagent.Probe
 	IsTTY  func() bool
 	Getwd  func() (string, error)
 	Out    io.Writer
@@ -42,6 +44,7 @@ func SystemDeps() Deps {
 		Git:    worktree.NewGit(),
 		Prompt: huhui.New(),
 		Hub:    hub.New(),
+		Agent:  sshagent.Check,
 		IsTTY:  func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
 		Getwd:  os.Getwd,
 		Out:    os.Stdout,

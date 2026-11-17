@@ -46,6 +46,17 @@ that is not built, no template named anywhere, a missing local [kit](den-yaml.md
 [layer](security.md#layers), `-i` without a terminal, an sbx older than v0.53.0. A refusal names the
 file or the command that fixes it.
 
+**After it creates the VM**, den prints two kinds of alerts on stderr. They do not stop `den up`:
+
+- `warning: the global sbx rule <id> opens <host> to every VM` for each rule of the global sbx
+  policy that sbx did not create, and `allows every host` for a rule that allows every host (as
+  the `allow-all` preset does). See [security.md](security.md#what-the-vm-can-reach).
+- `note: your SSH agent holds no key` or `note: no SSH agent answers at <socket>`, when sbx
+  forwards the SSH agent to the VM and the VM cannot use it. See [ssh.md](ssh.md#check).
+
+den prints them only when it creates the VM, never when it attaches to an existing one. If sbx or
+the SSH agent does not answer within 3 seconds, den prints nothing.
+
 **On an instance that already exists**, den attaches and changes nothing. If the nest's config
 changed since the instance was created, den warns and tells you to run `den rm <instance>` then
 `den up` again. `--only`, `--without`, `-i` and `--repo` on an existing instance are ignored with a

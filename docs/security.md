@@ -56,8 +56,9 @@ The VM reaches only the hosts its network policy allows. The policy has two part
    `sbx policy init balanced`, which allows a list of common development hosts (AI services, package
    registries, GitHub, ...). `allow-all` allows everything: with it, no den setting restricts
    anything. `sbx policy init` is a one-time setup; to change the preset later, run
-   `sbx policy reset` (it stops the running VMs), then `sbx policy init balanced`. den does not check
-   the global policy.
+   `sbx policy reset` (it stops the running VMs), then `sbx policy init balanced`. When `den up`
+   creates a VM, it warns about each global rule that sbx did not create and about a rule that
+   allows every host; it does not change the policy.
 2. **The instance's rules**: the `network.allow` hosts of the global `den.yaml`, the template and the
    nest, plus the hosts that each kit of the instance allows (the `den-claude` kit allows
    `api.anthropic.com:443`; a kit from a template or a profile can add more). See
@@ -81,9 +82,10 @@ sbx policy ls <instance>
 
 **Tighten it:**
 
-- **Rules added by hand.** `sbx policy ls --wide` lists every rule. Rules that sbx created carry an
-  id that starts with `default-`. A `local-policy` rule with any other id was added by hand
-  (`sbx policy allow network <host>`) and opens that host to every VM, den's or not. Remove one with
+- **Rules added by hand.** `sbx policy ls --wide` lists every rule; `den up` names the rules added
+  by hand when it creates a VM. Rules that sbx created carry an id that starts with `default-`. A
+  `local-policy` rule with any other id was added by hand (`sbx policy allow network <host>`) and
+  opens that host to every VM, den's or not. Remove one with
   `sbx policy rm network --id <rule id>`, and put the host in the nest that needs it instead.
 - **Block a host for one instance.** `sbx policy deny network <host> --sandbox <instance>`. A deny
   rule wins over every allow rule.

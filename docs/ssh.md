@@ -57,6 +57,12 @@ sbx exec <instance> ssh-add -l
 `The agent has no identities.` means the agent is empty. A key you add appears in a running VM at
 once; you do not need to remove and create the instance again.
 
+When `den up` creates a VM, it checks the agent that sbx forwards: the socket of
+`ssh.agentSocketPath`, or else the `SSH_AUTH_SOCK` of the shell you run `den` from. It prints
+`note: your SSH agent holds no key` or `note: no SSH agent answers at <socket>` when the VM cannot
+use it. It is a note, not an error: an empty agent is the safe state, and a nest that does not use
+SSH needs no key. With `ssh.agentForwardingEnabled false`, den checks nothing.
+
 ## Load a key
 
 Load only the keys your VMs may use, for example the key of the git server your nests push to:

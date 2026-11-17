@@ -361,6 +361,9 @@ func Up(ctx context.Context, d Deps, o Options, detach bool) error {
 	if err != nil {
 		return err
 	}
+	if p.State != Live {
+		printAlerts(ctx, d, rec.Instance)
+	}
 	for _, n := range template.Notices(ctx, d.Git, p.Resolved.Template) {
 		fmt.Fprintln(d.Err, n)
 	}

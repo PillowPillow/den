@@ -89,7 +89,7 @@ files, or a detached HEAD holding commits no ref contains, unless `--force`. A f
 back the worktrees that call made, without force.
 
 **Every system access is injected through `cli.Deps`** (`internal/cli/root.go`): one `sbx.Runner`
-shared by all commands, plus `Git`, `Hub` (`hub.Catalog`, Docker Hub's official images), `Prompt`, `IsTTY`, `Getwd`, `Out`, `Err`. Hard-wiring any of them
+shared by all commands, plus `Git`, `Hub` (`hub.Catalog`, Docker Hub's official images), `Agent` (`sshagent.Probe`, runs `ssh-add -l`), `Prompt`, `IsTTY`, `Getwd`, `Out`, `Err`. Hard-wiring any of them
 breaks the suite's hermeticity. Read helpers (`sbx.Ls`, `Templates`, `Version`) keep sbx's plain
 argv; `env create`, `env rm`, `rm`, `exec` and `ports` get `--no-input`; `den build`'s `stop` and
 `template save` do not, nor do interactive attaches.

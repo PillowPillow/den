@@ -8,6 +8,7 @@ import (
 	"github.com/PillowPillow/den/internal/nest"
 	"github.com/PillowPillow/den/internal/prompt"
 	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/internal/sshagent"
 	"github.com/PillowPillow/den/internal/worktree"
 )
 
@@ -19,6 +20,7 @@ type Deps struct {
 	DenHome  string
 	Cwd      string
 	Out, Err io.Writer
+	Agent    sshagent.Probe // nil: den does not check the SSH agent
 }
 
 // Options is what the command line asks of one instance.
