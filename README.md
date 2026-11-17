@@ -206,6 +206,9 @@ To update, run the command you installed with again: `brew upgrade --cask den`, 
 - **Bring your Claude configuration** (`CLAUDE.md`, settings, skills): a profile. See
   [docs/den-yaml.md](docs/den-yaml.md#profiles).
 - **Mount several repos, some optional:** see [docs/den-yaml.md](docs/den-yaml.md#repos).
+- **Declare a repo by its git origin, and let den find the clone:** `repos:` keys in a project
+  `den.yaml`, then `den scan ~/src`. See [docs/den-yaml.md](docs/den-yaml.md#repos) and
+  [docs/commands.md](docs/commands.md#den-scan).
 - **Install your tools once for every VM:** build a template. See
   [docs/templates.md](docs/templates.md#build-your-own-template).
 - **Share nests with a team:** a project `den.yaml`. See

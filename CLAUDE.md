@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `den` is a Go CLI that drives `sbx` microVM sandboxes (V2, module `github.com/PillowPillow/den/v2`): it resolves a **nest**
 from a `den.yaml`, generates the `sbxenv.yaml` files `sbx env create` reads, runs Claude Code in the
 VM through a `den-claude` agent kit, and records what it created so `den rm` can undo exactly that.
-Seven commands: `up`, `exec`, `shell`, `ls`, `rm`, `build`, `version`. `~/.den/` is the single
+Eight commands: `up`, `exec`, `shell`, `ls`, `rm`, `build`, `scan`, `version`. `~/.den/` is the single
 source of truth; `DEN_HOME` / `--den-home` redirects it, which is what makes the whole suite
 hermetic. The sbx floor is **v0.53.0** (`sbx.MinVersion`), checked once by `up`, `exec` and `build`
 before their first side effect.
@@ -33,7 +33,7 @@ go test ./internal/instance/ -run TestCreatePassesNoInputForceAndSkipHostCommand
 `state/v2/` keeps the real branch, so nothing re-derives it from the name.
 
 **Config**: `den.yaml` has two kinds, one strict schema (`internal/config`): the global file in the
-den home (the only one allowed `worktrees`, `repos`, `env`, `network`, `profiles`) and a project file found by
+den home (the only one allowed `worktrees`, `env`, `network`, `profiles`) and a project file found by
 walking up from the cwd; both may carry `templates` and `default_template` (a nest without `template:` takes its own file's
 `default_template`, then the global one). Decoding is `KnownFields(true)` everywhere: an unknown key is a load error
 naming the file, never a silence (a silent `network:` typo would empty an allowlist). `nest.Find`
@@ -42,11 +42,25 @@ merges global, template and nest into a `*nest.Resolved`. A nest name declared b
 refused. A **template** is a nest's starting point: a value is a declared `templates.<key>` (project masks global; `repo`/`dir` locates a folder with a `den-template.yaml`, parsed by `config.LoadDefinitions`, paths confined to it) or an official image (a short name completes to `docker.io/docker/sandbox-templates:<name>`). No default exists in code: with none, den refuses and lists Docker Hub's images (`internal/hub`). The `bases` and `agents` keys and `nests.<n>.base` are refused with their replacement named. A **profile** is a named kit list (`profiles:`, global file only) that `nest.Resolve` appends to
 `Kits` after the template's and the nest's; an undefined one is a warning, not a refusal.
 
+**Repo keys carry their origin.** `repos:` is allowed in both files. A project entry is `{origin}` or
+`{path}` (exactly one; a relative path is from that file's folder); a global entry needs a `path`
+(a scalar still is one) and may add an `origin`. `nest.Resolve` (`internal/nest/repos.go`) resolves a
+key's folder by global `path`, then project `path`, then the `den scan` table, and refuses two
+different identities or paths for one key, and a project `origin` against a global `path` without
+`origin` unless a remote of that folder has the identity. `internal/origin` computes the identity
+(`host/path`, lowercased, no scheme, user, port, `.git`); SSH aliases and `insteadOf` are not
+resolved, the remedy is a global `path` plus `origin`. Keys without a folder are collected and
+refused once by `den up`, with their `git clone` lines. `internal/repos` owns the table
+(`state/v2/repos.yaml`, identity to path, written only by `den scan`) and the walk that feeds it
+(reads `.git/config` itself, runs no process, never descends into a clone). `den scan` writes
+additions after confirmation, but a replacement always asks and needs a terminal; it never rewrites a
+`den.yaml`.
+
 **Layout on disk** (all under the den home, none of it read by v1, see the coexistence note below):
 `den.yaml`, `run/<instance>/` (global nests; project nests use
 `<project>/.den/run/<instance>/`), `gen/<instance>/` (egress kit, worktree `.git` files),
 `gen/.templates/<name>/` (a repo template's copy; `.staging-<name>/` is a build's clone), `gen/.build/<name>/` (build files), `build/<name>/`
-(the build VM's scratch workspace), `wt/` (default worktree root) and `state/v2/` (the registry).
+(the build VM's scratch workspace), `wt/` (default worktree root) and `state/v2/` (the registry, with `repos.yaml`, the table `den scan` writes).
 The leading dot on `.templates` and `.build` is deliberate: no sandbox name can start with one, so
 `den rm <name>` can never own them.
 

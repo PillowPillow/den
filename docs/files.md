@@ -13,6 +13,7 @@ image a VM starts from. A **record** is the file in which den notes what it crea
 | Path | Content | Owner |
 |---|---|---|
 | `~/.den/den.yaml` | the global file, see [den-yaml.md](den-yaml.md) | you |
+| `~/.den/state/v2/repos.yaml` | the table `den scan` writes: the folder of each git origin, see [commands.md](commands.md#den-scan) | den |
 | `~/.den/run/<instance>/` | the run dir of an instance of a global nest: the generated `sbxenv.yaml`; it is the VM's workspace | den |
 | `~/.den/gen/<instance>/` | the instance's generated kits (network allowlist, `den-claude` with the repo map) and, with `-w`, the read-only `.git` files of its worktrees | den |
 | `~/.den/gen/.templates/<name>/` | den's clone of a `repo` template (a build in progress uses `.staging-<name>/`) | den |

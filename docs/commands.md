@@ -1,6 +1,6 @@
 # Commands
 
-den has seven commands. Every command takes `--den-home <dir>` (or `$DEN_HOME`) to use another den
+den has eight commands. Every command takes `--den-home <dir>` (or `$DEN_HOME`) to use another den
 home (the folder that holds den's config and state) than `~/.den`.
 
 | Command | What it does |
@@ -11,6 +11,7 @@ home (the folder that holds den's config and state) than `~/.den`.
 | [`den ls`](#den-ls) | list the instances den created |
 | [`den rm <instance>`](#den-rm) | remove an instance: its VM, the worktrees den made, its files |
 | [`den build <template>`](#den-build) | build a template, see [templates.md](templates.md) |
+| [`den scan [folder]`](#den-scan) | find the git clones under a folder and record where each origin is cloned |
 | [`den version`](#den-version) | print den's version |
 
 A **nest** is what you declare in a `den.yaml` ([den-yaml.md](den-yaml.md)). An **instance** is the
@@ -155,6 +156,54 @@ den build <template> [--pull] [--yes] [--force]
 ```
 
 Builds a template declared in a `den.yaml`. See [templates.md](templates.md#den-build).
+
+## `den scan`
+
+```bash
+den scan [folder] [--yes]
+```
+
+Finds the git clones under `folder` (the current directory by default) and records, in
+`~/.den/state/v2/repos.yaml`, the folder of each origin. `den up` reads that table for the
+[repo keys](den-yaml.md#repos) that a `den.yaml` declares with an `origin` and no folder. `den scan`
+never rewrites a `den.yaml`.
+
+**What it walks.** Up to 20 levels down, without following symlinks. It skips the den home,
+`~/Library`, `node_modules`, `vendor` and folders that start with a dot, and does not descend into a
+clone. It reads each clone's `.git/config` itself, and every remote counts: a clone is known by the
+identity of each of its remotes ([identity](den-yaml.md#repos) ignores scheme, user, port and `.git`).
+It runs no process. A folder inside the den home is refused: it holds den's own files, not your clones.
+A path that holds a control character is skipped, and so is a `.git/config` that is not a regular
+file or is over 1 MiB. Run from a clone, or from inside one, `den scan` names the parent folder to
+scan instead.
+
+**What it prints**, in this order:
+
+- `replace <identity>: <old> → <new>`: the table held another folder for that identity, and it is
+  gone or no longer holds it;
+- `duplicate <identity>: using <path>, not <others>`: several clones carry it; den keeps the table's
+  folder when it still holds the identity, else picks the clone whose `origin` remote has the
+  identity, else the first path;
+- `add <identity> → <path>` for each origin that a `den.yaml` you can see declares, then
+  `and <n> other clones`;
+- `stale <identity>: <path> no longer holds it`: reported and kept, never deleted;
+- after the write, `still missing: <key> (<file>): git clone <origin>` for each declared origin with
+  no folder yet.
+
+**Confirmation.**
+
+| Run | Additions | Replacements |
+|---|---|---|
+| in a terminal | one question for everything | one question for everything |
+| in a terminal, `--yes` | written without a question | still asks |
+| no terminal, `--yes` | written | listed as `not written (needs a terminal)` |
+| no terminal, no `--yes` | refused | refused |
+
+A replacement moves the folder an existing nest mounts, so `--yes` does not cover it.
+
+An SSH alias (`Host gitlab-perso`) or git's `insteadOf` gives a remote another identity than the
+URL in the `den.yaml`: `den scan` does not find that clone. Put the key in your global `den.yaml`
+with a `path` and the real `origin` instead ([den-yaml.md](den-yaml.md#repos)).
 
 ## `den version`
 
