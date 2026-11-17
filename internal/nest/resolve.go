@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/template"
+	"github.com/PillowPillow/den/v2/internal/config"
+	"github.com/PillowPillow/den/v2/internal/template"
 )
 
 // Repo.Key is the global `repos:` key the path came from, "" for a path written in the nest.

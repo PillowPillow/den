@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/sbx"
-	"github.com/PillowPillow/den/internal/sshagent"
+	"github.com/PillowPillow/den/v2/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/sshagent"
 )
 
 func globalAllow(id string, resources ...string) sbx.Rule {

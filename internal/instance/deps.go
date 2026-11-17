@@ -5,11 +5,11 @@ package instance
 import (
 	"io"
 
-	"github.com/PillowPillow/den/internal/nest"
-	"github.com/PillowPillow/den/internal/prompt"
-	"github.com/PillowPillow/den/internal/sbx"
-	"github.com/PillowPillow/den/internal/sshagent"
-	"github.com/PillowPillow/den/internal/worktree"
+	"github.com/PillowPillow/den/v2/internal/nest"
+	"github.com/PillowPillow/den/v2/internal/prompt"
+	"github.com/PillowPillow/den/v2/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/sshagent"
+	"github.com/PillowPillow/den/v2/internal/worktree"
 )
 
 // Deps is every system access an instance command needs, injected so tests stay hermetic.

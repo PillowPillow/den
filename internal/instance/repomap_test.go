@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/nest"
-	"github.com/PillowPillow/den/internal/registry"
-	"github.com/PillowPillow/den/internal/sbxenv"
+	"github.com/PillowPillow/den/v2/internal/nest"
+	"github.com/PillowPillow/den/v2/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/sbxenv"
 )
 
 // mapFixture declares repos a, b, c, d in the global repos: and a project nest am using a (required),

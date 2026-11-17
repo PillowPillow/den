@@ -3,7 +3,7 @@ package cli
 import (
 	"errors"
 
-	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/sbx"
 )
 
 // ExitStatus maps an error returned by Execute onto den's process status, and

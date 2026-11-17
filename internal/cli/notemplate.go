@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/PillowPillow/den/internal/hub"
-	"github.com/PillowPillow/den/internal/template"
+	"github.com/PillowPillow/den/v2/internal/hub"
+	"github.com/PillowPillow/den/v2/internal/template"
 )
 
 // explainNoTemplate appends the official images to a missing-template error: the remedy is to name

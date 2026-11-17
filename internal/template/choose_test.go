@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/v2/internal/config"
 )
 
 func loaded(path string, global bool, f config.File) *config.Loaded {

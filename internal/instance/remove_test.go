@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PillowPillow/den/internal/registry"
-	"github.com/PillowPillow/den/internal/sbx"
-	"github.com/PillowPillow/den/internal/worktree"
+	"github.com/PillowPillow/den/v2/internal/registry"
+	"github.com/PillowPillow/den/v2/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/worktree"
 )
 
 // commitFile commits name with body at the tip of repo's current branch.

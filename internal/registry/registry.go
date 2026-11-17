@@ -15,8 +15,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/PillowPillow/den/internal/config"
-	"github.com/PillowPillow/den/internal/sbx"
+	"github.com/PillowPillow/den/v2/internal/config"
+	"github.com/PillowPillow/den/v2/internal/sbx"
 	"gopkg.in/yaml.v3"
 )
 

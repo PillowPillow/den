@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/v2/internal/config"
 )
 
 // OfficialRepository completes a short image name.

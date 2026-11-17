@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/PillowPillow/den/internal/cli"
+	"github.com/PillowPillow/den/v2/internal/cli"
 )
 
 func main() {

@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/PillowPillow/den/internal/config"
+	"github.com/PillowPillow/den/v2/internal/config"
 )
 
 // StepScript is one entry of `build.steps`: its path, kept for the failure
