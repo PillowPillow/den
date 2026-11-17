@@ -1,0 +1,159 @@
+# Security model
+
+den runs Claude Code **without permission prompts** inside an sbx microVM. The VM is the boundary:
+den adds no isolation of its own beyond what sbx enforces. This page says what a VM can do on your
+machine, what den protects, and what it accepts.
+
+Words used here: a **nest** is what you declare in a `den.yaml`; an **instance** is the VM den
+creates from it; a **kit** is an sbx package of files, network rules and settings added to a VM; a
+**template** is the image a VM starts from. See the [README](../README.md#words-den-uses).
+
+- [What the VM can do](#what-the-vm-can-do)
+- [What the VM can write](#what-the-vm-can-write)
+- [What the VM can reach](#what-the-vm-can-reach)
+- [What the VM can sign](#what-the-vm-can-sign)
+- [Secrets](#secrets)
+- [What den protects](#what-den-protects)
+- [Layers](#layers)
+- [Templates from someone else](#templates-from-someone-else)
+- [Accepted residual risks](#accepted-residual-risks)
+
+## What the VM can do
+
+den starts Claude with `--dangerously-skip-permissions`: Claude runs every command and edits every
+file it decides to, without asking. Anything that can steer Claude can steer those commands: a
+prompt, a file in a repo, a web page, a package it installs. Assume that whatever is in the VM can be
+read, changed or sent to a host the VM may reach.
+
+The VM sees only what sbx gives it: the folders den mounts, the network its policy allows, your SSH
+agent, the environment variables of the nest (`env:`), and the sbx integrations that are on.
+`sbx settings ls` lists the integrations; for example `browser.enabled` (on by default) lets a
+process in the VM open a URL in your host browser. Turn one off with
+`sbx settings set <key> false`. Ports you publish (`ports:`) expose a server of the VM on your Mac.
+
+## What the VM can write
+
+**Every repo of the nest is mounted read-write.** A VM can therefore change any file that your Mac
+later runs or trusts:
+
+- `.git/hooks` and `.git/config`: git on your Mac runs those hooks the next time you commit there.
+  With `-w` the worktree's own `.git` file is read-only, but the repo's git directory is mounted
+  read-write at `/den-git/<repo>` so that Claude can commit: `-w` does not remove this risk.
+- any script you run on the host: `package.json` scripts, a `Taskfile.yml` or `Makefile`, `.envrc`,
+  `.claude/settings.json` hooks and `CLAUDE.md` read by a Claude Code on your Mac.
+
+This is an accepted risk. After a session you do not trust, review the diff of the repo **and** its
+`.git/hooks` and `.git/config` before you run anything there.
+
+The VM can also write in its run dir (deleted by `den rm`), in any folder you add with `--repo`, and,
+for a nest with `start: .`, in the whole project folder.
+
+## What the VM can reach
+
+The VM reaches only the hosts its network policy allows. The policy has two parts:
+
+1. **The global sbx policy** (`local-policy`), shared by every sbx VM on the machine. den recommends
+   `sbx policy init balanced`, which allows a list of common development hosts (AI services, package
+   registries, GitHub, ...). `allow-all` allows everything: with it, no den setting restricts
+   anything. `sbx policy init` is a one-time setup; to change the preset later, run
+   `sbx policy reset` (it stops the running VMs), then `sbx policy init balanced`. den does not check
+   the global policy.
+2. **The instance's rules**: the `network.allow` hosts of the global `den.yaml`, the template and the
+   nest, plus the hosts that each kit of the instance allows (the `den-claude` kit allows
+   `api.anthropic.com`; a kit from a template or a profile can add more). See
+   [den-yaml.md](den-yaml.md#network).
+
+den adds hosts; it never removes a host the global policy allows. A host without a port allows every
+port.
+
+**Check what an instance reaches:**
+
+```bash
+sbx policy check network git.example.com:22 --sandbox <instance>   # Allowed or Denied
+sbx policy ls <instance>                                           # a summary of its policies
+```
+
+**Tighten it:**
+
+- **Rules added by hand.** `sbx policy ls --wide` lists every rule. Rules that sbx created carry an
+  id that starts with `default-`. A `local-policy` rule with any other id was added by hand
+  (`sbx policy allow network <host>`) and opens that host to every VM, den's or not. Remove one with
+  `sbx policy rm network --id <rule id>`, and put the host in the nest that needs it instead.
+- **Block a host for one instance.** `sbx policy deny network <host> --sandbox <instance>`. A deny
+  rule wins over every allow rule.
+
+## What the VM can sign
+
+The VM has no SSH key. sbx forwards your host's SSH agent to every running VM, and the VM can ask it
+to sign with every key it holds. All running VMs share the same agent. The network policy limits
+where a VM can use a signature. Turn forwarding off for every VM with
+`sbx settings set ssh.agentForwardingEnabled false`. See [ssh.md](ssh.md).
+
+## Secrets
+
+The recommended way to log Claude in stores a token with `sbx secret set-custom` (see the
+[README](../README.md#log-claude-in)). sbx keeps the token on your Mac and puts a placeholder in the
+VM; the sbx proxy replaces the placeholder in requests to `api.anthropic.com`. The token never
+enters the VM, but the VM can use it toward `api.anthropic.com` for as long as it runs. Any value in
+`env:` does enter the VM.
+
+## What den protects
+
+- **No lifecycle command from a VM.** den passes `--skip-host-commands` to every `sbx env create` and
+  `sbx env rm`. A `lifecycle:` command never runs on your Mac, and a command-backed MCP server (an
+  MCP server that sbx would start as a command on your Mac) is disabled. This does **not** cover
+  command-based secrets: see [Layers](#layers).
+- **Read-only config inside the VM.** Some files decide what the next create gives a VM: the
+  `den.yaml` files (den reads them), the local kits and the [layers](#layers) (sbx reads them at each
+  create and remove), the template's build scripts. A kit holds a network allowlist. When one of
+  these files lies in a folder the VM can write (a repo, the project folder), den mounts it read-only
+  over that folder, at the path the VM sees. The host enforces this even against root in the VM.
+  den refuses a file whose path goes through a symlink inside a mounted folder (the VM could replace
+  the link): write its real path.
+- **Records, not guesses.** den records what it created before it creates it, and `den rm` removes
+  only that. It never adopts or removes a VM it did not create. If the generated `sbxenv.yaml` or a
+  layer changed since the create, `den rm` removes the VM with `sbx rm --force` instead of
+  `sbx env rm`, so sbx does not act on a file the VM may have rewritten.
+
+## Layers
+
+`layers:` on a nest (in either `den.yaml`) lists extra `sbxenv.yaml` files that sbx stacks after the
+one den generates. This is how a nest reaches sbx fields den does not model: `secrets:`, `mcp:`,
+`sandboxOptions.memory`, and so on. den never parses a layer; sbx merges it, and a later file wins
+over den's.
+
+```yaml
+nests:
+  api:
+    layers: [~/.den/layers/api.yaml]
+```
+
+**A layer has full power over the VM.** It can add mounts, make a protected file writable again,
+and declare command-based secrets, which sbx runs **on your Mac** at create time even with
+`--skip-host-commands`. Treat a layer like a script you run: write it yourself, keep it outside your
+repos (`~/.den/layers/`), and keep any helper it runs outside every folder a VM can write. A layer
+inside a mounted folder is mounted read-only, like the files above. The schema of `sbxenv.yaml` is
+sbx's, and `sbx env` is experimental in sbx v0.53.0.
+
+## Templates from someone else
+
+`den build` on a template from a git repository (`repo:`) runs that repository's scripts in a build
+VM, and the template's kits and network rules then apply to every instance that uses it. den asks
+before it clones a URL that only a project `den.yaml` declares. Read a template repository before
+you build it, as you would read a script before you run it. See [templates.md](templates.md).
+
+## Accepted residual risks
+
+- A VM changes files in every repo it mounts, `.git` included, that your Mac later runs. See
+  [What the VM can write](#what-the-vm-can-write).
+- The read-only mount holds only inside the instance that reads the file. Any other VM that mounts
+  the same folder read-write (another nest that shares the repo, or an sbx VM den did not create)
+  can still write it.
+- A VM can create a **new** `den.yaml` in a repo it mounts. den takes the first `den.yaml` it finds
+  walking up from the current directory, so running `den` from inside that repo would read the
+  VM's file (its repos, kits and layers). Run `den` from outside the repos, or check for a
+  `den.yaml` you did not write.
+- A VM can sign with every key in your SSH agent, toward every host its policy allows. See
+  [ssh.md](ssh.md#accepted-residual-risks).
+- A host in the global sbx policy or in the global `den.yaml` is open to every VM.
+- The VM can use the Claude token toward `api.anthropic.com` while it runs.
