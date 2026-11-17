@@ -10,6 +10,7 @@ and state, `~/.den` by default. See the [README](../README.md#words-den-uses) fo
 - [Rules for both files](#rules-for-both-files)
 - [Every key](#every-key)
 - [Nests](#nests)
+- [Repos](#repos)
 - [Network](#network)
 - [Ports](#ports)
 - [Profiles](#profiles)
@@ -17,8 +18,8 @@ and state, `~/.den` by default. See the [README](../README.md#words-den-uses) fo
 ## Global file
 
 `~/.den/den.yaml` describes your machine. `--den-home <dir>` or `$DEN_HOME` moves the whole den home,
-this file included. The global file is the only one that may carry `worktrees`, `repos`, `env`,
-`network` and `profiles`.
+this file included. The global file is the only one that may carry `worktrees`, `env`, `network` and
+`profiles`. Both kinds of file may carry `repos`, with different entries (see [Repos](#repos)).
 
 ## Project file
 
@@ -27,22 +28,26 @@ it, and a teammate runs `den up <nest>` from a clone. den finds it by walking up
 directory to `/`, and takes the first `den.yaml` that is not the global file. A project file that
 carries a global-only key is refused.
 
-The repos of a teammate are rarely at the same absolute paths as yours. Two ways keep a project
+The repos of a teammate are rarely at the same absolute paths as yours. Three ways keep a project
 file portable:
 
 - a path relative to the project file (`path: .`, `path: ../api`);
-- a `key:` that each teammate defines in their own global `repos:`.
+- a `key:` that each teammate defines in their own global `repos:`;
+- a `key:` that the project file declares with the repo's git `origin`: den finds the clone on each
+  machine, see [Repos](#repos).
 
 ```yaml
 # <project>/den.yaml, committed
 schema: 1
 default_template: claude-code-docker
 profile: perso                 # optional; a project nest ignores the global file's `profile:`
+repos:
+  shared-lib: {origin: git@github.com:acme/shared-lib.git}   # den scan finds the clone
 nests:
   shop:
     repos:
       - path: .                # this project
-      - key: shared-lib        # each teammate sets repos.shared-lib in ~/.den/den.yaml
+      - key: shared-lib
     network:
       allow: [registry.npmjs.org]
 ```
@@ -72,12 +77,13 @@ declare the same nest name are refused.
 schema: 1                      # required, must be 1
 
 # --- global file only -------------------------------------------------------
+# (`repos:` is in both kinds of file, with other entries: see "Repos")
 worktrees:
   layout: central              # central (default) | per-repo, see docs/commands.md#worktrees
   root: ~/.den/wt              # default <den home>/wt; used by `central`
-repos:                         # short names a nest can refer to with `key:`
-  api: ~/src/api
-  web: ~/src/web
+repos:                         # global file: every key has a `path`, `origin` is optional
+  api: ~/src/api               # a scalar is a path
+  web: {path: ~/src/web, origin: git@github.com:acme/web.git}
 env:                           # environment variables of every instance
   TZ: Europe/Paris
 network:
@@ -100,7 +106,7 @@ nests:
     template: node             # a declared template or an official image; default `default_template`
     profile: perso             # optional; wins over the file's `profile`
     repos:                     # required, at least one
-      - key: api               # a key of the global `repos`
+      - key: api               # a key of `repos`, see "Repos"
       - path: ~/src/api-docs   # or a host path; exactly one of key and path
         optional: true         # see "Optional repos"
     kits: []                   # extra kits, added after the template's
@@ -135,14 +141,61 @@ den reports them when it checks the name.
 ### Repos
 
 Each repo is mounted read-write in the VM **at the same absolute path** it has on the host, so a
-path means the same file on both sides. Two repos with the same folder name are refused. A missing repo folder is refused before anything is created.
+path means the same file on both sides. A missing repo folder is refused before anything is created.
 
-A repo entry is either `key: <name>`, a key of the global `repos:`, or `path: <folder>`.
+A repo entry of a nest is either `key: <name>` or `path: <folder>`. A **key** is declared in a
+`repos:` map, and the key is the repo's name everywhere: `/den-git/<key>` in the VM under `-w`,
+`start:`, `--only` and `--without`, and the repo map. A key is a legal folder name: no `/`, not `.`
+or `..`, no leading dot. A `path:` entry is named by its folder name.
+
+In every layout, two repos of one nest with the same name are refused (two `path:` entries with the
+same folder name, or a key and a `path:` entry of that name), and so are two entries of one nest on
+the same folder.
+
+**Declaring keys.** Each entry says where the repo is, or how to find it:
+
+| File | Entry | Meaning |
+|---|---|---|
+| project | `key: {origin: <git URL>}` | the repo is whichever clone of that URL is on the machine |
+| project | `key: {path: <folder>}` | a folder, relative to the project file |
+| global | `key: <folder>` or `key: {path: <folder>}` | the folder on this machine |
+| global | `key: {path: <folder>, origin: <git URL>}` | the same, and the repo's identity is stated |
+
+A project entry has exactly one of `origin` and `path`. A global entry needs a `path`; `origin` alone
+is refused there. A key in both files is one repo: two different origins, or two different paths, for
+the same key are refused.
+
+**Finding the folder.** For a key, den uses the first of:
+
+1. the `path` in the global file;
+2. the `path` in the project file;
+3. the table `den scan` wrote (`~/.den/state/v2/repos.yaml`), which maps an origin to a folder.
+
+When a project `origin` meets a global `path` without `origin`, den refuses unless a remote of that
+folder has the same identity: a teammate's key must not mount a different repo of yours. A global key
+with both `path` and `origin` is trusted as written.
+
+An **identity** is `host/path` of the URL, lowercase, without scheme, user, password, port, `.git` and
+trailing `/`: `git@github.com:Acme/Web.git` and `https://github.com/acme/web` are the same repo. An
+SSH alias (`Host gitlab-perso` in `~/.ssh/config`) and git's `insteadOf` are not understood: the
+remote then has another identity. Put the key in your global file with a `path` (and the real
+`origin`), and den uses that folder.
+
+**Keys without a folder.** `den up` lists every key that has none at once, with a `git clone` line
+for each, and names `den scan`. An optional key without a folder is dropped with a warning.
+
+**Folder names under `-w`.** A worktree keeps the folder name of its clone. With the `central`
+layout, two repos of a nest with the same folder name would land on one worktree path: den refuses.
+
+### `den scan`
+
+`den scan [folder]` finds the clones for you and records them in the table `~/.den/state/v2/repos.yaml`
+(`identity: path`). It never rewrites a `den.yaml`. See [commands.md](commands.md#den-scan).
 
 ### Optional repos
 
-A repo with `optional: true` is still mounted by default. Its name is its folder name (`api-docs`
-for `~/src/api-docs`). Pick per run; `--only` and `--without` take a comma-separated list
+A repo with `optional: true` is still mounted by default. Its name is its key, or its folder name
+for a `path:` entry (`api-docs` for `~/src/api-docs`). Pick per run; `--only` and `--without` take a comma-separated list
 (`--without api-docs,web-docs`), cannot be combined, and refuse a name that is not optional:
 
 | You run | Optional repos mounted |
@@ -153,7 +206,7 @@ for `~/src/api-docs`). Pick per run; `--only` and `--without` take a comma-separ
 | `den up api -i` | the ones you tick in a checklist |
 
 The non-optional repos are always mounted. A missing optional folder is refused like any repo:
-leave it out with `--without`. An optional `key:` that your global `repos:` does not define is
+leave it out with `--without`. An optional `key:` that no `repos:` defines is
 skipped with a warning. The selection is fixed when the instance is created; on an existing
 instance, running or stopped, a selection flag is ignored with a warning.
 
@@ -163,13 +216,15 @@ whole life.
 ### Start folder
 
 `start:` is the folder Claude starts in: `<repo>` or `<repo>/<sub folder>`, where `<repo>` is the
-repo's folder name. Empty means the first repo. In a project file, `start: .` means the project
+repo's key, or its folder name for a `path:` entry. Empty means the first repo. In a project file, `start: .` means the project
 folder. `--workdir <vm path>` overrides it for one command.
 
 ### Repo map
 
 At each create, den writes the instance's repo map into the VM: the mounted repos (with their
-branch under `-w`), the nest's optional repos left out, and the other keys of the global `repos:`.
+branch under `-w`), the nest's optional repos left out, and the machine's other repos: the keys of
+the global `repos:`, then the clones of the `den scan` table that no global key points to, under
+their folder name. A folder that is gone is left out.
 Claude loads it from `~/.claude/rules/den-instance.md` in every session. Scripts read the same map
 as JSON from `$DEN_REPOS` (`/home/agent/.den/repos.json`). The map never changes for the life of the
 VM, like its mounts: to add a repo, run `den rm <instance>`, then `den up <nest> --repo <path>`.
