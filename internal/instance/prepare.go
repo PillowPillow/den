@@ -102,6 +102,10 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if state == Live {
 		return attachPlan(p, o)
 	}
+	// Checked before the selection so -i never asks for repos only to refuse afterwards.
+	if _, ok := res.Env[sbxenv.RepoMapEnv]; ok {
+		return nil, fmt.Errorf("`%s` is set by den in every instance — remove it from `env:` in %s or in nest %s of %s", sbxenv.RepoMapEnv, res.GlobalFile, res.Name, res.File.Path)
+	}
 
 	repos, err := nest.Select(ctx, res, o.Selection, d.Prompt)
 	if err != nil {

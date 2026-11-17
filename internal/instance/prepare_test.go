@@ -1057,3 +1057,26 @@ func TestUpNoticeRespectsItsDeadline(t *testing.T) {
 		t.Errorf("stderr %q has a notice", stderr.String())
 	}
 }
+
+func (f *fixture) globalWithEnv(t *testing.T, env string, nests map[string]string) string {
+	t.Helper()
+	return writeFile(t, filepath.Join(f.home, "den.yaml"), strings.Replace(denYAML(f.templates, nests), "nests:\n", "env:\n  "+env+"\nnests:\n", 1))
+}
+
+func TestPrepareRefusesDenReposInEnv(t *testing.T) {
+	f := newFixture(t)
+	path := f.globalWithEnv(t, "DEN_REPOS: x", map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+	prepareErr(t, f, Options{Nest: "am"}, "DEN_REPOS", path, "remove it")
+}
+
+func TestPrepareAttachesLiveDespiteDenReposInEnv(t *testing.T) {
+	f := newFixture(t)
+	nests := map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))}
+	f.global(t, nests)
+	record(t, f.home, mustPrepare(t, f, Options{Nest: "am"}))
+	f.globalWithEnv(t, "DEN_REPOS: x", nests)
+	f.live("am")
+	if p := mustPrepare(t, f, Options{Nest: "am"}); p.State != Live {
+		t.Fatalf("state %v, want Live", p.State)
+	}
+}
