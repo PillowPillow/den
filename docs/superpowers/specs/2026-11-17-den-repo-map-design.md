@@ -1,6 +1,6 @@
 # den V2 — carte des repos par instance
 
-Date : 2026-11-17. Branche : `v2`. Statut : proposé.
+Date : 2026-11-17. Branche : `v2`. Statut : approuvé le 2026-11-17 (fiche `2026-11-17-den-repo-map-validation.md`, 15 lignes acceptées ; la fiche gagne sur ce document).
 
 ## 1. Intention
 
