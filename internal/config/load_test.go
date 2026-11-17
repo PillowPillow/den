@@ -46,7 +46,7 @@ func TestLoadRejectsAnUnknownKey(t *testing.T) {
 }
 
 func TestLoadRejectsGlobalKeysInAProjectFile(t *testing.T) {
-	for _, key := range []string{"worktrees: {layout: central}", "repos: {a: /x}", "env: {A: b}", "network: {allow: [x.io]}"} {
+	for _, key := range []string{"worktrees: {layout: central}", "env: {A: b}", "network: {allow: [x.io]}"} {
 		mustFail(t, minimalNest+key+"\n", false, strings.SplitN(key, ":", 2)[0], "move it to")
 	}
 }
@@ -197,7 +197,7 @@ func TestLoadGlobalReadsTheFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l.File.Repos["a"] != "/x" {
+	if l.File.Repos["a"].Path != "/x" {
 		t.Errorf("repos = %v", l.File.Repos)
 	}
 }
@@ -329,4 +329,83 @@ nests:
 	if err.Error() != want {
 		t.Errorf("error\n%s\nwant\n%s", err, want)
 	}
+}
+
+func loadRepos(t *testing.T, global bool, repos string) *Loaded {
+	t.Helper()
+	p := writeFile(t, t.TempDir(), "den.yaml", "schema: 1\nrepos:\n"+repos)
+	l, err := Load(p, global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+func TestGlobalReposScalarStillLoads(t *testing.T) {
+	l := loadRepos(t, true, "  js.box: /x/js.box\n")
+	if got, want := l.File.Repos["js.box"], (RepoDecl{Path: "/x/js.box"}); got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestGlobalRepoMayCarryOriginAndPath(t *testing.T) {
+	l := loadRepos(t, true, "  api: {origin: 'git@github.com:acme/api.git', path: /src/api}\n")
+	if got := l.File.Repos["api"]; got.Origin != "git@github.com:acme/api.git" || got.Path != "/src/api" {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestGlobalRepoNeedsPath(t *testing.T) {
+	mustFail(t, "schema: 1\nrepos:\n  api: {origin: 'git@github.com:acme/api.git'}\n", true, "repos.api", "set `path`")
+}
+
+func TestProjectReposNeedExactlyOneOfOriginAndPath(t *testing.T) {
+	for _, decl := range []string{"{}", "{origin: 'git@github.com:acme/api.git', path: ./api}"} {
+		mustFail(t, "schema: 1\nrepos:\n  api: "+decl+"\n", false, "repos.api: set exactly one of `origin` and `path`")
+	}
+}
+
+func TestProjectReposAcceptOriginOrPath(t *testing.T) {
+	l := loadRepos(t, false, "  api: {origin: 'https://github.com/acme/api.git'}\n  scratch: ./s\n")
+	if l.File.Repos["api"].Origin == "" || l.File.Repos["scratch"].Path != filepath.Join(l.Dir, "s") {
+		t.Errorf("got %+v", l.File.Repos)
+	}
+}
+
+func TestProjectReposRelativePathIsAnchored(t *testing.T) {
+	l := loadRepos(t, false, "  scratch: {path: ../scratch}\n")
+	if got, want := l.File.Repos["scratch"].Path, filepath.Join(filepath.Dir(l.Dir), "scratch"); got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+}
+
+func TestReposRefusesBadOrigin(t *testing.T) {
+	mustFail(t, "schema: 1\nrepos:\n  api: {origin: /local}\n", false, "repos.api.origin: not a git remote URL")
+}
+
+func TestReposBadOriginSaysItOnce(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "den.yaml", "schema: 1\nrepos:\n  api: {origin: /local}\n")
+	_, err := Load(p, false)
+	if err == nil || strings.Count(err.Error(), "not a git remote URL") != 1 {
+		t.Fatalf("error %v, want `not a git remote URL` once", err)
+	}
+}
+
+func TestReposRefusesADuplicateField(t *testing.T) {
+	for _, decl := range []string{
+		"{origin: 'https://github.com/acme/a.git', origin: 'https://github.com/acme/b.git'}",
+		"{path: ./a, path: ./b}",
+	} {
+		mustFail(t, "schema: 1\nrepos:\n  api: "+decl+"\n", false, "repos entry", "twice")
+	}
+}
+
+func TestReposRefusesBadKey(t *testing.T) {
+	for _, key := range []string{"a/b", ".x", ".."} {
+		mustFail(t, "schema: 1\nrepos:\n  "+key+": /x\n", true, "repos."+key)
+	}
+}
+
+func TestReposRefusesUnknownField(t *testing.T) {
+	mustFail(t, "schema: 1\nrepos:\n  api: {origin: 'git@github.com:acme/api.git', url: x}\n", false, "url")
 }
