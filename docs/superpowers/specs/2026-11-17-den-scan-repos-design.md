@@ -2,6 +2,7 @@
 
 Date : 2026-11-17. Branche : `v2`. Taille : projet. Statut : approuvé le 2026-11-17 (fiche
 `2026-11-17-den-scan-repos-validation.md`, 35 lignes acceptées ; la fiche gagne sur ce document).
+Amendé le 2026-11-19 après la revue de la PR #102 (§9) : sur les points du §9, ce document gagne sur la fiche.
 Remplace la décision D1 de `2026-11-17-den-repo-map-design.md` (« la seule correspondance clé → chemin est
 `repos:` du global, écrit à la main ») et son non-but « découvrir des repos automatiquement ».
 
@@ -29,14 +30,21 @@ l'origine entrerait en collision.
 - U9. Alias SSH et `insteadOf` : non supportés pour le moment.
 - U10. La commande s'appelle `den scan`.
 
+Décisions du 2026-11-19 (revue de la PR #102) :
+
+- U11. Une clé sans chemin est un avertissement, pas un refus : `den up` la signale et demande confirmation ;
+  si l'utilisateur valide, l'instance démarre sans elle (§6.3, étape 4).
+- U12. `--yes` de `den scan` ne change pas : le doublon planté qui gagne au premier scan reste un résidu
+  accepté, documenté dans `docs/commands.md` (§7).
+
 ## 3. Buts, non-buts, anti-buts
 
 Buts :
 - G1. Un `den.yaml` de projet est portable : clés et origines, aucun chemin propre à un poste sauf les
   `path:` choisis exprès. Une clé donne le même `/den-git/<clé>`, le même `start:` et le même `wt/` partout.
 - G2. `den scan [dossier]` remplit la table sans édition manuelle.
-- G3. `den up` sur une origine sans chemin refuse, liste en une fois toutes les origines manquantes avec leur
-  ligne `git clone`, et nomme `den scan` pour celles déjà clonées.
+- G3. `den up` sur une origine sans chemin liste en une fois toutes les origines manquantes avec leur
+  ligne `git clone`, nomme `den scan` pour celles déjà clonées, puis demande s'il démarre sans elles (U11).
 - G4. La liste « Machine » de la carte des repos d'une VM continue de lister les repos du poste qu'aucun
   nest ne monte.
 - G5. Le `~/.den/den.yaml` actuel de l'utilisateur (36 entrées `clé: /chemin`) se charge sans modification.
@@ -138,9 +146,20 @@ Portée : le fichier qui déclare le nest et le global.
    de clé que l'utilisateur emploie pour un autre repo monterait ce repo sans erreur. Un global qui porte
    `path` **et** `origin` de même identité n'est pas vérifié : c'est l'utilisateur qui l'affirme, et c'est le
    remède d'un alias SSH, dont le remote ne donne pas la bonne identité.
-4. **Absente.** Toutes les clés sans chemin du nest sont réunies dans un seul refus (G3), chacune avec
-   `git clone <origine>`, puis « déjà cloné : `den scan <dossier où vivent vos clones>` ». Une clé
-   `optional` absente reste un avertissement.
+4. **Absente.** Toutes les clés sans chemin du nest sont réunies dans une seule liste (G3), chacune avec
+   `git clone <origine>`, puis « déjà cloné : `den scan <dossier où vivent vos clones>` ». Est absente
+   aussi une clé dont l'entrée de la table pointe un dossier qui n'est plus un clone de cette identité
+   (§6.6). `nest.Resolve` ne refuse pas : il range la liste dans `Resolved.MissingErr`, et `Prepare`
+   décide une fois l'état de l'instance connu (U11) :
+   - instance vivante : un avertissement, sans question, puisque ses montages sont fixés à sa création ;
+   - création ou recreate sur un TTY : la liste sur stderr, puis « start <instance> without … ? », posée
+     après toutes les autres vérifications. Oui : l'instance démarre sans ces repos. Non : rien n'est créé ;
+   - hors TTY, et toujours pour `den exec` qui ne demande jamais : refus, avec la liste ;
+   - un `start:` qui ne trouve plus de dossier parce qu'il visait une clé absente : refus qui nomme la liste.
+
+   Les clés absentes entrent dans l'empreinte de configuration (seulement quand il y en a, pour ne pas
+   déplacer celle des autres instances) : une fois la clé clonée, `den up` sur l'instance vivante signale
+   la dérive. Une clé `optional` absente reste un avertissement, sans question.
 
 - `Repo.Name` d'une entrée `key:` = la clé ; d'une entrée `path:` du nest = le nom du dossier, comme
   aujourd'hui.
@@ -175,8 +194,11 @@ est stockée, jamais d'identifiant ni de jeton. `state/` n'est jamais purgé.
    - ne suit aucun lien symbolique ;
    - saute le dossier de den (`DEN_HOME`), `~/Library`, `node_modules`, `vendor`, et tout dossier dont le nom
      commence par un point ;
-   - reconnaît un clone à un **dossier** `.git` et ne descend pas dans un clone ; un fichier `.git`
-     (worktree, sous-module) n'est pas un clone ;
+   - reconnaît un clone à un **dossier** `.git` et ne descend pas dans un clone ; un fichier ou un lien
+     `.git` (worktree, sous-module) n'est pas un clone, et le parcours n'y descend pas non plus : un
+     worktree est monté en écriture dans une VM, qui pourrait y planter un faux clone ;
+   - ignore un chemin qui contient un caractère que `unicode.IsPrint` refuse (contrôle, format, bidi) ou
+     de l'UTF-8 invalide : ce nom serait affiché à la confirmation et écrit dans la carte de chaque VM ;
    - ignore un dossier illisible ;
    - affiche sa progression ; lancé depuis l'intérieur d'un clone, il le signale et propose le parent.
 2. **Remotes.** den lit `.git/config` lui-même (C2) : chaque `[remote "…"] url`, sans `insteadOf` ni
@@ -194,7 +216,9 @@ est stockée, jamais d'identifiant ni de jeton. `state/` n'est jamais purgé.
    des ajouts tient en un compte *(appel de Claude : une liste de 40 lignes se valide sans être lue)*. Sur un
    TTY, den demande confirmation. `--yes` vaut pour les ajouts seulement : un remplacement demande toujours
    la confirmation, et hors TTY il est listé « non écrit » *(appel de Claude : un remplacement déplace un
-   nest existant, c'est le cas de l'anti-but sur la VM)*. Hors TTY sans `--yes`, den refuse.
+   nest existant, c'est le cas de l'anti-but sur la VM)*. Hors TTY sans `--yes`, den refuse. Avec `--yes`,
+   aucune ligne n'est confirmée : les ajouts qu'aucune clé ne déclare restent un compte, et un doublon est
+   tranché par la règle de l'étape 3 (U12).
 6. **Rapport final.** Les clés à `origin` toujours sans chemin, déclarées par le `den.yaml` de projet du cwd,
    les fichiers de l'index `state/v2/nests.yaml` et le global : listées, avec leur `git clone`.
 
@@ -202,8 +226,12 @@ est stockée, jamais d'identifiant ni de jeton. `state/` n'est jamais purgé.
 
 ### 6.6 Entrées périmées
 
-Un clone déplacé : `den up` échoue au `os.Stat` de `checkRepos` et nomme `den scan`. Le `scan` suivant
-remplace l'entrée (§6.5, étape 4).
+Un clone déplacé, supprimé ou remplacé par un autre repo : `nest.Resolve` vérifie chaque entrée de la table
+qu'il utilise avec `repos.Valid` (le dossier est un clone, un remote porte l'identité ; lecture de
+`.git/config`, aucun processus). Une entrée invalide rend la clé absente (§6.3, étape 4) : la ligne nomme le
+dossier périmé, puis `git clone` et `den scan`. Le `scan` suivant remplace l'entrée (§6.5, étape 4).
+*(Avant l'amendement du 2026-11-19, seul un dossier disparu était vu, au `os.Stat` de `checkRepos` ; un
+autre repo cloné au même chemin était monté sans un mot.)*
 
 ### 6.7 Migration
 
@@ -231,7 +259,10 @@ ne doit pas casser. Invariants :
 ## 7. Résidu accepté
 
 Une VM qui réécrit le remote d'un repo monté peut faire proposer une identité *nouvelle* vers son dossier.
-La ligne apparaît dans la confirmation ; une entrée valide ne bouge jamais ; un `path` du global gagne
+Sur un TTY sans `--yes`, la ligne apparaît dans la confirmation si une clé déclare cette identité ; sinon
+elle tient dans le compte des ajouts, et avec `--yes` rien n'est confirmé (U12). Au premier scan, un faux
+clone planté peut gagner un doublon si son remote s'appelle `origin` et que son chemin trie avant (§6.5,
+étape 3) ; la ligne `duplicate` le montre. Une entrée valide ne bouge jamais ; un `path` du global gagne
 toujours.
 
 ## 8. Laissé au constructeur
@@ -240,3 +271,23 @@ toujours.
 - L'emplacement du code : un paquet `internal/repos` (normalisation, parcours, table), suggéré.
 - La mise à jour de `docs/den-yaml.md`, de `CLAUDE.md` (huit commandes, `repos:` en projet), du README et des
   goldens (édités à la main, pas de `-update`).
+
+## 9. Amendements du 2026-11-19 (revue de la PR #102)
+
+- **Clé absente** : avertissement et confirmation au lieu d'un refus (U11, G3, §6.3 étape 4). Contredit la
+  fiche, partie C : les clés absentes entrent désormais dans l'empreinte de configuration.
+- **Entrée périmée** : vérifiée à chaque `den up` par `repos.Valid` (§6.6). `repos.Valid` exige aussi un
+  dossier `.git` : un lien `.git` n'est pas un clone, comme pour le parcours.
+- **Origine** : une `origin` doit commencer par une lettre ou un chiffre et ne contenir que des lettres, des
+  chiffres, `-._~:/@%+=,` ou des caractères non ASCII, sur l'URL brute comme sur l'identité décodée
+  (`%24` donnerait `$`). Raison : den imprime l'origine dans une ligne `git clone` à coller, et un `den.yaml`
+  de projet (d'un collègue, ou réécrit par une VM) pourrait y glisser `$(…)`. L'erreur ne répète pas
+  l'entrée.
+- **Caractères invisibles** : une identité, une clé de `repos:` et un chemin parcouru refusent tout
+  caractère que `unicode.IsPrint` refuse (contrôle, format, bidi) ; une identité et une clé refusent
+  aussi l'UTF-8 invalide.
+- **Parcours** : pas de descente dans un dossier dont `.git` est un fichier ou un lien (§6.5, étape 1).
+- **`--yes`** : inchangé, résidu documenté (U12, §6.5 étape 5, §7).
+- Laissés : la double lecture du global par `den scan` et de la racine par le parcours (une petite lecture
+  chacune) ; la limite de 128 Kio de `--argjson` dans la fusion des réglages de `den-claude` (taille
+  irréaliste, non testable sans VM).

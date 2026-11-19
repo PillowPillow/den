@@ -49,8 +49,10 @@ key's folder by global `path`, then project `path`, then the `den scan` table, a
 different identities or paths for one key, and a project `origin` against a global `path` without
 `origin` unless a remote of that folder has the identity. `internal/origin` computes the identity
 (`host/path`, lowercased, no scheme, user, port, `.git`); SSH aliases and `insteadOf` are not
-resolved, the remedy is a global `path` plus `origin`. Keys without a folder are collected and
-refused once by `den up`, with their `git clone` lines. `internal/repos` owns the table
+resolved, the remedy is a global `path` plus `origin`. Keys without a folder (or whose table folder no
+longer carries the identity) are collected in `Resolved.MissingErr` with their `git clone` lines;
+`Prepare` warns for a Live instance, asks on a terminal before it creates without them, and refuses
+otherwise (`den exec`, no terminal). `internal/repos` owns the table
 (`state/v2/repos.yaml`, identity to path, written only by `den scan`) and the walk that feeds it
 (reads `.git/config` itself, runs no process, never descends into a clone). `den scan` writes
 additions after confirmation, but a replacement always asks and needs a terminal; it never rewrites a
@@ -136,7 +138,7 @@ argv; `env create`, `env rm`, `rm`, `exec` and `ports` get `--no-input`; `den bu
 
 ## Stale artifacts — don't trust these
 
-- The V2 decisions are in `docs/superpowers/plans/2026-11-12-den-v2-0.md` (P1 to P11), the templates design `2026-11-16-den-templates-design.md`, plan `2026-11-16-den-templates.md` and validation `2026-11-16-den-templates-validation.md`, the kit settings defaults design `2026-11-17-claude-settings-defaults-design.md` and validation `2026-11-17-claude-settings-defaults-validation.md`, and the
+- The V2 decisions are in `docs/superpowers/plans/2026-11-12-den-v2-0.md` (P1 to P11), the templates design `2026-11-16-den-templates-design.md`, plan `2026-11-16-den-templates.md` and validation `2026-11-16-den-templates-validation.md`, the kit settings defaults design `2026-11-17-claude-settings-defaults-design.md` and validation `2026-11-17-claude-settings-defaults-validation.md`, the repo keys and `den scan` design `2026-11-17-den-scan-repos-design.md` (amended 2026-11-19, its §9 wins over the sheet) and validation `2026-11-17-den-scan-repos-validation.md`, and the
   scope in `docs/superpowers/specs/2026-11-12-den-v2-scope-design.md`; the sbx measurements are in
   `2026-11-12-den-v2-spikes.md`. Everything else under `docs/superpowers/` (the v1 spec
   `2026-07-27-den-cli-design.md` included) and everything under `.superpowers/sdd/` is historical
