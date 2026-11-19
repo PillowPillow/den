@@ -1,7 +1,6 @@
 package nest
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,12 +53,13 @@ func nestOf(refs string) string {
 func TestKeyResolvesThroughTheTable(t *testing.T) {
 	home, proj := t.TempDir(), t.TempDir()
 	g, p := pair(t, home, "", proj, "repos:\n  api: {origin: git@gitlab.com:dig/api.git}\n"+nestOf("[{key: api}]"))
-	writeTable(t, home, map[string]string{"gitlab.com/dig/api": "/c/api"})
+	dir := clone(t, filepath.Join(t.TempDir(), "api"), "git@gitlab.com:dig/api.git")
+	writeTable(t, home, map[string]string{"gitlab.com/dig/api": dir})
 	r, err := Resolve(home, g, p, "x")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Repo{{Name: "api", Path: "/c/api", Key: "api", Origin: "git@gitlab.com:dig/api.git", DeclaredIn: p.Path, FromTable: true}}
+	want := []Repo{{Name: "api", Path: dir, Key: "api", Origin: "git@gitlab.com:dig/api.git", DeclaredIn: p.Path, FromTable: true}}
 	if !reflect.DeepEqual(r.Repos, want) {
 		t.Fatalf("repos %+v, want %+v", r.Repos, want)
 	}
@@ -204,10 +204,13 @@ func TestMissingKeysAreListedTogether(t *testing.T) {
 		"  front-api: {origin: git@gitlab.com:dig/front/api.git}\n"+
 		"  back-api: {origin: git@gitlab.com:dig/back/api.git}\n"+
 		"nests:\n  oauth:\n    template: claude-code-docker\n    repos: [{key: front-api}, {key: back-api}]\n")
-	_, err := Resolve(home, g, p, "oauth")
-	var missing *MissingReposError
-	if !errors.As(err, &missing) {
-		t.Fatalf("err %v, want a *MissingReposError", err)
+	r, err := Resolve(home, g, p, "oauth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := r.MissingErr
+	if missing == nil || len(r.Repos) != 0 {
+		t.Fatalf("MissingErr %v, repos %+v: want both keys missing and none resolved", missing, r.Repos)
 	}
 	wantMissing := []MissingRepo{
 		{Key: "front-api", Origin: "git@gitlab.com:dig/front/api.git", DeclaredIn: p.Path},
@@ -220,8 +223,29 @@ func TestMissingKeysAreListedTogether(t *testing.T) {
 		"  - front-api: git clone git@gitlab.com:dig/front/api.git   (declared in " + p.Path + ")\n" +
 		"  - back-api: git clone git@gitlab.com:dig/back/api.git   (declared in " + p.Path + ")\n" +
 		"already cloned? run `den scan <folder that holds your clones>`"
-	if err.Error() != want {
-		t.Fatalf("message\n%s\nwant\n%s", err, want)
+	if missing.Error() != want {
+		t.Fatalf("message\n%s\nwant\n%s", missing, want)
+	}
+}
+
+func TestATableEntryThatIsNoLongerTheCloneIsMissing(t *testing.T) {
+	home, proj := t.TempDir(), t.TempDir()
+	g, p := pair(t, home, "", proj, "repos:\n  api: {origin: git@gitlab.com:dig/api.git}\n"+nestOf("[{key: api}]"))
+	dir := clone(t, filepath.Join(t.TempDir(), "api"), "git@gitlab.com:dig/other.git")
+	writeTable(t, home, map[string]string{"gitlab.com/dig/api": dir})
+	r, err := Resolve(home, g, p, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Repos) != 0 || r.MissingErr == nil {
+		t.Fatalf("repos %+v, MissingErr %v: want the key missing", r.Repos, r.MissingErr)
+	}
+	want := MissingRepo{Key: "api", Origin: "git@gitlab.com:dig/api.git", DeclaredIn: p.Path, Stale: dir}
+	if !reflect.DeepEqual(r.MissingErr.Missing, []MissingRepo{want}) {
+		t.Fatalf("missing %+v, want %+v", r.MissingErr.Missing, want)
+	}
+	if msg := r.MissingErr.Error(); !strings.Contains(msg, dir+" is no longer a clone of it; git clone git@gitlab.com:dig/api.git") {
+		t.Fatalf("message %q does not name the stale folder", msg)
 	}
 }
 

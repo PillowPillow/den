@@ -1,6 +1,7 @@
 package nest
 
 import (
+	"path/filepath"
 	"sort"
 
 	"github.com/PillowPillow/den/v2/internal/config"
@@ -30,31 +31,31 @@ func DeclaredOrigins(denHome, cwd string) ([]Declared, error) {
 		return nil, err
 	}
 	files := []*config.Loaded{global, project}
+	// The index maps each nest to its file, so one file holding several nests appears several times.
+	tried := map[string]bool{}
 	for _, n := range sortedNames(ix.Nests) {
-		path := ix.Nests[n]
-		if isLoaded(path, project, global) {
+		path := filepath.Clean(ix.Nests[n])
+		if tried[path] || isLoaded(path, project, global) {
 			continue
 		}
+		tried[path] = true
 		if l, err := config.Load(path, false); err == nil {
 			files = append(files, l)
 		}
 	}
-	seen := map[[2]string]bool{}
 	var out []Declared
 	for _, f := range files {
 		if f == nil {
 			continue
 		}
 		for key, d := range f.File.Repos {
-			id := [2]string{f.Path, key}
-			if d.Origin == "" || seen[id] {
+			if d.Origin == "" {
 				continue
 			}
 			identity, err := origin.Identity(d.Origin)
 			if err != nil {
 				continue
 			}
-			seen[id] = true
 			out = append(out, Declared{Key: key, Origin: d.Origin, Identity: identity, File: f.Path})
 		}
 	}

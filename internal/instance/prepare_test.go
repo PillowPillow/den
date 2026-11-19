@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -1092,17 +1093,19 @@ func TestRepoFixNamesTheDeclaringFile(t *testing.T) {
 
 func TestRepoFixNamesDenScanForATableClone(t *testing.T) {
 	f := newFixture(t)
-	missing := filepath.Join(f.src, "gone")
+	f.git = worktree.NewGit()
+	notARepo := writeFile(t, filepath.Join(f.src, "api", ".git", "config"), "[remote \"origin\"]\n\turl = git@gitlab.com:dig/api.git\n")
+	dir := filepath.Dir(filepath.Dir(notARepo))
 	writeFile(t, filepath.Join(f.proj, "den.yaml"),
 		"schema: 1\ndefault_template: claude-code-docker\nrepos:\n  api: {origin: \"git@gitlab.com:dig/api.git\"}\nnests:\n  am:\n    repos: [{key: api}]\n")
-	if err := scanrepos.WriteTable(f.home, scanrepos.Table{Repos: map[string]scanrepos.Entry{"gitlab.com/dig/api": {Path: missing}}}); err != nil {
+	if err := scanrepos.WriteTable(f.home, scanrepos.Table{Repos: map[string]scanrepos.Entry{"gitlab.com/dig/api": {Path: dir}}}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Prepare(context.Background(), f.deps(), Options{Nest: "am"})
+	_, err := Prepare(context.Background(), f.deps(), Options{Nest: "am", Branch: "feat"})
 	if err == nil {
 		t.Fatal("want an error")
 	}
-	for _, w := range []string{missing, "den scan", scanrepos.TablePath(f.home), "gitlab.com/dig/api"} {
+	for _, w := range []string{dir, "den scan", scanrepos.TablePath(f.home), "gitlab.com/dig/api"} {
 		if !strings.Contains(err.Error(), w) {
 			t.Errorf("error %q lacks %q", err, w)
 		}
@@ -1110,6 +1113,95 @@ func TestRepoFixNamesDenScanForATableClone(t *testing.T) {
 	if strings.Contains(err.Error(), "git@gitlab.com") {
 		t.Errorf("error %q prints the raw origin", err)
 	}
+}
+
+// missingKey writes the project nest am: the folder web, and the key api, whose origin has no folder.
+func (f *fixture) missingKey(t *testing.T) (web string) {
+	t.Helper()
+	web = f.repo(t, "web")
+	writeFile(t, filepath.Join(f.proj, "den.yaml"), fmt.Sprintf("schema: 1\ndefault_template: claude-code-docker\n"+
+		"repos:\n  api: {origin: \"git@gitlab.com:dig/api.git\"}\nnests:\n  am:\n    repos: [{path: %q}, {key: api}]\n", web))
+	return web
+}
+
+func (f *fixture) ttyDeps(stderr io.Writer) Deps {
+	d := f.deps()
+	d.IsTTY = func() bool { return true }
+	d.Err = stderr
+	return d
+}
+
+func TestMissingKeyAsksThenStartsWithoutIt(t *testing.T) {
+	f := newFixture(t)
+	web := f.missingKey(t)
+	f.prompt.ConfirmAnswers = []bool{true}
+	var stderr bytes.Buffer
+	p, err := Prepare(context.Background(), f.ttyDeps(&stderr), Options{Nest: "am"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Repos) != 1 || p.Repos[0].Path != web {
+		t.Fatalf("repos %+v, want web alone", p.Repos)
+	}
+	if len(f.prompt.Confirms) != 1 || f.prompt.Confirms[0].Question != "start am without this repo?" {
+		t.Fatalf("confirms %+v", f.prompt.Confirms)
+	}
+	if !strings.Contains(stderr.String(), "warning: nest \"am\": 1 repo has no folder on this machine:\n  - api: git clone git@gitlab.com:dig/api.git") {
+		t.Fatalf("stderr %q does not list the missing key", stderr.String())
+	}
+}
+
+func TestMissingKeyStopsWhenTheAnswerIsNo(t *testing.T) {
+	f := newFixture(t)
+	f.missingKey(t)
+	f.prompt.ConfirmAnswers = []bool{false}
+	_, err := Prepare(context.Background(), f.ttyDeps(io.Discard), Options{Nest: "am"})
+	if err == nil || !strings.Contains(err.Error(), "am not started: clone this repo, then run `den up am` again") {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestMissingKeyRefusesWithoutATerminal(t *testing.T) {
+	f := newFixture(t)
+	f.missingKey(t)
+	prepareErr(t, f, Options{Nest: "am"}, "git clone git@gitlab.com:dig/api.git", "den up asks before it starts am without this repo")
+	if len(f.prompt.Confirms) != 0 {
+		t.Fatalf("asked %+v without a terminal", f.prompt.Confirms)
+	}
+}
+
+func TestDenExecRefusesAMissingKey(t *testing.T) {
+	f := newFixture(t)
+	f.missingKey(t)
+	_, err := Prepare(context.Background(), f.ttyDeps(io.Discard), Options{Nest: "am", NoInput: true})
+	if err == nil || !strings.Contains(err.Error(), "den exec never asks") || len(f.prompt.Confirms) != 0 {
+		t.Fatalf("err %v, confirms %+v", err, f.prompt.Confirms)
+	}
+}
+
+func TestLiveInstanceAttachesWithAMissingKeyAsAWarning(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "web"), false))})
+	record(t, f.home, mustPrepare(t, f, Options{Nest: "am"}))
+	f.missingKey(t)
+	f.live("am")
+	p, err := Prepare(context.Background(), f.ttyDeps(io.Discard), Options{Nest: "am"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.State != Live || len(f.prompt.Confirms) != 0 {
+		t.Fatalf("state %v, confirms %+v: want Live and no question", p.State, f.prompt.Confirms)
+	}
+	if !slices.ContainsFunc(p.Resolved.Warnings, func(w string) bool { return strings.Contains(w, "git clone git@gitlab.com:dig/api.git") }) {
+		t.Fatalf("warnings %q lack the missing key", p.Resolved.Warnings)
+	}
+}
+
+func TestMissingKeyIsNamedWhenItLeavesNoStartFolder(t *testing.T) {
+	f := newFixture(t)
+	writeFile(t, filepath.Join(f.proj, "den.yaml"),
+		"schema: 1\ndefault_template: claude-code-docker\nrepos:\n  api: {origin: \"git@gitlab.com:dig/api.git\"}\nnests:\n  am:\n    repos: [{key: api}]\n")
+	prepareErr(t, f, Options{Nest: "am"}, "git clone git@gitlab.com:dig/api.git", "no repo is selected")
 }
 
 func TestWorktreeRefusesTwoReposWithTheSameFolderName(t *testing.T) {
@@ -1133,5 +1225,27 @@ func TestRecreateKeepsTheWorktreeOfARenamedKey(t *testing.T) {
 	repos := []nest.Repo{{Name: "go-dgdev", Key: "go-dgdev", Path: dir}}
 	if err := checkRecordedWorktrees(rec, res, repos, &worktree.Name{Dir: "feat", Branch: "feat"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCloningAMissingKeyLaterIsDriftOnTheLiveInstance(t *testing.T) {
+	f := newFixture(t)
+	f.missingKey(t)
+	f.prompt.ConfirmAnswers = []bool{true}
+	p, err := Prepare(context.Background(), f.ttyDeps(io.Discard), Options{Nest: "am"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record(t, f.home, p)
+	f.live("am")
+	if still := mustPrepare(t, f, Options{Nest: "am"}); still.ConfigHash != p.ConfigHash {
+		t.Fatal("a key still missing is drift")
+	}
+	cfg := writeFile(t, filepath.Join(f.src, "api", ".git", "config"), "[remote \"origin\"]\n\turl = git@gitlab.com:dig/api.git\n")
+	if err := scanrepos.WriteTable(f.home, scanrepos.Table{Repos: map[string]scanrepos.Entry{"gitlab.com/dig/api": {Path: filepath.Dir(filepath.Dir(cfg))}}}); err != nil {
+		t.Fatal(err)
+	}
+	if cloned := mustPrepare(t, f, Options{Nest: "am"}); cloned.ConfigHash == p.ConfigHash {
+		t.Fatal("the key now has a folder, and the hash of the running instance did not move")
 	}
 }

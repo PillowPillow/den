@@ -145,6 +145,17 @@ func TestScanRefusesWithoutTerminalOrYes(t *testing.T) {
 	}
 }
 
+func TestScanWithOnlyReplacementsAndNoTerminalDoesNotOfferYes(t *testing.T) {
+	f := newScanFixture(t)
+	f.seedTable(t, map[string]string{"gitlab.com/dig/api": filepath.Join(f.src, "gone", "api")})
+	scanClone(t, filepath.Join(f.src, "dev", "api"), gl("api"))
+	err := f.scan(f.src)
+	want := "den scan found 1 replacement; run it in a terminal: --yes never writes a replacement"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error %v, want %q", err, want)
+	}
+}
+
 func TestScanNeverReplacesWithoutATerminal(t *testing.T) {
 	f := newScanFixture(t)
 	old := filepath.Join(f.src, "gone", "api")

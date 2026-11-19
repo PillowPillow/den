@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 
 	"golang.org/x/mod/semver"
@@ -18,6 +19,7 @@ import (
 	"github.com/PillowPillow/den/v2/internal/config"
 	"github.com/PillowPillow/den/v2/internal/nest"
 	"github.com/PillowPillow/den/v2/internal/origin"
+	"github.com/PillowPillow/den/v2/internal/prompt"
 	"github.com/PillowPillow/den/v2/internal/registry"
 	scanrepos "github.com/PillowPillow/den/v2/internal/repos"
 	"github.com/PillowPillow/den/v2/internal/sbx"
@@ -91,6 +93,10 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 		}
 		res.Warnings = append(res.Warnings, res.TemplateErr.Error())
 	}
+	// A running VM keeps the mounts it was created with: there is nothing to consent to.
+	if res.MissingErr != nil && state == Live {
+		res.Warnings = append(res.Warnings, res.MissingErr.Error())
+	}
 
 	p := &Plan{
 		Instance: instance, Resolved: res, Worktree: wt, State: state, Record: rec,
@@ -149,13 +155,50 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	// Refused even with --workdir: the record keeps the mapped start for every later attach.
 	start, err := mapStart(res, repos, o.Selection)
 	if err != nil {
+		// The start folder may be in a repo with no folder: name that cause, not only its effect.
+		if res.MissingErr != nil {
+			return nil, fmt.Errorf("%w\n%v", res.MissingErr, err)
+		}
 		return nil, err
 	}
 	p.Repos, p.Start, p.Workdir = repos, start, o.Workdir
 	if p.ConfigHash, err = configHash(res, repos, start, o.Branch); err != nil {
 		return nil, err
 	}
+	// Last, so den never asks and then refuses on a check that did not need the answer.
+	if res.MissingErr != nil {
+		if err := confirmMissing(ctx, d, o, res.MissingErr, instance); err != nil {
+			return nil, err
+		}
+	}
 	return p, nil
+}
+
+// confirmMissing asks before den starts an instance without the keys that have no folder. Without
+// a terminal there is nobody to ask, and an instance quietly short of a repo is what den refuses.
+func confirmMissing(ctx context.Context, d Deps, o Options, missing *nest.MissingReposError, instance string) error {
+	n := len(missing.Missing)
+	what := "this repo"
+	if n > 1 {
+		what = fmt.Sprintf("these %d repos", n)
+	}
+	if o.NoInput {
+		return fmt.Errorf("%w\nden exec never asks: clone %s, or run `den up %s` in a terminal to start %s without %s",
+			missing, what, o.Nest, instance, what)
+	}
+	if d.IsTTY == nil || !d.IsTTY() {
+		return fmt.Errorf("%w\nden up asks before it starts %s without %s: clone %s, or run it in a terminal",
+			missing, instance, what, what)
+	}
+	fmt.Fprintf(d.Err, "warning: %s\n", missing)
+	ok, err := d.Prompt.Confirm(ctx, prompt.ConfirmRequest{Question: fmt.Sprintf("start %s without %s?", instance, what)})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%s not started: clone %s, then run `den up %s` again", instance, what, o.Nest)
+	}
+	return nil
 }
 
 // attachPlan hashes the RECORDED selection and branch: hashing a fresh one
@@ -282,7 +325,7 @@ func repoFix(denHome string, res *nest.Resolved, r nest.Repo) string {
 	}
 	if r.FromTable {
 		id, _ := origin.Identity(r.Origin)
-		return fmt.Sprintf("run `den scan <the folder that holds the clone>`: %s maps %s to a folder that is gone",
+		return fmt.Sprintf("run `den scan <the folder that holds the clone>`: %s maps %s to this folder",
 			scanrepos.TablePath(denHome), id)
 	}
 	if r.Key != "" {
@@ -605,6 +648,8 @@ func configHash(res *nest.Resolved, repos []nest.Repo, start, branch string) (st
 		Branch         string            `yaml:"branch"`
 		Layout         string            `yaml:"layout"`
 		Root           string            `yaml:"root"`
+		// The keys started without: once one is cloned the hash moves, and a Live instance warns of drift.
+		Missing []string `yaml:"missing,omitempty"`
 	}{
 		Template: t.Choice.Value, Tag: sbxTemplate(t), KitImage: t.KitImage,
 		Kits: res.Kits, Allow: res.Allow, Env: res.Env,
@@ -616,6 +661,12 @@ func configHash(res *nest.Resolved, repos []nest.Repo, start, branch string) (st
 	}
 	for _, r := range repos {
 		in.Repos = append(in.Repos, r.Path)
+	}
+	if res.MissingErr != nil {
+		for _, m := range res.MissingErr.Missing {
+			in.Missing = append(in.Missing, m.Key)
+		}
+		sort.Strings(in.Missing)
 	}
 	raw, err := yaml.Marshal(in)
 	if err != nil {

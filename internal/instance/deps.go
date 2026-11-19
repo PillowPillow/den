@@ -21,6 +21,7 @@ type Deps struct {
 	Cwd      string
 	Out, Err io.Writer
 	Agent    sshagent.Probe // nil: den does not check the SSH agent
+	IsTTY    func() bool    // nil: no terminal, so den never asks
 }
 
 // Options is what the command line asks of one instance.

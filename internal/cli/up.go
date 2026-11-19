@@ -43,7 +43,7 @@ func newUpCmd(deps Deps, denHome *string) *cobra.Command {
 			o.Nest = args[0]
 			d := instance.Deps{
 				Sbx: deps.Sbx, Git: deps.Git, Prompt: deps.Prompt, DenHome: home, Cwd: cwd,
-				Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr(), Agent: deps.Agent,
+				Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr(), Agent: deps.Agent, IsTTY: deps.IsTTY,
 			}
 			return explainNoTemplate(cmd.Context(), deps, instance.Up(cmd.Context(), d, o, detach))
 		},

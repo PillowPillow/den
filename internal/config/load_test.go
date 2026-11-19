@@ -406,6 +406,12 @@ func TestReposRefusesBadKey(t *testing.T) {
 	}
 }
 
+func TestReposRefusesAKeyWithAControlOrFormatCharacter(t *testing.T) {
+	for _, key := range []string{`"a\nb"`, `"a\e[2Jb"`, `"a\u202eb"`} {
+		mustFail(t, "schema: 1\nrepos:\n  "+key+": {origin: 'git@github.com:acme/api.git'}\n", false, "holds a control, format or invalid character")
+	}
+}
+
 func TestReposRefusesUnknownField(t *testing.T) {
 	mustFail(t, "schema: 1\nrepos:\n  api: {origin: 'git@github.com:acme/api.git', url: x}\n", false, "url")
 }

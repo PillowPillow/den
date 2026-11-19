@@ -220,3 +220,37 @@ func TestIsClone(t *testing.T) {
 		t.Error("a folder without .git is not a clone")
 	}
 }
+
+func TestWalkDoesNotEnterAWorktree(t *testing.T) {
+	root := walkRoot(t)
+	if err := os.MkdirAll(filepath.Join(root, "wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "wt", ".git"), []byte("gitdir: /x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mkClone(t, filepath.Join(root, "wt", "planted"), cfgA)
+	if got := walkOK(t, root, WalkOptions{}); len(got) != 0 {
+		t.Fatalf("got %v", paths(got))
+	}
+}
+
+func TestWalkDropsPathsWithFormatCharacters(t *testing.T) {
+	root := walkRoot(t)
+	mkClone(t, filepath.Join(root, "a\u202eb"), cfgA)
+	mkClone(t, filepath.Join(root, "z\u200bw"), cfgA)
+	mkClone(t, filepath.Join(root, "my repo"), cfgA)
+	got := walkOK(t, root, WalkOptions{})
+	if want := []string{filepath.Join(root, "my repo")}; !reflect.DeepEqual(paths(got), want) {
+		t.Fatalf("got %q, want %q", paths(got), want)
+	}
+}
+
+func TestListableRefusesInvalidUTF8(t *testing.T) {
+	if listable("/src/\xff\xfeapi") {
+		t.Error("a path with invalid UTF-8 is listable")
+	}
+	if !listable("/src/équipe/api") {
+		t.Error("a path with accented letters is not listable")
+	}
+}

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/PillowPillow/den/v2/internal/origin"
 	"gopkg.in/yaml.v3"
@@ -223,14 +225,25 @@ func ValidateRepoKey(key string) error {
 		return fmt.Errorf("repo key %q is reserved", key)
 	case strings.HasPrefix(key, "."):
 		return fmt.Errorf("repo key %q cannot start with a dot", key)
+	case !printableKey(key):
+		// A key is a repo's name in /den-git/<key> and in the rules file of every VM: a newline
+		// there would write lines of a project file's choosing into another VM's instructions.
+		return fmt.Errorf("repo key %q holds a control, format or invalid character", key)
 	}
 	return nil
+}
+
+func printableKey(key string) bool {
+	return utf8.ValidString(key) && !strings.ContainsFunc(key, func(r rune) bool { return !unicode.IsPrint(r) })
 }
 
 // validateRepo: the global file maps a key to a folder of this machine (origin is optional there);
 // a project file travels between machines, so it carries either an origin or a project-relative path.
 func validateRepo(key string, d RepoDecl, global bool, add func(string, ...any)) {
 	rk := "repos." + key
+	if !printableKey(key) {
+		rk = fmt.Sprintf("repos.%q", key)
+	}
 	if err := ValidateRepoKey(key); err != nil {
 		add("%s: %v", rk, err)
 	}
