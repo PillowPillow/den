@@ -45,7 +45,8 @@ Without a nest name, `den up` fails and lists the nests it can see.
 **Before it changes anything**, den checks what it can: an unknown nest, a missing repo, a template
 that is not built, no template named anywhere, a missing local [kit](den-yaml.md#every-key) or
 [layer](security.md#layers), `-i` without a terminal, an sbx older than v0.53.0. A refusal names the
-file or the command that fixes it.
+file or the command that fixes it. A [repo key without a folder](den-yaml.md#repos) is the exception:
+in a terminal, den lists the keys and asks before it starts the instance without them.
 
 **After it creates the VM**, den prints two kinds of alerts on stderr. They do not stop `den up`:
 
@@ -170,10 +171,10 @@ never rewrites a `den.yaml`.
 
 **What it walks.** Up to 20 levels down, without following symlinks. It skips the den home,
 `~/Library`, `node_modules`, `vendor` and folders that start with a dot, and does not descend into a
-clone. It reads each clone's `.git/config` itself, and every remote counts: a clone is known by the
+clone, nor into a worktree or submodule (a folder whose `.git` is a file or a link). It reads each clone's `.git/config` itself, and every remote counts: a clone is known by the
 identity of each of its remotes ([identity](den-yaml.md#repos) ignores scheme, user, port and `.git`).
 It runs no process. A folder inside the den home is refused: it holds den's own files, not your clones.
-A path that holds a control character is skipped, and so is a `.git/config` that is not a regular
+A path that holds a control or format character (such as a bidi override) is skipped, and so is a `.git/config` that is not a regular
 file or is over 1 MiB. Run from a clone, or from inside one, `den scan` names the parent folder to
 scan instead.
 
@@ -199,7 +200,10 @@ scan instead.
 | no terminal, `--yes` | written | listed as `not written (needs a terminal)` |
 | no terminal, no `--yes` | refused | refused |
 
-A replacement moves the folder an existing nest mounts, so `--yes` does not cover it.
+A replacement moves the folder an existing nest mounts, so `--yes` does not cover it. `--yes` writes
+the additions without listing each one: only those a `den.yaml` declares are named. When several
+clones carry one identity, the choice follows the `duplicate` rule above, so check the `duplicate`
+lines before you run a first scan with `--yes`.
 
 An SSH alias (`Host gitlab-perso`) or git's `insteadOf` gives a remote another identity than the
 URL in the `den.yaml`: `den scan` does not find that clone. Put the key in your global `den.yaml`

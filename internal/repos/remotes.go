@@ -92,8 +92,12 @@ func readConfig(path string) ([]byte, error) {
 }
 
 // Valid reports whether the folder at path is a clone with a remote carrying
-// identity. An absent or unreadable folder is simply not valid.
+// identity. An absent or unreadable folder is simply not valid, and so is a
+// `.git` link, which Walk would not count as a clone either.
 func Valid(path, identity string) bool {
+	if !IsClone(path) {
+		return false
+	}
 	remotes, err := Remotes(path)
 	if err != nil {
 		return false

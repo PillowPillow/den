@@ -119,6 +119,9 @@ func applyScanPlan(cmd *cobra.Command, deps Deps, home string, table *repos.Tabl
 
 	var write []repos.Change
 	switch {
+	case !tty && !yes && adds == 0:
+		return fmt.Errorf("den scan found %s; run it in a terminal: --yes never writes a replacement",
+			plural(replaces, "replacement", "replacements"))
 	case !tty && !yes:
 		return fmt.Errorf("den scan found %s; run it in a terminal, or with --yes to write the additions",
 			plural(adds+replaces, "change", "changes"))

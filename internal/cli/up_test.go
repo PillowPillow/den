@@ -467,3 +467,20 @@ func TestUpExplainsAMissingTemplate(t *testing.T) {
 		}
 	}
 }
+
+func TestUpAsksOnATerminalBeforeStartingWithoutAMissingKey(t *testing.T) {
+	f := newUpFixture(t)
+	writeTestFile(t, filepath.Join(f.proj, "den.yaml"), "schema: 1\ndefault_template: claude-code-docker\n"+
+		"repos:\n  api: {origin: \"git@gitlab.com:dig/api.git\"}\nnests:\n  am:\n    repos: [{path: "+f.dir(t, "web")+"}, {key: api}]\n")
+	if err := f.up("am", "--detach"); err == nil || f.hasEnvCreate() {
+		t.Fatalf("err %v, env create %t: want a refusal without a terminal", err, f.hasEnvCreate())
+	}
+	f.tty = true
+	f.prompt.ConfirmAnswers = []bool{true}
+	if err := f.up("am", "--detach"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.prompt.Confirms) != 1 || !f.hasEnvCreate() {
+		t.Fatalf("confirms %+v, env create %t: want one question, then the instance", f.prompt.Confirms, f.hasEnvCreate())
+	}
+}

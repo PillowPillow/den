@@ -126,6 +126,17 @@ func TestValid(t *testing.T) {
 	}
 }
 
+func TestValidRefusesASymlinkedGitFolder(t *testing.T) {
+	real := cloneWith(t, "[remote \"origin\"]\n\turl = https://gitlab.com/dig/api\n")
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(real, ".git"), filepath.Join(dir, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if Valid(dir, "gitlab.com/dig/api") {
+		t.Error("a .git link is not a clone")
+	}
+}
+
 func TestRemotesSurvivesHostileConfig(t *testing.T) {
 	dir := cloneWith(t, "[remote \"origin\"]\r\n\turl = git@gitlab.com:dig/api.git\r\n"+
 		"[remote \"cr\"]\n\turl = git@host:dig/a\rpi\n"+

@@ -34,6 +34,9 @@ type Resolved struct {
 	// TemplateErr is why template.Open refused the choice; Template then holds the Choice only. The
 	// caller decides: a Live instance attaches with a warning, any other refuses.
 	TemplateErr error
+	// MissingErr lists the required keys without a folder, which Repos leaves out. The caller decides:
+	// a Live instance attaches with a warning, any other asks before it starts without them.
+	MissingErr  *MissingReposError
 	Profile     string
 	ProfileKits []string
 	Repos       []Repo
@@ -194,7 +197,8 @@ func absPath(p, dir string) (string, error) {
 }
 
 // Resolve merges global, template and nest into what an instance prepares from. It never builds: a
-// template without a usable build is left in TemplateErr, with template.Open's `den build` remedy.
+// template without a usable build is left in TemplateErr, with template.Open's `den build` remedy, and
+// required keys without a folder in MissingErr.
 func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolved, error) {
 	n, ok := file.File.Nests[name]
 	if !ok {
@@ -251,7 +255,7 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 	}
 	r.Warnings = append(r.Warnings, keys.warnings...)
 	if len(keys.missing) > 0 {
-		return nil, &MissingReposError{Nest: name, Missing: keys.missing}
+		r.MissingErr = &MissingReposError{Nest: name, Missing: keys.missing}
 	}
 
 	if r.Profile == "" {

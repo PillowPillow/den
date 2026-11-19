@@ -163,7 +163,9 @@ the same folder.
 
 A project entry has exactly one of `origin` and `path`. A global entry needs a `path`; `origin` alone
 is refused there. A key in both files is one repo: two different origins, or two different paths, for
-the same key are refused.
+the same key are refused. An `origin` starts with a letter or a digit and holds no shell character
+(`$`, `` ` ``, `;`, `|`, quotes, parentheses, spaces): den prints it in the `git clone` line of a
+missing repo, a line meant to be pasted. A key is refused if it holds a control or format character.
 
 **Finding the folder.** For a key, den uses the first of:
 
@@ -182,7 +184,11 @@ remote then has another identity. Put the key in your global file with a `path` 
 `origin`), and den uses that folder.
 
 **Keys without a folder.** `den up` lists every key that has none at once, with a `git clone` line
-for each, and names `den scan`. An optional key without a folder is dropped with a warning.
+for each, and names `den scan`. A key counts as missing too when the table maps its origin to a folder
+that is no longer a clone of it. In a terminal, `den up` then asks before it starts the instance
+without them; with no terminal, and always in `den exec`, it refuses. A running instance keeps the
+repos it was created with, so `den up` only warns. An optional key without a folder is dropped with a
+warning.
 
 **Folder names under `-w`.** A worktree keeps the folder name of its clone. With the `central`
 layout, two repos of a nest with the same folder name would land on one worktree path: den refuses.

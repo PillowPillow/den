@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Clone is a folder holding a `.git` folder, with the remotes its config declares.
@@ -55,9 +56,7 @@ type walker struct {
 }
 
 func (w *walker) visit(dir string, depth int) {
-	// A folder name a VM chose could carry an escape sequence into den scan's confirmation screen and
-	// into every VM's repo map: nothing at or under such a path is listed.
-	if strings.ContainsFunc(dir, unicode.IsControl) {
+	if !listable(dir) {
 		return
 	}
 	w.dirs++
@@ -69,6 +68,11 @@ func (w *walker) visit(dir string, depth int) {
 		// no Remotes: the caller decides what an unmatched clone means.
 		remotes, _ := Remotes(dir)
 		w.clones = append(w.clones, Clone{Path: dir, Remotes: remotes})
+		return
+	}
+	// A `.git` file or link is a worktree or a submodule: not a clone, and not entered either, since
+	// a worktree is mounted read-write and a VM could plant a fake clone in it.
+	if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
 		return
 	}
 	if depth >= w.opts.MaxDepth {
@@ -94,6 +98,12 @@ func (w *walker) visit(dir string, depth int) {
 		}
 		w.visit(child, depth+1)
 	}
+}
+
+// listable refuses a path whose name a VM could have chosen to carry an escape sequence or a bidi
+// override into den scan's confirmation screen and into every VM's repo map.
+func listable(path string) bool {
+	return utf8.ValidString(path) && !strings.ContainsFunc(path, func(r rune) bool { return !unicode.IsPrint(r) })
 }
 
 // IsClone is true when dir holds a `.git` that is itself a folder: a file is a

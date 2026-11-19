@@ -15,13 +15,16 @@ import (
 // MachineRepo is a clone of this machine the nest does not necessarily use, for the instance's repo map.
 type MachineRepo struct{ Name, Path string }
 
-// MissingRepo is a key whose origin no folder of this machine answers for yet.
+// MissingRepo is a key whose origin no folder of this machine answers for yet. Stale is the folder
+// the table maps the origin to when that folder no longer is a clone of it.
 type MissingRepo struct {
 	Key, Origin, DeclaredIn string
+	Stale                   string
 	Optional                bool
 }
 
 // MissingReposError lists every key of a nest without a folder, so one `git clone` pass fixes them all.
+// den up asks before it starts an instance without them.
 type MissingReposError struct {
 	Nest    string
 	Missing []MissingRepo
@@ -35,6 +38,10 @@ func (e *MissingReposError) Error() string {
 		fmt.Fprintf(&b, "nest %q: %d repos have no folder on this machine:\n", e.Nest, len(e.Missing))
 	}
 	for _, m := range e.Missing {
+		if m.Stale != "" {
+			fmt.Fprintf(&b, "  - %s: %s is no longer a clone of it; git clone %s   (declared in %s)\n", m.Key, m.Stale, m.Origin, m.DeclaredIn)
+			continue
+		}
 		fmt.Fprintf(&b, "  - %s: git clone %s   (declared in %s)\n", m.Key, m.Origin, m.DeclaredIn)
 	}
 	b.WriteString("already cloned? run `den scan <folder that holds your clones>`")
@@ -124,9 +131,16 @@ func (k *keyResolver) resolve(ref config.RepoRef) (Repo, bool, error) {
 		if inFile && p.Origin != "" {
 			declaredIn = k.file.Path
 		}
-		e, ok := k.table.Repos[identity(repo.Origin)]
-		if !ok || e.Path == "" {
+		id := identity(repo.Origin)
+		e, ok := k.table.Repos[id]
+		// den scan checked the folder when it wrote the entry; a clone deleted, moved or replaced since
+		// would otherwise mount another repo under this key.
+		stale := ok && e.Path != "" && !repos.Valid(e.Path, id)
+		if !ok || e.Path == "" || stale {
 			m := MissingRepo{Key: key, Origin: repo.Origin, DeclaredIn: declaredIn, Optional: ref.Optional}
+			if stale {
+				m.Stale = filepath.Clean(e.Path)
+			}
 			if ref.Optional {
 				k.warnings = append(k.warnings, fmt.Sprintf("optional repo key %q has no folder on this machine "+
 					"(git clone %s, declared in %s); dropped", key, m.Origin, m.DeclaredIn))
