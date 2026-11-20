@@ -218,7 +218,8 @@ vérifiable aujourd'hui. Appuis : la liste des appels d'outils de la session, lu
 du transcript, ne contient que deux commandes `den` (`den exec mkt-trial -- true` et `den ls`,
 avec `DEN_HOME` posé au lancement) et ne nomme jamais `amproto` ; `nests.yaml`, `repos.yaml` et
 `instances/` du vrai den home ne nomment ni `mkt-trial` ni `<scratchpad>/runs`. Le contrôle par
-`find` n'a pas établi l'isolement ; seule cette lecture l'appuie.
+`find` n'a pas établi l'isolement ; seule cette lecture l'appuie. Décision de l'humain (2026-11-20,
+après la revue finale) : ce résidu du point 3 de « Review Focus » est accepté, sans nouvel essai.
 
 **Nettoyage.** `den --den-home <den home> rm mkt-trial` (sans `--force`) : `Removed sandbox mkt-trial`,
 code 0 ; `sbx ls` ne nomme plus `mkt-trial`.
