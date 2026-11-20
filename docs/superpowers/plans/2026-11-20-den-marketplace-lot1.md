@@ -12,7 +12,7 @@
 
 ## Faits vérifiés avant ce plan
 
-Sources primaires lues le 2026-11-20 :
+Lus le 2026-11-20. Sources primaires : les entrées `git-subdir` observées dans le fichier de la marketplace officielle, la sortie de `claude … --help`, l'essai de compilation dans le scratchpad. Les citations de code.claude.com sont des sources secondaires : la substitution de `${CLAUDE_PLUGIN_ROOT}` et la copie du seul dossier du plugin ne deviennent primaires qu'à la tâche 1.
 
 - **`git-subdir`** : champs `url`, `path`, `ref`, `sha` ; « `ref`: a branch or tag » ; « Claude Code checks out only that subdirectory » (code.claude.com/docs/en/plugins/marketplace-reference.md). Forme observée dans `~/.claude/plugins/marketplaces/claude-plugins-official/.claude-plugin/marketplace.json` : 110 entrées, dont `{"source": "git-subdir", "url": "https://github.com/42Crunch-AI/claude-plugins.git", "path": "plugins/api-security-testing", "ref": "v1.5.5", …}`.
 - **Même dépôt : non vérifié.** La doc dit « Use a relative path for a plugin in a subdirectory of the marketplace repository itself. Use `git-subdir` for a subdirectory of some other repository. » Elle n'interdit pas le même dépôt. La tâche 1 l'essaie avant tout le reste.
@@ -37,6 +37,7 @@ Sources primaires lues le 2026-11-20 :
 - Pas de `version` dans l'entrée de marketplace.
 - Aucun skill ne lit, n'affiche ni n'écrit le jeton ou une valeur de secret (B13), ne lance `den up` (B14), ne réécrit un `den.yaml` en entier (B15), n'élargit le réseau sans hôte nommé et diff vu (B16), ne lance `den rm` sans confirmation ni avec `--force` (B28), ne touche aux chemins de v1 (`config.yaml`, `stacks/`, `nests/`, `state/sandboxes/`).
 - Les skills résolvent le den home par `${DEN_HOME:-$HOME/.den}`, jamais par un `~/.den` en dur dans une commande.
+- Essais (tâches 4 et 8) : l'état du shell ne persiste pas d'un appel Bash à l'autre. Toute commande `den` que l'agent lance porte `--den-home <chemin>`, nettoyage compris ; `export DEN_HOME=…` ne vaut que dans le terminal de l'humain.
 - `CHANGELOG.md` ne reçoit aucune section sur la branche : l'entrée s'écrit par `/release` (tâche 10).
 - `.claude/commands/release.md` : `make` → `task check` est hors périmètre (suite nommée de la spec). Ne pas le faire.
 
@@ -89,9 +90,14 @@ claude plugin marketplace remove den
 ```
 Attendu : `claude plugin marketplace list` ne nomme plus `den`.
 
-- [ ] **Step 5: Consigner** dans le fichier des essais : commandes lancées, sortie observée, et ce qui reste non vérifié (l'URL `https://github.com/PillowPillow/den.git` au lieu de `file://`, vérifiée à la première release). **Si l'installation échoue, arrêter le plan et présenter le résultat à l'humain** : A5 interdit de servir `main`, aucun repli n'est à choisir seul.
+- [ ] **Step 5: Classer le résultat**
+  - Installation réussie : passer au Step 6.
+  - Refus de l'URL `file://` (message qui porte sur l'URL ou le schéma) : **non concluant**, pas un échec. Repli, HITL (l'humain approuve le push) : pousser une branche d'essai `trial/plugin-pin` (jamais un tag `v*`), puis refaire les Steps 1 à 4 avec `url: "https://github.com/PillowPillow/den.git"` et `ref: "trial/plugin-pin"` ; ensuite `git push origin --delete trial/plugin-pin`. Lire d'abord `claude plugin marketplace add --help` (une option de ref évite de pousser le `marketplace.json` d'essai sur la branche).
+  - Échec avec l'URL GitHub aussi : **arrêter le plan et présenter le résultat à l'humain**. A5 interdit de servir `main`, aucun repli n'est à choisir seul.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Consigner** dans le fichier des essais : commandes lancées, sortie observée, classe, et ce qui reste non vérifié (avec `file://`, l'URL GitHub reste à vérifier à la première release).
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-11-20-den-marketplace-runs.md
@@ -187,26 +193,26 @@ Décide le défaut de `den:profile` pour ces deux clés (B22). HITL : l'humain l
 **Files:**
 - Modify: `docs/superpowers/specs/2026-11-20-den-marketplace-runs.md` (section « Essai 2 — plugins dans une VM »)
 
-- [ ] **Step 1: Préparer un den home jetable** — `export DEN_HOME=<scratchpad>/vm-trial/den-home` ; un repo git vide `<scratchpad>/vm-trial/repo` ; un kit `$DEN_HOME/kits/trial/` avec `spec.yaml` minimal (`schemaVersion: "2"`, `kind: mixin`, `name: trial`, `version: 1.0.0`) et `files/home/.claude/settings.json` :
+- [ ] **Step 1: Préparer un den home jetable** — `H=<scratchpad>/vm-trial/den-home`, passé par `--den-home "$H"` à chaque commande `den` (ci-dessous, `$DEN_HOME` désigne ce chemin) ; un repo git vide `<scratchpad>/vm-trial/repo` ; un kit `$DEN_HOME/kits/trial/` avec `spec.yaml` minimal (`schemaVersion: "2"`, `kind: mixin`, `name: trial`, `version: 1.0.0`) et `files/home/.claude/settings.json` :
 
 ```json
 {"extraKnownMarketplaces":{"caveman":{"source":{"source":"github","repo":"JuliusBrussee/caveman"}}},"enabledPlugins":{"caveman@caveman":true}}
 ```
 `$DEN_HOME/den.yaml` : `schema: 1`, `default_template: claude-code-docker`, `profiles: {trial: [<DEN_HOME>/kits/trial]}`, `profile: trial`, nest `mkt-trial` avec le repo jetable. Vérifier d'abord `sbx ls` : aucune VM `mkt-trial`.
 
-- [ ] **Step 2: Créer l'instance** — `den exec mkt-trial -- true` (en arrière-plan : la première création tire l'image). Attendu : code 0.
+- [ ] **Step 2: Créer l'instance** — `den --den-home "$H" exec mkt-trial -- true` (en arrière-plan : la première création tire l'image). Attendu : code 0.
 
-- [ ] **Step 3: Observer (HITL)** — l'humain lance `DEN_HOME=… den up mkt-trial`, accepte ou non les invites, tape `/plugin`, quitte. Puis :
+- [ ] **Step 3: Observer (HITL)** — l'humain lance `den --den-home <H> up mkt-trial`, accepte ou non les invites, tape `/plugin`, quitte. Puis :
 
 ```bash
-den exec mkt-trial -- ls /home/agent/.claude/plugins/cache
-den exec mkt-trial -- cat /home/agent/.claude/plugins/known_marketplaces.json
+den --den-home "$H" exec mkt-trial -- ls /home/agent/.claude/plugins/cache
+den --den-home "$H" exec mkt-trial -- cat /home/agent/.claude/plugins/known_marketplaces.json
 sbx policy check network github.com:443 --sandbox mkt-trial
 ```
 
 - [ ] **Step 4: Classer le résultat** — un des quatre : installé sans action ; bloqué par l'invite de confiance ; bloqué par le réseau (`github.com` refusé) ; autre (sortie citée). Règle de décision : **gardées par défaut** seulement si le plugin s'installe sans modifier le réseau ni répondre à une invite autre que la confiance du dossier ; sinon **retirées par défaut**, et `den:profile` dit la cause observée (avec la cause réseau, il propose de les garder si l'utilisateur nomme l'hôte, selon B16).
 
-- [ ] **Step 5: Nettoyer** — `den rm mkt-trial` (instance créée par cet essai, sans `--force`), puis `rm -rf <scratchpad>/vm-trial`. Attendu : `sbx ls` ne nomme plus `mkt-trial`.
+- [ ] **Step 5: Nettoyer** — `den --den-home "$H" rm mkt-trial` (instance créée par cet essai, sans `--force`), puis `rm -rf <scratchpad>/vm-trial`. Attendu : `sbx ls` ne nomme plus `mkt-trial`.
 
 - [ ] **Step 6: Consigner** (commandes, sorties, classe, décision) et commit :
 
@@ -269,10 +275,11 @@ Dépend de la tâche 4 (défaut de `enabledPlugins` et `extraKnownMarketplaces`)
 - [ ] **Step 1: Écrire le SKILL.md** — `name: profile` ; `description` de déclenchement (créer un profil depuis la configuration Claude de l'hôte, ou y ranger des kits existants comme `~/.den/kits/pro`, A2) ; ne nomme que le travail « créer ». Corps, après la ligne `rules.md` :
   1. Lire `reference/den-yaml.md#profiles`. Demander le nom du profil ; refuser un nom déjà défini sous `profiles:` sans accord. Un kit qui existe déjà sous `<den home>/kits/<nom>` (avec `spec.yaml`) se déclare tel quel, sans copie.
   2. Lister `~/.claude/` de l'hôte et proposer, un par un, `CLAUDE.md`, `skills/`, `agents/`, `output-styles/`, `settings.json`, vers `<den home>/kits/<nom>/files/home/.claude/`. Ne jamais copier `~/.claude.json`, `.credentials.json`, `projects/`, `history.jsonl`, `todos/`, `statsig/`, `shell-snapshots/`, `plugins/`, ni aucun autre fichier d'état ou d'historique.
-  3. `settings.json` clé par clé, avec l'utilisateur. Retirées par défaut et signalées : `hooks`, `statusLine`, `permissions.additionalDirectories` dont une entrée est un chemin absolu, `sandbox` (B21). `env` : montrer les **noms** seulement (par exemple `jq 'env | keys'`), jamais les valeurs ; garder ceux que l'utilisateur choisit (B29). `enabledPlugins` et `extraKnownMarketplaces` : le défaut et sa cause viennent de l'essai de la tâche 4.
-  4. Écrire `spec.yaml` minimal (`schemaVersion: "2"`, `kind: mixin`, `name: <nom>`, `version: 1.0.0`).
-  5. Ajouter `profiles.<nom>: [<den home>/kits/<nom>]` au fichier global (règle 5) et, sur accord, `profile: <nom>`.
-  6. `den ls` : nommer les instances qui doivent être recréées (`den rm <instance>` puis `den up <nest>`) ; `den rm` seulement après confirmation (règle 8).
+  3. `settings.json` clé par clé, avec l'utilisateur. Règle générale : toute valeur qui est une commande de l'hôte ou un chemin absolu de l'hôte est signalée et retirée par défaut (B21). Cas connus : `hooks`, `statusLine`, `permissions.additionalDirectories` dont une entrée est un chemin absolu, `sandbox`, `apiKeyHelper`. Avant d'écrire le SKILL.md, relire la référence des réglages de Claude Code et compléter la liste des clés dont la valeur est une commande. `enabledPlugins` et `extraKnownMarketplaces` : le défaut et sa cause viennent de l'essai de la tâche 4.
+  4. `env` (B29) : ne jamais lire `settings.json` brut avec l'outil Read. Revoir le fichier par `jq 'del(.env)' ~/.claude/settings.json` ; obtenir les noms par `jq '.env | keys' ~/.claude/settings.json` ; garder les noms que l'utilisateur choisit ; écrire le fichier filtré par `jq` sans jamais afficher une valeur. `jq` absent de l'hôte : ne pas copier `settings.json`, et dire pourquoi.
+  5. Écrire `spec.yaml` minimal (`schemaVersion: "2"`, `kind: mixin`, `name: <nom>`, `version: 1.0.0`).
+  6. Ajouter `profiles.<nom>: [<den home>/kits/<nom>]` au fichier global (règle 5) et, sur accord, `profile: <nom>`.
+  7. `den ls` : nommer les instances qui doivent être recréées (`den rm <instance>` puis `den up <nest>`) ; `den rm` seulement après confirmation (règle 8).
 
 - [ ] **Step 2: `go test ./internal/plugin/ -count=1`**, `claude plugin validate plugins/den`, `task check` — PASS.
 
@@ -313,7 +320,7 @@ HITL : l'humain lance chaque session et répond aux questions du skill.
 **Files:**
 - Modify: `docs/superpowers/specs/2026-11-20-den-marketplace-runs.md` (section « Essai 3 — skills »)
 
-- [ ] **Step 1: Préparer** — `touch <scratchpad>/runs/marker` ; `export DEN_HOME=<scratchpad>/runs/den-home` (dossier absent) ; un repo jetable `<scratchpad>/runs/repo` ; `sbx ls` : aucune VM `mkt-trial`. Lancer depuis `<scratchpad>/runs` (aucun `den.yaml` de projet au-dessus) : `claude --plugin-dir /Users/polochon/Development/Pillow/den/plugins/den`.
+- [ ] **Step 1: Préparer** — `touch <scratchpad>/runs/marker` ; `H=<scratchpad>/runs/den-home` (dossier absent) ; un repo jetable `<scratchpad>/runs/repo` ; `sbx ls` : aucune VM `mkt-trial`. L'humain lance, dans son terminal et depuis `<scratchpad>/runs` (aucun `den.yaml` de projet au-dessus) : `DEN_HOME=<H> claude --plugin-dir /Users/polochon/Development/Pillow/den/plugins/den`. Les skills lisent `DEN_HOME` par la règle 1.
 
 - [ ] **Step 2: Lancer chaque skill une fois**
   - `/den:setup` : nest `mkt-trial` sur le repo jetable ; attendu : `den.yaml` créé sous `$DEN_HOME` après diff, `den exec mkt-trial -- true` réussi, `den up mkt-trial` donné, jamais lancé.
@@ -321,7 +328,7 @@ HITL : l'humain lance chaque session et répond aux questions du skill.
   - `/den:nest` : ajouter `ports` ou un repo optionnel à `mkt-trial` ; attendu : édition minimale, commentaires conservés.
   - `/den:troubleshoot` : symptôme « a host is unreachable from the VM » ; attendu : `sbx policy check network … --sandbox mkt-trial` lancé, aucune règle ajoutée sans hôte nommé.
 
-- [ ] **Step 3: Vérifier l'isolement** — `find ~/.den -newer <scratchpad>/runs/marker` ne rend rien. Puis `den rm mkt-trial` (sans `--force`), `sbx ls` sans `mkt-trial`.
+- [ ] **Step 3: Vérifier l'isolement** — `find ~/.den -newer <scratchpad>/runs/marker` ne rend rien. Puis `den --den-home "$H" rm mkt-trial` (sans `--force`), `sbx ls` sans `mkt-trial`.
 
 - [ ] **Step 4: Corriger** — chaque écart observé devient une modification du SKILL.md ou de `rules.md`, relancée une fois.
 
@@ -345,7 +352,7 @@ git commit -m "docs: record one real run of each den skill"
 
 - [ ] **Step 1: README** — `## With Claude Code`, avant `## First run` (B26) : les deux commandes `claude plugin marketplace add PillowPillow/den` et `claude plugin install den@den`, puis `/den:setup` dans Claude Code ; une phrase : le plugin sert les skills de la dernière release de den ; la ligne de `.claude/settings.json` de projet qui déclare la marketplace pour une équipe (`extraKnownMarketplaces` → `den` → `{"source": {"source": "github", "repo": "PillowPillow/den"}}`), forme à revérifier dans la doc settings de Claude Code avant de l'écrire. Le chemin manuel reste.
 
-- [ ] **Step 2: CLAUDE.md** — dans « What this is » ou une section courte « Plugin » : `.claude-plugin/marketplace.json` et `plugins/den/` (skills, `rules.md`, `reference/`), épinglage `git-subdir` sur `vX.Y.Z` ; « une page de `docs/` copiée sous `plugins/den/reference/` se recopie par `task plugin-sync` avant le commit, sinon `internal/plugin` échoue » ; ajouter `task plugin-sync` au bloc Commands ; aucun fichier Go sous `plugins/den/`.
+- [ ] **Step 2: CLAUDE.md** — dans « What this is » ou une section courte « Plugin » : `.claude-plugin/marketplace.json` et `plugins/den/` (skills, `rules.md`, `reference/`), épinglage `git-subdir` sur `vX.Y.Z` ; « une page de `docs/` copiée sous `plugins/den/reference/` se recopie par `task plugin-sync` avant le commit, sinon `internal/plugin` échoue » ; ajouter `task plugin-sync` au bloc Commands ; aucun fichier Go sous `plugins/den/`. Offre, hors design (l'humain tranche) : ajouter à « Stale artifacts » le design, la fiche, le fichier des essais et ce plan du 2026-11-20, sinon un agent les lit comme historiques.
 
 - [ ] **Step 3: release.md**
   - `allowed-tools` : ajouter `Bash(go test:*)`.
@@ -366,6 +373,6 @@ git commit -m "docs: den plugin in the README and CLAUDE.md; the release bumps t
 
 Après la fusion de la branche dans `main`.
 
-- [ ] **Step 1: `/release minor`** — B7. L'étape 4 de `/release` écrit l'entrée de `CHANGELOG.md` ; ligne attendue sous `### Added` : « A Claude Code plugin: `claude plugin marketplace add PillowPillow/den`, then `claude plugin install den@den`, gives `/den:setup`, `/den:profile`, `/den:nest` and `/den:troubleshoot`. » La nouvelle étape monte `plugin.json` et `ref`.
+- [ ] **Step 1: `/release minor`** — B7. `release.md` nomme encore `make lint && make typecheck && make test`, sans Makefile dans le dépôt : lancer `task check` à cet endroit. L'étape 4 de `/release` écrit l'entrée de `CHANGELOG.md` ; ligne attendue sous `### Added` : « A Claude Code plugin: `claude plugin marketplace add PillowPillow/den`, then `claude plugin install den@den`, gives `/den:setup`, `/den:profile`, `/den:nest` and `/den:troubleshoot`. » La nouvelle étape monte `plugin.json` et `ref`.
 - [ ] **Step 2:** `/release` s'arrête à son étape 7. L'humain donne le go du push.
 - [ ] **Step 3: Après publication** — sur un poste, `claude plugin marketplace add PillowPillow/den`, `claude plugin install den@den`, `/den:setup` répond ; consigner dans le fichier des essais la vérification de l'URL GitHub restée ouverte en tâche 1.
