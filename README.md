@@ -132,6 +132,27 @@ To update, run the command you installed with again: `brew upgrade --cask den`, 
 | **kit** | an sbx package of files, network rules and settings added to a VM |
 | **profile** | a list of kits that brings your own Claude configuration into a VM |
 
+## With Claude Code
+
+```bash
+claude plugin marketplace add PillowPillow/den
+claude plugin install den@den
+```
+
+Then run `/den:setup` in Claude Code. The plugin serves the skills of den's latest release.
+
+To declare the marketplace for a whole team, add this to the project's `.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "den": { "source": { "source": "github", "repo": "PillowPillow/den" } }
+  }
+}
+```
+
+The manual path below stays available.
+
 ## First run
 
 1. Create `~/.den/den.yaml` from the example in this repository:

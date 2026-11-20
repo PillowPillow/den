@@ -19,6 +19,7 @@ task check       # lint » typecheck » test, fail-fast — what CI runs, and wh
 task test        # go test -count=1 ./...   (-count=1 defeats the cache — plain `go test` can pass stale)
 task typecheck   # go build ./...
 task lint        # go vet ./... then test -z "$(gofmt -l .)"   — gofmt is enforced, not advisory
+task plugin-sync # copy the docs/ pages the plugin reads into plugins/den/reference/
 task build       # go build -ldflags "-X .../cli.Version=$(git describe --tags --always --dirty)" -o den ./cmd/den
                  # the ONLY documented way to build: a plain `go build` answers `den dev`
 
@@ -65,6 +66,13 @@ additions after confirmation, but a replacement always asks and needs a terminal
 (the build VM's scratch workspace), `wt/` (default worktree root) and `state/v2/` (the registry, with `repos.yaml`, the table `den scan` writes).
 The leading dot on `.templates` and `.build` is deliberate: no sandbox name can start with one, so
 `den rm <name>` can never own them.
+
+**Plugin** (`.claude-plugin/marketplace.json`, `plugins/den/`): the Claude Code plugin `den` carries the skills
+(`skills/`), `rules.md` and `reference/`. The marketplace entry is a same-repo `git-subdir` source pinned by `ref` to
+`vX.Y.Z`, so an install gets the last release, not `main`. Claude Code copies only `plugins/den/` into its cache, hence
+`reference/`: a `docs/` page copied there is re-copied by `task plugin-sync` before the commit, or `internal/plugin` fails.
+No Go file lives under `plugins/den/`. A release bumps `plugin.json`'s `version` and the marketplace `ref` together
+(`.claude/commands/release.md`).
 
 **Everything runs through `sbx env`.** `internal/sbxenv` renders `sbxenv.yaml` (pure, deterministic)
 plus the two kits den generates: `den-claude` (embedded, `kind: sandbox`, image pinned to the
