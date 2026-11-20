@@ -1,7 +1,7 @@
 ---
 description: Cut a release — read the commits, write the changelog, tag, and stop before the push
 argument-hint: "[major|minor|patch|vX.Y.Z]"
-allowed-tools: Bash(git:*), Bash(make:*), Bash(go test:*), Bash(gh:*), Read, Edit, Write
+allowed-tools: Bash(git:*), Bash(task:*), Bash(go test:*), Bash(gh:*), Read, Edit, Write
 ---
 
 Cut a den release. `$ARGUMENTS` optionally forces the bump (`major`, `minor`, `patch`) or
@@ -39,7 +39,7 @@ If `git status` shows tracked modifications, stop: a release commit must carry t
 Then the gates, in this order, all three green:
 
 ```bash
-make lint && make typecheck && make test
+task lint && task typecheck && task test
 ```
 
 `release.yml` re-runs the same three on the tagged commit, so a red gate here is a release

@@ -12,6 +12,7 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/den-yaml.md#profiles. Run the st
    - Ask the user for the profile name.
    - Read the `profiles:` key of `${DEN_HOME:-$HOME/.den}/den.yaml`. If the name is already defined there, stop and ask the user whether to replace that entry; do not go on without their agreement.
    - If a folder `${DEN_HOME:-$HOME/.den}/kits/<name>` already exists and holds a `spec.yaml`, it is a kit: declare it as it is, without copying anything, and go to step 6.
+   - If that folder exists without a `spec.yaml`, list its files and ask the user before writing anything into it; steps 2 to 5 would overwrite a file of the same name.
 
 2. Choose the files to bring. List `~/.claude/` of the host (`ls -A ~/.claude`). Propose one by one, and copy only what the user accepts into `${DEN_HOME:-$HOME/.den}/kits/<name>/files/home/.claude/`:
    - `CLAUDE.md`;
