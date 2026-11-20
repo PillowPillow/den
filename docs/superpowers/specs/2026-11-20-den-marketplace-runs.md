@@ -211,11 +211,14 @@ transcript de la session.
 
 **Isolement.** `find ~/.den -newer <repère>` n'est pas vide : `gen/amproto.prototype-den-a`,
 `gen/amproto.prototype-den-b`, `wt/prototype-den-a`, `wt/prototype-den-b`, et sous `state/v2`
-`instances/amproto.prototype-den-{a,b}.yaml`, `nests.yaml`, `repos.yaml` (17:50 à 17:52). Ces
-entrées viennent d'un autre travail mené en même temps sur le poste : le transcript de l'essai ne
-nomme jamais `amproto`, et `nests.yaml`, `repos.yaml` et `instances/` du vrai den home ne nomment ni
-`mkt-trial` ni `<scratchpad>/runs`. Toutes les écritures de l'essai sont sous `<scratchpad>/runs/den-home`.
-Le contrôle par `find` ne prouve donc l'isolement qu'avec cette lecture des fichiers.
+`instances/amproto.prototype-den-{a,b}.yaml`, `nests.yaml`, `repos.yaml` (17:50 à 17:52). La
+session de l'essai a duré d'environ 17:37 à 17:52 : la fenêtre recouvre ces écritures, l'heure ne
+les exclut donc pas. Attribution probable à un autre travail mené en même temps sur le poste, non
+vérifiable aujourd'hui. Appuis : la liste des appels d'outils de la session, lue avant la suppression
+du transcript, ne contient que deux commandes `den` (`den exec mkt-trial -- true` et `den ls`,
+avec `DEN_HOME` posé au lancement) et ne nomme jamais `amproto` ; `nests.yaml`, `repos.yaml` et
+`instances/` du vrai den home ne nomment ni `mkt-trial` ni `<scratchpad>/runs`. Le contrôle par
+`find` n'a pas établi l'isolement ; seule cette lecture l'appuie.
 
 **Nettoyage.** `den --den-home <den home> rm mkt-trial` (sans `--force`) : `Removed sandbox mkt-trial`,
 code 0 ; `sbx ls` ne nomme plus `mkt-trial`.
@@ -230,4 +233,8 @@ code 0 ; `sbx ls` ne nomme plus `mkt-trial`.
 - `den:nest` : l'écriture du diff et la conservation des commentaires (le fichier de l'essai n'en
   avait pas) ; un `den.yaml` de projet.
 - `den:troubleshoot` : le lancement de `sbx policy check` avec un hôte nommé, et l'application d'une
-  correction après accord.
+  correction après accord. Résultat attendu du plan non atteint pendant l'essai : aucun hôte nommé.
+- Après la correction de `rules.md` (règles 4 et 6), seul `/den:setup` a été relancé ;
+  `/den:profile`, `/den:nest` et `/den:troubleshoot` ne l'ont pas été.
+- `reference/files.md` (copie de `docs/files.md`) cite encore `sbx secret ls` sans filtre, comme
+  commande de l'utilisateur ; la règle 6 l'interdit aux skills.
