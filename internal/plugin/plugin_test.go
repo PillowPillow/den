@@ -169,11 +169,28 @@ func TestMarketplaceRefIsReleaseTag(t *testing.T) {
 	}
 }
 
+// cutFrontmatter splits at the first line that is exactly `---`.
+func cutFrontmatter(rest string) (block, body string, found bool) {
+	if strings.HasPrefix(rest, "---\n") || rest == "---" {
+		return "", strings.TrimPrefix(rest, "---"), true
+	}
+	if i := strings.Index(rest, "\n---\n"); i >= 0 {
+		return rest[:i], rest[i+len("\n---\n"):], true
+	}
+	if strings.HasSuffix(rest, "\n---") {
+		return strings.TrimSuffix(rest, "\n---"), "", true
+	}
+	return "", "", false
+}
+
 func TestSkillsHaveFrontmatter(t *testing.T) {
 	root := moduleRoot(t)
 	files, err := filepath.Glob(filepath.Join(root, pluginDirRel, "skills", "*", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("plugins/den/skills holds no skill folder with a SKILL.md")
 	}
 	for _, file := range files {
 		folder := filepath.Base(filepath.Dir(file))
