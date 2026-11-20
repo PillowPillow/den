@@ -27,7 +27,7 @@ the network ([docs/security.md](security.md#what-the-vm-can-reach)).
 
 | Symptom | Fix |
 |---|---|
-| den answers with commands such as `doctor`, or messages that this README does not describe | your `PATH` finds den v1: remove it or put the V2 binary's directory first, see [Install](../README.md#install) |
+| den answers with commands such as `doctor`, or messages that the README does not describe | your `PATH` finds den v1: remove it or put the V2 binary's directory first, see [Install](../README.md#install) |
 | `go install github.com/PillowPillow/den/cmd/den@latest` installs v1 | that path is v1's: use `github.com/PillowPillow/den/v2/cmd/den@latest` |
 | `den up`, `den ls` or another command fails with an sbx error about signing in | sbx is not signed in: `sbx login` |
 | `sbx <version> is older than v0.53.0` | upgrade sbx: `brew upgrade docker/tap/sbx` on macOS, `sudo apt install --only-upgrade docker-sbx` on Ubuntu |

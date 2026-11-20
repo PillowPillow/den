@@ -26,3 +26,4 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/den-yaml.md. Run the steps in or
    - Propose `den rm <instance>` then `den up <nest>`; run `den rm` only after the user confirms, never with `--force` (rule 8).
 
 6. Validate. Run `den exec <nest> -- true` (in the background if it creates the VM). When it succeeds, give the user `den up <nest>` (rule 7).
+   - If the instance was kept, `den exec` runs it with its old configuration and warns on stderr that the file changed: tell the user the change is not validated until the instance is recreated.
