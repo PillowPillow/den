@@ -1,0 +1,18 @@
+{
+  "name": "den",
+  "owner": {
+    "name": "PillowPillow"
+  },
+  "plugins": [
+    {
+      "name": "den",
+      "description": "Skills that drive den, the CLI for sbx microVM sandboxes.",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/PillowPillow/den.git",
+        "path": "plugins/den",
+        "ref": "v2.0.0"
+      }
+    }
+  ]
+}
