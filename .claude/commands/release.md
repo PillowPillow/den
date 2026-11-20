@@ -1,7 +1,7 @@
 ---
 description: Cut a release — read the commits, write the changelog, tag, and stop before the push
 argument-hint: "[major|minor|patch|vX.Y.Z]"
-allowed-tools: Bash(git:*), Bash(make:*), Bash(gh:*), Read, Edit, Write
+allowed-tools: Bash(git:*), Bash(make:*), Bash(go test:*), Bash(gh:*), Read, Edit, Write
 ---
 
 Cut a den release. `$ARGUMENTS` optionally forces the bump (`major`, `minor`, `patch`) or
@@ -33,8 +33,8 @@ nothing to do with a release, and a plain `--porcelain` would refuse the run ove
 (`claudedocs/`, the case that first motivated this flag, is ignored by `.gitignore` since
 2026-08-10 and no longer reaches `git status` at all — the flag stays for the next one.)
 
-If `git status` shows tracked modifications, stop: a release commit must carry the changelog
-and nothing else.
+If `git status` shows tracked modifications, stop: a release commit must carry the changelog,
+`plugins/den/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, and nothing else.
 
 Then the gates, in this order, all three green:
 
@@ -125,10 +125,21 @@ If a commit's user-visible effect isn't clear from its subject and body, read th
 before writing its line. Guessing produces a changelog that is wrong in the one place
 people trust it.
 
+## 4b. Bump the plugin
+
+Set `version` in `plugins/den/.claude-plugin/plugin.json` to `X.Y.Z` and `ref` in
+`.claude-plugin/marketplace.json` to `vX.Y.Z`, then:
+
+```bash
+go test ./internal/plugin/ -count=1   # must pass before the commit
+```
+
+A forgotten `ref` would otherwise fail in CI after the tag is public.
+
 ## 5. Commit
 
 ```bash
-git add CHANGELOG.md
+git add CHANGELOG.md plugins/den/.claude-plugin/plugin.json .claude-plugin/marketplace.json
 git commit -m "release: vX.Y.Z"
 ```
 
