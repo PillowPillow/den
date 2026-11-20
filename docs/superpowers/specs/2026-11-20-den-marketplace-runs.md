@@ -94,9 +94,10 @@ image déjà présente). Dans la VM, `~/.claude/settings.json` porte les deux cl
 **Session humaine** (`den --den-home <H> up mkt-trial`, puis `/plugin`). Aucune invite : ni
 confiance du dossier, ni marketplace, ni plugin. `/plugin` ne liste que les quatre plugins
 `builtin` (`cc-plugin-agents-md`, `cc-plugin-diff`, `cc-plugin-plugin-authoring`,
-`cc-plugin-telemetry`) ; `caveman` absent.
+`cc-plugin-telemetry`) ; `caveman` absent. La durée de cette session n'a pas été mesurée.
 
-**Constat après la session** (par `den --den-home <H> exec mkt-trial -- …`) :
+**Constat après la session** (par `den --den-home <H> exec mkt-trial -- …`, avant les sessions
+`claude -p --debug` ci-dessous) :
 
 - `ls ~/.claude/plugins/cache` : `No such file or directory` ;
 - `cat ~/.claude/plugins/known_marketplaces.json` : `No such file or directory` ;
@@ -112,7 +113,8 @@ confiance du dossier, ni marketplace, ni plugin. `/plugin` ne liste que les quat
 `git clone https://github.com/JuliusBrussee/caveman.git` réussit (code 0, `.claude-plugin/` présent).
 
 **Journal de Claude Code** (`claude -p --debug` lancé dans la VM, deux fois, la seconde pendant
-environ deux minutes) :
+environ deux minutes ; sessions sans terminal, distinctes de la session humaine, dont aucun journal
+n'existe) :
 
 ```
 Skipping orphaned enabledPlugins entry caveman@caveman: marketplace not registered
@@ -123,25 +125,27 @@ Marketplace checkout probe: no readable HEAD, cloning
 git clone: url=https://github.com/JuliusBrussee/caveman.git ref=default timeout=120000ms
 ```
 
-Aucune ligne de fin ni d'erreur du clone avant la fin de session, 109 s plus tard ;
-`known_marketplaces.json` reste absent et `marketplaces/` vide.
+Aucune ligne de fin ni d'erreur du clone avant la fin de session, 109 s plus tard, donc avant le
+délai de 120 s du clone ; `known_marketplaces.json` reste absent et `marketplaces/` vide.
 
-**Classe : autre.** Pas d'invite, réseau autorisé, `git clone` manuel réussi ; Claude Code lance le
-clone de la marketplace au démarrage, ne le termine pas dans la session, et le plugin n'est pas
-installé. La cause du clone sans fin n'est pas établie.
+**Classe : autre.** Pas d'invite, réseau autorisé, `git clone` manuel réussi en quelques secondes ;
+Claude Code lance le clone de la marketplace au démarrage, le clone n'est pas terminé après 109 s,
+et le plugin n'est pas installé dans la fenêtre observée. La cause n'est pas établie.
 
-**Décision (règle de la tâche 4) : retirées par défaut.** Le plugin ne s'installe pas sans action.
-`den:profile` retire par défaut `enabledPlugins` et `extraKnownMarketplaces`, et dit la cause
-observée : dans une VM, Claude Code n'a pas installé le plugin déclaré par ces clés, alors que le
-réseau l'autorisait.
+**Décision (règle de la tâche 4) : retirées par défaut.** Le plugin ne s'installe pas sans action
+dans la fenêtre observée. `den:profile` retire par défaut `enabledPlugins` et
+`extraKnownMarketplaces`, et dit la cause observée : dans une VM, Claude Code n'a pas installé le
+plugin déclaré par ces clés pendant une session d'environ deux minutes, alors que le réseau
+l'autorisait ; la cause n'est pas établie.
 
 **Nettoyage.** `den --den-home <H> rm mkt-trial` (sans `--force`) : `Removed sandbox mkt-trial`,
 code 0 ; `sbx ls` ne nomme plus `mkt-trial` ; `<scratchpad>/vm-trial` supprimé.
 
 **Reste non vérifié.**
 
-- La cause du clone sans fin (processus de clone de Claude Code dans le proxy sbx, ou version
-  2.1.306 de la VM).
-- Une session interactive plus longue que 120 s : l'essai ne montre pas si le clone aboutit après
-  le délai.
+- Pourquoi le clone de Claude Code dépasse 109 s alors qu'un `git clone` manuel aboutit.
+  Hypothèses non essayées : l'environnement ou le chemin réseau du clone de Claude Code diffère de
+  celui du shell ; la version 2.1.306 de Claude Code dans l'image `claude-code-docker`.
+- Une session plus longue que 120 s, ou une seconde session : l'essai ne montre pas si le clone
+  aboutit après le délai ou à une nouvelle tentative.
 - Une installation manuelle dans la VM (`claude plugin marketplace add`, `claude plugin install`).
