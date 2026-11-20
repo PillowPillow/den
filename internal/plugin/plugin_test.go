@@ -183,6 +183,29 @@ func cutFrontmatter(rest string) (block, body string, found bool) {
 	return "", "", false
 }
 
+func TestCutFrontmatter(t *testing.T) {
+	cases := []struct {
+		name, in, block, body string
+		found                 bool
+	}{
+		{"fence on its own line", "name: x\n---\nbody", "name: x", "body", true},
+		{"end of file without newline", "name: x\n---", "name: x", "", true},
+		{"empty block", "---\nbody", "", "\nbody", true},
+		{"empty block at end of file", "---", "", "", true},
+		{"four dashes", "name: x\n----\nbody", "", "", false},
+		{"dashes followed by text", "name: x\n---foo\nbody", "", "", false},
+		{"no fence", "name: x\nbody", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			block, body, found := cutFrontmatter(c.in)
+			if block != c.block || body != c.body || found != c.found {
+				t.Errorf("cutFrontmatter(%q) = (%q, %q, %v), want (%q, %q, %v)", c.in, block, body, found, c.block, c.body, c.found)
+			}
+		})
+	}
+}
+
 func TestSkillsHaveFrontmatter(t *testing.T) {
 	root := moduleRoot(t)
 	files, err := filepath.Glob(filepath.Join(root, pluginDirRel, "skills", "*", "SKILL.md"))
@@ -203,7 +226,7 @@ func TestSkillsHaveFrontmatter(t *testing.T) {
 			t.Errorf("%s: does not start with a --- frontmatter fence", file)
 			continue
 		}
-		block, body, found := strings.Cut(text[len("---\n"):], "\n---")
+		block, body, found := cutFrontmatter(text[len("---\n"):])
 		if !found {
 			t.Errorf("%s: frontmatter is not closed by ---", file)
 			continue
