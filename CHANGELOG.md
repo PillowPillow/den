@@ -7,6 +7,23 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v2.1.0 — 2026-11-22
+
+### Added
+- A Claude Code plugin, `den`, from this repo's marketplace: `claude plugin marketplace add PillowPillow/den`,
+  then `claude plugin install den@den`. Each release pins the plugin to its own tag, so an install gets the
+  skills of the last release, not `main`.
+- `/den:setup` installs and checks den, sbx, the network policy, the Claude token and a first nest.
+- `/den:profile` builds a profile kit from the host's `~/.claude` (or declares an existing kit folder),
+  reviewing `settings.json` key by key.
+- `/den:nest` adds or changes a nest in a `den.yaml` and validates it with `den exec`.
+- `/den:troubleshoot` finds and fixes the cause of a den or VM failure.
+- The skills never print the Claude token, a secret or a settings value: `sbx secret ls` is only read
+  through `--json` and a `jq` filter that drops every secret field.
+
+### Changed
+- Prerequisites and troubleshooting move from the README to `docs/setup.md`.
+
 ## v2.0.0 — 2026-11-20
 
 den V2 is a rewrite on top of sbx's `sbx env` commands. It shares no config or state with v1 and
