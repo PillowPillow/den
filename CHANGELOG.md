@@ -7,6 +7,65 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v2.0.0 — 2026-11-20
+
+den V2 is a rewrite on top of sbx's `sbx env` commands. It shares no config or state with v1 and
+cannot list or remove v1 sandboxes: read
+[docs/migrating-from-v1.md](https://github.com/PillowPillow/den/blob/main/docs/migrating-from-v1.md)
+**before** you upgrade. Requires sbx v0.53.0 or later; macOS and Linux.
+
+### Added
+- `den up <nest>` creates a nest's instance (an sbx VM) from a `den.yaml` and attaches Claude Code;
+  `-w <branch>` gives each repo a locked git worktree, `--detach` leaves the instance running,
+  `--repo` mounts an extra folder.
+- `den exec <nest> -- <command>` runs one command in an instance, creating it if needed, and returns
+  its exit code. den's own messages go to stderr, so stdout is the command's alone.
+- `den shell` opens a `bash -l` in an instance; `den ls` lists the instances den created with the
+  state of their VM.
+- `den rm` removes exactly what den recorded: the VM first, then the worktrees den made and its own
+  files. It refuses a worktree with uncommitted, untracked or ignored files, or unreachable commits,
+  unless `--force`.
+- Templates: a nest starts from a `templates:` entry (a folder or repo with a `den-template.yaml`)
+  or an official Docker sandbox image. `den build <template>` builds and records it; `den up`
+  never builds, and says when a template's definition moved.
+- `repos:` keys carry their git origin, in the global and the project `den.yaml`. `den scan [folder]`
+  finds the clones under a folder and records where each origin lives, so a shared project
+  `den.yaml` needs no machine path. A missing repo comes with its `git clone` line.
+- `profiles:` (global `den.yaml`) are named kit sets added to every nest that names them.
+- Kits can ship Claude settings defaults in `~/.den/claude-settings.d/`; an existing key in the
+  VM's settings keeps its value.
+- Each instance gets a repo map (`~/.claude/rules/den-instance.md`, `~/.den/repos.json`,
+  `DEN_REPOS`) so Claude knows where every repo is mounted.
+- `den up` warns about global sbx rules added by hand and about an SSH agent the VM cannot use.
+- `den --version` and `den -v`.
+
+### Changed
+- One config file, `den.yaml`, with a strict schema: an unknown key is an error naming the file,
+  never a silent no-op. The global file lives in `~/.den/` (`DEN_HOME` or `--den-home` moves it);
+  a project file is found by walking up from the current folder.
+- Every create and remove runs through `sbx env` with `--skip-host-commands`, so no `lifecycle:`
+  command or command-backed MCP server a VM could have written runs on your host. Config files den
+  reads under a read-write mount are mounted read-only inside the VM.
+- The Claude token stays on your host: the den-claude kit carries no credentials block, and its
+  network rule opens only HTTPS to `api.anthropic.com`.
+- The Go module is `github.com/PillowPillow/den/v2`: `go install` users move with
+  `go install github.com/PillowPillow/den/v2/cmd/den@latest`.
+
+### Removed
+- `config.yaml`, stacks and `stack.yaml`, team sources (`den source`, `den lint`), `den spawn`,
+  `den ports`, `den doctor`, `den init`, `den update`, the worktree trash, the SSH-agent key mount
+  and the egress settle loop. Update with Homebrew or `install.sh`.
+
+## v1.14.0 — 2026-11-20
+
+### Changed
+- `den update` refuses to cross a major version. den v2 is a rewrite that does not read v1's
+  config and cannot list or remove v1 sandboxes, so a silent swap would leave them, and the git
+  worktrees they registered, with nothing able to remove them. The refusal comes before any
+  download and names the migration: commit and push your work, run `den rm` on each v1 sandbox
+  with the v1 binary, then install v2 with `install.sh` or `brew upgrade --cask den`. No flag
+  bypasses it.
+
 ## v1.13.1 — 2026-10-14
 
 ### Fixed
