@@ -27,7 +27,9 @@ func newUpdateCmd(d Deps) *cobra.Command {
 			"It refuses, naming the right command, when another package manager owns the binary — " +
 			"Homebrew or the go toolchain — because overwriting their file would leave them managing a " +
 			"version they no longer manage. It also refuses a build from a checkout, which `git describe` " +
-			"stamps with a commit count or `-dirty`. There " +
+			"stamps with a commit count or `-dirty`. And it refuses to cross a major version: v2 does not " +
+			"read v1's config or manage v1 sandboxes, so remove them with `den rm` first, then install v2 " +
+			"with `install.sh` or Homebrew. There " +
 			"are no flags: pin a version or roll back with `DEN_VERSION=v1.0.1 sh install.sh`.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {

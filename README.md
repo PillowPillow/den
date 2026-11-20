@@ -74,6 +74,14 @@ manage. It also refuses a build from a checkout, which `git describe` stamps wit
 `-dirty`. There are no flags: pin a version or roll back with `DEN_VERSION=v1.0.1` on `install.sh`,
 as above.
 
+`den update` never crosses a major version. v2 is a rewrite that does not read v1's config and cannot
+list or remove v1 sandboxes, so before switching, commit and push your work and run `den rm` on each
+v1 sandbox with the v1 binary — once it is replaced, nothing is left that can remove them or the git
+worktrees they registered. The steps are in
+[docs/migrating-from-v1.md](docs/migrating-from-v1.md); then install v2 with
+`curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | sh` (or
+`brew upgrade --cask den`).
+
 ## Bootstrapping
 
 ```bash

@@ -63,6 +63,14 @@ func Run(ctx context.Context, f Fetcher, req Request, out io.Writer) error {
 		fmt.Fprintf(out, "den %s is already the latest release\n", req.Current)
 		return nil
 	}
+	// Above ProbeWritable for the same reason the up-to-date check is: an
+	// unwritable directory would answer "reinstall elsewhere", the user would
+	// meet this refusal on the next run, and the one message that matters —
+	// remove the v1 sandboxes with THIS binary before it is gone — would come
+	// second. No flag bypasses it: crossing a major is a reinstall, on purpose.
+	if CrossesMajor(req.Current, latest) {
+		return &MajorVersionError{Current: req.Current, Latest: latest}
+	}
 	if err := ProbeWritable(filepath.Dir(req.ExecPath)); err != nil {
 		return err
 	}

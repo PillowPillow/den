@@ -183,6 +183,71 @@ func TestRunSaysAheadWhenTheLocalBuildIsNewer(t *testing.T) {
 	assertGolden(t, "update_ahead.golden", out.String())
 }
 
+// A major release can share nothing with the running one, so the swap is
+// refused before a byte is downloaded: once this binary is gone, nothing is
+// left that can remove the sandboxes and worktrees it created.
+func TestRunRefusesANewMajorVersionBeforeAnyDownload(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "den")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeFetcher{tag: "v2.0.0", bodies: releaseFixture(t, "v2.0.0", "linux", "amd64", "NEW")}
+	var out bytes.Buffer
+	req := Request{ExecPath: target, Current: "v1.13.1", GOOS: "linux", GOARCH: "amd64"}
+	err := Run(context.Background(), f, req, &out)
+	var me *MajorVersionError
+	if !errors.As(err, &me) {
+		t.Fatalf("want a *MajorVersionError naming the migration, got %T: %v", err, err)
+	}
+	if len(f.requests) != 0 {
+		t.Fatalf("the refusal came AFTER a download: %v", f.requests)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old" {
+		t.Fatalf("binary holds %q, want it untouched", got)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("a refusal printed %q on stdout", out.String())
+	}
+}
+
+// The major-version refusal outranks ProbeWritable: "cannot write to …" would
+// send the user to reinstall elsewhere, only to meet this refusal next time,
+// without ever having read the migration steps.
+func TestRunRefusesANewMajorVersionBeforeProbingTheDirectory(t *testing.T) {
+	f := &fakeFetcher{tag: "v2.0.0"}
+	req := Request{ExecPath: filepath.Join(t.TempDir(), "missing", "den"), Current: "v1.13.1"}
+	err := Run(context.Background(), f, req, &bytes.Buffer{})
+	var me *MajorVersionError
+	if !errors.As(err, &me) {
+		t.Fatalf("want a *MajorVersionError, got %T: %v", err, err)
+	}
+}
+
+func TestRunUpdatesWithinTheSameMajor(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "den")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeFetcher{tag: "v1.14.0", bodies: releaseFixture(t, "v1.14.0", "linux", "amd64", "NEW")}
+	req := Request{ExecPath: target, Current: "v1.13.1", GOOS: "linux", GOARCH: "amd64"}
+	if err := Run(context.Background(), f, req, &bytes.Buffer{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "NEW" {
+		t.Fatalf("binary holds %q, want NEW", got)
+	}
+}
+
 func TestRunRefusesAMismatchedChecksum(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "den")

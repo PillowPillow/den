@@ -144,3 +144,20 @@ func TestNeedsUpdate(t *testing.T) {
 		}
 	}
 }
+
+func TestCrossesMajor(t *testing.T) {
+	cases := []struct {
+		current, latest string
+		want            bool
+	}{
+		{"v1.13.1", "v2.0.0", true},
+		{"v1.13.1", "v1.14.0", false},
+		{"v1.13.1", "v1.13.1", false},
+		{"v2.0.0", "v1.14.0", false},
+	}
+	for _, c := range cases {
+		if got := CrossesMajor(c.current, c.latest); got != c.want {
+			t.Errorf("CrossesMajor(%q, %q) = %v, want %v", c.current, c.latest, got, c.want)
+		}
+	}
+}

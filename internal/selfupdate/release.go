@@ -152,6 +152,12 @@ func NeedsUpdate(current, latest string) bool {
 	return semver.Compare(current, latest) < 0
 }
 
+// CrossesMajor answers whether latest is a higher major version than current.
+// Only "higher": a channel that moved back a major is IsAhead's business.
+func CrossesMajor(current, latest string) bool {
+	return semver.Compare(semver.Major(current), semver.Major(latest)) < 0
+}
+
 // IsAhead answers whether the RUNNING binary is newer than the release channel.
 // It exists because NeedsUpdate answers false for two different situations —
 // equal and ahead — and `den update` says a different sentence for each.

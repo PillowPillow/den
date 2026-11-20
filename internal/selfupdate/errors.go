@@ -34,6 +34,28 @@ func (e *VersionError) Error() string {
 		e.Observed)
 }
 
+// MajorVersionError refuses to swap the binary across a major version. v2 is a
+// rewrite that shares no config or state with v1, so a silent swap would leave
+// the user with v1 sandboxes nothing can remove and worktrees still registered
+// in git. The v1 binary is the only tool that can clean them up, which is why
+// the remedy is spelled out here rather than behind a flag: there is no flag,
+// and a reinstall through install.sh or Homebrew is the deliberate way across.
+type MajorVersionError struct {
+	Current string
+	Latest  string
+}
+
+func (e *MajorVersionError) Error() string {
+	return fmt.Sprintf("the latest release is den %s, a new major version, and `den update` does not "+
+		"cross one: v2 is a rewrite that does not read v1's config (~/.den/config.yaml, stacks, nests) "+
+		"and cannot list or remove v1 sandboxes. Before switching, commit and push your work, then run "+
+		"`den rm <sandbox>` on each v1 sandbox with this binary (den %s) — once it is replaced, nothing "+
+		"is left that can remove them or the git worktrees they registered. The steps are in "+
+		"https://github.com/PillowPillow/den/blob/main/docs/migrating-from-v1.md; then install v2 with "+
+		"`curl -fsSL https://raw.githubusercontent.com/PillowPillow/den/main/install.sh | sh` "+
+		"(or `brew upgrade --cask den`)", e.Latest, e.Current)
+}
+
 // WriteError reports a destination den cannot write. It names the directory and
 // a remedy but NOT a cause: a directory can be unwritable, full, or read-only,
 // and asserting "permission denied" would send a full-disk user to chmod. The

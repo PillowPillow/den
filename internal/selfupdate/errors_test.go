@@ -42,6 +42,11 @@ func TestVersionErrorText(t *testing.T) {
 	assertGolden(t, "refusal_version.golden", err.Error())
 }
 
+func TestMajorVersionErrorText(t *testing.T) {
+	err := &MajorVersionError{Current: "v1.13.1", Latest: "v2.0.0"}
+	assertGolden(t, "refusal_major.golden", err.Error())
+}
+
 func TestWriteErrorTextAndUnwrap(t *testing.T) {
 	err := &WriteError{Dir: "/usr/local/bin", Err: os.ErrPermission}
 	assertGolden(t, "refusal_write.golden", err.Error())
