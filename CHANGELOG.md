@@ -7,6 +7,16 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v1.14.0 — 2026-11-20
+
+### Changed
+- `den update` refuses to cross a major version. den v2 is a rewrite that does not read v1's
+  config and cannot list or remove v1 sandboxes, so a silent swap would leave them, and the git
+  worktrees they registered, with nothing able to remove them. The refusal comes before any
+  download and names the migration: commit and push your work, run `den rm` on each v1 sandbox
+  with the v1 binary, then install v2 with `install.sh` or `brew upgrade --cask den`. No flag
+  bypasses it.
+
 ## v1.13.1 — 2026-10-14
 
 ### Fixed
