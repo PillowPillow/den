@@ -24,16 +24,16 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/den-yaml.md#profiles. Run the st
 
 3. Go through `settings.json` key by key with the user, without printing a secret. If `jq` is absent from the host, do not copy `settings.json` and tell the user why: `env` cannot be filtered without it.
    - First list the key names and value types only: `jq 'del(.env) | map_values(type)' ~/.claude/settings.json` (step 4 covers `env`).
-   - For a key not on the lists below, show its shape first: `jq '.<key> | if type=="object" then map_values(type) elif type=="array" then length else type end' ~/.claude/settings.json`. For `permissions`: `jq '.permissions | map_values(if type=="array" then length else type end)' ~/.claude/settings.json`.
+   - For a key not on the lists below, show its shape first: `jq '.["<key>"] | if type=="object" then map_values(type) elif type=="array" then length else type end' ~/.claude/settings.json`. For `permissions`: `jq '.permissions | map_values(if type=="array" then length else type end)' ~/.claude/settings.json`.
    - Show the full value of a key only when the user asks for that key, after warning that `permissions` rules and other strings can embed a token: `jq '.["<key>"]' ~/.claude/settings.json`. A shown value stays in the transcript, so never repeat a secret from it.
    - Never print the value of a key on the command or path lists below. Show only its type and that it is removed by default. If the user wants to keep one, they read its value in their own terminal (rule 6).
-   - General rule: any value that is a command run on the host, or an absolute path of the host, is shown to the user and removed by default, because the VM has neither the host's programs nor its folders.
+   - General rule: any value that is a command run on the host, or an absolute path of the host, is named to the user with its type only, and removed by default, because the VM has neither the host's programs nor its folders.
    - Keys known to hold such a value, checked against the Claude Code settings reference (https://code.claude.com/docs/en/settings-reference):
      - commands: `hooks`, `statusLine`, `apiKeyHelper`, `awsAuthRefresh`, `awsCredentialExport`, `gcpAuthRefresh`, `otelHeadersHelper`, `fileSuggestion`, `sshHostCommands`;
      - executables: `processWrapper`, `policyHelper`, `sandbox` (its `bwrapPath`, `socatPath`, `ripgrep`, `excludedCommands` and `filesystem` paths);
      - host folders: `permissions.additionalDirectories` when an entry is an absolute path, `autoMemoryDirectory`, `plansDirectory`, `worktree`;
      - file paths: `claudeMdExcludes`.
-   - Apply the same rule to any other key whose value is a host command or an absolute host path, including permission rules that name one.
+   - Apply the same rule to any other key whose value is a host command or an absolute host path, including permission rules that name one. Judging such a value goes through the ask-first path above: the user asks for that key, after the warning.
    - `enabledPlugins` and `extraKnownMarketplaces`: remove them by default. Tell the user what was observed: in a trial in a VM, Claude Code did not install the plugin these keys declare during a session of about two minutes, although the network allowed it; the cause is not established. The user may still choose to keep them.
    - Keep the other keys the user accepts.
 
@@ -47,7 +47,7 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/den-yaml.md#profiles. Run the st
      K="${DEN_HOME:-$HOME/.den}/kits/<name>/files/home/.claude/settings.json"
      jq --argjson keep '["NAME_A","NAME_B"]' \
         'del(.hooks, .statusLine) | if .env then .env |= with_entries(select(.key as $k | $keep | index($k))) else . end | if .env == {} then del(.env) else . end' \
-        ~/.claude/settings.json > "$K.tmp" && mv "$K.tmp" "$K"
+        ~/.claude/settings.json > "$K.tmp" && mv "$K.tmp" "$K" || rm -f "$K.tmp"
      ```
 
    - Check the result on the same file with `jq 'del(.env) | map_values(type)' ...` and `jq '(.env // {}) | keys' ...`, never by reading it raw.
