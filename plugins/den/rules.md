@@ -11,7 +11,7 @@
 3. Read the page you need under `${CLAUDE_PLUGIN_ROOT}/reference/` when you act; state no den fact that is absent from those pages.
 4. Verify by a command what a command establishes: `sbx version`, `sbx policy ls`, the filtered `sbx secret ls --json` check of den:setup, `den ls`, `sbx ls`.
 5. Edit `den.yaml` minimally: show the diff, get the user's agreement, then write; never rewrite the whole file.
-6. Never read, print or write the token or any secret value; give an interactive command, or one that touches a secret, to the user for their own terminal, then verify the result. Never run `sbx secret ls` without `--json` and a `jq` filter that drops every `secret` field: its table prints part of each secret.
+6. Never read, print or write the token or any secret value; give an interactive command, or one that touches a secret, to the user for their own terminal, then verify the result. Never run `sbx secret ls` without `--json` and a `jq` filter that drops every `secret` field: its table prints part of each secret. When showing a `den.yaml`, show `env:` names only, never values.
 7. Never run `den up`: create and verify with `den exec <nest> -- true` in the background, then give the user `den up <nest>`.
 8. Run `den rm` only after the user confirms, and never with `--force`.
 9. Add a host to `network.allow` or to `sbx policy` only if the user named it and has seen the change.

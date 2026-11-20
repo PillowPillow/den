@@ -24,7 +24,9 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/den-yaml.md#profiles. Run the st
 
 3. Go through `settings.json` key by key with the user, without printing a secret. If `jq` is absent from the host, do not copy `settings.json` and tell the user why: `env` cannot be filtered without it.
    - First list the key names and value types only: `jq 'del(.env) | map_values(type)' ~/.claude/settings.json` (step 4 covers `env`).
-   - Show the full value of a key only for the keys the user chooses to review: `jq '.<key>' ~/.claude/settings.json`. A value can embed a secret (a literal key in `apiKeyHelper`, a token in a hook or `statusLine` command, a header in `otelHeadersHelper`, a credential in `awsCredentialExport`, a permission rule that names a token). If a shown value contains a secret, do not repeat it: mask it.
+   - For a key not on the lists below, show its shape first: `jq '.<key> | if type=="object" then map_values(type) elif type=="array" then length else type end' ~/.claude/settings.json`. For `permissions`: `jq '.permissions | map_values(if type=="array" then length else type end)' ~/.claude/settings.json`.
+   - Show the full value of a key only when the user asks for that key, after warning that `permissions` rules and other strings can embed a token: `jq '.["<key>"]' ~/.claude/settings.json`. A shown value stays in the transcript, so never repeat a secret from it.
+   - Never print the value of a key on the command or path lists below. Show only its type and that it is removed by default. If the user wants to keep one, they read its value in their own terminal (rule 6).
    - General rule: any value that is a command run on the host, or an absolute path of the host, is shown to the user and removed by default, because the VM has neither the host's programs nor its folders.
    - Keys known to hold such a value, checked against the Claude Code settings reference (https://code.claude.com/docs/en/settings-reference):
      - commands: `hooks`, `statusLine`, `apiKeyHelper`, `awsAuthRefresh`, `awsCredentialExport`, `gcpAuthRefresh`, `otelHeadersHelper`, `fileSuggestion`, `sshHostCommands`;
@@ -39,12 +41,13 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/den-yaml.md#profiles. Run the st
    - Never read `settings.json` with the Read tool, and never print an `env` value.
    - List the names only: `jq '(.env // {}) | keys' ~/.claude/settings.json`. With no `env` or no name, skip the question.
    - Create the folder first: `mkdir -p "${DEN_HOME:-$HOME/.den}/kits/<name>/files/home/.claude"`.
-   - Write the filtered file with `jq`, in one command, deleting the keys removed in step 3 and keeping only the chosen `env` names. With no name kept, delete `env` too. Pass the lists as arguments, for example:
+   - Write the filtered file with `jq`, in one command, deleting the keys removed in step 3 and keeping only the chosen `env` names. With no name kept, delete `env` entirely. Write to a temporary file and move it into place only when `jq` succeeds. Pass the lists as arguments, for example:
 
      ```
+     K="${DEN_HOME:-$HOME/.den}/kits/<name>/files/home/.claude/settings.json"
      jq --argjson keep '["NAME_A","NAME_B"]' \
-        'del(.hooks, .statusLine) | if .env then .env |= with_entries(select(.key as $k | $keep | index($k))) else . end' \
-        ~/.claude/settings.json > "${DEN_HOME:-$HOME/.den}/kits/<name>/files/home/.claude/settings.json"
+        'del(.hooks, .statusLine) | if .env then .env |= with_entries(select(.key as $k | $keep | index($k))) else . end | if .env == {} then del(.env) else . end' \
+        ~/.claude/settings.json > "$K.tmp" && mv "$K.tmp" "$K"
      ```
 
    - Check the result on the same file with `jq 'del(.env) | map_values(type)' ...` and `jq '(.env // {}) | keys' ...`, never by reading it raw.
