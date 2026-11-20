@@ -128,7 +128,7 @@ git clone: url=https://github.com/JuliusBrussee/caveman.git ref=default timeout=
 Aucune ligne de fin ni d'erreur du clone avant la fin de session, 109 s plus tard, donc avant le
 délai de 120 s du clone ; `known_marketplaces.json` reste absent et `marketplaces/` vide.
 
-**Classe : autre.** Pas d'invite, réseau autorisé, `git clone` manuel réussi en quelques secondes ;
+**Classe : autre.** Pas d'invite, réseau autorisé, `git clone` manuel réussi ;
 Claude Code lance le clone de la marketplace au démarrage, le clone n'est pas terminé après 109 s,
 et le plugin n'est pas installé dans la fenêtre observée. La cause n'est pas établie.
 
