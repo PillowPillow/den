@@ -11,13 +11,18 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/setup.md. Run the steps in order
    - the platform;
    - `sbx version` (v0.53.0 or later);
    - `sbx ls`;
-   - `sbx policy ls`, then `sbx policy check network example.com:443`, which must answer `Denied`;
+   - `sbx policy ls`, which lists `local-policy` when the global policy exists, then `sbx policy check network example.com:443`, which must answer `Denied`;
    - `claude --version`;
-   - `git --version`.
+   - `git --version`;
+   - `jq --version`.
 
-   For each missing item, give the user the "Install" command from that page, then run its check again.
+   For each missing item except `jq`, give the user the "Install" command from that page, then run its check again.
 
-   If no policy exists, propose `sbx policy init balanced`, say it applies to every VM on this machine, and run it only after the user agrees.
+   If `jq` is absent, tell the user to install jq with their package manager. Do not run the token check of step 3 until `jq` is present, and never fall back to a bare `sbx secret ls` (rule 6).
+
+   If the check answers `Allowed`, say the policy is allow-all and no den setting restricts the network. Change nothing without the user's agreement (rule 9).
+
+   If `sbx policy ls` does not list `local-policy`, propose `sbx policy init balanced`, say it applies to every VM on this machine, and run it only after the user agrees.
 
 2. Check den. Run `command -v den`, then apply the version rule.
    - If den is absent, give the user `https://github.com/PillowPillow/den#install`, wait, then check again.

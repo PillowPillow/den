@@ -21,11 +21,14 @@ Facts come from the troubleshooting tables of `${CLAUDE_PLUGIN_ROOT}/reference/s
    Say whether the output confirms the row.
 
 4. Give the fix the page states for that row.
+   - A fix that links to `../README.md#<anchor>` is given to the user as `https://github.com/PillowPillow/den#<anchor>`.
+   - A token or login step goes to the user's own terminal (rule 6).
 
 5. Apply it only when the user agrees, and only through the rules that govern the action:
    - a `den.yaml` change: minimal diff, agreement, then write (rule 5);
    - a host to add to `network.allow` or to `sbx policy`: only one the user named and has seen in the change (rule 9);
-   - removing an instance: `den rm <instance>` after the user confirms, never with `--force` (rule 8).
+   - removing an instance: `den rm <instance>` after the user confirms, never with `--force` (rule 8);
+   - `sbx rm <name>`: give it to the user for their own terminal, after they saved any work in that sandbox; never run it.
 
    A command that is interactive or touches a secret goes to the user's own terminal (rule 6).
 
