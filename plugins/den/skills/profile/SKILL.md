@@ -22,7 +22,9 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/den-yaml.md#profiles. Run the st
 
    Never copy `~/.claude.json`, `.credentials.json`, `projects/`, `history.jsonl`, `todos/`, `statsig/`, `shell-snapshots/`, `plugins/`, nor any other state or history file, even if the user asks for "everything".
 
-3. Go through `settings.json` key by key with the user. Read only `jq 'del(.env)' ~/.claude/settings.json` (step 4 covers `env`). If `jq` is absent from the host, do not copy `settings.json` and tell the user why: `env` cannot be filtered without it.
+3. Go through `settings.json` key by key with the user, without printing a secret. If `jq` is absent from the host, do not copy `settings.json` and tell the user why: `env` cannot be filtered without it.
+   - First list the key names and value types only: `jq 'del(.env) | map_values(type)' ~/.claude/settings.json` (step 4 covers `env`).
+   - Show the full value of a key only for the keys the user chooses to review: `jq '.<key>' ~/.claude/settings.json`. A value can embed a secret (a literal key in `apiKeyHelper`, a token in a hook or `statusLine` command, a header in `otelHeadersHelper`, a credential in `awsCredentialExport`, a permission rule that names a token). If a shown value contains a secret, do not repeat it: mask it.
    - General rule: any value that is a command run on the host, or an absolute path of the host, is shown to the user and removed by default, because the VM has neither the host's programs nor its folders.
    - Keys known to hold such a value, checked against the Claude Code settings reference (https://code.claude.com/docs/en/settings-reference):
      - commands: `hooks`, `statusLine`, `apiKeyHelper`, `awsAuthRefresh`, `awsCredentialExport`, `gcpAuthRefresh`, `otelHeadersHelper`, `fileSuggestion`, `sshHostCommands`;
@@ -35,7 +37,8 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/den-yaml.md#profiles. Run the st
 
 4. Filter `env` without ever showing a value.
    - Never read `settings.json` with the Read tool, and never print an `env` value.
-   - List the names only: `jq '.env | keys' ~/.claude/settings.json`. Ask the user which names to keep.
+   - List the names only: `jq '(.env // {}) | keys' ~/.claude/settings.json`. With no `env` or no name, skip the question.
+   - Create the folder first: `mkdir -p "${DEN_HOME:-$HOME/.den}/kits/<name>/files/home/.claude"`.
    - Write the filtered file with `jq`, in one command, deleting the keys removed in step 3 and keeping only the chosen `env` names. With no name kept, delete `env` too. Pass the lists as arguments, for example:
 
      ```
@@ -44,7 +47,7 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/den-yaml.md#profiles. Run the st
         ~/.claude/settings.json > "${DEN_HOME:-$HOME/.den}/kits/<name>/files/home/.claude/settings.json"
      ```
 
-   - Check the result with `jq 'del(.env)' "${DEN_HOME:-$HOME/.den}/kits/<name>/files/home/.claude/settings.json"` and `jq '.env | keys' ...` on the same file, never by reading it raw.
+   - Check the result on the same file with `jq 'del(.env) | map_values(type)' ...` and `jq '(.env // {}) | keys' ...`, never by reading it raw.
    - Ship `settings.json` from one kit only (see `${CLAUDE_PLUGIN_ROOT}/reference/den-yaml.md#profiles`).
 
 5. Write `${DEN_HOME:-$HOME/.den}/kits/<name>/spec.yaml`, the smallest kit:
