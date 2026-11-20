@@ -30,7 +30,7 @@ command -v den
 den --help
 ```
 
-V2 lists exactly `build`, `exec`, `ls`, `rm`, `shell`, `up` and `version` (plus cobra's `completion`
+V2 lists exactly `build`, `exec`, `ls`, `rm`, `scan`, `shell`, `up` and `version` (plus cobra's `completion`
 and `help`), and `den version` prints `den v2.…`. A list with `doctor`, `init` or `update` is v1.
 
 **You upgraded before you migrated.** Install v1 again beside V2, in its own directory, and call it

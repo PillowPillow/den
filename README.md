@@ -133,7 +133,7 @@ command -v den
 den --help
 ```
 
-`den --help` must list `build`, `exec`, `ls`, `rm`, `shell`, `up` and `version` (plus `completion`
+`den --help` must list `build`, `exec`, `ls`, `rm`, `scan`, `shell`, `up` and `version` (plus `completion`
 and `help`). If it lists `doctor` or `init`, your `PATH` finds den v1 first: remove that binary, or
 put the directory of the V2 binary first in your `PATH`. `den version` prints `den v2.…`.
 
