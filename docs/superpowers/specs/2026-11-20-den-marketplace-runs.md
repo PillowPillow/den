@@ -149,3 +149,85 @@ code 0 ; `sbx ls` ne nomme plus `mkt-trial` ; `<scratchpad>/vm-trial` supprimé.
 - Une session plus longue que 120 s, ou une seconde session : l'essai ne montre pas si le clone
   aboutit après le délai ou à une nouvelle tentative.
 - Une installation manuelle dans la VM (`claude plugin marketplace add`, `claude plugin install`).
+
+## Essai 3 — skills
+
+Date : 2026-11-20. Tâche 8 du plan. Hôte : den v2.0.0, sbx v0.53.0, `claude` 2.1.329.
+
+**Montage.** Un repère `<scratchpad>/runs/marker` ; un repo git jetable `<scratchpad>/runs/repo` (un
+commit vide) ; le den home `<scratchpad>/runs/den-home`, absent au départ. Aucun `den.yaml` au-dessus
+de `<scratchpad>/runs` ; `sbx ls` ne nommait aucune VM `mkt-trial`. L'humain lance, depuis
+`<scratchpad>/runs` : `DEN_HOME=<den home> claude --plugin-dir <dépôt>/plugins/den`, accepte la
+confiance du dossier, puis lance les quatre skills dans une même session. L'observation vient du
+transcript de la session.
+
+**`/den:setup`.**
+- Lancé : prérequis par les commandes de `reference/setup.md#prerequisites` (`sw_vers`, `uname -m`,
+  `sbx version`, `sbx ls`, `sbx policy ls`, `sbx policy check network example.com:443`,
+  `claude --version`, `git --version`), puis `den version`, `den --help`, la version de `plugin.json`,
+  le contrôle du jeton, la recherche d'un `den.yaml` de projet.
+- Observé : tous les prérequis présents, `Denied` pour `example.com:443`, den v2.0.0 égale au plugin
+  2.0.0, pas de v1. Aucun `den.yaml` de projet ; le skill demande le nom du nest et les repos, montre
+  le fichier entier comme diff (`schema: 1`, `default_template: claude-code-docker`, nest `mkt-trial`),
+  attend l'accord, écrit sous `$DEN_HOME`. `den exec mkt-trial -- true` en arrière-plan : code 0. Le
+  skill donne `den up mkt-trial` et ne le lance pas, puis propose `/den:profile`.
+- Observé aussi : le bac à sable de Claude Code sur l'hôte bloque le socket du démon sbx ; le modèle
+  relance les commandes `sbx` et `den` hors de ce bac à sable.
+- **Écart corrigé.** L'étape 3 lançait `sbx secret ls`, dont la table affiche en clair un préfixe de
+  chaque secret : un préfixe du jeton OAuth de Claude est entré dans la conversation (B13). Le
+  transcript a été supprimé à la demande de l'humain. Correction (commit `056a2e0`) : `rules.md`
+  (règles 4 et 6) et l'étape 3 utilisent
+  `sbx secret ls --json | jq '{custom: [.custom_secrets[]? | select(any(.targets[]?; . == "api.anthropic.com")) | {scope, env, targets}], services: [.secrets[]? | {scope, name, type}]}'`,
+  qui ne rend aucun champ `secret` (vérifié sur l'hôte). Relance de `/den:setup` une fois : le skill
+  lance cette commande, conclut « The token is stored globally », trouve le nest `mkt-trial` et
+  vérifie l'instance par `den exec mkt-trial -- true` (code 0) ; le transcript de la relance ne
+  contient aucun préfixe `sk-ant`.
+
+**`/den:profile`** (profil `trial`).
+- Lancé : lecture de `reference/den-yaml.md#profiles`, liste de `~/.claude/` de l'hôte,
+  `jq 'del(.env) | map_values(type)'`, `jq '(.env // {}) | keys'`, des filtres `jq` sur
+  `permissions` qui rendent des types, des comptes, ou les seules règles qui nomment un chemin.
+- Observé : `CLAUDE.md`, `skills/`, `agents/`, `output-styles/` proposés un par un (l'humain refuse
+  les quatre). Pour `settings.json`, une question propose de retirer `hooks`, `statusLine`, `sandbox`,
+  `enabledPlugins`, `extraKnownMarketplaces`, `pluginConfigs` (avec la cause de l'essai 2) et
+  `outputStyle`, et offre « Review keys first » ; `env` : quatre noms proposés, aucune valeur
+  affichée. Le kit est écrit par `jq` (dossier créé par `mkdir -p`) ; la vérification ne rend que des
+  noms de clés. Diff de `den.yaml` (`profiles.trial` avec un chemin absolu, puisque `DEN_HOME` est
+  posé ; `profile: trial` sur accord), écrit après accord ; `den ls` charge le fichier. Le skill
+  nomme `mkt-trial` à recréer, avertit que `den rm` est irréversible, et demande avant de le lancer :
+  l'humain ne répond pas, `den rm` n'est pas lancé.
+
+**`/den:nest`** (« ajoute un port 8189 exposé »).
+- Observé : le skill montre le seul `den.yaml` (global), explique global ou projet, puis propose une
+  édition minimale (`ports: - {name: app, sandbox: 8189, host: 8189}`) en diff, signale que le port
+  hôte peut être pris (non vérifié par lui) et propose `host: 0`, et rappelle que l'instance doit être
+  recréée. L'humain passe au skill suivant sans répondre : rien n'est écrit.
+
+**`/den:troubleshoot`** (« a host is unreachable from the VM »).
+- Observé : le skill rapproche le symptôme de la ligne de `reference/setup.md#troubleshooting` et de
+  la ligne SSH de `reference/ssh.md#troubleshooting`, puis demande l'hôte, le port et l'instance pour
+  lancer `sbx policy check network <host>:<port> --sandbox <instance>`. Aucun hôte n'est nommé :
+  aucune commande `sbx policy check` n'est lancée, aucune règle n'est ajoutée.
+
+**Isolement.** `find ~/.den -newer <repère>` n'est pas vide : `gen/amproto.prototype-den-a`,
+`gen/amproto.prototype-den-b`, `wt/prototype-den-a`, `wt/prototype-den-b`, et sous `state/v2`
+`instances/amproto.prototype-den-{a,b}.yaml`, `nests.yaml`, `repos.yaml` (17:50 à 17:52). Ces
+entrées viennent d'un autre travail mené en même temps sur le poste : le transcript de l'essai ne
+nomme jamais `amproto`, et `nests.yaml`, `repos.yaml` et `instances/` du vrai den home ne nomment ni
+`mkt-trial` ni `<scratchpad>/runs`. Toutes les écritures de l'essai sont sous `<scratchpad>/runs/den-home`.
+Le contrôle par `find` ne prouve donc l'isolement qu'avec cette lecture des fichiers.
+
+**Nettoyage.** `den --den-home <den home> rm mkt-trial` (sans `--force`) : `Removed sandbox mkt-trial`,
+code 0 ; `sbx ls` ne nomme plus `mkt-trial`.
+
+**Reste non vérifié.**
+- `den:setup` : les branches « prérequis manquant » (sbx absent ou trop ancien, sbx non connecté,
+  politique absente ou `allow-all`, `claude` ou `git` absent, den absent ou v1, jeton absent) — non
+  vérifié, premier coéquipier (B25). La branche « `den.yaml` de projet trouvé ».
+- `den:profile` : la copie de `CLAUDE.md`, `skills/`, `agents/`, `output-styles/` (refusée pendant
+  l'essai) ; la voie « Review keys first » et le masquage d'un secret dans une valeur ; la
+  déclaration d'un kit existant (A2) ; `den rm` après confirmation.
+- `den:nest` : l'écriture du diff et la conservation des commentaires (le fichier de l'essai n'en
+  avait pas) ; un `den.yaml` de projet.
+- `den:troubleshoot` : le lancement de `sbx policy check` avec un hôte nommé, et l'application d'une
+  correction après accord.
