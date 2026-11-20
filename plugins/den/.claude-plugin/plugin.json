@@ -1,0 +1,5 @@
+{
+  "name": "den",
+  "version": "2.0.0",
+  "description": "Skills that drive den, the CLI for sbx microVM sandboxes."
+}
