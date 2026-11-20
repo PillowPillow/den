@@ -92,3 +92,13 @@ tasks:
       - task: lint
       - task: typecheck
       - task: test
+
+  plugin-sync:
+    desc: Copy the docs/ pages the den plugin reads into plugins/den/reference/
+    # Claude Code copies only plugins/den/ into its cache, so a skill cannot read docs/.
+    # Copies and not symlinks: what the cache does with a symlink is unknown.
+    # TestReferenceCopiesMatchDocs fails on a stale copy and names this task; the list
+    # below must equal `pages` in internal/plugin/reference_test.go, which that test enforces.
+    cmds:
+      - mkdir -p plugins/den/reference
+      - for p in den-yaml commands templates security ssh files setup; do cp "docs/$p.md" "plugins/den/reference/$p.md"; done
