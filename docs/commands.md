@@ -26,7 +26,9 @@ den up <nest> [-w <branch>] [--only a,b | --without a,b | -i] [--repo <path>]...
 
 Creates the instance if it does not exist, then attaches Claude to it, in the nest's
 [start folder](den-yaml.md#start-folder). When you quit Claude, run the same `den up` command again
-to attach again (with the same `-w <branch>` for a worktree instance).
+to attach again (with the same `-w <branch>` for a worktree instance). With `add_dirs: true`, Claude
+also gets the other mounted repos with `--add-dir`, see
+[den-yaml.md](den-yaml.md#other-repos-in-claudes-context).
 
 | Flag | Effect |
 |---|---|
