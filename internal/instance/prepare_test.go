@@ -1266,3 +1266,15 @@ func TestConfigHashMovesOnlyWhenAutoTrustIsOff(t *testing.T) {
 		t.Errorf("auto_trust: false did not change the hash")
 	}
 }
+
+func TestConfigHashIgnoresAddDirs(t *testing.T) {
+	f := newFixture(t)
+	am := repos(repoEntry(f.repo(t, "api"), false))
+	f.project(t, map[string]string{"am": am + "\nadd_dirs: false"})
+	before := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash
+
+	f.project(t, map[string]string{"am": am + "\nadd_dirs: true"})
+	if got := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash; got != before {
+		t.Errorf("add_dirs changed the hash: it applies per attach, and a live instance would warn about drift")
+	}
+}
