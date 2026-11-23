@@ -45,7 +45,8 @@ trust the folders of the instance without asking. It does two things:
 
 Claude Code 2.1.330 ignores a project's `permissions.additionalDirectories` until that entry exists.
 With the entry, Claude gets **file access** to those folders. It does not load their `CLAUDE.md`,
-skills or agents: only `claude --add-dir <folder>` does that.
+skills or agents: only `claude --add-dir <folder>` does that, which `add_dirs: true` turns on
+([den-yaml.md](den-yaml.md#other-repos-in-claudes-context)).
 
 With `auto_trust: false`, den does neither. Claude shows its trust dialog when you attach in a
 folder it does not trust yet. Claude Code loads a repo's settings only after you accept it; this

@@ -93,6 +93,8 @@ profiles:                      # named kit lists, see "Profiles"
   perso: [~/.den/kits/perso]
 auto_trust: true               # default true; Claude trusts the instance's folders without asking,
                                # see docs/security.md#folder-trust
+add_dirs: false                # default false; true loads the other repos' CLAUDE.md and skills,
+                               # see "Other repos in Claude's context"
 
 # --- both kinds of file -----------------------------------------------------
 default_template: claude-code-docker   # the template of a nest that names none
@@ -121,6 +123,7 @@ nests:
     worktrees: {layout: central, root: ~/wt}  # overrides the global setting for this nest
     layers: []                 # extra sbxenv.yaml files, see docs/security.md#layers
     auto_trust: false          # optional; wins over the global auto_trust
+    add_dirs: true             # optional; wins over the global add_dirs
 ```
 
 `template:` and `templates:` are described in [templates.md](templates.md); `worktrees` and `-w`
@@ -239,6 +242,19 @@ as JSON from `$DEN_REPOS` (`/home/agent/.den/repos.json`). The map never changes
 VM, like its mounts: to add a repo, run `den rm <instance>`, then `den up <nest> --repo <path>`.
 `DEN_REPOS` belongs to den: an `env:` that sets it is refused.
 
+### Other repos in Claude's context
+
+Claude starts in the start folder and loads the `CLAUDE.md`, skills and agents of that repo only.
+The repo map tells it where the other repos are, but not what their `CLAUDE.md` says. With
+`add_dirs: true`, `den up` gives Claude every other mounted repo with `--add-dir`, and Claude loads
+their `CLAUDE.md` and skills too. A repo that holds the start folder is not added: Claude already
+loads it. With `start: .` in a project file, every repo is added.
+
+den passes the folders each time it attaches, after the `--workdir` of that attach. A change to
+`add_dirs` therefore applies at the next `den up`, without `den rm`. `den exec`, `den shell` and
+`den up --detach` start no Claude session and pass nothing. Each `CLAUDE.md` adds to the context of
+every session: on a nest of many repos, keep only the ones Claude needs.
+
 ### Merge order
 
 | Setting | Order (later adds or wins) |
@@ -247,11 +263,13 @@ VM, like its mounts: to add a repo, run `den rm <instance>`, then `den up <nest>
 | `kits` | template, then nest, then the profile's |
 | `env` | global file, then nest (the nest wins per key) |
 | `auto_trust` | `true`, then global file, then nest (the last one set wins) |
+| `add_dirs` | `false`, then global file, then nest (the last one set wins) |
 
 ### Changing a nest
 
 An instance keeps the config it was created with. When the nest changes, `den up` warns and tells
-you to run `den rm <instance>` then `den up <nest>`.
+you to run `den rm <instance>` then `den up <nest>`. `add_dirs` is the exception: it applies at the
+next `den up`.
 
 ### Workspace
 
