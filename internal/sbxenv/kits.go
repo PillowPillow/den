@@ -53,7 +53,7 @@ func DenClaudeKit(image string, autoTrust bool) ([]byte, error) {
 
 // DenClaudeBuildKit is DenClaudeKit without its setup block. The build VM never attaches Claude, and
 // the block's jq would refuse a template whose own build steps are what install jq. It has no nest,
-// so no auto_trust: it keeps CLAUDE_CODE_SANDBOXED, as it always has.
+// so no auto_trust: it keeps CLAUDE_CODE_SANDBOXED.
 func DenClaudeBuildKit(image string) ([]byte, error) {
 	spec, err := DenClaudeKit(image, true)
 	if err != nil {
