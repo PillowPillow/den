@@ -503,3 +503,28 @@ func TestResolveExposesEveryMachineRepo(t *testing.T) {
 		t.Fatalf("machine repos %v, want %v", r.MachineRepos, want)
 	}
 }
+
+func TestResolveAutoTrust(t *testing.T) {
+	const nestLine = "    template: claude-code-docker\n"
+	for _, c := range []struct {
+		name, global, nest string
+		want               bool
+	}{
+		{"default", "", "", true},
+		{"global false", "auto_trust: false\n", "", false},
+		{"nest wins over global", "auto_trust: false\n", "    auto_trust: true\n", true},
+		{"nest false alone", "", "    auto_trust: false\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			body := strings.Replace(profileGlobal, nestLine, nestLine+c.nest, 1)
+			body = strings.Replace(body, "schema: 1\n", "schema: 1\n"+c.global, 1)
+			r, err := resolveRich(t, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.AutoTrust != c.want {
+				t.Errorf("AutoTrust = %t, want %t", r.AutoTrust, c.want)
+			}
+		})
+	}
+}

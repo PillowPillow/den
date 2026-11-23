@@ -415,3 +415,18 @@ func TestReposRefusesAKeyWithAControlOrFormatCharacter(t *testing.T) {
 func TestReposRefusesUnknownField(t *testing.T) {
 	mustFail(t, "schema: 1\nrepos:\n  api: {origin: 'git@github.com:acme/api.git', url: x}\n", false, "url")
 }
+
+func TestLoadRefusesAutoTrustAtTheTopOfAProjectFile(t *testing.T) {
+	mustFail(t, minimalNest+"auto_trust: false\n", false, "auto_trust", "global-only", "global den.yaml")
+}
+
+func TestLoadReadsAutoTrustOnANestOfAProjectFile(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "den.yaml", strings.Replace(minimalNest, "    profile: p\n", "    profile: p\n    auto_trust: false\n", 1))
+	l, err := Load(p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := l.File.Nests["am"].AutoTrust; v == nil || *v {
+		t.Errorf("nest auto_trust = %v, want false", v)
+	}
+}

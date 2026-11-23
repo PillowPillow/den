@@ -52,7 +52,9 @@ type Resolved struct {
 	Layout       string
 	Root         string
 	Layers       []string
-	Warnings     []string
+	// AutoTrust: the nest's auto_trust, else the global file's, else true.
+	AutoTrust bool
+	Warnings  []string
 }
 
 func sortedNames[V any](m map[string]V) []string {
@@ -267,6 +269,13 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 			r.ProfileKits = kits
 		} else {
 			r.Warnings = append(r.Warnings, fmt.Sprintf("profile %q is not defined in profiles: of %s; no profile kits", r.Profile, global.Path))
+		}
+	}
+
+	r.AutoTrust = true
+	for _, v := range []*bool{global.File.AutoTrust, n.AutoTrust} {
+		if v != nil {
+			r.AutoTrust = *v
 		}
 	}
 

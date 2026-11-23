@@ -89,7 +89,7 @@ const kitImage = "docker.io/docker/sandbox-templates:claude-code-docker"
 
 func kit(t *testing.T, image string) []byte {
 	t.Helper()
-	spec, err := DenClaudeKit(image)
+	spec, err := DenClaudeKit(image, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,8 +182,53 @@ func TestDenClaudeKitStartupMergesOnboardingAndBypassConsent(t *testing.T) {
 			t.Errorf("startup script lacks %q:\n%s", frag, script)
 		}
 	}
-	if strings.Contains(script, "projects") {
-		t.Errorf("startup script writes a trust entry; CLAUDE_CODE_SANDBOXED owns trust:\n%s", script)
+}
+
+func TestDenClaudeKitStartupTrustsOnlyTheFoldersDenLists(t *testing.T) {
+	script := decodeDenClaude(t).Setup.Startup[0].Command[2]
+	for _, frag := range []string{
+		`trusted=$(jq -c 'if type == "array" then . else error("not an array") end' "$h/.den/trust.json")`,
+		`merge "$h/.claude.json" --argjson trusted "$trusted" 'reduce $trusted[] as $p (.; .projects[$p].hasTrustDialogAccepted = true)'`,
+	} {
+		if !strings.Contains(script, frag) {
+			t.Errorf("startup script lacks %q:\n%s", frag, script)
+		}
+	}
+	if strings.Contains(script, `projects["/"]`) || strings.Contains(script, `projects."/"`) {
+		t.Errorf("startup script trusts the root folder:\n%s", script)
+	}
+}
+
+func TestDenClaudeKitWithoutAutoTrustIsTheKitWithoutItsEnvironment(t *testing.T) {
+	off, err := DenClaudeKit(kitImage, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(off), "CLAUDE_CODE_SANDBOXED") {
+		t.Errorf("kit without auto-trust still names CLAUDE_CODE_SANDBOXED:\n%s", off)
+	}
+	var got, want map[string]any
+	if err := yaml.Unmarshal(off, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(kit(t, kitImage), &want); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := want["environment"]; !ok {
+		t.Fatal("the kit has no environment block to drop")
+	}
+	delete(want, "environment")
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("kit without auto-trust %v, want the kit without environment %v", got, want)
+	}
+}
+
+func TestRenderTrustJSON(t *testing.T) {
+	if got := string(RenderTrustJSON(nil)); got != "[]\n" {
+		t.Errorf("no folder renders %q, want []", got)
+	}
+	if got, want := string(RenderTrustJSON([]string{"/a b", `/c"d`})), "[\"/a b\",\"/c\\\"d\"]\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -273,7 +318,7 @@ func TestDenClaudeKitQuotesYAMLSpecials(t *testing.T) {
 }
 
 func TestDenClaudeKitNeedsAnImage(t *testing.T) {
-	if _, err := DenClaudeKit(""); err == nil {
+	if _, err := DenClaudeKit("", true); err == nil {
 		t.Error("an empty image must be refused: den writes no image of its own (A9)")
 	}
 	for _, l := range strings.Split(string(denClaudeSpec), "\n") {

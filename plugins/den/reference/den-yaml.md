@@ -91,6 +91,8 @@ network:
     - registry.npmjs.org
 profiles:                      # named kit lists, see "Profiles"
   perso: [~/.den/kits/perso]
+auto_trust: true               # default true; Claude trusts the instance's folders without asking,
+                               # see docs/security.md#folder-trust
 
 # --- both kinds of file -----------------------------------------------------
 default_template: claude-code-docker   # the template of a nest that names none
@@ -118,6 +120,7 @@ nests:
     start: api                 # the folder Claude starts in, see "Start folder"
     worktrees: {layout: central, root: ~/wt}  # overrides the global setting for this nest
     layers: []                 # extra sbxenv.yaml files, see docs/security.md#layers
+    auto_trust: false          # optional; wins over the global auto_trust
 ```
 
 `template:` and `templates:` are described in [templates.md](templates.md); `worktrees` and `-w`
@@ -243,6 +246,7 @@ VM, like its mounts: to add a repo, run `den rm <instance>`, then `den up <nest>
 | `network.allow` | global file, then template, then nest (all added together) |
 | `kits` | template, then nest, then the profile's |
 | `env` | global file, then nest (the nest wins per key) |
+| `auto_trust` | `true`, then global file, then nest (the last one set wins) |
 
 ### Changing a nest
 

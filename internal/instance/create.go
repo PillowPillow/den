@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/PillowPillow/den/v2/internal/nest"
@@ -197,10 +198,13 @@ func writeGenerated(p *Plan, trios map[string]gitTrio, repoMap sbxenv.RepoMap) e
 	}
 	// One kit per instance (T3): a kit shared by instances on two templates would carry the image of
 	// whichever was created last, and sbx reads it again at every create.
-	if err := WriteDenClaudeKit(denClaudeKitDir(p), p.Resolved.Template.KitImage); err != nil {
+	if err := WriteDenClaudeKit(denClaudeKitDir(p), p.Resolved.Template.KitImage, p.Resolved.AutoTrust); err != nil {
 		return err
 	}
 	if err := writeRepoMap(denClaudeKitDir(p), repoMap); err != nil {
+		return err
+	}
+	if err := WriteGenFile(filepath.Join(denClaudeKitDir(p), sbxenv.TrustJSONFile), sbxenv.RenderTrustJSON(trustedOf(p))); err != nil {
 		return err
 	}
 	if err := WriteGenFile(filepath.Join(p.GenDir, "network", "spec.yaml"), sbxenv.NetworkKit(p.Resolved.Allow)); err != nil {
@@ -217,12 +221,28 @@ func writeGenerated(p *Plan, trios map[string]gitTrio, repoMap sbxenv.RepoMap) e
 }
 
 // WriteDenClaudeKit writes <dir>/spec.yaml, the den-claude kit on image.
-func WriteDenClaudeKit(dir, image string) error {
-	spec, err := sbxenv.DenClaudeKit(image)
+func WriteDenClaudeKit(dir, image string, autoTrust bool) error {
+	spec, err := sbxenv.DenClaudeKit(image, autoTrust)
 	if err != nil {
 		return err
 	}
 	return WriteGenFile(filepath.Join(dir, "spec.yaml"), spec)
+}
+
+// trustedOf lists every mounted repo, then the start folder when it differs: a `start: .` project
+// folder is no mounted repo, and nothing measured shows that an entry at a repo root covers a sub folder.
+func trustedOf(p *Plan) []string {
+	if !p.Resolved.AutoTrust {
+		return nil
+	}
+	var out []string
+	for _, r := range p.Repos {
+		out = append(out, r.Path)
+	}
+	if !slices.Contains(out, p.Start) {
+		out = append(out, p.Start)
+	}
+	return out
 }
 
 func denClaudeKitDir(p *Plan) string {

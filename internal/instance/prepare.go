@@ -650,11 +650,13 @@ func configHash(res *nest.Resolved, repos []nest.Repo, start, branch string) (st
 		Root           string            `yaml:"root"`
 		// The keys started without: once one is cloned the hash moves, and a Live instance warns of drift.
 		Missing []string `yaml:"missing,omitempty"`
+		// Only false is hashed: a key always present would move the hash of every instance made before it.
+		NoAutoTrust bool `yaml:"no_auto_trust,omitempty"`
 	}{
 		Template: t.Choice.Value, Tag: sbxTemplate(t), KitImage: t.KitImage,
 		Kits: res.Kits, Allow: res.Allow, Env: res.Env,
 		Ports: res.Ports, Start: start, Layers: res.Layers, Profile: res.Profile,
-		Branch: branch, Layout: res.Layout, Root: res.Root,
+		Branch: branch, Layout: res.Layout, Root: res.Root, NoAutoTrust: !res.AutoTrust,
 	}
 	if t.Record != nil {
 		in.DefinitionHash = t.Record.DefinitionHash

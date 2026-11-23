@@ -214,11 +214,14 @@ docker image inspect --format '{{json .Config.Entrypoint}}' <image>
 
 ## The image must provide `jq`
 
-At every VM start, den's `den-claude` kit runs `jq` in the VM. It merges two keys into Claude's own
-files, so Claude opens at its prompt with no first-run screen:
+At every VM start, den's `den-claude` kit runs `jq` in the VM. It merges these keys into Claude's
+own files, so Claude opens at its prompt with no first-run screen:
 
 - `hasCompletedOnboarding: true` in `~/.claude.json` removes the theme wizard;
-- `skipDangerousModePermissionPrompt: true` in `~/.claude/settings.json` removes the bypass-mode warning.
+- `skipDangerousModePermissionPrompt: true` in `~/.claude/settings.json` removes the bypass-mode warning;
+- `projects["<folder>"].hasTrustDialogAccepted: true` in `~/.claude.json`, for each folder in
+  `~/.den/trust.json`: the mounted repos and the start folder, or none with `auto_trust: false`
+  (see [security.md](security.md#folder-trust)).
 
 The same step also merges the settings defaults that kits ship (see
 [Default Claude settings from a kit](#default-claude-settings-from-a-kit)).
