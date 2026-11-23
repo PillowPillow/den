@@ -40,6 +40,8 @@ image a VM starts from. A **record** is the file in which den notes what it crea
   `claude-code-docker`) and `/home/agent/.den/repos.json` (see [den-yaml.md](den-yaml.md#repo-map)).
 - den merges the kits' `~/.den/claude-settings.d/*.json` files into `~/.claude/settings.json` at
   every start (see [templates.md](templates.md#default-claude-settings-from-a-kit)).
+- den writes `/home/agent/.den/trust.json`, the folders the startup step marks trusted in
+  `~/.claude.json` (see [security.md](security.md#folder-trust)).
 
 ## Rules
 

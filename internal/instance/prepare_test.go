@@ -1249,3 +1249,20 @@ func TestCloningAMissingKeyLaterIsDriftOnTheLiveInstance(t *testing.T) {
 		t.Fatal("the key now has a folder, and the hash of the running instance did not move")
 	}
 }
+
+func TestConfigHashMovesOnlyWhenAutoTrustIsOff(t *testing.T) {
+	f := newFixture(t)
+	am := repos(repoEntry(f.repo(t, "api"), false))
+	f.project(t, map[string]string{"am": am})
+	before := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash
+
+	f.project(t, map[string]string{"am": am + "\nauto_trust: true"})
+	if got := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash; got != before {
+		t.Errorf("an explicit auto_trust: true changed the hash: every instance made before the key would drift")
+	}
+
+	f.project(t, map[string]string{"am": am + "\nauto_trust: false"})
+	if got := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash; got == before {
+		t.Errorf("auto_trust: false did not change the hash")
+	}
+}

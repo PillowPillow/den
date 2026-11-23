@@ -25,15 +25,32 @@ file it decides to, without asking. Anything that can steer Claude can steer tho
 prompt, a file in a repo, a web page, a package it installs. Assume that whatever is in the VM can be
 read, changed or sent to a host the VM may reach.
 
-den also sets `CLAUDE_CODE_SANDBOXED=1`, an undocumented Claude Code switch: every folder counts as
-trusted, so Claude never shows its trust dialog and loads a repo's `.claude/settings.json` and
-`.claude/settings.local.json` without asking: their hooks, permissions and extra directories included.
-
 The VM sees only what sbx gives it: the folders den mounts, the network its policy allows, your SSH
 agent, the environment variables of the nest (`env:`), and the sbx integrations that are on.
 `sbx settings ls` lists the integrations; for example `browser.enabled` (on by default) lets a
 process in the VM open a URL in your host browser. Turn one off with
 `sbx settings set <key> false`. Ports you publish (`ports:`) expose a server of the VM on your host.
+
+### Folder trust
+
+With `auto_trust: true` (the default, see [den-yaml.md](den-yaml.md#every-key)), den makes Claude
+trust the folders of the instance without asking. It does two things:
+
+- It sets `CLAUDE_CODE_SANDBOXED=1`, an undocumented Claude Code switch. Claude never shows its trust
+  dialog and loads a repo's `.claude/settings.json` and `.claude/settings.local.json` hooks without
+  asking. The switch does not record trust.
+- At every VM start, it writes the trust entry that Claude writes when you accept the dialog,
+  `projects["<folder>"].hasTrustDialogAccepted: true` in `~/.claude.json`, for each mounted repo
+  and for the start folder. den lists those folders in `~/.den/trust.json` at create.
+
+Claude Code 2.1.330 ignores a project's `permissions.additionalDirectories` until that entry exists.
+With the entry, Claude gets **file access** to those folders. It does not load their `CLAUDE.md`,
+skills or agents: only `claude --add-dir <folder>` does that.
+
+With `auto_trust: false`, den does neither. Claude shows its trust dialog when you attach in a
+folder it does not trust yet. Claude Code loads a repo's settings only after you accept it; this
+was not measured in a den VM. `claude -p` (as run by `den exec`) shows no dialog: it runs, warns
+that the workspace is not trusted, and ignores the project's `permissions.additionalDirectories`.
 
 ## What the VM can write
 
@@ -169,3 +186,8 @@ you build it, as you would read a script before you run it. See [templates.md](t
   [ssh.md](ssh.md#accepted-residual-risks).
 - A host in the global sbx policy or in the global `den.yaml` is open to every VM.
 - The VM can use the Claude token toward `api.anthropic.com` while it runs.
+- With `auto_trust: true`, a repo's `.claude/settings.json` runs its hooks in the VM without asking,
+  and the trust entry den writes may turn on other Claude Code features that wait for trust. No one
+  has listed those features for Claude Code 2.1.330. They all run inside the VM, which already runs
+  Claude with `--dangerously-skip-permissions`. Set `auto_trust: false` on a nest whose repos you
+  do not trust.

@@ -17,9 +17,10 @@ Claude Code only.
 Read this before you install. Details: [docs/security.md](docs/security.md).
 
 - Claude runs with `--dangerously-skip-permissions`: it runs commands without asking.
-- Claude trusts every folder of the VM (`CLAUDE_CODE_SANDBOXED=1`): it loads a repo's
+- By default (`auto_trust: true`), Claude trusts the folders of the VM: it loads a repo's
   `.claude/settings.json` and `.claude/settings.local.json` (hooks, permissions, directories) without
-  the trust dialog.
+  the trust dialog. Set `auto_trust: false` on a nest to get the dialog back
+  ([docs/security.md](docs/security.md#folder-trust)).
 - Your repos are mounted **read-write**, `.git` included. A VM can change hooks, scripts and config
   that your host runs later.
 - The VM reaches only the hosts its network policy allows: the **global sbx policy**, shared by every

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -116,7 +117,7 @@ func TestCreateComposesTheKitsAndWritesThem(t *testing.T) {
 			t.Errorf("sbxenv.yaml:\n%s\nlacks:\n%s", env, w)
 		}
 	}
-	if want, _ := sbxenv.DenClaudeKit(templateFrom); readFile(t, filepath.Join(claude, "spec.yaml")) != string(want) {
+	if want, _ := sbxenv.DenClaudeKit(templateFrom, true); readFile(t, filepath.Join(claude, "spec.yaml")) != string(want) {
 		t.Errorf("den-claude kit is not the embedded one on the nest's image")
 	}
 	if got := readFile(t, filepath.Join(p.GenDir, "network", "spec.yaml")); got != string(sbxenv.NetworkKit([]string{"example.test"})) {
@@ -447,7 +448,7 @@ func TestCreateWritesAKitPerInstance(t *testing.T) {
 func TestWriteDenClaudeKitWritesTheImage(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "den-claude")
 	image := "registry.test/claude@sha256:" + strings.Repeat("cd", 32)
-	if err := WriteDenClaudeKit(dir, image); err != nil {
+	if err := WriteDenClaudeKit(dir, image, true); err != nil {
 		t.Fatal(err)
 	}
 	got := readFile(t, filepath.Join(dir, "spec.yaml"))
@@ -458,7 +459,7 @@ func TestWriteDenClaudeKitWritesTheImage(t *testing.T) {
 
 func TestWriteDenClaudeKitRefusesNoImage(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "den-claude")
-	if err := WriteDenClaudeKit(dir, ""); err == nil {
+	if err := WriteDenClaudeKit(dir, "", true); err == nil {
 		t.Fatal("want a refusal: den has no image of its own")
 	}
 	if _, err := os.Stat(dir); err == nil {
@@ -521,5 +522,49 @@ func TestCreateOnATemplateAddsNoImageHint(t *testing.T) {
 	_, err := Create(context.Background(), f.deps(), p)
 	if err == nil || strings.Contains(err.Error(), "no template is named") {
 		t.Errorf("error %v", err)
+	}
+}
+
+func trustList(t *testing.T, p *Plan) []string {
+	t.Helper()
+	var got []string
+	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(p.GenDir, sbxenv.AgentName, sbxenv.TrustJSONFile))), &got); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestCreateTrustsEveryMountedRepoAndTheStartFolder(t *testing.T) {
+	f := newFixture(t)
+	api, web := f.repo(t, "api"), f.repo(t, "web")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false), repoEntry(web, false)) + "\nstart: api/sub"})
+	p := mustPrepare(t, f, Options{Nest: "am"})
+	mustCreate(t, f, p)
+	if got, want := trustList(t, p), []string{api, web, filepath.Join(api, "sub")}; !reflect.DeepEqual(got, want) {
+		t.Errorf("trusted %v, want %v", got, want)
+	}
+}
+
+func TestCreateTrustsTheProjectFolderWhenItIsTheStart(t *testing.T) {
+	f := newFixture(t)
+	api := f.repo(t, "api")
+	f.project(t, map[string]string{"am": repos(repoEntry(api, false)) + "\nstart: ."})
+	p := mustPrepare(t, f, Options{Nest: "am"})
+	mustCreate(t, f, p)
+	if got, want := trustList(t, p), []string{api, f.proj}; !reflect.DeepEqual(got, want) {
+		t.Errorf("trusted %v, want %v", got, want)
+	}
+}
+
+func TestCreateWithoutAutoTrustTrustsNothingAndDropsTheSandboxedSwitch(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nauto_trust: false"})
+	p := mustPrepare(t, f, Options{Nest: "am"})
+	mustCreate(t, f, p)
+	if got := trustList(t, p); len(got) != 0 {
+		t.Errorf("trusted %v, want none", got)
+	}
+	if want, _ := sbxenv.DenClaudeKit(templateFrom, false); readFile(t, filepath.Join(p.GenDir, sbxenv.AgentName, "spec.yaml")) != string(want) {
+		t.Errorf("den-claude kit is not the kit without auto-trust")
 	}
 }

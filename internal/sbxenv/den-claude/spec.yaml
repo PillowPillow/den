@@ -18,9 +18,11 @@ permissions:
       - api.anthropic.com:443
 environment:
   variables:
-    # Claude Code's own switch, undocumented: every folder counts as trusted, so no trust dialog and a
-    # project's .claude/settings*.json (hooks, permissions) loads without asking. The VM is the
-    # boundary. A trust entry in ~/.claude.json would not do: Claude stops its walk up at the git root.
+    # Claude Code's own switch, undocumented: no trust dialog, and a project's .claude/settings*.json
+    # hooks load without asking. The VM is the boundary. It does not record trust: Claude 2.1.330
+    # still ignores a project's permissions.additionalDirectories without a trust entry, which the
+    # startup step writes per folder. A single projects["/"] entry would not do: Claude stops its walk
+    # up at the git root. den drops this block when the nest's auto_trust is false.
     CLAUDE_CODE_SANDBOXED: "1"
 setup:
   # The theme wizard reads hasCompletedOnboarding in ~/.claude.json, which the image ships with its own
@@ -31,6 +33,9 @@ setup:
   # kits shipping the same file means the later one replaces it whole, and a template's defaults would
   # vanish under a personal kit. Fragments merge in name order, a later one wins, and a key already in
   # settings.json keeps its value.
+  # ~/.den/trust.json lists each mounted repo and the start folder, or nothing when auto_trust is
+  # false; each gets a trust entry in ~/.claude.json, the one Claude itself writes when the dialog is
+  # accepted.
   startup:
     - command:
         - sh
@@ -51,6 +56,9 @@ setup:
           }
           merge "$h/.claude.json" '.hasCompletedOnboarding = true'
           merge "$h/.claude/settings.json" '.skipDangerousModePermissionPrompt = true'
+          trusted=$(jq -c 'if type == "array" then . else error("not an array") end' "$h/.den/trust.json") ||
+            { echo "den-claude: $h/.den/trust.json is missing or not a JSON array: den writes it at create; run den rm, then den up" >&2; exit 1; }
+          merge "$h/.claude.json" --argjson trusted "$trusted" 'reduce $trusted[] as $p (.; .projects[$p].hasTrustDialogAccepted = true)'
           set -- "$h/.den/claude-settings.d"/*.json
           if [ -e "$1" ]; then
             for f; do
