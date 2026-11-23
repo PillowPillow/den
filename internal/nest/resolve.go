@@ -54,7 +54,9 @@ type Resolved struct {
 	Layers       []string
 	// AutoTrust: the nest's auto_trust, else the global file's, else true.
 	AutoTrust bool
-	Warnings  []string
+	// AddDirs: the nest's add_dirs, else the global file's, else false.
+	AddDirs  bool
+	Warnings []string
 }
 
 func sortedNames[V any](m map[string]V) []string {
@@ -276,6 +278,11 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 	for _, v := range []*bool{global.File.AutoTrust, n.AutoTrust} {
 		if v != nil {
 			r.AutoTrust = *v
+		}
+	}
+	for _, v := range []*bool{global.File.AddDirs, n.AddDirs} {
+		if v != nil {
+			r.AddDirs = *v
 		}
 	}
 
