@@ -420,6 +420,21 @@ func TestLoadRefusesAutoTrustAtTheTopOfAProjectFile(t *testing.T) {
 	mustFail(t, minimalNest+"auto_trust: false\n", false, "auto_trust", "global-only", "global den.yaml")
 }
 
+func TestLoadRefusesAddDirsAtTheTopOfAProjectFile(t *testing.T) {
+	mustFail(t, minimalNest+"add_dirs: true\n", false, "add_dirs", "global-only", "global den.yaml")
+}
+
+func TestLoadReadsAddDirsOnANestOfAProjectFile(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "den.yaml", strings.Replace(minimalNest, "    profile: p\n", "    profile: p\n    add_dirs: true\n", 1))
+	l, err := Load(p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := l.File.Nests["am"].AddDirs; v == nil || !*v {
+		t.Errorf("nest add_dirs = %v, want true", v)
+	}
+}
+
 func TestLoadReadsAutoTrustOnANestOfAProjectFile(t *testing.T) {
 	p := writeFile(t, t.TempDir(), "den.yaml", strings.Replace(minimalNest, "    profile: p\n", "    profile: p\n    auto_trust: false\n", 1))
 	l, err := Load(p, false)

@@ -136,6 +136,9 @@ func validate(f *File, global bool) []string {
 		if f.AutoTrust != nil {
 			add("auto_trust: %s", move)
 		}
+		if f.AddDirs != nil {
+			add("add_dirs: %s", move)
+		}
 	}
 	for _, key := range sortedKeys(f.Repos) {
 		validateRepo(key, f.Repos[key], global, add)

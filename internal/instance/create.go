@@ -316,9 +316,26 @@ func WriteGenFile(name string, content []byte) error {
 	return nil
 }
 
-// Attach runs Claude in the instance, in workdir when set, else in its start folder (P1).
-func Attach(ctx context.Context, d Deps, r registry.Record, workdir string) error {
-	return d.Sbx.Attach(ctx, "run", "--name", r.Instance, "--workdir", startOf(r, workdir))
+// Attach runs Claude in the instance, in workdir when set, else in its start folder (P1). With
+// addDirs, every recorded repo that neither is nor holds that folder becomes an --add-dir (P17).
+// The arguments go after sbx run's `--`, which appends them to the kit entrypoint: the entrypoint
+// itself never passed one (P15). Without the variable, --add-dir loads a folder's skills but not
+// its CLAUDE.md; it rides on this run, not in the kit's environment block, which auto_trust: false drops.
+func Attach(ctx context.Context, d Deps, r registry.Record, workdir string, addDirs bool) error {
+	start := startOf(r, workdir)
+	args := []string{"run", "--name", r.Instance, "--workdir", start}
+	var dirs []string
+	if addDirs {
+		for _, repo := range r.Repos {
+			if _, held := relUnder(start, repo.Target); !held {
+				dirs = append(dirs, "--add-dir", repo.Target)
+			}
+		}
+	}
+	if len(dirs) > 0 {
+		args = append(append(args, "-e", "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1", "--"), dirs...)
+	}
+	return d.Sbx.Attach(ctx, args...)
 }
 
 func startOf(r registry.Record, workdir string) string {
@@ -390,7 +407,7 @@ func Up(ctx context.Context, d Deps, o Options, detach bool) error {
 	if detach {
 		err = startDetached(ctx, d, p, rec.Instance)
 	} else {
-		err = Attach(ctx, d, rec, p.Workdir)
+		err = Attach(ctx, d, rec, p.Workdir, p.Resolved.AddDirs)
 	}
 	if err != nil && p.State != Live {
 		return fmt.Errorf("%w%s", err, imageHint(p))

@@ -12,7 +12,7 @@ const FileName = "den.yaml"
 // Schema is the only den.yaml schema version this den reads.
 const Schema = 1
 
-// File is one den.yaml. Worktrees, Env, Network, Profiles and AutoTrust at top level exist in the
+// File is one den.yaml. Worktrees, Env, Network, Profiles, AutoTrust and AddDirs at top level exist in the
 // global file only; a project file carrying them is refused. Repos is accepted in both.
 type File struct {
 	Schema    int                 `yaml:"schema"`
@@ -23,6 +23,7 @@ type File struct {
 	Profiles  map[string][]string `yaml:"profiles"`
 	Profile   string              `yaml:"profile"`
 	AutoTrust *bool               `yaml:"auto_trust"`
+	AddDirs   *bool               `yaml:"add_dirs"`
 	Nests     map[string]Nest     `yaml:"nests"`
 
 	Templates       map[string]TemplateEntry `yaml:"templates"`
@@ -120,6 +121,7 @@ type Nest struct {
 	Worktrees *Worktrees        `yaml:"worktrees"`
 	Layers    []string          `yaml:"layers"`
 	AutoTrust *bool             `yaml:"auto_trust"`
+	AddDirs   *bool             `yaml:"add_dirs"`
 }
 
 // RepoRef names a repo by host path or by a key of the global repos map; exactly one is set.

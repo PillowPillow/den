@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -155,6 +156,83 @@ func TestUpAttachesAtTheWorkdirOnALiveInstance(t *testing.T) {
 	}
 	if !f.fake.HasAttached("run", "--name", "am", "--workdir", "/h/dev/am-backend/sub") {
 		t.Errorf("attaches %v", f.fake.Attaches)
+	}
+}
+
+func (f *upFixture) lastAttach(t *testing.T) []string {
+	t.Helper()
+	if len(f.fake.Attaches) == 0 {
+		t.Fatalf("no attach, calls %v", f.fake.Calls)
+	}
+	return f.fake.Attaches[len(f.fake.Attaches)-1]
+}
+
+func TestUpWithAddDirsGivesClaudeEveryRepoButTheStartOne(t *testing.T) {
+	f := newUpFixture(t)
+	api, web, lib := f.dir(t, "api"), f.dir(t, "web"), f.dir(t, "lib")
+	f.dir(t, "api/sub")
+	f.project(t, [2]string{"am", "repos: [{path: " + api + "}, {path: " + web + "}, {path: " + lib + "}]\nstart: api/sub\nadd_dirs: true"})
+	if err := f.up("am"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"run", "--name", "am", "--workdir", api + "/sub",
+		"-e", "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1", "--", "--add-dir", web, "--add-dir", lib}
+	if got := f.lastAttach(t); !slices.Equal(got, want) {
+		t.Errorf("attach %q, want %q", got, want)
+	}
+}
+
+func TestUpWithAddDirsFollowsTheWorkdirOfThisAttach(t *testing.T) {
+	f := newUpFixture(t)
+	api, web := f.dir(t, "api"), f.dir(t, "web")
+	f.project(t, [2]string{"am", "repos: [{path: " + api + "}, {path: " + web + "}]\nadd_dirs: true"})
+	if err := f.up("am", "--workdir", web+"/x"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"run", "--name", "am", "--workdir", web + "/x",
+		"-e", "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1", "--", "--add-dir", api}
+	if got := f.lastAttach(t); !slices.Equal(got, want) {
+		t.Errorf("attach %q, want %q", got, want)
+	}
+}
+
+func TestUpWithAddDirsAtTheProjectFolderGivesEveryRepo(t *testing.T) {
+	f := newUpFixture(t)
+	api, web := f.dir(t, "api"), f.dir(t, "web")
+	f.project(t, [2]string{"am", "repos: [{path: " + api + "}, {path: " + web + "}]\nstart: .\nadd_dirs: true"})
+	if err := f.up("am"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"run", "--name", "am", "--workdir", f.proj,
+		"-e", "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1", "--", "--add-dir", api, "--add-dir", web}
+	if got := f.lastAttach(t); !slices.Equal(got, want) {
+		t.Errorf("attach %q, want %q", got, want)
+	}
+}
+
+func TestUpWithoutAddDirsPassesNoAgentArgument(t *testing.T) {
+	f := newUpFixture(t)
+	api, web := f.dir(t, "api"), f.dir(t, "web")
+	f.project(t, [2]string{"am", "repos: [{path: " + api + "}, {path: " + web + "}]"})
+	if err := f.up("am"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"run", "--name", "am", "--workdir", api}
+	if got := f.lastAttach(t); !slices.Equal(got, want) {
+		t.Errorf("attach %q, want %q", got, want)
+	}
+}
+
+func TestUpWithAddDirsAndOneRepoPassesNoAgentArgument(t *testing.T) {
+	f := newUpFixture(t)
+	api := f.dir(t, "api")
+	f.project(t, [2]string{"am", "repos: [{path: " + api + "}]\nadd_dirs: true"})
+	if err := f.up("am"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"run", "--name", "am", "--workdir", api}
+	if got := f.lastAttach(t); !slices.Equal(got, want) {
+		t.Errorf("attach %q, want %q", got, want)
 	}
 }
 
