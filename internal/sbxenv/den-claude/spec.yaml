@@ -56,7 +56,7 @@ setup:
           }
           merge "$h/.claude.json" '.hasCompletedOnboarding = true'
           merge "$h/.claude/settings.json" '.skipDangerousModePermissionPrompt = true'
-          trusted=$(jq -c 'if type == "array" then . else error("not an array") end' "$h/.den/trust.json") ||
+          trusted=$(jq -ce 'if type == "array" then . else error("not an array") end' "$h/.den/trust.json") ||
             { echo "den-claude: $h/.den/trust.json is missing or not a JSON array: den writes it at create; run den rm, then den up" >&2; exit 1; }
           merge "$h/.claude.json" --argjson trusted "$trusted" 'reduce $trusted[] as $p (.; .projects[$p].hasTrustDialogAccepted = true)'
           set -- "$h/.den/claude-settings.d"/*.json

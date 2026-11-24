@@ -187,7 +187,7 @@ func TestDenClaudeKitStartupMergesOnboardingAndBypassConsent(t *testing.T) {
 func TestDenClaudeKitStartupTrustsOnlyTheFoldersDenLists(t *testing.T) {
 	script := decodeDenClaude(t).Setup.Startup[0].Command[2]
 	for _, frag := range []string{
-		`trusted=$(jq -c 'if type == "array" then . else error("not an array") end' "$h/.den/trust.json")`,
+		`trusted=$(jq -ce 'if type == "array" then . else error("not an array") end' "$h/.den/trust.json")`,
 		`merge "$h/.claude.json" --argjson trusted "$trusted" 'reduce $trusted[] as $p (.; .projects[$p].hasTrustDialogAccepted = true)'`,
 	} {
 		if !strings.Contains(script, frag) {
