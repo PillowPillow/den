@@ -7,6 +7,17 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v2.3.0 — 2026-11-24
+
+### Added
+- `resources: {cpus, memory}` (global top level or nest, the nest wins key by key) sets the VM size of
+  an instance, instead of sbx's default of every host CPU and half the host memory. den checks only the
+  format at load, naming the file: `cpus` is a plain decimal whole number of 1 or more, `memory` an
+  integer then `m` (MiB) or `g` (GiB), such as `8g`; sbx checks the bounds. A changed `resources:` gives
+  the usual drift warning on a running instance; it applies after `den rm`, then `den up`.
+- A nest with `resources:` needs sbx v0.54.0 or later to create an instance: on an older sbx, `den up`
+  refuses before it creates anything, instead of failing inside sbx. A running instance still attaches.
+
 ## v2.2.0 — 2026-11-24
 
 ### Added
