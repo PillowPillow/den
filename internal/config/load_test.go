@@ -512,3 +512,8 @@ func TestLoadRefusesACPUCountNotWrittenInDecimal(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadListsABadCPUCountWithTheFileOtherProblems(t *testing.T) {
+	body := strings.Replace(nestWithLine("resources: {cpus: 010}"), "    profile: p\n", "    profile: p\n    egres: x\n", 1)
+	mustFail(t, body, false, "010", "egres")
+}

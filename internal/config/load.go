@@ -158,6 +158,9 @@ func validate(f *File, global bool) []string {
 		}
 	}
 	validateWorktrees("worktrees", f.Worktrees, add)
+	if global {
+		validateResources("resources", f.Resources, add)
+	}
 
 	for _, key := range sortedKeys(f.Templates) {
 		e := f.Templates[key]
@@ -220,9 +223,6 @@ func validate(f *File, global bool) []string {
 		}
 		validateWorktrees(key+".worktrees", n.Worktrees, add)
 		validateResources(key+".resources", n.Resources, add)
-	}
-	if global {
-		validateResources("resources", f.Resources, add)
 	}
 	return out
 }
