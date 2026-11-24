@@ -276,6 +276,8 @@ func envOf(p *Plan, trios map[string]gitTrio) sbxenv.Env {
 		Workspace: p.Workspace,
 		Env:       env,
 		Template:  sbxTemplate(res.Template),
+		CPUs:      res.CPUs,
+		Memory:    res.Memory,
 	}
 	for _, r := range p.Repos {
 		t, ok := trios[r.Name]
