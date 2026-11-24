@@ -44,7 +44,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{home: t.TempDir(), cwd: t.TempDir(), prompt: &prompt.Fake{}}
 	f.fake = &sbx.Fake{Responses: map[string]sbx.Response{
-		"version":   {Output: []byte("sbx version v0.53.0 abc\n")},
+		"version":   {Output: []byte("sbx version v0.54.0 abc\n")},
 		"ls --json": {Output: []byte(`[]`)},
 	}}
 	f.templates(row("docker.io/docker/sandbox-templates", "claude-code-docker", digest))

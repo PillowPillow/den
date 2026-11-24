@@ -4,8 +4,8 @@ den runs Claude Code on your repos inside a Docker Sandboxes ([`sbx`](https://do
 microVM. You declare a set of repos once in a `den.yaml`; `den up <name>` creates the VM, mounts the
 repos at their usual paths, and attaches Claude. `den rm` removes exactly what den created.
 
-**Status: V2 (the second version of den, a rewrite of v1), for macOS and Linux, tested with sbx
-v0.53.0.** den drives the experimental `sbx env` commands, which may change. den runs wherever sbx
+**Status: V2 (the second version of den, a rewrite of v1), for macOS and Linux, requires sbx
+v0.54.0 or later.** den drives the experimental `sbx env` commands, which may change. den runs wherever sbx
 runs; its day-to-day use so far is on macOS. Coming from v1: read
 [docs/migrating-from-v1.md](docs/migrating-from-v1.md) **before** you upgrade.
 

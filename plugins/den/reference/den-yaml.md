@@ -269,8 +269,7 @@ every session: on a nest of many repos, keep only the ones Claude needs.
 | `resources` | sbx's default, then global file, then nest (per key: `cpus`, `memory`) |
 
 den checks only the format of `resources`: `cpus` is a plain decimal whole number of 1 or more, `memory` an integer
-then `m` (MiB) or `g` (GiB), such as `512m` or `8g`. sbx checks the bounds. A nest with `resources` needs sbx v0.54.0 or later
-to create an instance; on an older sbx, `den up` refuses before it creates anything.
+then `m` (MiB) or `g` (GiB), such as `512m` or `8g`. sbx checks the bounds.
 
 ### Changing a nest
 
@@ -312,7 +311,7 @@ ports:
 
 `sandbox` is the port a server listens on inside the VM. `host` is the port on your host; `0` lets
 sbx pick a free one. `name` is a label for you. Ports are published when the instance is created;
-den prints sbx's port table after each create. Run `sbx ports <instance>` to see it again. Two
+den prints sbx's port table after each create. Run `sbx port ls <instance>` to see it again. Two
 entries with the same `sandbox` port are refused.
 
 ## Profiles

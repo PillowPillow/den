@@ -46,7 +46,7 @@ Without a nest name, `den up` fails and lists the nests it can see.
 
 **Before it changes anything**, den checks what it can: an unknown nest, a missing repo, a template
 that is not built, no template named anywhere, a missing local [kit](den-yaml.md#every-key) or
-[layer](security.md#layers), `-i` without a terminal, an sbx older than v0.53.0. A refusal names the
+[layer](security.md#layers), `-i` without a terminal, an sbx older than v0.54.0. A refusal names the
 file or the command that fixes it. A [repo key without a folder](den-yaml.md#repos) is the exception:
 in a terminal, den lists the keys and asks before it starts the instance without them.
 

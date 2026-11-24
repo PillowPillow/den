@@ -230,8 +230,8 @@ func TestCreatePassesNoInputForceAndSkipHostCommands(t *testing.T) {
 	if !slices.ContainsFunc(f.fake.Calls, func(c []string) bool { return slices.Equal(c, want) }) {
 		t.Errorf("calls %v, want %v", f.fake.Calls, want)
 	}
-	if !f.fake.HasCalled("--no-input", "ports", "am") {
-		t.Errorf("calls %v, want `--no-input ports am`", f.fake.Calls)
+	if !f.fake.HasCalled("--no-input", "port", "ls", "am") {
+		t.Errorf("calls %v, want `--no-input port ls am`", f.fake.Calls)
 	}
 }
 
@@ -571,7 +571,6 @@ func TestCreateWithoutAutoTrustTrustsNothingAndDropsTheSandboxedSwitch(t *testin
 
 func TestCreateWritesTheNestResources(t *testing.T) {
 	f := newFixture(t)
-	f.respond("version", resourcesVersion)
 	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nresources: {cpus: 4, memory: 8g}"})
 	p := mustPrepare(t, f, Options{Nest: "am"})
 	mustCreate(t, f, p)

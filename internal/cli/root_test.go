@@ -24,7 +24,7 @@ func TestVersionPrintsTheStampedVersion(t *testing.T) {
 }
 
 func TestMinVersionIsTheSpecFloor(t *testing.T) {
-	if sbx.MinVersion != "v0.53.0" {
-		t.Errorf("sbx.MinVersion = %q, want v0.53.0", sbx.MinVersion)
+	if sbx.MinVersion != "v0.54.0" {
+		t.Errorf("sbx.MinVersion = %q, want v0.54.0", sbx.MinVersion)
 	}
 }

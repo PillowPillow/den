@@ -12,7 +12,7 @@ Your **host** is the machine you run den on. It must be one that sbx supports
 
 | Need | Install | Check |
 |---|---|---|
-| sbx v0.53.0 or later | macOS: `brew install docker/tap/sbx`; Ubuntu: see the [sbx install page](https://docs.docker.com/ai/sandboxes/install/) | `sbx version` |
+| sbx v0.54.0 or later | macOS: `brew install docker/tap/sbx`; Ubuntu: see the [sbx install page](https://docs.docker.com/ai/sandboxes/install/) | `sbx version` |
 | sbx signed in (Docker account) | `sbx login` | `sbx ls` prints a table, not an error |
 | sbx global network policy | `sbx policy init balanced` (once) | `sbx policy ls` lists `local-policy` |
 | Claude Code on your host, for the token | [Claude Code setup](https://code.claude.com/docs/en/setup) | `claude --version` |
@@ -30,7 +30,7 @@ the network ([docs/security.md](security.md#what-the-vm-can-reach)).
 | den answers with commands such as `doctor`, or messages that the README does not describe | your `PATH` finds den v1: remove it or put the V2 binary's directory first, see [Install](../README.md#install) |
 | `go install github.com/PillowPillow/den/cmd/den@latest` installs v1 | that path is v1's: use `github.com/PillowPillow/den/v2/cmd/den@latest` |
 | `den up`, `den ls` or another command fails with an sbx error about signing in | sbx is not signed in: `sbx login` |
-| `sbx <version> is older than v0.53.0` | upgrade sbx: `brew upgrade docker/tap/sbx` on macOS, `sudo apt install --only-upgrade docker-sbx` on Ubuntu |
+| `sbx <version> is older than v0.54.0` | upgrade sbx: `brew upgrade docker/tap/sbx` on macOS, `sudo apt install --only-upgrade docker-sbx` on Ubuntu |
 | Claude in the VM says `Not logged in · Please run /login` | no token stored: see [Log Claude in](../README.md#log-claude-in) |
 | `nest "<nest>" has no template` | add `default_template: claude-code-docker` to `~/.den/den.yaml` |
 | a host is unreachable from the VM | `sbx policy check network <host>:<port> --sandbox <instance>`, then add the host to the nest's `network.allow` ([docs/den-yaml.md](den-yaml.md#network)) |

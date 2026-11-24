@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 }
 
 const (
-	okVersion      = "sbx version v0.53.0 abc\n"
+	okVersion      = "sbx version v0.54.0 abc\n"
 	templateDigest = "sha256:4a94d9144a70df744fd9247e0c365a14cfb97024afab8db7597c8ba3e0637642"
 	templateFrom   = "docker.io/docker/sandbox-templates:claude-code-docker"
 	templateImage  = "docker.io/docker/sandbox-templates@" + templateDigest
@@ -300,8 +300,8 @@ func TestPrepareChecksSbxOnTheLivePath(t *testing.T) {
 	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
 	record(t, f.home, mustPrepare(t, f, Options{Nest: "am"}))
 	f.live("am")
-	f.respond("version", "sbx version v0.52.0 abc\n")
-	prepareErr(t, f, Options{Nest: "am"}, "v0.52.0", sbx.MinVersion)
+	f.respond("version", "sbx version v0.53.0 abc\n")
+	prepareErr(t, f, Options{Nest: "am"}, "v0.53.0", sbx.MinVersion)
 }
 
 func TestPrepareRefusesAMissingSbxTemplate(t *testing.T) {
@@ -356,8 +356,8 @@ func TestPrepareOnAnImageSkipsTheTemplateCheck(t *testing.T) {
 func TestPrepareRefusesAnOldSbx(t *testing.T) {
 	f := newFixture(t)
 	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
-	f.respond("version", "sbx version v0.52.0 abc\n")
-	prepareErr(t, f, Options{Nest: "am"}, "v0.52.0", sbx.MinVersion)
+	f.respond("version", "sbx version v0.53.0 abc\n")
+	prepareErr(t, f, Options{Nest: "am"}, "v0.53.0", sbx.MinVersion)
 	if f.fake.HasCalled("ls") {
 		t.Errorf("listed sandboxes under an sbx below the floor: %v", f.fake.Calls)
 	}
@@ -1281,7 +1281,6 @@ func TestConfigHashIgnoresAddDirs(t *testing.T) {
 
 func TestConfigHashMovesOnlyWhenResourcesAreSet(t *testing.T) {
 	f := newFixture(t)
-	f.respond("version", resourcesVersion)
 	am := repos(repoEntry(f.repo(t, "api"), false))
 	f.project(t, map[string]string{"am": am})
 	before := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash
@@ -1301,29 +1300,4 @@ func TestConfigHashMovesOnlyWhenResourcesAreSet(t *testing.T) {
 	if got := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash; got == before || got == cpus {
 		t.Errorf("memory: 8g did not give its own hash")
 	}
-}
-
-const resourcesVersion = "sbx version v0.54.0 abc\n"
-
-func TestPrepareRefusesResourcesOnAnSbxOlderThanV054(t *testing.T) {
-	f := newFixture(t)
-	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nresources: {cpus: 2}"})
-	prepareErr(t, f, Options{Nest: "am"}, "resources:", sbx.ResourcesMinVersion, "v0.53.0", "upgrade sbx")
-}
-
-func TestPrepareAcceptsResourcesOnSbxV054(t *testing.T) {
-	f := newFixture(t)
-	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nresources: {memory: 8g}"})
-	f.respond("version", resourcesVersion)
-	mustPrepare(t, f, Options{Nest: "am"})
-}
-
-func TestPrepareAttachesALiveInstanceWithResourcesOnAnOlderSbx(t *testing.T) {
-	f := newFixture(t)
-	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nresources: {cpus: 2}"})
-	f.respond("version", resourcesVersion)
-	record(t, f.home, mustPrepare(t, f, Options{Nest: "am"}))
-	f.live("am")
-	f.respond("version", okVersion)
-	mustPrepare(t, f, Options{Nest: "am"})
 }

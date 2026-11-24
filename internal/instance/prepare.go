@@ -74,8 +74,7 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if err := sbx.ValidateCreatableSandboxName(instance); err != nil {
 		return nil, err
 	}
-	sbxVersion, err := CheckSbx(ctx, d.Sbx)
-	if err != nil {
+	if _, err := CheckSbx(ctx, d.Sbx); err != nil {
 		return nil, err
 	}
 	state, rec, err := Lookup(ctx, d, instance)
@@ -93,11 +92,6 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 			return nil, res.TemplateErr
 		}
 		res.Warnings = append(res.Warnings, res.TemplateErr.Error())
-	}
-	// A running VM keeps the size it was created with, so only a create needs an sbx that reads it.
-	if (res.CPUs > 0 || res.Memory != "") && state != Live && semver.Compare(sbxVersion, sbx.ResourcesMinVersion) < 0 {
-		return nil, fmt.Errorf("nest %q sets resources:, which needs sbx %s or later, and this sbx is %s — "+
-			"upgrade sbx, or remove resources: from the nest and the global den.yaml", res.Name, sbx.ResourcesMinVersion, sbxVersion)
 	}
 	// A running VM keeps the mounts it was created with: there is nothing to consent to.
 	if res.MissingErr != nil && state == Live {

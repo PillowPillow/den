@@ -46,8 +46,8 @@ func Create(ctx context.Context, d Deps, p *Plan) (registry.Record, error) {
 			p.Instance, err, imageHint(p), upCommand(p), p.Instance)
 	}
 	// The VM exists: a failed listing must not cost the user the attach.
-	if err := d.Sbx.Stream(ctx, d.Out, "--no-input", "ports", p.Instance); err != nil {
-		fmt.Fprintf(d.Err, "warning: listing the ports of %s: %v — run `sbx ports %s`\n", p.Instance, err, p.Instance)
+	if err := d.Sbx.Stream(ctx, d.Out, "--no-input", "port", "ls", p.Instance); err != nil {
+		fmt.Fprintf(d.Err, "warning: listing the ports of %s: %v — run `sbx port ls %s`\n", p.Instance, err, p.Instance)
 	}
 	return rec, nil
 }
