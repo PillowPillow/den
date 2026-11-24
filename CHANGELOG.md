@@ -7,6 +7,21 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v2.2.0 — 2026-11-24
+
+### Added
+- `add_dirs` (global top level or nest, the nest wins, default `false`): `den up` gives Claude every
+  other mounted repo with `--add-dir`, so Claude loads their `CLAUDE.md` and skills, not just the
+  start repo's. It applies at the next `den up`, without `den rm`.
+- `auto_trust` (global top level or nest, the nest wins, default `true`): `false` brings Claude's
+  trust dialog back in the VM.
+
+### Fixed
+- Claude in a den VM now honours a repo's `permissions.additionalDirectories`: den records Claude's
+  trust for each mounted repo and the start folder, where it used to skip the trust dialog without
+  recording trust, so Claude ignored those folders. An instance created before this release gets the
+  fix after `den rm`, then `den up`.
+
 ## v2.1.0 — 2026-11-22
 
 ### Added
