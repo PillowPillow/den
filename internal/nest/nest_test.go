@@ -553,3 +553,29 @@ func TestResolveAddDirs(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveResources(t *testing.T) {
+	const nestLine = "    template: claude-code-docker\n"
+	for _, c := range []struct {
+		name, global, nest string
+		cpus               int
+		memory             string
+	}{
+		{"none", "", "", 0, ""},
+		{"global only", "resources: {cpus: 2, memory: 4g}\n", "", 2, "4g"},
+		{"nest wins per key", "resources: {cpus: 2, memory: 4g}\n", "    resources: {cpus: 6}\n", 6, "4g"},
+		{"nest only", "", "    resources: {memory: 16g}\n", 0, "16g"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			body := strings.Replace(profileGlobal, nestLine, nestLine+c.nest, 1)
+			body = strings.Replace(body, "schema: 1\n", "schema: 1\n"+c.global, 1)
+			r, err := resolveRich(t, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.CPUs != c.cpus || r.Memory != c.memory {
+				t.Errorf("resources = cpus %d memory %q, want cpus %d memory %q", r.CPUs, r.Memory, c.cpus, c.memory)
+			}
+		})
+	}
+}
