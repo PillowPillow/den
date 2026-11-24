@@ -7,6 +7,17 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v2.3.1 — 2026-11-24
+
+### Changed
+- den now requires sbx v0.54.0 or later: `den up`, `den exec` and `den build` refuse an older sbx,
+  a running instance included. Upgrade with `brew upgrade docker/tap/sbx`.
+
+### Fixed
+- `den up` lists a new instance's published ports with `sbx port ls` instead of `sbx ports`, which
+  sbx v0.54.0 deprecates: no more deprecation warning after each create, and den keeps listing ports
+  once a later sbx removes the old command.
+
 ## v2.3.0 — 2026-11-24
 
 ### Added
