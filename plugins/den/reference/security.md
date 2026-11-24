@@ -50,8 +50,8 @@ skills or agents: only `claude --add-dir <folder>` does that, which `add_dirs: t
 
 With `auto_trust: false`, den does neither. Claude shows its trust dialog when you attach in a
 folder it does not trust yet. Claude Code loads a repo's settings only after you accept it; this
-was not measured in a den VM. `claude -p` (as run by `den exec`) shows no dialog: it runs, warns
-that the workspace is not trusted, and ignores the project's `permissions.additionalDirectories`.
+was not measured in a den VM. `claude -p` (for example `den exec <nest> -- claude -p …`) shows no
+dialog: it runs, warns that the workspace is not trusted, and ignores the project's `permissions.additionalDirectories`.
 
 ## What the VM can write
 
