@@ -32,6 +32,8 @@ type Env struct {
 	Env       map[string]string
 	Ports     []Port
 	Template  string
+	CPUs      int    // 0: not written, sbx's default
+	Memory    string // "": not written, sbx's default
 }
 
 // scalar renders s as a YAML scalar, quoted only when YAML needs it.
@@ -89,8 +91,17 @@ func Render(e Env) ([]byte, error) {
 			}
 		}
 	}
-	if e.Template != "" {
-		fmt.Fprintf(&b, "sandboxOptions:\n  template: %s\n", scalar(e.Template))
+	if e.Template != "" || e.CPUs > 0 || e.Memory != "" {
+		b.WriteString("sandboxOptions:\n")
+		if e.Template != "" {
+			fmt.Fprintf(&b, "  template: %s\n", scalar(e.Template))
+		}
+		if e.CPUs > 0 {
+			fmt.Fprintf(&b, "  cpus: %d\n", e.CPUs)
+		}
+		if e.Memory != "" {
+			fmt.Fprintf(&b, "  memory: %s\n", scalar(e.Memory))
+		}
 	}
 	return b.Bytes(), nil
 }
