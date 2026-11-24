@@ -37,7 +37,7 @@ type Options struct {
 // can decide from config, records and `sbx ls` comes before the first VM, and a failure leaves the
 // previous copy, record and sbx template as they were.
 func Build(ctx context.Context, d Deps, value string, o Options) error {
-	if err := instance.CheckSbx(ctx, d.Sbx); err != nil {
+	if _, err := instance.CheckSbx(ctx, d.Sbx); err != nil {
 		return err
 	}
 	global, err := config.LoadGlobal(d.DenHome)

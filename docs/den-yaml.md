@@ -269,7 +269,8 @@ every session: on a nest of many repos, keep only the ones Claude needs.
 | `resources` | sbx's default, then global file, then nest (per key: `cpus`, `memory`) |
 
 den checks only the format of `resources`: `cpus` is a plain decimal whole number of 1 or more, `memory` an integer
-then `m` (MiB) or `g` (GiB), such as `512m` or `8g`. sbx checks the bounds.
+then `m` (MiB) or `g` (GiB), such as `512m` or `8g`. sbx checks the bounds. A nest with `resources` needs sbx v0.54.0 or later
+to create an instance; on an older sbx, `den up` refuses before it creates anything.
 
 ### Changing a nest
 

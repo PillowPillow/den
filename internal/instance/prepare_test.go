@@ -1281,6 +1281,7 @@ func TestConfigHashIgnoresAddDirs(t *testing.T) {
 
 func TestConfigHashMovesOnlyWhenResourcesAreSet(t *testing.T) {
 	f := newFixture(t)
+	f.respond("version", resourcesVersion)
 	am := repos(repoEntry(f.repo(t, "api"), false))
 	f.project(t, map[string]string{"am": am})
 	before := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash
@@ -1300,4 +1301,29 @@ func TestConfigHashMovesOnlyWhenResourcesAreSet(t *testing.T) {
 	if got := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash; got == before || got == cpus {
 		t.Errorf("memory: 8g did not give its own hash")
 	}
+}
+
+const resourcesVersion = "sbx version v0.54.0 abc\n"
+
+func TestPrepareRefusesResourcesOnAnSbxOlderThanV054(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nresources: {cpus: 2}"})
+	prepareErr(t, f, Options{Nest: "am"}, "resources:", sbx.ResourcesMinVersion, "v0.53.0", "upgrade sbx")
+}
+
+func TestPrepareAcceptsResourcesOnSbxV054(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nresources: {memory: 8g}"})
+	f.respond("version", resourcesVersion)
+	mustPrepare(t, f, Options{Nest: "am"})
+}
+
+func TestPrepareAttachesALiveInstanceWithResourcesOnAnOlderSbx(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nresources: {cpus: 2}"})
+	f.respond("version", resourcesVersion)
+	record(t, f.home, mustPrepare(t, f, Options{Nest: "am"}))
+	f.live("am")
+	f.respond("version", okVersion)
+	mustPrepare(t, f, Options{Nest: "am"})
 }

@@ -571,6 +571,7 @@ func TestCreateWithoutAutoTrustTrustsNothingAndDropsTheSandboxedSwitch(t *testin
 
 func TestCreateWritesTheNestResources(t *testing.T) {
 	f := newFixture(t)
+	f.respond("version", resourcesVersion)
 	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nresources: {cpus: 4, memory: 8g}"})
 	p := mustPrepare(t, f, Options{Nest: "am"})
 	mustCreate(t, f, p)
