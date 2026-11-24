@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -139,6 +140,9 @@ func validate(f *File, global bool) []string {
 		if f.AddDirs != nil {
 			add("add_dirs: %s", move)
 		}
+		if f.Resources != nil {
+			add("resources: %s", move)
+		}
 	}
 	for _, key := range sortedKeys(f.Repos) {
 		validateRepo(key, f.Repos[key], global, add)
@@ -215,8 +219,26 @@ func validate(f *File, global bool) []string {
 			add("%s.start: %v", key, err)
 		}
 		validateWorktrees(key+".worktrees", n.Worktrees, add)
+		validateResources(key+".resources", n.Resources, add)
+	}
+	if global {
+		validateResources("resources", f.Resources, add)
 	}
 	return out
+}
+
+var memorySize = regexp.MustCompile(`^[1-9][0-9]*[mg]$`)
+
+func validateResources(key string, r *Resources, add func(string, ...any)) {
+	if r == nil {
+		return
+	}
+	if r.CPUs != nil && *r.CPUs < 1 {
+		add("%s.cpus: %d is not a CPU count — set 1 or more, or remove cpus to use every host CPU", key, *r.CPUs)
+	}
+	if r.Memory != "" && !memorySize.MatchString(r.Memory) {
+		add("%s.memory: %q is not a memory size — write an integer then m (MiB) or g (GiB), e.g. 8g", key, r.Memory)
+	}
 }
 
 // ValidateRepoKey refuses a repos: key that is not one folder name: it names a clone and ends up

@@ -445,3 +445,62 @@ func TestLoadReadsAutoTrustOnANestOfAProjectFile(t *testing.T) {
 		t.Errorf("nest auto_trust = %v, want false", v)
 	}
 }
+
+func nestWithLine(line string) string {
+	return strings.Replace(minimalNest, "    profile: p\n", "    profile: p\n    "+line+"\n", 1)
+}
+
+func TestLoadRefusesResourcesAtTheTopOfAProjectFile(t *testing.T) {
+	mustFail(t, minimalNest+"resources: {cpus: 2}\n", false, "resources", "global-only", "global den.yaml")
+}
+
+func TestLoadReadsResourcesOnANestAndAtTheTopOfTheGlobalFile(t *testing.T) {
+	body := strings.Replace(nestWithLine("resources: {cpus: 4}"), "schema: 1\n", "schema: 1\nresources: {memory: 8g}\n", 1)
+	l, err := Load(writeFile(t, t.TempDir(), "den.yaml", body), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := l.File.Resources; r == nil || r.Memory != "8g" || r.CPUs != nil {
+		t.Errorf("top-level resources = %+v, want memory 8g and no cpus", r)
+	}
+	if r := l.File.Nests["am"].Resources; r == nil || r.CPUs == nil || *r.CPUs != 4 || r.Memory != "" {
+		t.Errorf("nest resources = %+v, want cpus 4 and no memory", r)
+	}
+}
+
+func TestLoadRefusesABadCPUCount(t *testing.T) {
+	for _, v := range []string{"0", "-1"} {
+		t.Run(v, func(t *testing.T) {
+			mustFail(t, nestWithLine("resources: {cpus: "+v+"}"), false, "nests.am.resources.cpus", "remove cpus")
+		})
+	}
+	t.Run("fraction", func(t *testing.T) {
+		mustFail(t, nestWithLine("resources: {cpus: 2.5}"), false, "2.5")
+	})
+}
+
+func TestLoadRefusesABadMemorySize(t *testing.T) {
+	for _, v := range []string{"8G", "8gb", "8", "0g", "1.5g", "'8 g'", "08g"} {
+		t.Run(v, func(t *testing.T) {
+			mustFail(t, nestWithLine("resources: {memory: "+v+"}"), false, "nests.am.resources.memory", "e.g. 8g")
+		})
+	}
+}
+
+func TestLoadRefusesABadMemorySizeAtTheTopOfTheGlobalFile(t *testing.T) {
+	mustFail(t, minimalNest+"resources: {memory: 8GB}\n", true, "resources.memory", "e.g. 8g")
+}
+
+func TestLoadRefusesAnUnknownResourcesKey(t *testing.T) {
+	mustFail(t, nestWithLine("resources: {memroy: 8g}"), false, "memroy")
+}
+
+func TestLoadAcceptsAWellFormedMemorySize(t *testing.T) {
+	for _, v := range []string{"512m", "8g", "100000g"} {
+		t.Run(v, func(t *testing.T) {
+			if _, err := Load(writeFile(t, t.TempDir(), "den.yaml", nestWithLine("resources: {memory: "+v+"}")), false); err != nil {
+				t.Errorf("Load refused memory %s: %v", v, err)
+			}
+		})
+	}
+}

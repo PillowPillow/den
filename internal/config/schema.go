@@ -12,8 +12,8 @@ const FileName = "den.yaml"
 // Schema is the only den.yaml schema version this den reads.
 const Schema = 1
 
-// File is one den.yaml. Worktrees, Env, Network, Profiles, AutoTrust and AddDirs at top level exist in the
-// global file only; a project file carrying them is refused. Repos is accepted in both.
+// File is one den.yaml. Worktrees, Env, Network, Profiles, AutoTrust, AddDirs and Resources at top level exist
+// in the global file only; a project file carrying them is refused. Repos is accepted in both.
 type File struct {
 	Schema    int                 `yaml:"schema"`
 	Worktrees *Worktrees          `yaml:"worktrees"`
@@ -24,6 +24,7 @@ type File struct {
 	Profile   string              `yaml:"profile"`
 	AutoTrust *bool               `yaml:"auto_trust"`
 	AddDirs   *bool               `yaml:"add_dirs"`
+	Resources *Resources          `yaml:"resources"`
 	Nests     map[string]Nest     `yaml:"nests"`
 
 	Templates       map[string]TemplateEntry `yaml:"templates"`
@@ -122,6 +123,29 @@ type Nest struct {
 	Layers    []string          `yaml:"layers"`
 	AutoTrust *bool             `yaml:"auto_trust"`
 	AddDirs   *bool             `yaml:"add_dirs"`
+	Resources *Resources        `yaml:"resources"`
+}
+
+// Resources sizes an instance's VM. den checks only the format; sbx owns the bounds, which move between
+// releases and depend on the host.
+type Resources struct {
+	CPUs   *CPUCount `yaml:"cpus"`
+	Memory string    `yaml:"memory"`
+}
+
+// CPUCount accepts a YAML integer only: decoding 2.5 into an int truncates it to 2 in silence.
+type CPUCount int
+
+func (c *CPUCount) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.ScalarNode || n.Tag != "!!int" {
+		return fmt.Errorf("line %d: cpus: %q is not a whole number of CPUs", n.Line, n.Value)
+	}
+	var v int
+	if err := n.Decode(&v); err != nil {
+		return err
+	}
+	*c = CPUCount(v)
+	return nil
 }
 
 // RepoRef names a repo by host path or by a key of the global repos map; exactly one is set.
