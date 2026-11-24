@@ -7,13 +7,10 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-// MinVersion is the oldest sbx den supports: the floor of the V2 spike results
-// (v0.53.0), checked once by the commands that create or run a sandbox.
-const MinVersion = "v0.53.0"
-
-// ResourcesMinVersion is the oldest sbx measured to accept sandboxOptions.cpus and .memory
-// (2026-11-24); a nest with resources: refuses to create on an older one rather than fail inside sbx.
-const ResourcesMinVersion = "v0.54.0"
+// MinVersion is the oldest sbx den supports, checked once by the commands that create or run a
+// sandbox. v0.54.0 is the first with `sbx port ls` (v0.54.0 deprecates `sbx ports`) and the first
+// measured to accept sandboxOptions.cpus and .memory (2026-11-24).
+const MinVersion = "v0.54.0"
 
 // ParseVersion reads the version out of `sbx version`, whose output is one
 // line: "sbx version v0.48.0 <commit>" from v0.48.0 on, "sbx version: v0.43.0

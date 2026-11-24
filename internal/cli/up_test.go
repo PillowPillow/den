@@ -29,7 +29,7 @@ func newUpFixture(t *testing.T) *upFixture {
 	t.Helper()
 	f := &upFixture{home: t.TempDir(), proj: t.TempDir(), src: t.TempDir(), prompt: &prompt.Fake{}}
 	f.fake = &sbx.Fake{Responses: map[string]sbx.Response{
-		"version":   {Output: []byte("sbx version v0.53.0 abc\n")},
+		"version":   {Output: []byte("sbx version v0.54.0 abc\n")},
 		"ls --json": {Output: []byte(`[]`)},
 	}}
 	return f

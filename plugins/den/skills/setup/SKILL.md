@@ -9,7 +9,7 @@ Facts come from ${CLAUDE_PLUGIN_ROOT}/reference/setup.md. Run the steps in order
 
 1. Check the prerequisites. Read the Prerequisites section of `${CLAUDE_PLUGIN_ROOT}/reference/setup.md#prerequisites` and run each "Check" command:
    - the platform;
-   - `sbx version` (v0.53.0 or later);
+   - `sbx version` (v0.54.0 or later);
    - `sbx ls`;
    - `sbx policy ls`, which lists `local-policy` when the global policy exists, then `sbx policy check network example.com:443`, which must answer `Denied`;
    - `claude --version`;

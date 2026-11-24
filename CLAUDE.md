@@ -9,7 +9,7 @@ from a `den.yaml`, generates the `sbxenv.yaml` files `sbx env create` reads, run
 VM through a `den-claude` agent kit, and records what it created so `den rm` can undo exactly that.
 Eight commands: `up`, `exec`, `shell`, `ls`, `rm`, `build`, `scan`, `version`. `~/.den/` is the single
 source of truth; `DEN_HOME` / `--den-home` redirects it, which is what makes the whole suite
-hermetic. The sbx floor is **v0.53.0** (`sbx.MinVersion`), checked once by `up`, `exec` and `build`
+hermetic. The sbx floor is **v0.54.0** (`sbx.MinVersion`), checked once by `up`, `exec` and `build`
 before their first side effect.
 
 ## Commands
@@ -115,7 +115,7 @@ back the worktrees that call made, without force.
 **Every system access is injected through `cli.Deps`** (`internal/cli/root.go`): one `sbx.Runner`
 shared by all commands, plus `Git`, `Hub` (`hub.Catalog`, Docker Hub's official images), `Agent` (`sshagent.Probe`, runs `ssh-add -l`), `Prompt`, `IsTTY`, `Getwd`, `Out`, `Err`. Hard-wiring any of them
 breaks the suite's hermeticity. Read helpers (`sbx.Ls`, `Templates`, `Version`, `PolicyRules`, `SSHForwarding`) keep sbx's plain
-argv; `env create`, `env rm`, `rm`, `exec` and `ports` get `--no-input`; `den build`'s `stop` and
+argv; `env create`, `env rm`, `rm`, `exec` and `port ls` get `--no-input`; `den build`'s `stop` and
 `template save` do not, nor do interactive attaches.
 `den exec` requires `--` and sends its own messages to stderr, so stdout is the command's alone.
 
@@ -157,8 +157,8 @@ argv; `env create`, `env rm`, `rm`, `exec` and `ports` get `--no-input`; `den bu
   `internal/sbx` error strings (`den doctor`); there is no such command in V2.
 - The v1 binary on a machine answers `den` too. `den version` names the code it runs; a plain
   `go build` answers `den dev`, so build with `task build`.
-- sbx is installed (`/opt/homebrew/bin/sbx`). V2 requires **v0.53.0 or later** and reads only the
-  surface of `sbx env`, `sbx ls --json`, `sbx template`, `sbx run`, `sbx exec`, `sbx ports`, and, for the
+- sbx is installed (`/opt/homebrew/bin/sbx`). V2 requires **v0.54.0 or later** and reads only the
+  surface of `sbx env`, `sbx ls --json`, `sbx template`, `sbx run`, `sbx exec`, `sbx port ls`, and, for the
   alerts of `den up`, `sbx policy ls --json` and `sbx settings ls --json`. An
   sbx that is not signed in (`sbx login`) fails every `sbx ls` den makes.
 - `.claude/worktrees/` may hold a full shadow copy of the tree. Exclude it from greps or every

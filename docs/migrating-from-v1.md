@@ -1,6 +1,6 @@
 # Migrating from den v1
 
-den V2 (v2.0.0 and later) is a rewrite. It drives `sbx env` (sbx v0.53.0 or later) and shares no
+den V2 (v2.0.0 and later) is a rewrite. It drives `sbx env` (sbx v0.54.0 or later) and shares no
 config format with v1. V2 never reads v1's config, and it cannot list or remove the sandboxes v1
 created.
 
@@ -70,7 +70,8 @@ Push any work that lives only there first.**
 
 With the v1 binary:
 
-1. Run `den ls` and note each sandbox, its nest and its published ports (`sbx ports <sandbox>`).
+1. Run `den ls` and note each sandbox, its nest and its published ports (`sbx port ls <sandbox>`; on an
+   sbx older than v0.54.0, `sbx ports <sandbox>`).
 2. Commit and push any work that lives only in a v1 VM or in its worktrees.
 3. Run `den rm <sandbox>` for each one. v1 moves its worktrees to its trash.
 4. Check that `git worktree list`, in each repo, no longer shows a worktree under `~/.den/worktrees/`
@@ -95,7 +96,7 @@ delete the record file the error names.
 | team sources (`den source`, `den lint`) | a template in a git repository, declared with `repo:` |
 | `den up`, `den run` | `den up`, `den exec` |
 | `den nest ls`, `den nest show` | `den up` without a name lists the nests |
-| `den ports` | `ports:` on a nest, then `sbx ports <instance>` |
+| `den ports` | `ports:` on a nest, then `sbx port ls <instance>` |
 | `den doctor`, `den init` | none |
 | `den update` | the command of your install method, see the [README](../README.md#install) |
 | the worktree trash | none: `den rm` refuses to drop unsaved work, see [commands.md](commands.md#den-rm) |
