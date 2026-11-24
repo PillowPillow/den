@@ -18,8 +18,8 @@ and state, `~/.den` by default. See the [README](../README.md#words-den-uses) fo
 ## Global file
 
 `~/.den/den.yaml` describes your machine. `--den-home <dir>` or `$DEN_HOME` moves the whole den home,
-this file included. The global file is the only one that may carry `worktrees`, `env`, `network` and
-`profiles`. Both kinds of file may carry `repos`, with different entries (see [Repos](#repos)).
+this file included. The global file is the only one that may carry `worktrees`, `env`, `network`,
+`profiles`, and at its top level `auto_trust`, `add_dirs` and `resources`. Both kinds of file may carry `repos`, with different entries (see [Repos](#repos)).
 
 ## Project file
 
@@ -268,7 +268,7 @@ every session: on a nest of many repos, keep only the ones Claude needs.
 | `add_dirs` | `false`, then global file, then nest (the last one set wins) |
 | `resources` | sbx's default, then global file, then nest (per key: `cpus`, `memory`) |
 
-den checks only the format of `resources`: `cpus` is a whole number of 1 or more, `memory` an integer
+den checks only the format of `resources`: `cpus` is a plain decimal whole number of 1 or more, `memory` an integer
 then `m` (MiB) or `g` (GiB), such as `512m` or `8g`. sbx checks the bounds.
 
 ### Changing a nest

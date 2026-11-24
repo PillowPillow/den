@@ -143,7 +143,8 @@ var decimalCPUs = regexp.MustCompile(`^(0|-?[1-9][0-9]*)$`)
 
 func (c *CPUCount) UnmarshalYAML(n *yaml.Node) error {
 	if n.Kind != yaml.ScalarNode || n.Tag != "!!int" || !decimalCPUs.MatchString(n.Value) {
-		return fmt.Errorf("line %d: cpus: %q is not a decimal whole number of CPUs", n.Line, n.Value)
+		// A TypeError, not a plain error: yaml.v3 then keeps decoding and reports the file's other problems too.
+		return &yaml.TypeError{Errors: []string{fmt.Sprintf("line %d: cpus: %q is not a decimal whole number of CPUs", n.Line, n.Value)}}
 	}
 	var v int
 	if err := n.Decode(&v); err != nil {
