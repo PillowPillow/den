@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -133,12 +134,16 @@ type Resources struct {
 	Memory string    `yaml:"memory"`
 }
 
-// CPUCount accepts a YAML integer only: decoding 2.5 into an int truncates it to 2 in silence.
+// CPUCount accepts a plain decimal integer only: decoding 2.5 into an int truncates it to 2, and
+// YAML reads 010 as 8 and 0x10 as 16, all in silence. 0 and negatives pass here so validate names
+// the remedy.
 type CPUCount int
 
+var decimalCPUs = regexp.MustCompile(`^(0|-?[1-9][0-9]*)$`)
+
 func (c *CPUCount) UnmarshalYAML(n *yaml.Node) error {
-	if n.Kind != yaml.ScalarNode || n.Tag != "!!int" {
-		return fmt.Errorf("line %d: cpus: %q is not a whole number of CPUs", n.Line, n.Value)
+	if n.Kind != yaml.ScalarNode || n.Tag != "!!int" || !decimalCPUs.MatchString(n.Value) {
+		return fmt.Errorf("line %d: cpus: %q is not a decimal whole number of CPUs", n.Line, n.Value)
 	}
 	var v int
 	if err := n.Decode(&v); err != nil {

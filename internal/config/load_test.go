@@ -504,3 +504,11 @@ func TestLoadAcceptsAWellFormedMemorySize(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadRefusesACPUCountNotWrittenInDecimal(t *testing.T) {
+	for _, v := range []string{"010", "0b11", "0x10", "1_000", "+4"} {
+		t.Run(v, func(t *testing.T) {
+			mustFail(t, nestWithLine("resources: {cpus: "+v+"}"), false, v, "decimal")
+		})
+	}
+}
