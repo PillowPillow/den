@@ -327,3 +327,28 @@ func TestDenClaudeKitNeedsAnImage(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderWritesResourcesUnderSandboxOptions(t *testing.T) {
+	got, err := Render(Env{Name: "a", Workspace: "/w", Template: "t:v2", CPUs: 4, Memory: "8g"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "sandboxOptions:\n  template: t:v2\n  cpus: 4\n  memory: 8g\n"; !strings.Contains(string(got), want) {
+		t.Errorf("rendered:\n%s\nlacks:\n%s", got, want)
+	}
+}
+
+func TestRenderWritesResourcesWithoutATemplate(t *testing.T) {
+	got, err := Render(Env{Name: "a", Workspace: "/w", CPUs: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "sandboxOptions:\n  cpus: 2\n"; !strings.Contains(string(got), want) {
+		t.Errorf("rendered:\n%s\nlacks:\n%s", got, want)
+	}
+	for _, k := range []string{"memory:", "template:"} {
+		if strings.Contains(string(got), k) {
+			t.Errorf("unset %s rendered:\n%s", k, got)
+		}
+	}
+}
