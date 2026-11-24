@@ -568,3 +568,28 @@ func TestCreateWithoutAutoTrustTrustsNothingAndDropsTheSandboxedSwitch(t *testin
 		t.Errorf("den-claude kit is not the kit without auto-trust")
 	}
 }
+
+func TestCreateWritesTheNestResources(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nresources: {cpus: 4, memory: 8g}"})
+	p := mustPrepare(t, f, Options{Nest: "am"})
+	mustCreate(t, f, p)
+
+	if env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml")); !strings.Contains(env, "  cpus: 4\n  memory: 8g\n") {
+		t.Errorf("sbxenv.yaml:\n%s\nlacks the nest's cpus and memory", env)
+	}
+}
+
+func TestCreateWithoutResourcesWritesNoCPUsNorMemory(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+	p := mustPrepare(t, f, Options{Nest: "am"})
+	mustCreate(t, f, p)
+
+	env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml"))
+	for _, k := range []string{"cpus:", "memory:"} {
+		if strings.Contains(env, k) {
+			t.Errorf("sbxenv.yaml writes %s with no resources declared:\n%s", k, env)
+		}
+	}
+}

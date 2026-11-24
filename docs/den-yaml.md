@@ -95,6 +95,7 @@ auto_trust: true               # default true; Claude trusts the instance's fold
                                # see docs/security.md#folder-trust
 add_dirs: false                # default false; true loads the other repos' CLAUDE.md and skills,
                                # see "Other repos in Claude's context"
+resources: {cpus: 4, memory: 8g}   # optional; the VM size of every instance, see "Merge order"
 
 # --- both kinds of file -----------------------------------------------------
 default_template: claude-code-docker   # the template of a nest that names none
@@ -124,6 +125,7 @@ nests:
     layers: []                 # extra sbxenv.yaml files, see docs/security.md#layers
     auto_trust: false          # optional; wins over the global auto_trust
     add_dirs: true             # optional; wins over the global add_dirs
+    resources: {memory: 16g}   # optional; wins over the global resources, key by key
 ```
 
 `template:` and `templates:` are described in [templates.md](templates.md); `worktrees` and `-w`
@@ -264,6 +266,10 @@ every session: on a nest of many repos, keep only the ones Claude needs.
 | `env` | global file, then nest (the nest wins per key) |
 | `auto_trust` | `true`, then global file, then nest (the last one set wins) |
 | `add_dirs` | `false`, then global file, then nest (the last one set wins) |
+| `resources` | sbx's default, then global file, then nest (per key: `cpus`, `memory`) |
+
+den checks only the format of `resources`: `cpus` is a whole number of 1 or more, `memory` an integer
+then `m` (MiB) or `g` (GiB), such as `512m` or `8g`. sbx checks the bounds.
 
 ### Changing a nest
 

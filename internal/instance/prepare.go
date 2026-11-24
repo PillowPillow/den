@@ -652,11 +652,15 @@ func configHash(res *nest.Resolved, repos []nest.Repo, start, branch string) (st
 		Missing []string `yaml:"missing,omitempty"`
 		// Only false is hashed: a key always present would move the hash of every instance made before it.
 		NoAutoTrust bool `yaml:"no_auto_trust,omitempty"`
+		// Omitted when unset, for the same reason: an instance made before resources: keeps its hash.
+		CPUs   int    `yaml:"cpus,omitempty"`
+		Memory string `yaml:"memory,omitempty"`
 	}{
 		Template: t.Choice.Value, Tag: sbxTemplate(t), KitImage: t.KitImage,
 		Kits: res.Kits, Allow: res.Allow, Env: res.Env,
 		Ports: res.Ports, Start: start, Layers: res.Layers, Profile: res.Profile,
 		Branch: branch, Layout: res.Layout, Root: res.Root, NoAutoTrust: !res.AutoTrust,
+		CPUs: res.CPUs, Memory: res.Memory,
 	}
 	if t.Record != nil {
 		in.DefinitionHash = t.Record.DefinitionHash

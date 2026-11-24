@@ -1278,3 +1278,26 @@ func TestConfigHashIgnoresAddDirs(t *testing.T) {
 		t.Errorf("add_dirs changed the hash: it applies per attach, and a live instance would warn about drift")
 	}
 }
+
+func TestConfigHashMovesOnlyWhenResourcesAreSet(t *testing.T) {
+	f := newFixture(t)
+	am := repos(repoEntry(f.repo(t, "api"), false))
+	f.project(t, map[string]string{"am": am})
+	before := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash
+
+	f.project(t, map[string]string{"am": am + "\nresources: {}"})
+	if got := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash; got != before {
+		t.Errorf("an empty resources: changed the hash: every instance made before the key would drift")
+	}
+
+	f.project(t, map[string]string{"am": am + "\nresources: {cpus: 4}"})
+	cpus := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash
+	if cpus == before {
+		t.Errorf("cpus: 4 did not change the hash")
+	}
+
+	f.project(t, map[string]string{"am": am + "\nresources: {memory: 8g}"})
+	if got := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash; got == before || got == cpus {
+		t.Errorf("memory: 8g did not give its own hash")
+	}
+}
