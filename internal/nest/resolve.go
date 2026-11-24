@@ -55,7 +55,10 @@ type Resolved struct {
 	// AutoTrust: the nest's auto_trust, else the global file's, else true.
 	AutoTrust bool
 	// AddDirs: the nest's add_dirs, else the global file's, else false.
-	AddDirs  bool
+	AddDirs bool
+	// CPUs and Memory: the nest's resources, else the global file's, per key; zero values leave sbx's default.
+	CPUs     int
+	Memory   string
 	Warnings []string
 }
 
@@ -283,6 +286,17 @@ func Resolve(denHome string, global, file *config.Loaded, name string) (*Resolve
 	for _, v := range []*bool{global.File.AddDirs, n.AddDirs} {
 		if v != nil {
 			r.AddDirs = *v
+		}
+	}
+	for _, res := range []*config.Resources{global.File.Resources, n.Resources} {
+		if res == nil {
+			continue
+		}
+		if res.CPUs != nil {
+			r.CPUs = int(*res.CPUs)
+		}
+		if res.Memory != "" {
+			r.Memory = res.Memory
 		}
 	}
 
