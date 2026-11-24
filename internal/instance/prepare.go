@@ -74,7 +74,8 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if err := sbx.ValidateCreatableSandboxName(instance); err != nil {
 		return nil, err
 	}
-	if err := CheckSbx(ctx, d.Sbx); err != nil {
+	sbxVersion, err := CheckSbx(ctx, d.Sbx)
+	if err != nil {
 		return nil, err
 	}
 	state, rec, err := Lookup(ctx, d, instance)
@@ -92,6 +93,11 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 			return nil, res.TemplateErr
 		}
 		res.Warnings = append(res.Warnings, res.TemplateErr.Error())
+	}
+	// A running VM keeps the size it was created with, so only a create needs an sbx that reads it.
+	if (res.CPUs > 0 || res.Memory != "") && state != Live && semver.Compare(sbxVersion, sbx.ResourcesMinVersion) < 0 {
+		return nil, fmt.Errorf("nest %q sets resources:, which needs sbx %s or later, and this sbx is %s — "+
+			"upgrade sbx, or remove resources: from the nest and the global den.yaml", res.Name, sbx.ResourcesMinVersion, sbxVersion)
 	}
 	// A running VM keeps the mounts it was created with: there is nothing to consent to.
 	if res.MissingErr != nil && state == Live {
@@ -257,21 +263,22 @@ func checkRecordedWorktrees(rec *registry.Record, res *nest.Resolved, repos []ne
 	return nil
 }
 
-// CheckSbx refuses an sbx below MinVersion, and one whose version it cannot read.
-func CheckSbx(ctx context.Context, r sbx.Runner) error {
+// CheckSbx refuses an sbx below MinVersion, and one whose version it cannot read. It returns the
+// release version it read.
+func CheckSbx(ctx context.Context, r sbx.Runner) (string, error) {
 	raw, err := sbx.Version(ctx, r)
 	if err != nil {
-		return err
+		return "", err
 	}
 	v, ok := sbx.ReleaseVersion(raw)
 	if !ok {
-		return fmt.Errorf("could not read a version out of `sbx version` (got %q); den needs sbx %s or later — "+
+		return "", fmt.Errorf("could not read a version out of `sbx version` (got %q); den needs sbx %s or later — "+
 			"check which sbx is on PATH", raw, sbx.MinVersion)
 	}
 	if semver.Compare(v, sbx.MinVersion) < 0 {
-		return fmt.Errorf("sbx %s is older than %s, the oldest sbx den supports — upgrade sbx", raw, sbx.MinVersion)
+		return "", fmt.Errorf("sbx %s is older than %s, the oldest sbx den supports — upgrade sbx", raw, sbx.MinVersion)
 	}
-	return nil
+	return v, nil
 }
 
 func runDir(denHome string, res *nest.Resolved, instance string) string {
