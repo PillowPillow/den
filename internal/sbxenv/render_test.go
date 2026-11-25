@@ -204,10 +204,11 @@ func TestDenClaudeKitStartupLinksClaudeProjectsToTheSessionsMount(t *testing.T) 
 	for _, frag := range []string{
 		`if [ -d ` + SessionsVMPath + ` ] && [ ! -L "$h/.claude/projects" ]; then`,
 		`if [ ! -e "` + SessionsVMPath + `/$f" ] && [ ! -L "` + SessionsVMPath + `/$f" ]; then`,
-		`rm -f "` + SessionsVMPath + `/$f.den-tmp"` + "\n",
-		`cp -a "$f" "` + SessionsVMPath + `/$f.den-tmp"` + "\n",
+		`rm -f "` + SessionsVMPath + `/$f.den-tmp" &&` + "\n",
+		`cp -a "$f" "` + SessionsVMPath + `/$f.den-tmp" &&` + "\n",
 		`mv "` + SessionsVMPath + `/$f.den-tmp" "` + SessionsVMPath + `/$f"` + "\n",
 		"find . ! -type d -exec sh -c 'set -e\n",
+		`|| { echo "den-claude: cannot copy $f to ` + SessionsVMPath + `/$f" >&2; exit 1; }` + "\n",
 		`cd "$h/.claude/projects" &&` + "\n",
 		`) || { echo "den-claude: cannot copy the image's ~/.claude/projects into ` + SessionsVMPath + `: `,
 		`[ ! -e "$h/.claude/projects" ] || { echo "den-claude: $h/.claude/projects is a file, not a folder, and den links that path to ` + SessionsVMPath + `: `,
