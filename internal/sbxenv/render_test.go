@@ -204,7 +204,9 @@ func TestDenClaudeKitStartupLinksClaudeProjectsToTheSessionsMount(t *testing.T) 
 	for _, frag := range []string{
 		`if [ -d ` + SessionsVMPath + ` ] && [ ! -L "$h/.claude/projects" ]; then`,
 		`if [ ! -e "` + SessionsVMPath + `/$f" ] && [ ! -L "` + SessionsVMPath + `/$f" ]; then`,
-		`cp -a "$f" "` + SessionsVMPath + `/$f"` + "\n",
+		`rm -f "` + SessionsVMPath + `/$f.den-tmp"` + "\n",
+		`cp -a "$f" "` + SessionsVMPath + `/$f.den-tmp"` + "\n",
+		`mv "` + SessionsVMPath + `/$f.den-tmp" "` + SessionsVMPath + `/$f"` + "\n",
 		"find . ! -type d -exec sh -c 'set -e\n",
 		`cd "$h/.claude/projects" &&` + "\n",
 		`) || { echo "den-claude: cannot copy the image's ~/.claude/projects into ` + SessionsVMPath + `: `,
@@ -216,6 +218,9 @@ func TestDenClaudeKitStartupLinksClaudeProjectsToTheSessionsMount(t *testing.T) 
 	}
 	if strings.Contains(script, `cp -a "$h/.claude/projects/." `) {
 		t.Errorf("a copy of the whole folder puts the image's files back over the ones an earlier VM wrote:\n%s", script)
+	}
+	if strings.Contains(script, `cp -a "$f" "`+SessionsVMPath+`/$f"`) {
+		t.Errorf("a copy straight to the final name leaves a truncated file when it is cut short, and the next start keeps it:\n%s", script)
 	}
 	if strings.Contains(script, `sh {} + &&`) || strings.Contains(script, ") &&\n") {
 		t.Errorf("a failed copy must stop the script under set -e, and an && list would not:\n%s", script)

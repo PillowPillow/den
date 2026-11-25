@@ -1284,6 +1284,50 @@ func TestConfigHashMovesOnlyWhenSessionsAreOff(t *testing.T) {
 	}
 }
 
+func TestPrepareRefusesASessionsPathThatIsNotAFolder(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		place func(t *testing.T, dir string)
+	}{
+		{"a file", func(t *testing.T, dir string) { writeFile(t, dir, "x") }},
+		{"a link to a missing folder", func(t *testing.T, dir string) {
+			if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(t.TempDir(), "gone"), dir); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			am := repos(repoEntry(f.repo(t, "api"), false))
+			f.project(t, map[string]string{"am": am})
+			dir := filepath.Join(f.home, "sessions", "am")
+			tc.place(t, dir)
+			prepareErr(t, f, Options{Nest: "am"}, dir, "den up am", "sessions: false")
+
+			f.project(t, map[string]string{"am": am + "\nsessions: false"})
+			mustPrepare(t, f, Options{Nest: "am"})
+		})
+	}
+}
+
+func TestPrepareAcceptsASessionsPathThatLinksToAFolder(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+	dir := filepath.Join(f.home, "sessions", "am")
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustPrepare(t, f, Options{Nest: "am"}).SessionsDir; got != dir {
+		t.Errorf("SessionsDir = %q, want %q", got, dir)
+	}
+}
+
 func TestConfigHashIgnoresAddDirs(t *testing.T) {
 	f := newFixture(t)
 	am := repos(repoEntry(f.repo(t, "api"), false))

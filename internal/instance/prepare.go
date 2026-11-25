@@ -149,6 +149,9 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	}
 	if res.Sessions {
 		p.SessionsDir = SessionsDir(d.DenHome, instance)
+		if err := checkSessions(p); err != nil {
+			return nil, err
+		}
 	}
 	mounts, err := writableMounts(ctx, d.Git, res, repos, wt, p.Workspace, p.SessionsDir)
 	if err != nil {
@@ -286,6 +289,24 @@ func CheckSbx(ctx context.Context, r sbx.Runner) (string, error) {
 // `claude --continue` resumes the last one. It lies outside the run and gen dirs: `den rm` deletes those.
 func SessionsDir(denHome, instance string) string {
 	return filepath.Join(denHome, "sessions", instance)
+}
+
+// checkSessions refuses a sessions path Create could not make a folder of: a file, or a link whose
+// folder is missing, as when the disk that keeps the sessions is not mounted. Create would find out
+// only after it made the worktrees, and with a bare `mkdir: file exists`. An absent path is fine:
+// Create makes it.
+func checkSessions(p *Plan) error {
+	for _, dir := range []string{filepath.Dir(p.SessionsDir), p.SessionsDir} {
+		if _, err := os.Lstat(dir); err != nil {
+			continue
+		}
+		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+			return fmt.Errorf("the sessions folder %s is a file, or a link to a folder that is missing — move it away or "+
+				"bring its folder back, then run `%s` again, or set `sessions: false` on nest %q in %s",
+				dir, upCommand(p), p.Resolved.Name, p.Resolved.File.Path)
+		}
+	}
+	return nil
 }
 
 func runDir(denHome string, res *nest.Resolved, instance string) string {
