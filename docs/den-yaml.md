@@ -279,7 +279,11 @@ the VM. At every start of the VM, den makes `~/.claude/projects` a link to it.
 - `den rm` never deletes the sessions. It prints where they stay, and removes the folder only when
   it is empty.
 - An instance made again under the same name mounts the same folder: `claude --continue` resumes
-  the last session of the VM before it.
+  the last session of the VM before it. `den up` then prints
+  `<instance> loads the sessions kept in <path>`. The name is the only key: a nest that takes the
+  name of a removed instance gets its sessions too.
+- A `~/.claude/projects` folder that the image ships is copied into the sessions folder at the
+  start of the VM, one file at a time; a file the sessions folder already holds is kept.
 - `sessions: false` mounts nothing: the sessions then live on the VM's disk and go with it.
 - An instance created by a den without this key has no mount. It gets one when you run
   `den rm <instance>`, then `den up <nest>`. That `den rm` deletes the sessions the VM holds: to keep

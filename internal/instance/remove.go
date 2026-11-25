@@ -78,12 +78,11 @@ func Remove(ctx context.Context, d Deps, instance string, force bool) error {
 	if err := registry.Remove(d.DenHome, instance); err != nil {
 		return err
 	}
-	// os.Remove deletes a directory only when it is empty, which is the whole check.
+	// os.Remove deletes a directory only when it is empty, which is the whole check. Lstat goes first:
+	// os.Remove would unlink a symlink that keeps the sessions on another disk, whatever its folder holds.
 	sessions := SessionsDir(d.DenHome, instance)
-	if os.Remove(sessions) != nil {
-		if _, err := os.Stat(sessions); err == nil {
-			fmt.Fprintf(d.Err, "the sessions of %s stay in %s\n", instance, sessions)
-		}
+	if st, err := os.Lstat(sessions); err == nil && (!st.IsDir() || os.Remove(sessions) != nil) {
+		fmt.Fprintf(d.Err, "the sessions of %s stay in %s\n", instance, sessions)
 	}
 	return nil
 }

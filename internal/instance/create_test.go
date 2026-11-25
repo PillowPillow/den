@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -622,13 +623,65 @@ func TestCreateKeepsTheSessionsAnEarlierInstanceLeft(t *testing.T) {
 	mustExist(t, old)
 }
 
+func TestCreateSetsMode700OnASessionsFolderFoundLooser(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+	root := filepath.Join(f.home, "sessions")
+	dir := filepath.Join(root, "am")
+	for _, d := range []string{root, dir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am"}))
+
+	for _, d := range []string{root, dir} {
+		st, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := st.Mode().Perm(); got != 0o700 {
+			t.Errorf("%s has mode %o, want 700: the VM of an earlier instance can have changed it", d, got)
+		}
+	}
+}
+
+func TestCreateNamesTheSessionsFolderItLoadsOnlyWhenItHoldsSomething(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kept bool
+	}{{"kept sessions", true}, {"new folder", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+			dir := filepath.Join(f.home, "sessions", "am")
+			if tc.kept {
+				writeFile(t, filepath.Join(dir, "-src-api", "s.jsonl"), "{}\n")
+			}
+			var stderr bytes.Buffer
+			d := f.deps()
+			d.Err = &stderr
+			if _, err := Create(context.Background(), d, mustPrepare(t, f, Options{Nest: "am"})); err != nil {
+				t.Fatal(err)
+			}
+			want := "am loads the sessions kept in " + dir
+			if got := strings.Contains(stderr.String(), want); got != tc.kept {
+				t.Errorf("stderr %q: notice %q present = %t, want %t", stderr.String(), want, got, tc.kept)
+			}
+		})
+	}
+}
+
 func TestCreateWithoutSessionsMountsNoSessionsFolder(t *testing.T) {
 	f := newFixture(t)
 	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nsessions: false"})
 	p := mustPrepare(t, f, Options{Nest: "am"})
 	mustCreate(t, f, p)
 
-	if env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml")); strings.Contains(env, "sessions") {
+	if env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml")); strings.Contains(env, sbxenv.SessionsVMPath) {
 		t.Errorf("sbxenv.yaml mounts a sessions folder with sessions: false:\n%s", env)
 	}
 	mustBeGone(t, filepath.Join(f.home, "sessions"))

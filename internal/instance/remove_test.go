@@ -524,6 +524,32 @@ func TestRmKeepsTheSessionsAndNamesTheirFolder(t *testing.T) {
 	}
 }
 
+func TestRmKeepsASessionsFolderThatIsASymlink(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	link := filepath.Join(f.home, "sessions", rec.Instance)
+	elsewhere := t.TempDir()
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	d := f.deps()
+	d.Err = &stderr
+	if err := Remove(context.Background(), d, rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Errorf("den rm unlinked %s, the user's link to the folder that keeps the sessions: %v", link, err)
+	}
+	if !strings.Contains(stderr.String(), link) {
+		t.Errorf("stderr %q does not name the sessions folder %s", stderr.String(), link)
+	}
+}
+
 func TestRmRemovesASessionsFolderThatHoldsNothing(t *testing.T) {
 	f := newFixture(t)
 	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
