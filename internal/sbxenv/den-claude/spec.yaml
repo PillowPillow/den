@@ -50,6 +50,8 @@ setup:
   # The usual cause of a failed copy is a file the sessions folder holds where the image has a folder:
   # it stays across den rm, so the message names the host folder; it is not the only cause, so the
   # message leaves the entry to the error printed above it.
+  # A plain file at ~/.claude/projects is refused by name: ln would stop the script on it with a bare
+  # `File exists`, and nothing would say which template or kit to fix.
   startup:
     - command:
         - sh
@@ -76,6 +78,7 @@ setup:
               ) || { echo "den-claude: cannot copy the image's ~/.claude/projects into /den-sessions: the error above names the entry; when it is one the instance's sessions folder holds in the way, move or delete it on the host, under <den home>/sessions/<instance>/, then start the instance again" >&2; exit 1; }
               rm -rf "$h/.claude/projects"
             fi
+            [ ! -e "$h/.claude/projects" ] || { echo "den-claude: $h/.claude/projects is a file, not a folder, and den links that path to /den-sessions: fix the template or the kit that ships it, or set sessions: false on the nest, then start the instance again" >&2; exit 1; }
             ln -s /den-sessions "$h/.claude/projects"
           fi
           merge() {
