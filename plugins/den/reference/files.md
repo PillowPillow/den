@@ -42,7 +42,8 @@ image a VM starts from. A **record** is the file in which den notes what it crea
 - den merges the kits' `~/.den/claude-settings.d/*.json` files into `~/.claude/settings.json` at
   every start (see [templates.md](templates.md#default-claude-settings-from-a-kit)).
 - The instance's sessions folder appears at `/den-sessions`, and `~/.claude/projects` is a link to it
-  (see [den-yaml.md](den-yaml.md#sessions)); with `sessions: false`, neither exists.
+  (see [den-yaml.md](den-yaml.md#sessions)); with `sessions: false`, there is no mount and
+  `~/.claude/projects` is a plain folder on the VM's disk.
 - den writes `/home/agent/.den/trust.json`, the folders the startup step marks trusted in
   `~/.claude.json` (see [security.md](security.md#folder-trust)).
 

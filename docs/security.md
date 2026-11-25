@@ -77,8 +77,9 @@ your host: its own `~/.claude/projects` is another folder. They are still conten
 
 - A transcript holds every prompt, every file Claude read and every command output of the session,
   a secret that a command printed included. den sets mode `700` on `sessions/` and on the instance
-  folder each time it creates the instance. The VM can change the mode of its own folder afterwards,
-  and it stays so until the next create. Do not share a transcript before you read it.
+  folder each time it creates the instance; one that you replaced by a link keeps the mode of its
+  target. The VM can change the mode of its own folder afterwards, and it stays so until the next
+  create. Do not share a transcript before you read it.
 - The instance name is the only key. `den rm` keeps the folder, so the next VM of that name mounts
   it, also when the name now belongs to another nest, another project or another branch that
   flattens to the same name. That VM can read every earlier transcript and send it to any host its

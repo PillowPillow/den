@@ -136,8 +136,8 @@ generated for it (its run dir and generated kits, see [files.md](files.md)), the
 file in which den notes what it created). It acts only on an instance den has a record of. It
 removes only the worktrees den created; a repo or worktree den found in place is never touched.
 Claude's sessions stay in `<den home>/sessions/<instance>/`: `den rm` prints that path when the
-folder holds something, and removes the folder when it is empty (see
-[den-yaml.md](den-yaml.md#sessions)).
+folder holds something or is a link you put in its place, and removes the folder when it is empty
+(see [den-yaml.md](den-yaml.md#sessions)).
 
 **Why `den rm` refuses.** There is no trash, so `den rm` refuses, before it removes anything (the VM
 included):
