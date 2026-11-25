@@ -94,6 +94,10 @@ your host: its own `~/.claude/projects` is another folder. They are still conten
   (`cp -RL`, `tar -h`, `grep -R`, `rsync -L`, a backup) reads the host file a link points at. den
   itself never opens a file of that folder: it lists the folder's entries at create, and `den rm`
   removes the folder only when it is empty.
+- `den scan` never enters the den home, so it never reads this folder. A sessions folder that you
+  replace by a link to a place outside the den home loses that protection: the VM can write a fake
+  clone there, and a `den scan` of that place records it. Keep the link's target out of the folders
+  you scan.
 
 ## What the VM can reach
 
