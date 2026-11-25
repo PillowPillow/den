@@ -1313,6 +1313,25 @@ func TestPrepareRefusesASessionsPathThatIsNotAFolder(t *testing.T) {
 	}
 }
 
+func TestPrepareRefusesASessionsFolderItCannotRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root traverses directories regardless of permissions")
+	}
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+	root := filepath.Join(f.home, "sessions")
+	dir := filepath.Join(root, "am")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
+
+	prepareErr(t, f, Options{Nest: "am"}, dir, "permission denied", "den up am", "sessions: false")
+}
+
 func TestPrepareAcceptsASessionsPathThatLinksToAFolder(t *testing.T) {
 	f := newFixture(t)
 	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})

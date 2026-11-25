@@ -294,16 +294,22 @@ func SessionsDir(denHome, instance string) string {
 // checkSessions refuses a sessions path Create could not make a folder of: a file, or a link whose
 // folder is missing, as when the disk that keeps the sessions is not mounted. Create would find out
 // only after it made the worktrees, and with a bare `mkdir: file exists`. An absent path is fine:
-// Create makes it.
+// Create makes it. Only an absence is: a path den cannot read is refused with its own cause, never
+// taken for an absent one nor for a missing folder.
 func checkSessions(p *Plan) error {
+	again := fmt.Sprintf("then run `%s` again, or set `sessions: false` on nest %q in %s",
+		upCommand(p), p.Resolved.Name, p.Resolved.File.Path)
 	for _, dir := range []string{filepath.Dir(p.SessionsDir), p.SessionsDir} {
-		if _, err := os.Lstat(dir); err != nil {
+		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		st, err := os.Stat(dir)
+		switch {
+		case err != nil && !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("the sessions folder %s: %v — fix the cause, %s", dir, &config.FileError{Err: err}, again)
+		case err != nil || !st.IsDir():
 			return fmt.Errorf("the sessions folder %s is a file, or a link to a folder that is missing — move it away or "+
-				"bring its folder back, then run `%s` again, or set `sessions: false` on nest %q in %s",
-				dir, upCommand(p), p.Resolved.Name, p.Resolved.File.Path)
+				"bring its folder back, %s", dir, again)
 		}
 	}
 	return nil

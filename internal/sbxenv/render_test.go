@@ -210,6 +210,7 @@ func TestDenClaudeKitStartupLinksClaudeProjectsToTheSessionsMount(t *testing.T) 
 		"find . ! -type d -exec sh -c 'set -e\n",
 		`cd "$h/.claude/projects" &&` + "\n",
 		`) || { echo "den-claude: cannot copy the image's ~/.claude/projects into ` + SessionsVMPath + `: `,
+		`[ ! -e "$h/.claude/projects" ] || { echo "den-claude: $h/.claude/projects is a file, not a folder, and den links that path to ` + SessionsVMPath + `: `,
 		`ln -s ` + SessionsVMPath + ` "$h/.claude/projects"`,
 	} {
 		if !strings.Contains(script, frag) {
