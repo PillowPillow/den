@@ -593,3 +593,43 @@ func TestCreateWithoutResourcesWritesNoCPUsNorMemory(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateMountsTheSessionsFolderOfTheInstance(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.committedRepo(t, "api"), false))})
+	p := mustPrepare(t, f, Options{Nest: "am", Branch: "feat"})
+	mustCreate(t, f, p)
+
+	dir := filepath.Join(f.home, "sessions", "am.feat")
+	want := "  - path: " + dir + "\n    target: " + sbxenv.SessionsVMPath + "\n"
+	if env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml")); !strings.Contains(env, want) {
+		t.Errorf("sbxenv.yaml:\n%s\nlacks:\n%s", env, want)
+	}
+	st, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Mode().Perm(); got != 0o700 {
+		t.Errorf("%s has mode %o, want 700: a transcript holds what the user and the tools wrote", dir, got)
+	}
+}
+
+func TestCreateKeepsTheSessionsAnEarlierInstanceLeft(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false))})
+	old := writeFile(t, filepath.Join(f.home, "sessions", "am", "-src-api", "s.jsonl"), "{}\n")
+	mustCreate(t, f, mustPrepare(t, f, Options{Nest: "am"}))
+	mustExist(t, old)
+}
+
+func TestCreateWithoutSessionsMountsNoSessionsFolder(t *testing.T) {
+	f := newFixture(t)
+	f.project(t, map[string]string{"am": repos(repoEntry(f.repo(t, "api"), false)) + "\nsessions: false"})
+	p := mustPrepare(t, f, Options{Nest: "am"})
+	mustCreate(t, f, p)
+
+	if env := readFile(t, filepath.Join(p.RunDir, "sbxenv.yaml")); strings.Contains(env, "sessions") {
+		t.Errorf("sbxenv.yaml mounts a sessions folder with sessions: false:\n%s", env)
+	}
+	mustBeGone(t, filepath.Join(f.home, "sessions"))
+}

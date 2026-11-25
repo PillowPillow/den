@@ -1267,6 +1267,23 @@ func TestConfigHashMovesOnlyWhenAutoTrustIsOff(t *testing.T) {
 	}
 }
 
+func TestConfigHashMovesOnlyWhenSessionsAreOff(t *testing.T) {
+	f := newFixture(t)
+	am := repos(repoEntry(f.repo(t, "api"), false))
+	f.project(t, map[string]string{"am": am})
+	before := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash
+
+	f.project(t, map[string]string{"am": am + "\nsessions: true"})
+	if got := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash; got != before {
+		t.Errorf("an explicit sessions: true changed the hash: every instance made before the key would drift")
+	}
+
+	f.project(t, map[string]string{"am": am + "\nsessions: false"})
+	if got := mustPrepare(t, f, Options{Nest: "am"}).ConfigHash; got == before {
+		t.Errorf("sessions: false did not change the hash")
+	}
+}
+
 func TestConfigHashIgnoresAddDirs(t *testing.T) {
 	f := newFixture(t)
 	am := repos(repoEntry(f.repo(t, "api"), false))

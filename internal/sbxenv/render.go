@@ -15,6 +15,11 @@ const (
 	AgentName      = "den-claude"
 	GitMountRoot   = "/den-git"
 	NetworkKitName = "den-network"
+	// SessionsVMPath is where an instance's sessions folder lands in the VM. It is not Claude's own
+	// ~/.claude/projects: a mount there makes sbx create a missing ~/.claude owned by root, which Claude
+	// then cannot write (measured on sbx 0.54.1 with an image that ships no ~/.claude). The den-claude
+	// startup step links ~/.claude/projects to this path, and names it too: keep both in step.
+	SessionsVMPath = "/den-sessions"
 )
 
 type Mount struct {

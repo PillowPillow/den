@@ -140,6 +140,9 @@ func validate(f *File, global bool) []string {
 		if f.AddDirs != nil {
 			add("add_dirs: %s", move)
 		}
+		if f.Sessions != nil {
+			add("sessions: %s", move)
+		}
 		if f.Resources != nil {
 			add("resources: %s", move)
 		}

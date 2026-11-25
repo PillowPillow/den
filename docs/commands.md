@@ -135,6 +135,8 @@ Removes an instance den created, in this order: its VM, the worktrees den made, 
 generated for it (its run dir and generated kits, see [files.md](files.md)), then its record (the
 file in which den notes what it created). It acts only on an instance den has a record of. It
 removes only the worktrees den created; a repo or worktree den found in place is never touched.
+Claude's sessions stay in `<den home>/sessions/<instance>/`, and `den rm` prints that path (see
+[den-yaml.md](den-yaml.md#sessions)).
 
 **Why `den rm` refuses.** There is no trash, so `den rm` refuses, before it removes anything (the VM
 included):

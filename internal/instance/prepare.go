@@ -43,6 +43,9 @@ type Plan struct {
 	State      State
 	Record     *registry.Record // set when State == Live or Recorded
 	Overlays   []sbxenv.Mount   // read-only, after every other mount; empty on the Live path
+	// SessionsDir is <denHome>/sessions/<instance>, mounted at sbxenv.SessionsVMPath; empty when the
+	// nest's sessions is false, and on the Live path.
+	SessionsDir string
 }
 
 // Prepare resolves o into a Plan and makes every refusal den can decide before
@@ -144,7 +147,10 @@ func Prepare(ctx context.Context, d Deps, o Options) (*Plan, error) {
 	if err := checkLayers(res); err != nil {
 		return nil, err
 	}
-	mounts, err := writableMounts(ctx, d.Git, res, repos, wt, p.Workspace)
+	if res.Sessions {
+		p.SessionsDir = SessionsDir(d.DenHome, instance)
+	}
+	mounts, err := writableMounts(ctx, d.Git, res, repos, wt, p.Workspace, p.SessionsDir)
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +279,13 @@ func CheckSbx(ctx context.Context, r sbx.Runner) (string, error) {
 		return "", fmt.Errorf("sbx %s is older than %s, the oldest sbx den supports — upgrade sbx", raw, sbx.MinVersion)
 	}
 	return v, nil
+}
+
+// SessionsDir is the folder that keeps an instance's Claude sessions on the host. It is keyed by
+// the instance name alone, so the instance made again under that name finds its sessions, and
+// `claude --continue` resumes the last one. It lies outside the run and gen dirs: `den rm` deletes those.
+func SessionsDir(denHome, instance string) string {
+	return filepath.Join(denHome, "sessions", instance)
 }
 
 func runDir(denHome string, res *nest.Resolved, instance string) string {
@@ -411,8 +424,11 @@ type rwMount struct{ source, target string }
 
 // writableMounts lists the read-write mounts envOf declares. Under -w the main
 // clone is not one of them (its worktree lands at its path), nor is the worktree root.
-func writableMounts(ctx context.Context, g worktree.Git, res *nest.Resolved, repos []nest.Repo, wt *worktree.Name, workspace string) ([]rwMount, error) {
+func writableMounts(ctx context.Context, g worktree.Git, res *nest.Resolved, repos []nest.Repo, wt *worktree.Name, workspace, sessions string) ([]rwMount, error) {
 	mounts := []rwMount{{workspace, workspace}}
+	if sessions != "" {
+		mounts = append(mounts, rwMount{sessions, sbxenv.SessionsVMPath})
+	}
 	for _, r := range repos {
 		if wt == nil {
 			mounts = append(mounts, rwMount{r.Path, r.Path})
@@ -656,12 +672,14 @@ func configHash(res *nest.Resolved, repos []nest.Repo, start, branch string) (st
 		// Omitted when unset, for the same reason: an instance made before resources: keeps its hash.
 		CPUs   int    `yaml:"cpus,omitempty"`
 		Memory string `yaml:"memory,omitempty"`
+		// Only false is hashed, as for auto_trust: an instance made before sessions: keeps its hash.
+		NoSessions bool `yaml:"no_sessions,omitempty"`
 	}{
 		Template: t.Choice.Value, Tag: sbxTemplate(t), KitImage: t.KitImage,
 		Kits: res.Kits, Allow: res.Allow, Env: res.Env,
 		Ports: res.Ports, Start: start, Layers: res.Layers, Profile: res.Profile,
 		Branch: branch, Layout: res.Layout, Root: res.Root, NoAutoTrust: !res.AutoTrust,
-		CPUs: res.CPUs, Memory: res.Memory,
+		CPUs: res.CPUs, Memory: res.Memory, NoSessions: !res.Sessions,
 	}
 	if t.Record != nil {
 		in.DefinitionHash = t.Record.DefinitionHash

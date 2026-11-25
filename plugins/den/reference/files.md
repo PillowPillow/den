@@ -16,6 +16,7 @@ image a VM starts from. A **record** is the file in which den notes what it crea
 | `~/.den/state/v2/repos.yaml` | the table `den scan` writes: the folder of each git origin, see [commands.md](commands.md#den-scan) | den |
 | `~/.den/run/<instance>/` | the run dir of an instance of a global nest: the generated `sbxenv.yaml`; it is the VM's workspace | den |
 | `~/.den/gen/<instance>/` | the instance's generated kits (network allowlist, `den-claude` with the repo map) and, with `-w`, the read-only `.git` files of its worktrees | den |
+| `~/.den/sessions/<instance>/` | Claude's sessions (transcripts and per-project memory) of an instance, written by its VM; `den rm` keeps it, see [den-yaml.md](den-yaml.md#sessions) | the VM |
 | `~/.den/gen/.templates/<name>/` | den's clone of a `repo` template (a build in progress uses `.staging-<name>/`) | den |
 | `~/.den/gen/.build/<name>/`, `~/.den/build/<name>/` | the generated files and the scratch workspace of a template build | den |
 | `~/.den/wt/` | the worktree root of the `central` layout, unless `worktrees.root` sets another | den |
@@ -40,6 +41,8 @@ image a VM starts from. A **record** is the file in which den notes what it crea
   `claude-code-docker`) and `/home/agent/.den/repos.json` (see [den-yaml.md](den-yaml.md#repo-map)).
 - den merges the kits' `~/.den/claude-settings.d/*.json` files into `~/.claude/settings.json` at
   every start (see [templates.md](templates.md#default-claude-settings-from-a-kit)).
+- The instance's sessions folder appears at `/den-sessions`, and `~/.claude/projects` is a link to it
+  (see [den-yaml.md](den-yaml.md#sessions)); with `sessions: false`, neither exists.
 - den writes `/home/agent/.den/trust.json`, the folders the startup step marks trusted in
   `~/.claude.json` (see [security.md](security.md#folder-trust)).
 
@@ -51,6 +54,8 @@ image a VM starts from. A **record** is the file in which den notes what it crea
   mounted is what its record says, not what a VM may have edited since. When the VM is gone, den
   creates it again from the current config and rewrites the generated files.
 - **`state/` is never purged.** Delete a record by hand only when den tells you to.
+- **`sessions/` is never purged.** `den rm` keeps an instance's sessions; delete a folder by hand when
+  you no longer want them.
 
 sbx keeps its own state (sandboxes, templates, policies, secrets) outside the den home. List it with
 `sbx ls`, `sbx template ls`, `sbx policy ls` and `sbx secret ls`.

@@ -23,6 +23,9 @@ Read this before you install. Details: [docs/security.md](docs/security.md).
   ([docs/security.md](docs/security.md#folder-trust)).
 - Your repos are mounted **read-write**, `.git` included. A VM can change hooks, scripts and config
   that your host runs later.
+- Claude's sessions (transcripts and memory) are kept on your host, in `~/.den/sessions/<instance>/`,
+  and `den rm` keeps them. The VM writes that folder. `sessions: false` turns it off
+  ([docs/den-yaml.md](docs/den-yaml.md#sessions)).
 - The VM reaches only the hosts its network policy allows: the **global sbx policy**, shared by every
   VM, plus the hosts of the instance (from your `den.yaml`, the template and the kits). den adds
   hosts; it never removes one.

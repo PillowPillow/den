@@ -36,6 +36,13 @@ setup:
   # ~/.den/trust.json lists each mounted repo and the start folder, or nothing when auto_trust is
   # false; each gets a trust entry in ~/.claude.json, the one Claude itself writes when the dialog is
   # accepted.
+  # /den-sessions is the instance's sessions folder on the host, mounted unless the nest's sessions is
+  # false. Claude keeps its transcripts and its per-project memory under ~/.claude/projects, so that
+  # path becomes a link to the mount and both outlive the VM. A projects folder the image ships is
+  # copied into the mount first, never dropped. cp -a also gives the mount the mode of the folder it
+  # copies, hence the chmod back to the 700 den created it with. The copy and the removal are separate
+  # commands: under set -e a failed copy in an && list would not stop the script, and the link would
+  # land inside the folder.
   startup:
     - command:
         - sh
@@ -45,6 +52,15 @@ setup:
           umask 077
           command -v jq >/dev/null 2>&1 || { echo "den-claude: the image has no jq; den needs it to pre-accept Claude's first-run screens: add jq to the template" >&2; exit 1; }
           h="${HOME:-/home/agent}"
+          if [ -d /den-sessions ] && [ ! -L "$h/.claude/projects" ]; then
+            mkdir -p "$h/.claude"
+            if [ -d "$h/.claude/projects" ]; then
+              cp -a "$h/.claude/projects/." /den-sessions/
+              chmod 700 /den-sessions
+              rm -rf "$h/.claude/projects"
+            fi
+            ln -s /den-sessions "$h/.claude/projects"
+          fi
           merge() {
             file="$1"
             shift

@@ -62,6 +62,7 @@ additions after confirmation, but a replacement always asks and needs a terminal
 **Layout on disk** (all under the den home, none of it read by v1, see the coexistence note below):
 `den.yaml`, `run/<instance>/` (global nests; project nests use
 `<project>/.den/run/<instance>/`), `gen/<instance>/` (egress kit, worktree `.git` files),
+`sessions/<instance>/` (Claude's transcripts and per-project memory, mounted read-write at `/den-sessions` unless `sessions: false`, global or per nest; the den-claude startup step links `~/.claude/projects` to it, never a mount at that path: sbx would create a missing `~/.claude` owned by root; `den rm` keeps it and removes only an empty one),
 `gen/.templates/<name>/` (a repo template's copy; `.staging-<name>/` is a build's clone), `gen/.build/<name>/` (build files), `build/<name>/`
 (the build VM's scratch workspace), `wt/` (default worktree root) and `state/v2/` (the registry, with `repos.yaml`, the table `den scan` writes).
 The leading dot on `.templates` and `.build` is deliberate: no sandbox name can start with one, so

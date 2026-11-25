@@ -9,6 +9,8 @@ kits:
 workspace: /proj
 additionalWorkspaces:
   - path: /src/api
+  - path: /denhome/sessions/am
+    target: /den-sessions
   - path: /proj/den.yaml
     target: /proj/den.yaml
     readOnly: true

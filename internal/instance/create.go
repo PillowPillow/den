@@ -88,6 +88,13 @@ func writeRecord(ctx context.Context, d Deps, p *Plan, fresh *[]worktree.Target)
 	if err := writeGenerated(p, trios, repoMapOf(p, rec)); err != nil {
 		return registry.Record{}, err
 	}
+	// sbx creates a missing mount source itself, but world-readable: a transcript holds every prompt
+	// and every tool output of the session, secrets a command printed included.
+	if p.SessionsDir != "" {
+		if err := os.MkdirAll(p.SessionsDir, 0o700); err != nil {
+			return registry.Record{}, fmt.Errorf("creating the sessions folder %s: %w", p.SessionsDir, err)
+		}
+	}
 	envFile := filepath.Join(p.RunDir, EnvFileName)
 	env, err := sbxenv.Render(envOf(p, trios))
 	if err != nil {
@@ -289,6 +296,9 @@ func envOf(p *Plan, trios map[string]gitTrio) sbxenv.Env {
 			sbxenv.Mount{Path: t.worktree, Target: r.Path},
 			sbxenv.Mount{Path: t.common, Target: path.Join(sbxenv.GitMountRoot, r.Name)},
 			sbxenv.Mount{Path: gitFilePath(p, r), Target: filepath.Join(r.Path, ".git"), ReadOnly: true})
+	}
+	if p.SessionsDir != "" {
+		e.Mounts = append(e.Mounts, sbxenv.Mount{Path: p.SessionsDir, Target: sbxenv.SessionsVMPath})
 	}
 	// Last: a later entry wins in sbx, and an overlay sits under a read-write mount (P12, S6).
 	e.Mounts = append(e.Mounts, p.Overlays...)
