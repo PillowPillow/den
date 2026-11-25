@@ -199,6 +199,23 @@ func TestDenClaudeKitStartupTrustsOnlyTheFoldersDenLists(t *testing.T) {
 	}
 }
 
+func TestDenClaudeKitStartupLinksClaudeProjectsToTheSessionsMount(t *testing.T) {
+	script := decodeDenClaude(t).Setup.Startup[0].Command[2]
+	for _, frag := range []string{
+		`if [ -d ` + SessionsVMPath + ` ] && [ ! -L "$h/.claude/projects" ]; then`,
+		`cp -a "$h/.claude/projects/." ` + SessionsVMPath + "/\n",
+		`chmod 700 ` + SessionsVMPath + "\n",
+		`ln -s ` + SessionsVMPath + ` "$h/.claude/projects"`,
+	} {
+		if !strings.Contains(script, frag) {
+			t.Errorf("startup script lacks %q:\n%s", frag, script)
+		}
+	}
+	if strings.Contains(script, "cp -a \"$h/.claude/projects/.\" "+SessionsVMPath+"/ &&") {
+		t.Errorf("a failed copy must stop the script under set -e, and an && list would not:\n%s", script)
+	}
+}
+
 func TestDenClaudeKitWithoutAutoTrustIsTheKitWithoutItsEnvironment(t *testing.T) {
 	off, err := DenClaudeKit(kitImage, false)
 	if err != nil {

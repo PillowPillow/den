@@ -18,6 +18,7 @@ import (
 // Remove deletes an instance den created: refusals first, then the VM, then the
 // worktrees den made, then its files, the record last. There is no trash, so a
 // dirty worktree refuses the whole removal, VM included, unless force.
+// The sessions folder stays: outliving the VM is what it is for. Only an empty one goes.
 func Remove(ctx context.Context, d Deps, instance string, force bool) error {
 	rec, err := registry.Read(d.DenHome, instance)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -74,7 +75,17 @@ func Remove(ctx context.Context, d Deps, instance string, force bool) error {
 			return fmt.Errorf("removing %s: %w — fix the cause, then run `den rm %s` again", dir, err, instance)
 		}
 	}
-	return registry.Remove(d.DenHome, instance)
+	if err := registry.Remove(d.DenHome, instance); err != nil {
+		return err
+	}
+	// os.Remove deletes a directory only when it is empty, which is the whole check.
+	sessions := SessionsDir(d.DenHome, instance)
+	if os.Remove(sessions) != nil {
+		if _, err := os.Stat(sessions); err == nil {
+			fmt.Fprintf(d.Err, "the sessions of %s stay in %s\n", instance, sessions)
+		}
+	}
+	return nil
 }
 
 // removalPlan refuses a record that names a directory den never places, since

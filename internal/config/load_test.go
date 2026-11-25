@@ -424,6 +424,21 @@ func TestLoadRefusesAddDirsAtTheTopOfAProjectFile(t *testing.T) {
 	mustFail(t, minimalNest+"add_dirs: true\n", false, "add_dirs", "global-only", "global den.yaml")
 }
 
+func TestLoadRefusesSessionsAtTheTopOfAProjectFile(t *testing.T) {
+	mustFail(t, minimalNest+"sessions: false\n", false, "sessions", "global-only", "global den.yaml")
+}
+
+func TestLoadReadsSessionsOnANestOfAProjectFile(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "den.yaml", strings.Replace(minimalNest, "    profile: p\n", "    profile: p\n    sessions: false\n", 1))
+	l, err := Load(p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := l.File.Nests["am"].Sessions; v == nil || *v {
+		t.Errorf("nest sessions = %v, want false", v)
+	}
+}
+
 func TestLoadReadsAddDirsOnANestOfAProjectFile(t *testing.T) {
 	p := writeFile(t, t.TempDir(), "den.yaml", strings.Replace(minimalNest, "    profile: p\n", "    profile: p\n    add_dirs: true\n", 1))
 	l, err := Load(p, false)

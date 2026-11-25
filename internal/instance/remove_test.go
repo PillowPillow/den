@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io/fs"
@@ -503,4 +504,40 @@ func TestRmRefusesADetachedHeadNoRefContainsAndTouchesNothing(t *testing.T) {
 		t.Errorf("the VM went before the refusal: %v", f.fake.Calls)
 	}
 	mustExist(t, recordPath(t, f.home, rec.Instance), wt, rec.RunDir, rec.GenDir)
+}
+
+func TestRmKeepsTheSessionsAndNamesTheirFolder(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	transcript := writeFile(t, filepath.Join(f.home, "sessions", rec.Instance, "-src-api", "s.jsonl"), "{}\n")
+
+	var stderr bytes.Buffer
+	d := f.deps()
+	d.Err = &stderr
+	if err := Remove(context.Background(), d, rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	mustExist(t, transcript)
+	mustBeGone(t, rec.GenDir, recordPath(t, f.home, rec.Instance))
+	if want := filepath.Join(f.home, "sessions", rec.Instance); !strings.Contains(stderr.String(), want) {
+		t.Errorf("stderr %q does not name the sessions folder %s", stderr.String(), want)
+	}
+}
+
+func TestRmRemovesASessionsFolderThatHoldsNothing(t *testing.T) {
+	f := newFixture(t)
+	rec := f.created(t, repos(repoEntry(f.committedRepo(t, "api"), false)))
+	dir := filepath.Join(f.home, "sessions", rec.Instance)
+	mustExist(t, dir)
+
+	var stderr bytes.Buffer
+	d := f.deps()
+	d.Err = &stderr
+	if err := Remove(context.Background(), d, rec.Instance, false); err != nil {
+		t.Fatal(err)
+	}
+	mustBeGone(t, dir)
+	if strings.Contains(stderr.String(), "sessions") {
+		t.Errorf("stderr names sessions that do not exist: %q", stderr.String())
+	}
 }

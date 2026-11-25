@@ -19,7 +19,7 @@ and state, `~/.den` by default. See the [README](../README.md#words-den-uses) fo
 
 `~/.den/den.yaml` describes your machine. `--den-home <dir>` or `$DEN_HOME` moves the whole den home,
 this file included. The global file is the only one that may carry `worktrees`, `env`, `network`,
-`profiles`, and at its top level `auto_trust`, `add_dirs` and `resources`. Both kinds of file may carry `repos`, with different entries (see [Repos](#repos)).
+`profiles`, and at its top level `auto_trust`, `add_dirs`, `sessions` and `resources`. Both kinds of file may carry `repos`, with different entries (see [Repos](#repos)).
 
 ## Project file
 
@@ -95,6 +95,8 @@ auto_trust: true               # default true; Claude trusts the instance's fold
                                # see docs/security.md#folder-trust
 add_dirs: false                # default false; true loads the other repos' CLAUDE.md and skills,
                                # see "Other repos in Claude's context"
+sessions: true                 # default true; Claude's sessions stay on the host after the VM,
+                               # see "Sessions"
 resources: {cpus: 4, memory: 8g}   # optional; the VM size of every instance, see "Merge order"
 
 # --- both kinds of file -----------------------------------------------------
@@ -125,6 +127,7 @@ nests:
     layers: []                 # extra sbxenv.yaml files, see docs/security.md#layers
     auto_trust: false          # optional; wins over the global auto_trust
     add_dirs: true             # optional; wins over the global add_dirs
+    sessions: false            # optional; wins over the global sessions
     resources: {memory: 16g}   # optional; wins over the global resources, key by key
 ```
 
@@ -257,6 +260,34 @@ den passes the folders each time it attaches, after the `--workdir` of that atta
 `den up --detach` start no Claude session and pass nothing. Each `CLAUDE.md` adds to the context of
 every session: on a nest of many repos, keep only the ones Claude needs.
 
+### Sessions
+
+Claude Code keeps each session as a transcript file, and its per-project memory, under
+`~/.claude/projects` in the VM. A VM's disk goes with the VM, so den keeps that folder on the host:
+`<den home>/sessions/<instance>/`, one folder per instance, mounted read-write at `/den-sessions` in
+the VM. At every start of the VM, den makes `~/.claude/projects` a link to it.
+
+```
+~/.den/sessions/
+  api/                          # the instance
+    -Users-me-src-api/          # one folder per start folder, named by Claude
+      6f0c….jsonl               # one transcript per session
+      memory/                   # Claude's memory for that folder
+  api.feature-123/              # a worktree instance has its own
+```
+
+- `den rm` never deletes the sessions. It prints where they stay, and removes the folder only when
+  it is empty.
+- An instance made again under the same name mounts the same folder: `claude --continue` resumes
+  the last session of the VM before it.
+- `sessions: false` mounts nothing: the sessions then live on the VM's disk and go with it.
+- An instance created by a den without this key has no mount. It gets one when you run
+  `den rm <instance>`, then `den up <nest>`. That `den rm` deletes the sessions the VM holds: to keep
+  them, copy them out first with `sbx cp <instance>:/home/agent/.claude/projects <folder>`.
+
+The VM writes these files: read [security.md](security.md#what-the-vm-can-write) before you feed
+them to a tool on your host.
+
 ### Merge order
 
 | Setting | Order (later adds or wins) |
@@ -266,6 +297,7 @@ every session: on a nest of many repos, keep only the ones Claude needs.
 | `env` | global file, then nest (the nest wins per key) |
 | `auto_trust` | `true`, then global file, then nest (the last one set wins) |
 | `add_dirs` | `false`, then global file, then nest (the last one set wins) |
+| `sessions` | `true`, then global file, then nest (the last one set wins) |
 | `resources` | sbx's default, then global file, then nest (per key: `cpus`, `memory`) |
 
 den checks only the format of `resources`: `cpus` is a plain decimal whole number of 1 or more, `memory` an integer

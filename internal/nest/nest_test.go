@@ -529,6 +529,31 @@ func TestResolveAutoTrust(t *testing.T) {
 	}
 }
 
+func TestResolveSessions(t *testing.T) {
+	const nestLine = "    template: claude-code-docker\n"
+	for _, c := range []struct {
+		name, global, nest string
+		want               bool
+	}{
+		{"default", "", "", true},
+		{"global false", "sessions: false\n", "", false},
+		{"nest wins over global", "sessions: false\n", "    sessions: true\n", true},
+		{"nest false alone", "", "    sessions: false\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			body := strings.Replace(profileGlobal, nestLine, nestLine+c.nest, 1)
+			body = strings.Replace(body, "schema: 1\n", "schema: 1\n"+c.global, 1)
+			r, err := resolveRich(t, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Sessions != c.want {
+				t.Errorf("Sessions = %t, want %t", r.Sessions, c.want)
+			}
+		})
+	}
+}
+
 func TestResolveAddDirs(t *testing.T) {
 	const nestLine = "    template: claude-code-docker\n"
 	for _, c := range []struct {
