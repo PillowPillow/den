@@ -7,6 +7,24 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v2.4.0 — 2026-11-25
+
+### Added
+- Claude's sessions stay on the host: `den up` mounts `<den home>/sessions/<instance>/` (mode `700`)
+  read-write at `/den-sessions`, and `~/.claude/projects` in the VM is a link to it. The transcripts and
+  the per-project memory survive `den rm` and a recreation, so an instance made again under the same name
+  resumes with `claude --continue`. `den up` names the sessions it loads; `den rm` keeps the folder,
+  prints where it stays, and removes it only when it is empty. The next VM of the same name reads every
+  earlier transcript, whichever nest or branch now owns that name (see `docs/security.md`).
+- `sessions: false` (global top level or nest) mounts nothing; `~/.claude/projects` stays on the VM's
+  disk. An instance made before this release keeps its config hash and gets the mount at its next
+  recreation.
+- A sessions folder can be a link you put in its place, to keep the sessions on another disk: `den rm`
+  never removes it. `den up` refuses a sessions path that is a file or a link to a missing folder before
+  it creates anything, and names the remedy. The VM startup copies the image's own `~/.claude/projects`
+  into the folder file by file, keeps every file already there, and stops with the path to fix when a
+  copy fails, instead of a truncated transcript.
+
 ## v2.3.1 — 2026-11-24
 
 ### Changed
