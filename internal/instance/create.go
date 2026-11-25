@@ -88,13 +88,6 @@ func writeRecord(ctx context.Context, d Deps, p *Plan, fresh *[]worktree.Target)
 	if err := writeGenerated(p, trios, repoMapOf(p, rec)); err != nil {
 		return registry.Record{}, err
 	}
-	// sbx creates a missing mount source itself, but world-readable: a transcript holds every prompt
-	// and every tool output of the session, secrets a command printed included.
-	if p.SessionsDir != "" {
-		if err := os.MkdirAll(p.SessionsDir, 0o700); err != nil {
-			return registry.Record{}, fmt.Errorf("creating the sessions folder %s: %w", p.SessionsDir, err)
-		}
-	}
 	envFile := filepath.Join(p.RunDir, EnvFileName)
 	env, err := sbxenv.Render(envOf(p, trios))
 	if err != nil {
@@ -117,10 +110,50 @@ func writeRecord(ctx context.Context, d Deps, p *Plan, fresh *[]worktree.Target)
 		}
 		rec.EnvHashes = append(rec.EnvHashes, sum)
 	}
+	// sbx creates a missing mount source itself, but world-readable: a transcript holds every prompt
+	// and every tool output of the session, secrets a command printed included. Last before the record:
+	// a step that failed after it would leave an empty folder that no record lets `den rm` remove.
+	if p.SessionsDir != "" {
+		if err := ensureSessions(d, p); err != nil {
+			return registry.Record{}, fmt.Errorf("creating the sessions folder %s: %w — fix the cause, then run `%s` again, "+
+				"or set `sessions: false` on nest %q in %s", p.SessionsDir, err, upCommand(p), res.Name, res.File.Path)
+		}
+	}
 	if err := registry.Write(d.DenHome, rec); err != nil {
 		return registry.Record{}, err
 	}
 	return rec, nil
+}
+
+// ensureSessions makes the instance's sessions folder and its parent, both with mode 700 again when
+// they already exist: the VM of an earlier instance wrote the folder and can have changed its mode,
+// and MkdirAll leaves an existing one as it is. A symlink is the user's own placement and keeps its
+// target's mode. A folder that already holds something is named on stderr: the new VM reads every
+// transcript and loads the memory an earlier one left, which nothing else would tell.
+func ensureSessions(d Deps, p *Plan) error {
+	if err := os.MkdirAll(p.SessionsDir, 0o700); err != nil {
+		return err
+	}
+	for _, dir := range []string{filepath.Dir(p.SessionsDir), p.SessionsDir} {
+		st, err := os.Lstat(dir)
+		if err != nil {
+			return err
+		}
+		if st.Mode()&fs.ModeSymlink != 0 {
+			continue
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	entries, err := os.ReadDir(p.SessionsDir)
+	if err != nil {
+		return err
+	}
+	if len(entries) > 0 {
+		fmt.Fprintf(d.Err, "%s loads the sessions kept in %s\n", p.Instance, p.SessionsDir)
+	}
+	return nil
 }
 
 // fileHash is the hex sha256 of a file's bytes.

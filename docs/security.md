@@ -72,16 +72,28 @@ for a nest with `start: .`, in the whole project folder.
 
 **The sessions folder is written by the VM.** Unless `sessions: false`, the VM writes Claude's
 transcripts and memory in `<den home>/sessions/<instance>/` (see
-[den-yaml.md](den-yaml.md#sessions)). den never reads these files, and neither does a Claude Code on
+[den-yaml.md](den-yaml.md#sessions)). den never opens these files, and neither does a Claude Code on
 your host: its own `~/.claude/projects` is another folder. They are still content that a VM chose:
 
 - A transcript holds every prompt, every file Claude read and every command output of the session,
-  a secret that a command printed included. den creates `sessions/` and each instance folder with
-  mode `700`. Do not share a transcript before you read it.
+  a secret that a command printed included. den sets mode `700` on `sessions/` and on the instance
+  folder each time it creates the instance. The VM can change the mode of its own folder afterwards,
+  and it stays so until the next create. Do not share a transcript before you read it.
+- The instance name is the only key. `den rm` keeps the folder, so the next VM of that name mounts
+  it, also when the name now belongs to another nest, another project or another branch that
+  flattens to the same name. That VM can read every earlier transcript and send it to any host its
+  network policy allows. `den up` prints `<instance> loads the sessions kept in <path>` when the
+  folder already holds something.
+- `den rm` then `den up` is therefore not a clean Claude state. Claude's memory in that folder is
+  loaded by the next VM of the same instance name, and `claude --continue` resumes the last
+  transcript, which a VM can have forged. For a clean state, delete `sessions/<instance>/` after
+  `den rm`, or set `sessions: false`.
 - A tool or a model that reads these files on your host reads text an untrusted session can have
   shaped. Treat them as data, never as instructions.
-- Claude's memory in that folder is loaded by the next VM of the same instance name. What one
-  session wrote there, the next one reads.
+- The VM can place any file there: a symlink, a file of any size. A host tool that follows links
+  (`cp -RL`, `tar -h`, `grep -R`, `rsync -L`, a backup) reads the host file a link points at. den
+  itself never opens a file of that folder: it lists the folder's entries at create, and `den rm`
+  removes the folder only when it is empty.
 
 ## What the VM can reach
 
@@ -192,8 +204,9 @@ you build it, as you would read a script before you run it. See [templates.md](t
 - The read-only mount holds only inside the instance that reads the file. Any other VM that mounts
   the same folder read-write (another nest that shares the repo, or an sbx VM den did not create)
   can still write it.
-- A VM writes its sessions folder on your host, and the next VM of the same instance name loads the
-  Claude memory it holds. See [What the VM can write](#what-the-vm-can-write).
+- A VM writes its sessions folder on your host, and the next VM of the same instance name reads the
+  transcripts and loads the Claude memory it holds, whatever nest now has that name. See
+  [What the VM can write](#what-the-vm-can-write).
 - A VM can create a **new** `den.yaml` in a repo it mounts. den takes the first `den.yaml` it finds
   walking up from the current directory, so running `den` from inside that repo would read the
   VM's file (its repos, kits and layers). Run `den` from outside the repos, or check for a

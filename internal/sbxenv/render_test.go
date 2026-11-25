@@ -203,15 +203,21 @@ func TestDenClaudeKitStartupLinksClaudeProjectsToTheSessionsMount(t *testing.T) 
 	script := decodeDenClaude(t).Setup.Startup[0].Command[2]
 	for _, frag := range []string{
 		`if [ -d ` + SessionsVMPath + ` ] && [ ! -L "$h/.claude/projects" ]; then`,
-		`cp -a "$h/.claude/projects/." ` + SessionsVMPath + "/\n",
-		`chmod 700 ` + SessionsVMPath + "\n",
+		`if [ ! -e "` + SessionsVMPath + `/$f" ] && [ ! -L "` + SessionsVMPath + `/$f" ]; then`,
+		`cp -a "$f" "` + SessionsVMPath + `/$f"` + "\n",
+		"find . ! -type d -exec sh -c 'set -e\n",
+		`cd "$h/.claude/projects" &&` + "\n",
+		`) || { echo "den-claude: cannot copy the image's ~/.claude/projects into ` + SessionsVMPath + `: `,
 		`ln -s ` + SessionsVMPath + ` "$h/.claude/projects"`,
 	} {
 		if !strings.Contains(script, frag) {
 			t.Errorf("startup script lacks %q:\n%s", frag, script)
 		}
 	}
-	if strings.Contains(script, "cp -a \"$h/.claude/projects/.\" "+SessionsVMPath+"/ &&") {
+	if strings.Contains(script, `cp -a "$h/.claude/projects/." `) {
+		t.Errorf("a copy of the whole folder puts the image's files back over the ones an earlier VM wrote:\n%s", script)
+	}
+	if strings.Contains(script, `sh {} + &&`) || strings.Contains(script, ") &&\n") {
 		t.Errorf("a failed copy must stop the script under set -e, and an && list would not:\n%s", script)
 	}
 }

@@ -39,10 +39,14 @@ setup:
   # /den-sessions is the instance's sessions folder on the host, mounted unless the nest's sessions is
   # false. Claude keeps its transcripts and its per-project memory under ~/.claude/projects, so that
   # path becomes a link to the mount and both outlive the VM. A projects folder the image ships is
-  # copied into the mount first, never dropped. cp -a also gives the mount the mode of the folder it
-  # copies, hence the chmod back to the 700 den created it with. The copy and the removal are separate
-  # commands: under set -e a failed copy in an && list would not stop the script, and the link would
-  # land inside the folder.
+  # copied into the mount first, never dropped, one file at a time: a file the mount already holds
+  # stays, since every new VM starts from the image's copy again and a plain cp -a of the folder would
+  # put it back over the memory and the transcripts an earlier VM wrote. The copy and the removal are
+  # separate commands: under set -e a failed copy in an && list would not stop the script, and the
+  # link would land inside the folder. The inner sh sets -e itself, and find reports its failure.
+  # set -e does not act inside the left side of ||, hence the && after cd. The usual cause of a failed
+  # copy is a file the sessions folder holds where the image has a folder: it stays across den rm, so
+  # the message names the host folder.
   startup:
     - command:
         - sh
@@ -55,8 +59,16 @@ setup:
           if [ -d /den-sessions ] && [ ! -L "$h/.claude/projects" ]; then
             mkdir -p "$h/.claude"
             if [ -d "$h/.claude/projects" ]; then
-              cp -a "$h/.claude/projects/." /den-sessions/
-              chmod 700 /den-sessions
+              (
+                cd "$h/.claude/projects" &&
+                find . ! -type d -exec sh -c 'set -e
+                  for f; do
+                    if [ ! -e "/den-sessions/$f" ] && [ ! -L "/den-sessions/$f" ]; then
+                      mkdir -p "/den-sessions/${f%/*}"
+                      cp -a "$f" "/den-sessions/$f"
+                    fi
+                  done' sh {} +
+              ) || { echo "den-claude: cannot copy the image's ~/.claude/projects into /den-sessions: an entry of the instance's sessions folder is in the way; on the host, move or delete what <den home>/sessions/<instance>/ holds under that name, then start the instance again" >&2; exit 1; }
               rm -rf "$h/.claude/projects"
             fi
             ln -s /den-sessions "$h/.claude/projects"
