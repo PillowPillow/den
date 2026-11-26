@@ -7,6 +7,17 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v2.6.0 — 2026-11-26
+
+### Added
+- Shell completion completes nest names: `den up <TAB>` and `den exec <TAB>` offer the nests den can see
+  from the current folder, the ones `den up` lists when it gets none. A <TAB> reads the `den.yaml` files
+  and writes nothing, so it never records a nest in den's index, and it never calls sbx.
+
+### Fixed
+- `den up` and `den exec` without a nest name a broken `den.yaml` once in their list of unreadable files,
+  not once per nest it declares.
+
 ## v2.5.0 — 2026-11-26
 
 ### Added
