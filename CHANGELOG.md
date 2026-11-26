@@ -7,6 +7,16 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v2.6.1 — 2026-11-26
+
+### Fixed
+- `den up <TAB>` and `den exec <TAB>` under a project `den.yaml` offer that file's nests and the global
+  file's only, not those of every other project den has seen. Without a project file they still add the
+  nests den has recorded from other projects, the only way to reach them from there.
+- Completion and the list `den up` prints without a nest no longer offer a nest that `den up` then refuses
+  as unknown: a nest added to another project's `den.yaml` since den last read that file appears once den
+  reads it again.
+
 ## v2.6.0 — 2026-11-26
 
 ### Added
