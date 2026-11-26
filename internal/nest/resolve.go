@@ -140,10 +140,13 @@ func Visible(denHome, cwd string) (string, error) {
 	return visible(project, global, ix), nil
 }
 
-// Names lists the nests den can see from cwd, the names Visible prints. It reads the index without
-// claiming anything: a shell completion calls it at every <TAB> and must not write nests.yaml. So it
-// does not refuse a name two live files declare, which `den up` then names. An indexed file den
-// cannot read is skipped; a broken global or cwd project file is returned.
+// Names lists the nests a shell completion offers from cwd, each one a name Find accepts. Under a
+// project file it lists that file's nests and the global file's only: a project's <TAB> is about that
+// project, and the index would bring in every other project den has seen. Without a project file it
+// adds the indexed nests, the only way to reach them from there. It reads the index without claiming
+// anything: a completion runs at every <TAB> and must not write nests.yaml. So it does not refuse a
+// name two live files declare, which `den up` then names. An indexed file den cannot read is skipped;
+// a broken global or cwd project file is returned.
 func Names(denHome, cwd string) ([]string, error) {
 	global, err := config.LoadGlobal(denHome)
 	if err != nil {
@@ -153,40 +156,61 @@ func Names(denHome, cwd string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	ix, err := readIndex(denHome)
-	if err != nil {
-		return nil, err
+	var known []declarer
+	if project != nil {
+		known = []declarer{{project.Path, sortedNames(project.File.Nests)}, {global.Path, sortedNames(global.File.Nests)}}
+	} else {
+		ix, err := readIndex(denHome)
+		if err != nil {
+			return nil, err
+		}
+		known, _ = seen(nil, global, ix)
 	}
-	known, _ := seen(project, global, ix)
 	var names []string
-	for _, f := range known {
-		names = append(names, sortedNames(f.File.Nests)...)
+	for _, d := range known {
+		names = append(names, d.names...)
 	}
-	names = dedupe(names)
-	sort.Strings(names)
-	return names, nil
+	return dedupe(names), nil
 }
 
-// seen returns the loaded files that declare the nests den can see, and the indexed files it cannot read.
-func seen(project, global *config.Loaded, ix index) (known []*config.Loaded, unreadable []string) {
+// declarer is a file and the nests Find takes from it.
+type declarer struct {
+	path  string
+	names []string
+}
+
+// seen returns the files that declare the nests den can see, and the indexed files it cannot read.
+// An indexed file gives only the names the index points at it, the ones Find looks up there: a nest
+// added to that file since den last read it is unknown to Find until den reads the file again.
+func seen(project, global *config.Loaded, ix index) (known []declarer, unreadable []string) {
 	for _, f := range []*config.Loaded{project, global} {
 		if f != nil {
-			known = append(known, f)
+			known = append(known, declarer{f.Path, sortedNames(f.File.Nests)})
 		}
 	}
-	read := map[string]bool{}
+	at := map[string]int{}
+	failed := map[string]bool{}
 	for _, n := range sortedNames(ix.Nests) {
 		path := ix.Nests[n]
-		if read[path] || !declares(path, n) || isLoaded(path, project, global) {
+		if failed[path] || !declares(path, n) || isLoaded(path, project, global) {
 			continue
 		}
-		read[path] = true
-		l, err := config.Load(path, false)
-		if err != nil {
-			unreadable = append(unreadable, fmt.Sprintf("%s (%s)", path, shortReason(path, err)))
-			continue
+		i, ok := at[path]
+		if !ok {
+			l, err := config.Load(path, false)
+			if err != nil {
+				failed[path] = true
+				unreadable = append(unreadable, fmt.Sprintf("%s (%s)", path, shortReason(path, err)))
+				continue
+			}
+			if _, ok := l.File.Nests[n]; !ok {
+				continue
+			}
+			known = append(known, declarer{path: l.Path})
+			i = len(known) - 1
+			at[path] = i
 		}
-		known = append(known, l)
+		known[i].names = append(known[i].names, n)
 	}
 	return known, unreadable
 }
@@ -194,10 +218,10 @@ func seen(project, global *config.Loaded, ix index) (known []*config.Loaded, unr
 func visible(project, global *config.Loaded, ix index) string {
 	known, unreadable := seen(project, global, ix)
 	var names, files []string
-	for _, f := range known {
-		names = append(names, sortedNames(f.File.Nests)...)
-		if len(f.File.Nests) > 0 {
-			files = append(files, f.Path)
+	for _, d := range known {
+		names = append(names, d.names...)
+		if len(d.names) > 0 {
+			files = append(files, d.path)
 		}
 	}
 	names, files = dedupe(names), dedupe(files)
@@ -205,7 +229,6 @@ func visible(project, global *config.Loaded, ix index) string {
 	if len(unreadable) > 0 {
 		suffix = "; unreadable: " + strings.Join(unreadable, ", ")
 	}
-	sort.Strings(names)
 	if len(names) == 0 {
 		return fmt.Sprintf("no nest is declared in %s%s", global.Path, suffix)
 	}

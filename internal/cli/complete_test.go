@@ -114,6 +114,30 @@ func TestCompletionOffersTheNestsDenCanSee(t *testing.T) {
 	}
 }
 
+func TestCompletionUnderAProjectLeavesOutTheNestsOfOtherProjects(t *testing.T) {
+	f := newUpFixture(t)
+	f.project(t, [2]string{"am", "repos: [{path: /x}]"})
+	other := filepath.Join(t.TempDir(), "den.yaml")
+	writeTestFile(t, other, "schema: 1\ndefault_template: claude-code-docker\nnests:\n  lib:\n    repos: [{path: /l}]\n")
+	writeTestFile(t, filepath.Join(f.home, "state/v2/nests.yaml"), "nests:\n  lib: "+other+"\n")
+	got, _ := f.complete(t, "up", "")
+	if want := []string{"am"}; !slices.Equal(got, want) {
+		t.Errorf("candidates %q, want %q", got, want)
+	}
+}
+
+func TestCompletionWithoutAProjectOffersTheIndexedNests(t *testing.T) {
+	f := newUpFixture(t)
+	f.cwd = t.TempDir()
+	other := filepath.Join(t.TempDir(), "den.yaml")
+	writeTestFile(t, other, "schema: 1\ndefault_template: claude-code-docker\nnests:\n  lib:\n    repos: [{path: /l}]\n  added:\n    repos: [{path: /a}]\n")
+	writeTestFile(t, filepath.Join(f.home, "state/v2/nests.yaml"), "nests:\n  lib: "+other+"\n")
+	got, _ := f.complete(t, "up", "")
+	if want := []string{"lib"}; !slices.Equal(got, want) {
+		t.Errorf("candidates %q, want %q", got, want)
+	}
+}
+
 func TestCompletionKeepsTheNestsThatStartWithTheTypedText(t *testing.T) {
 	f := newUpFixture(t)
 	f.project(t, [2]string{"am", "repos: [{path: /x}]"}, [2]string{"dg", "repos: [{path: /y}]"}, [2]string{"dg2", "repos: [{path: /z}]"})

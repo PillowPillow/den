@@ -44,7 +44,8 @@ func completeInstance(denHome *string) func(*cobra.Command, []string, string) ([
 }
 
 // completeNest is the shell completion of a command whose first positional argument is a nest: it
-// offers the names `den up` lists when it gets none.
+// offers the names nest.Names gives, the project's and global nests under a project file, the
+// indexed ones added without it.
 //
 // It goes through nest.Names, not nest.Visible: Visible claims the nests it reads, so a <TAB> would
 // write nests.yaml. Like completeInstance, it never calls sbx and stays silent on a file it cannot
