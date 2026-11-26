@@ -18,6 +18,10 @@ A **nest** is what you declare in a `den.yaml` ([den-yaml.md](den-yaml.md)). An 
 sbx sandbox, a microVM, that den creates from it. The instance is named `<nest>`, or
 `<nest>.<branch>` with `-w`. That name is also the sbx sandbox name, so `sbx` commands accept it too.
 
+**Shell completion.** `den completion <bash|zsh|fish|powershell>` prints the completion script of
+your shell, and `den completion <shell> --help` says how to load it. With it, `den rm <TAB>` and
+`den shell <TAB>` offer the instances `den ls` lists.
+
 ## `den up`
 
 ```bash
