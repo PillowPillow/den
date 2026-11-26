@@ -7,6 +7,18 @@ release with `/release`.
 Lines describe what changed for someone using den. The commit history is in the repo; it is
 not repeated here.
 
+## v2.5.0 — 2026-11-26
+
+### Added
+- Shell completion completes instance names: with the script of `den completion <bash|zsh|fish|powershell>`
+  loaded, `den rm <TAB>` and `den shell <TAB>` offer the instances `den ls` lists. The completion reads
+  den's records and never calls sbx, so a <TAB> does not wait for `sbx ls` nor fail when sbx is signed out.
+
+### Fixed
+- Shell completion no longer offers host file names where den takes no host path: the nest of `den up`
+  and `den exec`, the template of `den build`, `--workdir`, and the command after `den exec … --`, which
+  runs in the VM. `--repo` still completes host folders.
+
 ## v2.4.0 — 2026-11-25
 
 ### Added
