@@ -13,11 +13,10 @@ import (
 func newExecCmd(deps Deps, denHome *string) *cobra.Command {
 	var o instance.Options
 	cmd := &cobra.Command{
-		Use:   "exec <nest> [-w <branch>] [--only a,b | --without a,b] [--repo <path>]... [--workdir <vm path>] -- <cmd> [args…]",
-		Short: "Create a nest's instance if needed, run one command in it, and return its exit code",
-		Args:  cobra.ArbitraryArgs,
-		// Neither the nest nor the command after `--`, which runs in the VM, is a host path.
-		ValidArgsFunction: cobra.NoFileCompletions,
+		Use:               "exec <nest> [-w <branch>] [--only a,b | --without a,b] [--repo <path>]... [--workdir <vm path>] -- <cmd> [args…]",
+		Short:             "Create a nest's instance if needed, run one command in it, and return its exit code",
+		Args:              cobra.ArbitraryArgs,
+		ValidArgsFunction: completeNest(deps, denHome),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {

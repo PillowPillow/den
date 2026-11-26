@@ -20,9 +20,8 @@ func newUpCmd(deps Deps, denHome *string) *cobra.Command {
 		Use:   "up <nest> [-w <branch>] [--only a,b | --without a,b | -i] [--repo <path>]... [--workdir <vm path>] [--detach]",
 		Short: "Create a nest's instance if needed, then run Claude in it",
 		// MaximumNArgs, not ExactArgs: a missing nest gets the list of nests, not cobra's usage line.
-		Args: cobra.MaximumNArgs(1),
-		// A nest is never a path; without this the shell offers the current folder's files.
-		ValidArgsFunction: cobra.NoFileCompletions,
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeNest(deps, denHome),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if o.Selection.Interactive && !deps.IsTTY() {
 				return errors.New("-i needs a terminal; use --only/--without to pick the optional repos")

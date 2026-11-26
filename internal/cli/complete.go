@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/PillowPillow/den/v2/internal/config"
+	"github.com/PillowPillow/den/v2/internal/nest"
 	"github.com/PillowPillow/den/v2/internal/registry"
 )
 
@@ -36,6 +37,39 @@ func completeInstance(denHome *string) func(*cobra.Command, []string, string) ([
 		for _, r := range records {
 			if strings.HasPrefix(r.Instance, toComplete) {
 				names = append(names, r.Instance)
+			}
+		}
+		return names, cobra.ShellCompDirectiveNoFileComp
+	}
+}
+
+// completeNest is the shell completion of a command whose first positional argument is a nest: it
+// offers the names `den up` lists when it gets none.
+//
+// It goes through nest.Names, not nest.Visible: Visible claims the nests it reads, so a <TAB> would
+// write nests.yaml. Like completeInstance, it never calls sbx and stays silent on a file it cannot
+// read; `den up` names that file. After the nest, and after the `--` of `den exec`, it offers nothing.
+func completeNest(deps Deps, denHome *string) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+	return func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) > 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		home, err := config.Home(*denHome)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		cwd, err := deps.Getwd()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		all, err := nest.Names(home, cwd)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		var names []string
+		for _, n := range all {
+			if strings.HasPrefix(n, toComplete) {
+				names = append(names, n)
 			}
 		}
 		return names, cobra.ShellCompDirectiveNoFileComp

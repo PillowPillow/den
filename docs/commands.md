@@ -20,8 +20,9 @@ sbx sandbox, a microVM, that den creates from it. The instance is named `<nest>`
 
 **Shell completion.** `den completion <bash|zsh|fish|powershell>` prints the completion script of
 your shell, and `den completion <shell> --help` says how to load it. With it, `den rm <TAB>` and
-`den shell <TAB>` offer the instances `den ls` lists. A nest, a template, a `--workdir` and the
-command after `den exec … --` offer no file name: none of them is a host path.
+`den shell <TAB>` offer the instances `den ls` lists, and `den up <TAB>` and `den exec <TAB>` offer
+the nests den can see from the current folder. A template, a `--workdir` and the command after
+`den exec … --` offer no file name: none of them is a host path.
 
 ## `den up`
 
