@@ -156,14 +156,14 @@ func Names(denHome, cwd string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	ix, err := readIndex(denHome)
+	if err != nil {
+		return nil, err
+	}
 	var known []declarer
 	if project != nil {
 		known = []declarer{{project.Path, sortedNames(project.File.Nests)}, {global.Path, sortedNames(global.File.Nests)}}
 	} else {
-		ix, err := readIndex(denHome)
-		if err != nil {
-			return nil, err
-		}
 		known, _ = seen(nil, global, ix)
 	}
 	var names []string
@@ -188,6 +188,7 @@ func seen(project, global *config.Loaded, ix index) (known []declarer, unreadabl
 			known = append(known, declarer{f.Path, sortedNames(f.File.Nests)})
 		}
 	}
+	loaded := map[string]*config.Loaded{}
 	at := map[string]int{}
 	failed := map[string]bool{}
 	for _, n := range sortedNames(ix.Nests) {
@@ -195,17 +196,21 @@ func seen(project, global *config.Loaded, ix index) (known []declarer, unreadabl
 		if failed[path] || !declares(path, n) || isLoaded(path, project, global) {
 			continue
 		}
-		i, ok := at[path]
+		l, ok := loaded[path]
 		if !ok {
-			l, err := config.Load(path, false)
-			if err != nil {
+			var err error
+			if l, err = config.Load(path, false); err != nil {
 				failed[path] = true
 				unreadable = append(unreadable, fmt.Sprintf("%s (%s)", path, shortReason(path, err)))
 				continue
 			}
-			if _, ok := l.File.Nests[n]; !ok {
-				continue
-			}
+			loaded[path] = l
+		}
+		if _, ok := l.File.Nests[n]; !ok {
+			continue
+		}
+		i, ok := at[path]
+		if !ok {
 			known = append(known, declarer{path: l.Path})
 			i = len(known) - 1
 			at[path] = i

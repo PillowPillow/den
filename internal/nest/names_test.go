@@ -52,7 +52,7 @@ func TestNamesLeavesOutANestTheIndexedFileDeclaresButTheIndexDoesNot(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(v, "added") {
+	if !strings.HasPrefix(v, "nests den can see: lib (from ") {
 		t.Errorf("Visible lists a nest Find refuses: %q", v)
 	}
 }
