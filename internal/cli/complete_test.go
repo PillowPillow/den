@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -96,8 +97,71 @@ func TestCompletionNeverCallsSbx(t *testing.T) {
 	}
 }
 
-func TestCompletionOffersNoFileForANestOrATemplate(t *testing.T) {
-	for _, command := range []string{"up", "exec", "build"} {
+func TestCompletionOffersTheNestsDenCanSee(t *testing.T) {
+	for _, command := range []string{"up", "exec"} {
+		t.Run(command, func(t *testing.T) {
+			f := newUpFixture(t)
+			f.project(t, [2]string{"am", "repos: [{path: /x}]"}, [2]string{"dg", "repos: [{path: /y}]"})
+			writeTestFile(t, filepath.Join(f.home, "den.yaml"), "schema: 1\ndefault_template: claude-code-docker\nnests:\n  global:\n    repos: [{path: /g}]\n")
+			got, directive := f.complete(t, command, "")
+			if want := []string{"am", "dg", "global"}; !slices.Equal(got, want) {
+				t.Errorf("candidates %q, want %q", got, want)
+			}
+			if directive != noFileComp {
+				t.Errorf("directive %q, want %q: the shell would offer file names", directive, noFileComp)
+			}
+		})
+	}
+}
+
+func TestCompletionKeepsTheNestsThatStartWithTheTypedText(t *testing.T) {
+	f := newUpFixture(t)
+	f.project(t, [2]string{"am", "repos: [{path: /x}]"}, [2]string{"dg", "repos: [{path: /y}]"}, [2]string{"dg2", "repos: [{path: /z}]"})
+	got, _ := f.complete(t, "up", "dg")
+	if want := []string{"dg", "dg2"}; !slices.Equal(got, want) {
+		t.Errorf("candidates %q, want %q", got, want)
+	}
+}
+
+func TestCompletionOffersNothingAfterTheNest(t *testing.T) {
+	for _, command := range []string{"up", "exec"} {
+		t.Run(command, func(t *testing.T) {
+			f := newUpFixture(t)
+			f.project(t, [2]string{"am", "repos: [{path: /x}]"})
+			got, directive := f.complete(t, command, "am", "")
+			if len(got) != 0 || directive != noFileComp {
+				t.Errorf("candidates %q, directive %q: want none and %q", got, directive, noFileComp)
+			}
+		})
+	}
+}
+
+func TestCompletionOfANestWritesNoIndex(t *testing.T) {
+	f := newUpFixture(t)
+	f.project(t, [2]string{"am", "repos: [{path: /x}]"})
+	f.complete(t, "up", "")
+	if _, err := os.Stat(filepath.Join(f.home, "state", "v2", "nests.yaml")); !os.IsNotExist(err) {
+		t.Errorf("a <TAB> wrote nests.yaml: %v", err)
+	}
+	if len(f.fake.Calls) != 0 {
+		t.Errorf("completion called sbx: %v", f.fake.Calls)
+	}
+}
+
+func TestCompletionOfANestOffersNothingOnABrokenProjectFile(t *testing.T) {
+	f := newUpFixture(t)
+	writeTestFile(t, filepath.Join(f.proj, "den.yaml"), "schema: 1\nbogus: 1\n")
+	got, directive := f.complete(t, "up", "")
+	if len(got) != 0 || directive != noFileComp {
+		t.Errorf("candidates %q, directive %q: want none and %q", got, directive, noFileComp)
+	}
+	if strings.Contains(f.err.String(), "bogus") {
+		t.Errorf("a completion has nowhere to print a warning, got %q", f.err.String())
+	}
+}
+
+func TestCompletionOffersNoFileForATemplate(t *testing.T) {
+	for _, command := range []string{"build"} {
 		t.Run(command, func(t *testing.T) {
 			f := newUpFixture(t)
 			got, directive := f.complete(t, command, "")
