@@ -21,6 +21,8 @@ func newUpCmd(deps Deps, denHome *string) *cobra.Command {
 		Short: "Create a nest's instance if needed, then run Claude in it",
 		// MaximumNArgs, not ExactArgs: a missing nest gets the list of nests, not cobra's usage line.
 		Args: cobra.MaximumNArgs(1),
+		// A nest is never a path; without this the shell offers the current folder's files.
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if o.Selection.Interactive && !deps.IsTTY() {
 				return errors.New("-i needs a terminal; use --only/--without to pick the optional repos")
@@ -55,6 +57,7 @@ func newUpCmd(deps Deps, denHome *string) *cobra.Command {
 	f.StringArrayVar(&o.Selection.Repos, "repo", nil, "also mount this folder, kept with the instance (repeatable)")
 	f.BoolVarP(&o.Selection.Interactive, "interactive", "i", false, "pick the optional repos from a checklist")
 	f.StringVar(&o.Workdir, "workdir", "", "folder Claude starts in, as a VM path")
+	_ = cmd.RegisterFlagCompletionFunc("workdir", cobra.NoFileCompletions)
 	f.BoolVar(&detach, "detach", false, "create or start the instance, leave it running, and do not attach")
 	return cmd
 }

@@ -16,6 +16,8 @@ func newExecCmd(deps Deps, denHome *string) *cobra.Command {
 		Use:   "exec <nest> [-w <branch>] [--only a,b | --without a,b] [--repo <path>]... [--workdir <vm path>] -- <cmd> [args…]",
 		Short: "Create a nest's instance if needed, run one command in it, and return its exit code",
 		Args:  cobra.ArbitraryArgs,
+		// Neither the nest nor the command after `--`, which runs in the VM, is a host path.
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {
@@ -58,5 +60,6 @@ func newExecCmd(deps Deps, denHome *string) *cobra.Command {
 	f.StringArrayVar(&o.Selection.Repos, "repo", nil, "also mount this folder, kept with the instance (repeatable)")
 	f.BoolVarP(&o.Selection.Interactive, "interactive", "i", false, "refused: den exec never asks")
 	f.StringVar(&o.Workdir, "workdir", "", "folder the command runs in, as a VM path")
+	_ = cmd.RegisterFlagCompletionFunc("workdir", cobra.NoFileCompletions)
 	return cmd
 }

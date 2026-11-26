@@ -53,6 +53,7 @@ func newShellCmd(deps Deps, denHome *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&workdir, "workdir", "", "folder the shell starts in, as a VM path")
+	_ = cmd.RegisterFlagCompletionFunc("workdir", cobra.NoFileCompletions)
 	return cmd
 }
 

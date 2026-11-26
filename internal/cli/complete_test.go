@@ -95,3 +95,47 @@ func TestCompletionNeverCallsSbx(t *testing.T) {
 		t.Errorf("completion called sbx: %v", f.fake.Calls)
 	}
 }
+
+func TestCompletionOffersNoFileForANestOrATemplate(t *testing.T) {
+	for _, command := range []string{"up", "exec", "build"} {
+		t.Run(command, func(t *testing.T) {
+			f := newUpFixture(t)
+			got, directive := f.complete(t, command, "")
+			if len(got) != 0 || directive != noFileComp {
+				t.Errorf("candidates %q, directive %q: want none and %q", got, directive, noFileComp)
+			}
+		})
+	}
+}
+
+func TestCompletionOffersNoFileForTheCommandOfDenExec(t *testing.T) {
+	f := newUpFixture(t)
+	_, directive := f.complete(t, "exec", "am", "--", "")
+	if directive != noFileComp {
+		t.Errorf("directive %q, want %q: the command runs in the VM", directive, noFileComp)
+	}
+}
+
+func TestCompletionOffersNoFileForAVMWorkdir(t *testing.T) {
+	for _, command := range []string{"up", "exec", "shell"} {
+		t.Run(command, func(t *testing.T) {
+			f := newUpFixture(t)
+			_, directive := f.complete(t, command, "--workdir", "")
+			if directive != noFileComp {
+				t.Errorf("directive %q, want %q: --workdir is a VM path", directive, noFileComp)
+			}
+		})
+	}
+}
+
+func TestCompletionKeepsTheHostFilesForRepo(t *testing.T) {
+	for _, command := range []string{"up", "exec"} {
+		t.Run(command, func(t *testing.T) {
+			f := newUpFixture(t)
+			_, directive := f.complete(t, command, "--repo", "")
+			if directive != ":0" {
+				t.Errorf("directive %q, want %q: --repo is a host folder", directive, ":0")
+			}
+		})
+	}
+}
