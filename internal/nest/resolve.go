@@ -141,8 +141,9 @@ func Visible(denHome, cwd string) (string, error) {
 }
 
 // Names lists the nests den can see from cwd, the names Visible prints. It reads the index without
-// claiming anything: a shell completion calls it at every <TAB> and must not write nests.yaml. An
-// indexed file den cannot read is skipped; a broken global or cwd project file is returned.
+// claiming anything: a shell completion calls it at every <TAB> and must not write nests.yaml. So it
+// does not refuse a name two live files declare, which `den up` then names. An indexed file den
+// cannot read is skipped; a broken global or cwd project file is returned.
 func Names(denHome, cwd string) ([]string, error) {
 	global, err := config.LoadGlobal(denHome)
 	if err != nil {
@@ -173,11 +174,13 @@ func seen(project, global *config.Loaded, ix index) (known []*config.Loaded, unr
 			known = append(known, f)
 		}
 	}
+	read := map[string]bool{}
 	for _, n := range sortedNames(ix.Nests) {
 		path := ix.Nests[n]
-		if !declares(path, n) || isLoaded(path, project, global) {
+		if read[path] || !declares(path, n) || isLoaded(path, project, global) {
 			continue
 		}
+		read[path] = true
 		l, err := config.Load(path, false)
 		if err != nil {
 			unreadable = append(unreadable, fmt.Sprintf("%s (%s)", path, shortReason(path, err)))
