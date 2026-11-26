@@ -21,6 +21,8 @@ func newShellCmd(deps Deps, denHome *string) *cobra.Command {
 		Use:   "shell [<instance>] [--workdir <vm path>]",
 		Short: "Open a bash login shell in an instance",
 		Args:  cobra.MaximumNArgs(1),
+		// Every recorded instance, stopped ones included: telling which VM runs would take an sbx call.
+		ValidArgsFunction: completeInstance(denHome),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {

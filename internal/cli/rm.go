@@ -13,6 +13,8 @@ func newRmCmd(deps Deps, denHome *string) *cobra.Command {
 		Use:   "rm <instance> [--force]",
 		Short: "Remove an instance den created: its VM, the worktrees den made, its files",
 		Args:  cobra.ExactArgs(1),
+		// The instances den has a record of, which are the only ones rm acts on.
+		ValidArgsFunction: completeInstance(denHome),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {
