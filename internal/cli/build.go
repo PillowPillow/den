@@ -16,6 +16,8 @@ func newBuildCmd(deps Deps, denHome *string) *cobra.Command {
 		Use:   "build <template>",
 		Short: "Build a template: provision a throwaway VM, save it as an sbx template and record it",
 		Args:  cobra.ExactArgs(1),
+		// A template is a name or an image reference, never a path.
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := config.Home(*denHome)
 			if err != nil {
