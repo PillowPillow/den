@@ -48,7 +48,8 @@ func completeInstance(denHome *string) func(*cobra.Command, []string, string) ([
 //
 // It goes through nest.Names, not nest.Visible: Visible claims the nests it reads, so a <TAB> would
 // write nests.yaml. Like completeInstance, it never calls sbx and stays silent on a file it cannot
-// read; `den up` names that file. After the nest, and after the `--` of `den exec`, it offers nothing.
+// read; `den up` names that file. After the nest, the command of `den exec <nest> --` included, it
+// offers nothing.
 func completeNest(deps Deps, denHome *string) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 	return func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) > 0 {

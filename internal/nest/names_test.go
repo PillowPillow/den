@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +61,19 @@ func TestNamesListsANestOnceWhenTheIndexPointsAtTheProjectFile(t *testing.T) {
 	}
 	if want := []string{"api"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestVisibleNamesABrokenIndexedFileOnce(t *testing.T) {
+	home, proj, other := t.TempDir(), t.TempDir(), t.TempDir()
+	write(t, proj, "den.yaml", nestFile("api"))
+	broken := write(t, other, "den.yaml", "schema: 1\nbogus: 1\nnests:\n  a: {}\n  b: {}\n")
+	write(t, home, "state/v2/nests.yaml", "nests:\n  a: "+broken+"\n  b: "+broken+"\n")
+	got, err := Visible(home, proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(got, broken); n != 1 {
+		t.Errorf("%s named %d times in %q", broken, n, got)
 	}
 }

@@ -161,14 +161,10 @@ func TestCompletionOfANestOffersNothingOnABrokenProjectFile(t *testing.T) {
 }
 
 func TestCompletionOffersNoFileForATemplate(t *testing.T) {
-	for _, command := range []string{"build"} {
-		t.Run(command, func(t *testing.T) {
-			f := newUpFixture(t)
-			got, directive := f.complete(t, command, "")
-			if len(got) != 0 || directive != noFileComp {
-				t.Errorf("candidates %q, directive %q: want none and %q", got, directive, noFileComp)
-			}
-		})
+	f := newUpFixture(t)
+	got, directive := f.complete(t, "build", "")
+	if len(got) != 0 || directive != noFileComp {
+		t.Errorf("candidates %q, directive %q: want none and %q", got, directive, noFileComp)
 	}
 }
 
